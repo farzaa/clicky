@@ -23,7 +23,13 @@ import threading
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "anthropic/claude-sonnet-4"
 
+# set this to use a specific model regardless of what clicky requests
+# e.g. "openai/gpt-4o", "google/gemini-2.5-pro-preview", "meta-llama/llama-4-maverick"
+# leave empty to use the MODEL_MAP lookup (anthropic models only)
+DEFAULT_MODEL = os.environ.get("OPENROUTER_MODEL", "")
+
 # model mapping: anthropic model name -> openrouter model id
+# only used when DEFAULT_MODEL is empty
 MODEL_MAP = {
     "claude-sonnet-4-20250514": "anthropic/claude-sonnet-4",
     "claude-sonnet-4": "anthropic/claude-sonnet-4",
@@ -35,6 +41,8 @@ MODEL_MAP = {
     "claude-3-sonnet-20240229": "anthropic/claude-3-sonnet",
     "claude-3-haiku-20240307": "anthropic/claude-3-haiku",
 }
+
+FALLBACK_MODEL = "anthropic/claude-sonnet-4"
 
 
 def anthropic_to_openai(anthropic_req):
@@ -73,9 +81,12 @@ def anthropic_to_openai(anthropic_req):
         else:
             messages.append({"role": role, "content": content})
 
-    # map model
+    # map model: env override > anthropic map > fallback
     anthropic_model = anthropic_req.get("model", "")
-    model = MODEL_MAP.get(anthropic_model, DEFAULT_MODEL)
+    if DEFAULT_MODEL:
+        model = DEFAULT_MODEL
+    else:
+        model = MODEL_MAP.get(anthropic_model, FALLBACK_MODEL)
 
     # build openai request
     openai_req = {
@@ -297,6 +308,15 @@ def main():
     print(f"clicky openrouter proxy running on http://127.0.0.1:{port}")
     print(f"set clicky's anthropic endpoint to: http://localhost:{port}")
     print(f"OPENROUTER_API_KEY: {'set' if os.environ.get('OPENROUTER_API_KEY') else 'NOT SET'}")
+    print(f"OPENROUTER_MODEL: {DEFAULT_MODEL or f'map from clicky (fallback: {FALLBACK_MODEL})'}")
+    print()
+    print("popular models:")
+    print("  openai/gpt-4o                    openai/gpt-4o-mini")
+    print("  google/gemini-2.5-pro-preview    google/gemini-2.0-flash")
+    print("  anthropic/claude-sonnet-4        anthropic/claude-opus-4")
+    print("  meta-llama/llama-4-maverick      deepseek/deepseek-chat-v3")
+    print()
+    print("full list: https://openrouter.ai/models")
     print()
 
     try:

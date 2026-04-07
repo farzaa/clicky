@@ -34,6 +34,29 @@ Set Clicky's Anthropic endpoint to: `http://localhost:8976`
 
 Leave your Anthropic API key blank (the proxy uses your OpenRouter key).
 
+## Using non-Anthropic models
+
+Set `OPENROUTER_MODEL` to use any model regardless of what Clicky requests:
+
+```bash
+# use gpt-4o
+OPENROUTER_MODEL=openai/gpt-4o python3 proxy.py
+
+# use gemini
+OPENROUTER_MODEL=google/gemini-2.5-pro-preview python3 proxy.py
+
+# use llama
+OPENROUTER_MODEL=meta-llama/llama-4-maverick python3 proxy.py
+```
+
+Clicky thinks it's talking to Claude, but it's actually whatever model you picked.
+
+## Model behavior
+
+- If `OPENROUTER_MODEL` is set → always use that model, ignore what Clicky sends
+- If `OPENROUTER_MODEL` is empty → map Clicky's model name via MODEL_MAP
+- If no mapping found → fallback to `anthropic/claude-sonnet-4`
+
 ## Supported models
 
 Clicky's model name gets mapped automatically:
