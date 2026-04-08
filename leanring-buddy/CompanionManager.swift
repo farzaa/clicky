@@ -110,6 +110,35 @@ final class CompanionManager: ObservableObject {
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedGemmaModel") ?? "gemma-4-e4b-uncensored-hauhaucs-aggressive"
 
+    /// List of available models fetched from LM Studio API
+    @Published var availableModels: [String] = []
+
+    func fetchAvailableModels() {
+        guard let url = URL(string: "http://127.0.0.1:1234/v1/models") else { return }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 3
+        
+        Task {
+            do {
+                let (data, _) = try await URLSession.shared.data(for: request)
+                if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let dataArr = json["data"] as? [[String: Any]] {
+                    var models = dataArr.compactMap { $0["id"] as? String }
+                    // Filter out embedding models or non-chat models if needed, 
+                    // usually all are fine but we just list them.
+                    models.sort()
+                    await MainActor.run {
+                        self.availableModels = models
+                        // If current selected isn't in there, don't force change it yet
+                        // unless it's completely empty. It's safe to let them manually select it.
+                    }
+                }
+            } catch {
+                print("Failed to fetch models from LM Studio: \\(error)")
+            }
+        }
+    }
+
     func setSelectedModel(_ model: String) {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedGemmaModel")
@@ -173,6 +202,7 @@ final class CompanionManager: ObservableObject {
     }
 
     func start() {
+        fetchAvailableModels()
         refreshAllPermissions()
         print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
