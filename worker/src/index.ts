@@ -10,7 +10,7 @@
  */
 
 interface Env {
-  LM_STUDIO_API_KEY: string;
+  ANTHROPIC_API_KEY: string;
   ELEVENLABS_API_KEY: string;
   ELEVENLABS_VOICE_ID: string;
   ASSEMBLYAI_API_KEY: string;
@@ -54,7 +54,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
-      "x-api-key": env.LM_STUDIO_API_KEY,
+      "x-api-key": env.ANTHROPIC_API_KEY,
       "anthropic-version": "2023-06-01",
       "content-type": "application/json",
     },

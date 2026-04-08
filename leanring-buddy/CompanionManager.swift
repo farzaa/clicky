@@ -72,6 +72,10 @@ final class CompanionManager: ObservableObject {
     /// through this so keys never ship in the app binary.
     private static let workerBaseURL = "http://localhost:8787"
 
+    private lazy var claudeAPI: ClaudeAPI = {
+        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+    }()
+
     private lazy var openAIAPI: OpenAIAPI = {
         return OpenAIAPI(model: selectedModel)
     }()
@@ -142,7 +146,12 @@ final class CompanionManager: ObservableObject {
     func setSelectedModel(_ model: String) {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedGemmaModel")
-        openAIAPI.model = model
+        
+        if model.lowercased().contains("claude") {
+            claudeAPI.model = model
+        } else {
+            openAIAPI.model = model
+        }
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -209,8 +218,9 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
-        // Eagerly touch the Claude API so its TLS warmup handshake completes
+        // Eagerly touch APIs so their TLS warmup handshakes complete
         // well before the onboarding demo fires at ~40s into the video.
+        _ = claudeAPI
         _ = openAIAPI
 
         // If the user already completed onboarding AND all permissions are
@@ -640,15 +650,30 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                let (fullResponseText, _) = try await openAIAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
-                    conversationHistory: historyForAPI,
-                    userPrompt: transcript,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
-                    }
-                )
+                let fullResponseText: String
+                let duration: TimeInterval
+                
+                if selectedModel.lowercased().contains("claude") {
+                    (fullResponseText, duration) = try await claudeAPI.analyzeImageStreaming(
+                        images: labeledImages,
+                        systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                        conversationHistory: historyForAPI,
+                        userPrompt: transcript,
+                        onTextChunk: { _ in
+                            // No streaming text display — spinner stays until TTS plays
+                        }
+                    )
+                } else {
+                    (fullResponseText, duration) = try await openAIAPI.analyzeImageStreaming(
+                        images: labeledImages,
+                        systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                        conversationHistory: historyForAPI,
+                        userPrompt: transcript,
+                        onTextChunk: { _ in
+                            // No streaming text display — spinner stays until TTS plays
+                        }
+                    )
+                }
 
                 guard !Task.isCancelled else { return }
 
@@ -1012,12 +1037,24 @@ final class CompanionManager: ObservableObject {
                 let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
                 let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
 
-                let (fullResponseText, _) = try await openAIAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: Self.onboardingDemoSystemPrompt,
-                    userPrompt: "look around my screen and find something interesting to point at",
-                    onTextChunk: { _ in }
-                )
+                let fullResponseText: String
+                let duration: TimeInterval
+
+                if selectedModel.lowercased().contains("claude") {
+                    (fullResponseText, duration) = try await claudeAPI.analyzeImageStreaming(
+                        images: labeledImages,
+                        systemPrompt: Self.onboardingDemoSystemPrompt,
+                        userPrompt: "look around my screen and find something interesting to point at",
+                        onTextChunk: { _ in }
+                    )
+                } else {
+                    (fullResponseText, duration) = try await openAIAPI.analyzeImageStreaming(
+                        images: labeledImages,
+                        systemPrompt: Self.onboardingDemoSystemPrompt,
+                        userPrompt: "look around my screen and find something interesting to point at",
+                        onTextChunk: { _ in }
+                    )
+                }
 
                 let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
 
