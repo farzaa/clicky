@@ -70,14 +70,9 @@ final class CompanionManager: ObservableObject {
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
-    #if DEBUG
-    private static let workerBaseURL = "http://localhost:8787"
-    #else
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
-    #endif
-
     private lazy var claudeAPI: ClaudeAPI = {
-        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+        let defaultURL = "https://your-worker-name.your-subdomain.workers.dev" // Default placeholder, will be dynamically updated in start()
+        return ClaudeAPI(proxyURL: "\(defaultURL)/chat", model: selectedModel)
     }()
 
     private lazy var openAIAPI: OpenAIAPI = {
@@ -85,7 +80,8 @@ final class CompanionManager: ObservableObject {
     }()
 
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
-        return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
+        let defaultURL = "https://your-worker-name.your-subdomain.workers.dev"
+        return ElevenLabsTTSClient(proxyURL: "\(defaultURL)/tts")
     }()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
@@ -226,6 +222,17 @@ final class CompanionManager: ObservableObject {
     }
 
     func start() {
+        Task {
+            let baseURL = await WorkerEnvironment.shared.getBaseURL()
+            self.claudeAPI.proxyURL = "\(baseURL)/chat"
+            self.elevenLabsTTSClient.proxyURL = "\(baseURL)/tts"
+            
+            // Eagerly touch APIs so their TLS warmup handshakes complete
+            // well before the onboarding demo fires at ~40s into the video.
+            self.claudeAPI.warmUpTLSConnectionIfNeeded()
+            _ = self.openAIAPI
+        }
+        
         fetchAvailableModels()
         refreshAllPermissions()
         print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
@@ -233,10 +240,6 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
-        // Eagerly touch APIs so their TLS warmup handshakes complete
-        // well before the onboarding demo fires at ~40s into the video.
-        _ = claudeAPI
-        _ = openAIAPI
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions

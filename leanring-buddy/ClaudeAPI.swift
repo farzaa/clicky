@@ -10,12 +10,13 @@ class ClaudeAPI {
     private static let tlsWarmupLock = NSLock()
     private static var hasStartedTLSWarmup = false
 
-    private let apiURL: URL
+    var proxyURL: String
+    private var apiURL: URL { URL(string: proxyURL)! }
     var model: String
     private let session: URLSession
 
     init(proxyURL: String, model: String = "claude-sonnet-4-6") {
-        self.apiURL = URL(string: proxyURL)!
+        self.proxyURL = proxyURL
         self.model = model
 
         // Use .default instead of .ephemeral so TLS session tickets are cached.
@@ -29,11 +30,6 @@ class ClaudeAPI {
         config.urlCache = nil
         config.httpCookieStorage = nil
         self.session = URLSession(configuration: config)
-
-        // Fire a lightweight HEAD request in the background to pre-establish the TLS
-        // connection. This caches the TLS session ticket so the first real API call
-        // (which carries a large image payload) doesn't need a cold TLS handshake.
-        warmUpTLSConnectionIfNeeded()
     }
 
     private func makeAPIRequest() -> URLRequest {
@@ -63,7 +59,7 @@ class ClaudeAPI {
 
     /// Sends a no-op HEAD request to the API host to establish and cache a TLS session.
     /// Failures are silently ignored — this is purely an optimization.
-    private func warmUpTLSConnectionIfNeeded() {
+    func warmUpTLSConnectionIfNeeded() {
         Self.tlsWarmupLock.lock()
         let shouldStartTLSWarmup = !Self.hasStartedTLSWarmup
         if shouldStartTLSWarmup {
