@@ -6,3 +6,5 @@ build/
 releases/
 .claude/
 coding-plans/
+
+/worker/wrangler.toml
