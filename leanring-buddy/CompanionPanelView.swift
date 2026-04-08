@@ -703,7 +703,7 @@ struct CompanionPanelView: View {
                         TextField("", text: Binding(
                             get: { companionManager.lmStudioAPIKey },
                             set: { companionManager.lmStudioAPIKey = $0 }
-                        ), prompt: Text("LM Studio API Key (leave empty if none)").foregroundColor(.white.opacity(0.4)))
+                        ), prompt: Text("LM Studio API Key (leave empty if none)").foregroundColor(.white))
                         .textFieldStyle(PlainTextFieldStyle())
                         .font(.system(size: 11))
                         .foregroundColor(.white)
@@ -711,7 +711,7 @@ struct CompanionPanelView: View {
                         SecureField("", text: Binding(
                             get: { companionManager.lmStudioAPIKey },
                             set: { companionManager.lmStudioAPIKey = $0 }
-                        ), prompt: Text("LM Studio API Key (leave empty if none)").foregroundColor(.white.opacity(0.4)))
+                        ), prompt: Text("LM Studio API Key (leave empty if none)").foregroundColor(.white))
                         .textFieldStyle(PlainTextFieldStyle())
                         .font(.system(size: 11))
                         .foregroundColor(.white)
