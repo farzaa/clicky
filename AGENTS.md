@@ -5,7 +5,7 @@
 
 ## Overview
 
-macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes locally via Apple Speech, and sends the transcript + a screenshot of the user's screen to OpenRouter. OpenRouter responds with text (streamed via SSE) and voice is generated with ElevenLabs TTS. A blue cursor overlay can fly to and point at UI elements referenced in responses on any connected monitor.
+macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes locally via Apple Speech, and sends the transcript + a screenshot of the display where the cursor is to OpenRouter. OpenRouter responds with text (streamed via SSE) and voice is generated with ElevenLabs TTS. A blue cursor overlay can fly to and point at UI elements referenced in responses; pointing uses the same display’s coordinate mapping as the vision screenshot.
 
 API keys are stored locally in macOS Keychain via the Settings tab.
 
@@ -17,7 +17,7 @@ API keys are stored locally in macOS Keychain via the Settings tab.
 - **AI Chat**: OpenRouter chat completions API with SSE streaming
 - **Speech-to-Text**: Apple Speech (local on-device/system service)
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) direct API
-- **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
+- **Screen Capture**: ScreenCaptureKit (macOS 14.2+); voice/OpenRouter vision uses the cursor display only (smaller payload, one coordinate space). `CompanionScreenCaptureUtility` can still capture all displays for other call sites.
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: OpenRouter model responses can embed `[POINT:x,y:label:screenN]` tags. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
@@ -42,12 +42,12 @@ API keys are stored locally in macOS Keychain via the Settings tab.
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1800 | Central state machine. Owns dictation, shortcut monitoring, screen capture, OpenRouter API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → OpenRouter → TTS → pointing pipeline. |
+| `CompanionManager.swift` | ~2320 | Central state machine. Owns dictation, shortcut monitoring, screen capture, OpenRouter API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → OpenRouter → TTS → pointing pipeline; Computer Use action resolution (including scroll focus coordinates), multi-turn observe-mode heuristics, duplicate-action loop guard, and max autonomous iteration cap. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
 | `CompanionPanelView.swift` | ~900 | SwiftUI panel content for the menu bar dropdown. Includes Main and Settings tabs, permission UI, key management, OpenRouter model selection, and app controls using the `DS` design system. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
-| `CompanionScreenCaptureUtility.swift` | ~225 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data per display and maps screenshot pixels to global AppKit coordinates for clicks and pointing. |
+| `CompanionScreenCaptureUtility.swift` | ~275 | ScreenCaptureKit capture: shared per-display pipeline, `captureCursorScreenAsJPEG()` for the voice/vision flow, `captureAllScreensAsJPEG()` for full multi-monitor capture. Maps screenshot pixels to global AppKit coordinates for clicks and pointing. |
 | `BuddyDictationManager.swift` | ~866 | Push-to-talk voice pipeline. Handles microphone capture via `AVAudioEngine`, provider-aware permission checks, keyboard/button dictation sessions, transcript finalization, shortcut parsing, contextual keyterms, and live audio-level reporting for waveform feedback. |
 | `BuddyTranscriptionProvider.swift` | ~40 | Protocol surface and provider factory for voice transcription backends. Defaults to Apple Speech local provider. |
 | `AppleSpeechTranscriptionProvider.swift` | ~147 | Local fallback transcription provider backed by Apple's Speech framework. |
@@ -61,7 +61,7 @@ API keys are stored locally in macOS Keychain via the Settings tab.
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AIServiceSettings.swift` | ~80 | Local settings state for OpenRouter model and ElevenLabs voice preferences plus Keychain-backed key loading. |
 | `SecureSettingsStore.swift` | ~120 | macOS Keychain helper for storing/retrieving OpenRouter and ElevenLabs API keys securely. |
-| `ComputerUseActionExecutor.swift` | ~514 | Executes local computer-control actions for Computer Use (CGEvent clicks with warp verification, System Events fallback, scroll, drag). |
+| `ComputerUseActionExecutor.swift` | ~600 | Executes local computer-control actions for Computer Use (CGEvent clicks with warp verification, System Events fallback, scroll with optional focus warp + activation, drag). |
 
 ## Build & Run
 

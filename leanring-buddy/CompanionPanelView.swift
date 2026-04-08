@@ -156,6 +156,36 @@ struct CompanionPanelView: View {
             .pointerCursor()
 
             VStack(alignment: .leading, spacing: 6) {
+                Toggle("Multi-Turn", isOn: Binding(
+                    get: { companionManager.isMultiTurnEnabled },
+                    set: { companionManager.setMultiTurnEnabled($0) }
+                ))
+                .toggleStyle(.switch)
+                .tint(DS.Colors.accent)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+                Text("When enabled, Clicky can continue an autonomous multi-turn loop from one request so it can handle longer tasks with follow-up replies, actions, and point events.")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Toggle("Defer voice until loop completes", isOn: Binding(
+                    get: { companionManager.deferVoiceUntilAgenticLoopCompletes },
+                    set: { companionManager.setDeferVoiceUntilAgenticLoopCompletes($0) }
+                ))
+                .toggleStyle(.switch)
+                .tint(DS.Colors.accent)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+                .disabled(!companionManager.isMultiTurnEnabled)
+                .opacity(companionManager.isMultiTurnEnabled ? 1.0 : 0.45)
+
+                Text("When Multi-Turn is on, wait until the autonomous loop finishes before speaking the reply aloud — no voice after each intermediate step.")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
                 Toggle("Computer Use", isOn: Binding(
                     get: { companionManager.isComputerUseEnabled },
                     set: { companionManager.setComputerUseEnabled($0) }
@@ -226,10 +256,40 @@ struct CompanionPanelView: View {
             .pickerStyle(.menu)
             .disabled(companionManager.visibleOpenRouterModels.isEmpty)
 
+            Text("Used for each vision step: screenshots, spoken reply, actions, and pointing. Pick a cheaper model here if you use a separate orchestrator below.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Picker("Orchestrator model", selection: Binding(
+                get: { companionManager.orchestratorOpenRouterModelID },
+                set: { companionManager.setOrchestratorOpenRouterModelID($0) }
+            )) {
+                ForEach(companionManager.visibleOpenRouterModels, id: \.id) { model in
+                    Text(modelDisplayLabel(for: model))
+                        .tag(model.id)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(companionManager.visibleOpenRouterModels.isEmpty)
+
+            Text("Used only for Multi-Turn continuation turns (loop orchestration and [LOOP_CONTROL]). Use a stronger model here and a cheaper OpenRouter model above for step execution, or set both to the same model.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
             if companionManager.showOnlyWebEnabledModels
                 && !companionManager.selectedModel.isEmpty
                 && !companionManager.visibleOpenRouterModels.contains(where: { $0.id == companionManager.selectedModel }) {
                 Text("Current selection is not web-enabled; choose a visible model to force native browsing.")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+
+            if companionManager.showOnlyWebEnabledModels
+                && !companionManager.orchestratorOpenRouterModelID.isEmpty
+                && !companionManager.visibleOpenRouterModels.contains(where: { $0.id == companionManager.orchestratorOpenRouterModelID }) {
+                Text("Orchestrator model is not web-enabled; choose a visible model or turn off Web-enabled only.")
                     .font(.system(size: 10))
                     .foregroundColor(DS.Colors.textTertiary)
             }

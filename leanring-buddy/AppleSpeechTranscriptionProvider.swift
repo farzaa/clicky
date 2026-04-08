@@ -87,9 +87,10 @@ private final class AppleSpeechTranscriptionSession: NSObject, BuddyStreamingTra
         recognitionRequest.taskHint = .dictation
         recognitionRequest.addsPunctuation = true
 
-        if speechRecognizer.supportsOnDeviceRecognition {
-            recognitionRequest.requiresOnDeviceRecognition = true
-        }
+        // Do not force `requiresOnDeviceRecognition`: on some Macs the on-device path combined with
+        // certain input devices yields empty recognition (kAFAssistantErrorDomain / 1110) even when
+        // audio is present; letting the system choose server-assisted recognition when available is
+        // more reliable.
 
         recognitionTask = speechRecognizer.recognitionTask(with: recognitionRequest) { [weak self] result, error in
             self?.handleRecognitionEvent(result: result, error: error)

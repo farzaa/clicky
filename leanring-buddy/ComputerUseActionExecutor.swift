@@ -53,7 +53,8 @@ enum ResolvedComputerUseAction {
     case typeText(String)
     case keyPress(String)
     case keyCombo(key: String, modifiers: [String])
-    case scroll(deltaX: Double, deltaY: Double)
+    /// `focusGlobalPoint` moves the OS pointer and activates the window under that screenshot-mapped point before posting wheel events (required for reliable browser scrolling).
+    case scroll(deltaX: Double, deltaY: Double, focusGlobalPoint: CGPoint?)
     case drag(fromGlobalPoint: CGPoint, toGlobalPoint: CGPoint)
 }
 
@@ -65,6 +66,12 @@ struct ComputerUseActionExecutionResult {
 
 @MainActor
 final class ComputerUseActionExecutor {
+    /// Windows owned by these bundles are ignored when hit-testing for activation so scroll/click
+    /// targets the user’s app (e.g. browser) instead of the Dock strip.
+    private static let bundleIdentifiersSkippedForFrontmostWindowActivationAtPoint: Set<String> = [
+        "com.apple.dock"
+    ]
+
     func execute(actions: [ResolvedComputerUseAction]) -> [ComputerUseActionExecutionResult] {
         actions.map { execute(action: $0) }
     }
@@ -104,8 +111,12 @@ final class ComputerUseActionExecutor {
         case .keyCombo(let key, let modifiers):
             let didSucceed = runSystemEventsScript(scriptBody: scriptBodyForKeyCombo(key: key, modifiers: modifiers))
             return result(description: "key combo", didSucceed: didSucceed, failureReason: "Could not send key combo with System Events.")
-        case .scroll(let deltaX, let deltaY):
-            let didSucceed = postScroll(deltaX: deltaX, deltaY: deltaY)
+        case .scroll(let deltaX, let deltaY, let focusGlobalPoint):
+            let didSucceed = postScrollWheelTicks(
+                deltaX: deltaX,
+                deltaY: deltaY,
+                focusGlobalPoint: focusGlobalPoint
+            )
             return result(description: "scroll", didSucceed: didSucceed, failureReason: "Could not post scroll event.")
         case .drag(let fromGlobalPoint, let toGlobalPoint):
             let didSucceed = postDrag(from: fromGlobalPoint, to: toGlobalPoint)
@@ -357,12 +368,15 @@ final class ComputerUseActionExecutor {
 
     /// Walks on-screen windows front-to-back and activates the app that owns the first window
     /// whose bounds contain `globalPoint` (AppKit global coordinates), skipping this app’s windows.
+    /// `kCGWindowBounds` uses Quartz desktop coordinates (top-left origin); we convert the
+    /// AppKit point with `coreGraphicsGlobalPointFromAppKitGlobalPoint` before hit-testing.
     private func activateApplicationOwningFrontmostWindowAt(_ globalPoint: CGPoint) -> (
         didFindWindow: Bool,
         targetApplication: NSRunningApplication?,
         didActivate: Bool
     ) {
         let ownProcessIdentifier = ProcessInfo.processInfo.processIdentifier
+        let quartzGlobalPoint = coreGraphicsGlobalPointFromAppKitGlobalPoint(globalPoint)
         guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [NSDictionary] else {
             return (false, nil, false)
         }
@@ -383,9 +397,13 @@ final class ComputerUseActionExecutor {
             let sizeHeight = CGFloat((boundsDict["Height"] as? NSNumber)?.doubleValue ?? 0)
             let windowBounds = CGRect(x: originX, y: originY, width: sizeWidth, height: sizeHeight)
             guard sizeWidth >= 2, sizeHeight >= 2 else { continue }
-            guard windowBounds.contains(globalPoint) else { continue }
+            guard windowBounds.contains(quartzGlobalPoint) else { continue }
 
             guard let application = NSRunningApplication(processIdentifier: windowOwnerProcessIdentifier) else {
+                continue
+            }
+            if let bundleIdentifier = application.bundleIdentifier,
+               Self.bundleIdentifiersSkippedForFrontmostWindowActivationAtPoint.contains(bundleIdentifier) {
                 continue
             }
             let didActivate = application.activate(options: [.activateIgnoringOtherApps])
@@ -395,19 +413,103 @@ final class ComputerUseActionExecutor {
         return (false, nil, false)
     }
 
-    private func postScroll(deltaX: Double, deltaY: Double) -> Bool {
-        guard let scrollEvent = CGEvent(
-            scrollWheelEvent2Source: nil,
-            units: .line,
-            wheelCount: 2,
-            wheel1: Int32(deltaY),
-            wheel2: Int32(deltaX),
-            wheel3: 0
-        ) else {
+    /// Posts scroll wheel events in small line-sized ticks (Chromium-based browsers often ignore a single large delta).
+    /// When `focusGlobalPoint` is set, activates the window under that point and warps the pointer there first so scroll targets the web view under the cursor.
+    private func postScrollWheelTicks(deltaX: Double, deltaY: Double, focusGlobalPoint: CGPoint?) -> Bool {
+        let focusDescription = focusGlobalPoint.map { point in
+            "focusGlobalPoint=\(point)"
+        } ?? "focusGlobalPoint=none (legacy: scroll may miss if pointer is not over the target window)"
+        print(
+            "🖱️ Computer use scroll: deltaX=\(deltaX) deltaY=\(deltaY) \(focusDescription)"
+        )
+
+        // Quartz-global point for routing: unset location often defaults to origin so the web view never receives wheel deltas.
+        let quartzLocationForScrollEvents: CGPoint
+        if let focusGlobalPoint {
+            let activation = activateApplicationOwningFrontmostWindowAt(focusGlobalPoint)
+            if activation.didFindWindow, let application = activation.targetApplication {
+                print(
+                    "🖱️ Computer use scroll: activate pid=\(application.processIdentifier) " +
+                    "bundle=\(application.bundleIdentifier ?? "nil") ok=\(activation.didActivate)"
+                )
+            } else {
+                print("🖱️ Computer use scroll: no on-screen window under focus point for activation")
+            }
+            usleep(200_000)
+            let pointerPreparation = preparePointerForSyntheticMouseAction(desiredGlobalPoint: focusGlobalPoint)
+            if let alignmentWarning = pointerPreparation.alignmentWarning {
+                print("⚠️ Computer use scroll: \(alignmentWarning)")
+            }
+            quartzLocationForScrollEvents =
+                coreGraphicsGlobalPointFromAppKitGlobalPoint(pointerPreparation.clickPoint)
+        } else if let currentQuartzLocation = CGEvent(source: nil)?.location {
+            quartzLocationForScrollEvents = currentQuartzLocation
+        } else {
+            print("⚠️ Computer use scroll: no focus point and could not read cursor location; wheel routing may fail.")
+            quartzLocationForScrollEvents = .zero
+        }
+
+        let totalY = Int32(deltaY.rounded())
+        let totalX = Int32(deltaX.rounded())
+        if totalY == 0 && totalX == 0 {
+            print("⚠️ Computer use scroll: delta rounds to zero; no wheel events posted.")
             return false
         }
-        scrollEvent.post(tap: .cghidEventTap)
-        return true
+
+        let maxLinesPerTick: Int32 = 8
+        let verticalTicks = decomposeScrollDeltaIntoTicks(totalDelta: totalY, maxMagnitudePerTick: maxLinesPerTick)
+        let horizontalTicks = decomposeScrollDeltaIntoTicks(totalDelta: totalX, maxMagnitudePerTick: maxLinesPerTick)
+        let tickCount = max(verticalTicks.count, horizontalTicks.count)
+
+        let scrollEventSource = CGEventSource(stateID: .hidSystemState)
+
+        var didPostAnyEvent = false
+        for tickIndex in 0..<tickCount {
+            let chunkY = tickIndex < verticalTicks.count ? verticalTicks[tickIndex] : 0
+            let chunkX = tickIndex < horizontalTicks.count ? horizontalTicks[tickIndex] : 0
+            guard chunkY != 0 || chunkX != 0 else { continue }
+
+            let scrollWheelAxisCount: UInt32 = chunkX == 0 ? 1 : 2
+            guard let scrollEvent = CGEvent(
+                scrollWheelEvent2Source: scrollEventSource,
+                units: .line,
+                wheelCount: scrollWheelAxisCount,
+                wheel1: chunkY,
+                wheel2: chunkX,
+                wheel3: 0
+            ) else {
+                print("⚠️ Computer use scroll: failed to create scroll wheel event at tick \(tickIndex).")
+                return didPostAnyEvent
+            }
+            scrollEvent.location = quartzLocationForScrollEvents
+            scrollEvent.post(tap: CGEventTapLocation.cghidEventTap)
+            didPostAnyEvent = true
+            usleep(35_000)
+        }
+
+        if didPostAnyEvent {
+            print(
+                "🖱️ Computer use scroll: posted \(tickCount) tick(s) " +
+                "verticalChunks=\(verticalTicks) horizontalChunks=\(horizontalTicks)"
+            )
+        }
+        return didPostAnyEvent
+    }
+
+    /// Splits a scroll delta into multiple ticks capped in magnitude (e.g. -24 → [-8,-8,-8]).
+    private func decomposeScrollDeltaIntoTicks(totalDelta: Int32, maxMagnitudePerTick: Int32) -> [Int32] {
+        guard totalDelta != 0 else { return [] }
+        let cap = max(1, maxMagnitudePerTick)
+        var remaining = totalDelta
+        var ticks: [Int32] = []
+        while remaining != 0 {
+            let sign: Int32 = remaining > 0 ? 1 : -1
+            let magnitude = min(cap, abs(remaining))
+            let chunk = sign * magnitude
+            ticks.append(chunk)
+            remaining -= chunk
+        }
+        return ticks
     }
 
     private func postDrag(from: CGPoint, to: CGPoint) -> Bool {

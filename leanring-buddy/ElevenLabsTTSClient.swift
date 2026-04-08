@@ -74,6 +74,11 @@ final class ElevenLabsTTSClient {
         self.audioPlayer = player
         player.play()
         print("🔊 ElevenLabs TTS: playing \(data.count / 1024)KB audio")
+
+        while audioPlayer?.isPlaying == true {
+            try Task.checkCancellation()
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
     }
 
     /// Whether TTS audio is currently playing back.

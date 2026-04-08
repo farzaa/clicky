@@ -7,8 +7,10 @@
 //  exposes observable voice state for the panel UI.
 //
 
+import AppKit
 import AVFoundation
 import Combine
+import CoreFoundation
 import Foundation
 import ScreenCaptureKit
 import SwiftUI
@@ -78,6 +80,10 @@ final class CompanionManager: ObservableObject {
     private lazy var elevenLabsTTSClient = ElevenLabsTTSClient()
     private lazy var computerUseActionExecutor = ComputerUseActionExecutor()
 
+    /// Retained instance so `stopSpeaking()` can run on quit. Throwaway `NSSpeechSynthesizer()` instances
+    /// still enqueue utterances with the system speech service, which can keep talking after the app exits.
+    private let systemSpeechSynthesizerForErrors = NSSpeechSynthesizer()
+
     /// Conversation history so Claude remembers prior exchanges within a session.
     /// Each entry is the user's transcript and Claude's response.
     private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
@@ -92,6 +98,12 @@ final class CompanionManager: ObservableObject {
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
+
+    /// True while the global push-to-talk shortcut is held and we intend to record, including the
+    /// async gap before `BuddyDictationManager` flips to actively recording. Keeps the overlay
+    /// waveform in sync with user intent (and allows interrupting `.responding` when combined with
+    /// the voice-state sink below).
+    @Published private(set) var isPushToTalkHotkeyHeld = false
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
     /// Throttles System Events AppleScript probes during timer-driven `refreshAllPermissions` so polling
@@ -102,6 +114,7 @@ final class CompanionManager: ObservableObject {
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
+    private var isOrchestratedLoopActive = false
 
     /// True when all three required permissions (accessibility, screen recording,
     /// microphone) are granted. Used by the panel to show a single "all good" state.
@@ -123,6 +136,14 @@ final class CompanionManager: ObservableObject {
 
     var isComputerUseEnabled: Bool {
         aiServiceSettings.isComputerUseEnabled
+    }
+
+    var isMultiTurnEnabled: Bool {
+        aiServiceSettings.isMultiTurnEnabled
+    }
+
+    var deferVoiceUntilAgenticLoopCompletes: Bool {
+        aiServiceSettings.deferVoiceUntilAgenticLoopCompletes
     }
 
     var areComputerUsePermissionsGranted: Bool {
@@ -169,8 +190,16 @@ final class CompanionManager: ObservableObject {
         aiServiceSettings.selectedOpenRouterModelID
     }
 
+    var orchestratorOpenRouterModelID: String {
+        aiServiceSettings.orchestratorOpenRouterModelID
+    }
+
     func setSelectedModel(_ model: String) {
         aiServiceSettings.saveSelectedOpenRouterModelID(model)
+    }
+
+    func setOrchestratorOpenRouterModelID(_ orchestratorOpenRouterModelID: String) {
+        aiServiceSettings.saveOrchestratorOpenRouterModelID(orchestratorOpenRouterModelID)
     }
 
     func setShowOnlyWebEnabledModels(_ showOnlyWebEnabledModels: Bool) {
@@ -192,6 +221,14 @@ final class CompanionManager: ObservableObject {
             lastAutomationPermissionProbeDateDuringPolling = nil
             computerUseRuntimeStatusMessage = "Ready to control."
         }
+    }
+
+    func setMultiTurnEnabled(_ isMultiTurnEnabled: Bool) {
+        aiServiceSettings.saveMultiTurnEnabled(isMultiTurnEnabled)
+    }
+
+    func setDeferVoiceUntilAgenticLoopCompletes(_ deferVoiceUntilAgenticLoopCompletes: Bool) {
+        aiServiceSettings.saveDeferVoiceUntilAgenticLoopCompletes(deferVoiceUntilAgenticLoopCompletes)
     }
 
     @discardableResult
@@ -272,6 +309,10 @@ final class CompanionManager: ObservableObject {
                     if let firstModel = defaultModelPool.first,
                        !models.contains(where: { $0.id == aiServiceSettings.selectedOpenRouterModelID }) {
                         aiServiceSettings.saveSelectedOpenRouterModelID(firstModel.id)
+                    }
+                    if let firstModel = defaultModelPool.first,
+                       !models.contains(where: { $0.id == aiServiceSettings.orchestratorOpenRouterModelID }) {
+                        aiServiceSettings.saveOrchestratorOpenRouterModelID(firstModel.id)
                     }
                 }
             } catch {
@@ -448,6 +489,8 @@ final class CompanionManager: ObservableObject {
     /// Resets the in-memory conversation context used for follow-up turns.
     /// This keeps permissions/settings untouched while starting a fresh chat thread.
     func clearConversationContext() {
+        elevenLabsTTSClient.stopPlayback()
+        abortActiveOrchestratedLoopIfNeeded(reason: "context_cleared")
         conversationHistory.removeAll()
         hasConversationHistory = false
         pendingDestructiveActionPlan = nil
@@ -455,6 +498,13 @@ final class CompanionManager: ObservableObject {
     }
 
     func stop() {
+        elevenLabsTTSClient.stopPlayback()
+        systemSpeechSynthesizerForErrors.stopSpeaking()
+        onboardingMusicFadeTimer?.invalidate()
+        onboardingMusicFadeTimer = nil
+        onboardingMusicPlayer?.stop()
+        onboardingMusicPlayer = nil
+
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
@@ -624,37 +674,53 @@ final class CompanionManager: ObservableObject {
     }
 
     private func bindVoiceStateObservation() {
-        voiceStateCancellable = buddyDictationManager.$isRecordingFromKeyboardShortcut
-            .combineLatest(
-                buddyDictationManager.$isFinalizingTranscript,
-                buddyDictationManager.$isPreparingToRecord
-            )
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] isRecording, isFinalizing, isPreparing in
-                guard let self else { return }
-                // Don't override .responding — the AI response pipeline
-                // manages that state directly until streaming finishes.
-                guard self.voiceState != .responding else { return }
+        voiceStateCancellable = Publishers.CombineLatest4(
+            buddyDictationManager.$isFinalizingTranscript,
+            buddyDictationManager.$isPreparingToRecord,
+            buddyDictationManager.$isRecordingFromKeyboardShortcut,
+            buddyDictationManager.$isRecordingFromMicrophoneButton
+        )
+        .combineLatest($isPushToTalkHotkeyHeld)
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] dictationTuple, hotkeyHeld in
+            guard let self else { return }
 
-                if isFinalizing {
-                    self.voiceState = .processing
-                } else if isRecording {
-                    self.voiceState = .listening
-                } else if isPreparing {
-                    self.voiceState = .processing
-                } else {
-                    self.voiceState = .idle
-                    // If the user pressed and released the hotkey without
-                    // saying anything, no response task runs — schedule the
-                    // transient hide here so the overlay doesn't get stuck.
-                    // Only do this when no response is in flight, otherwise
-                    // the brief idle gap between recording and processing
-                    // would prematurely hide the overlay.
-                    if self.currentResponseTask == nil {
-                        self.scheduleTransientHideIfNeeded()
-                    }
+            let (
+                isFinalizing,
+                isPreparing,
+                isRecordingFromKeyboardShortcut,
+                isRecordingFromMicrophoneButton
+            ) = dictationTuple
+            let isActivelyRecording = isRecordingFromKeyboardShortcut || isRecordingFromMicrophoneButton
+
+            // Keep `.responding` while the assistant is talking, unless the user is interrupting
+            // with push-to-talk (hotkey held) or dictation has already moved on.
+            let shouldAllowDictationToDriveVoiceState =
+                self.voiceState != .responding
+                || isFinalizing
+                || isActivelyRecording
+                || hotkeyHeld
+            guard shouldAllowDictationToDriveVoiceState else { return }
+
+            if isFinalizing {
+                self.voiceState = .processing
+            } else if isActivelyRecording || hotkeyHeld {
+                self.voiceState = .listening
+            } else if isPreparing {
+                self.voiceState = .processing
+            } else {
+                self.voiceState = .idle
+                // If the user pressed and released the hotkey without
+                // saying anything, no response task runs — schedule the
+                // transient hide here so the overlay doesn't get stuck.
+                // Only do this when no response is in flight, otherwise
+                // the brief idle gap between recording and processing
+                // would prematurely hide the overlay.
+                if self.currentResponseTask == nil {
+                    self.scheduleTransientHideIfNeeded()
                 }
             }
+        }
     }
 
     private func bindShortcutTransitions() {
@@ -669,6 +735,7 @@ final class CompanionManager: ObservableObject {
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
         case .pressed:
+            abortActiveOrchestratedLoopIfNeeded(reason: "hotkey_pressed")
             guard !buddyDictationManager.isDictationInProgress else { return }
             // Don't register push-to-talk while the onboarding video is playing
             guard !showOnboardingVideo else { return }
@@ -706,6 +773,8 @@ final class CompanionManager: ObservableObject {
 
             ClickyAnalytics.trackPushToTalkStarted()
 
+            isPushToTalkHotkeyHeld = true
+
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = Task {
                 await buddyDictationManager.startPushToTalkFromKeyboardShortcut(
@@ -721,6 +790,7 @@ final class CompanionManager: ObservableObject {
                 )
             }
         case .released:
+            abortActiveOrchestratedLoopIfNeeded(reason: "hotkey_released")
             // Cancel the pending start task in case the user released the shortcut
             // before the async startPushToTalk had a chance to begin recording.
             // Without this, a quick press-and-release drops the release event and
@@ -729,15 +799,26 @@ final class CompanionManager: ObservableObject {
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
+            isPushToTalkHotkeyHeld = false
         case .none:
             break
         }
     }
 
+    private func abortActiveOrchestratedLoopIfNeeded(reason: String) {
+        guard isOrchestratedLoopActive else { return }
+        print("🧠 Multi-turn loop stop reason: \(reason)")
+        currentResponseTask?.cancel()
+        currentResponseTask = nil
+        pendingDestructiveActionPlan = nil
+        voiceState = .idle
+        scheduleTransientHideIfNeeded()
+    }
+
     // MARK: - Companion Prompt
 
     private static let companionVoiceResponseSystemPrompt = """
-    you're clicky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
+    you're clicky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you get one screenshot: the display where their cursor is. your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
 
     rules:
     - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
@@ -745,6 +826,7 @@ final class CompanionManager: ObservableObject {
     - all lowercase, casual, warm. no emojis.
     - write for the ear, not the eye. short sentences. no lists, bullet points, markdown, or formatting — just natural speech.
     - never narrate internal metadata or control syntax in the spoken text. do not say things like actions json, point tag, coordinates, x/y values, screen numbers, cursor metadata, or execution metadata out loud.
+    - never read aloud bracket tags, json blocks, scroll deltas, loop control fields, or the phrases loop control or actions json — the app strips machine syntax from audio, but your spoken lines must stay conversational.
     - don't use abbreviations or symbols that sound weird read aloud. write "for example" not "e.g.", spell out small numbers.
     - if the user's question relates to what's on their screen, reference specific things you see.
     - if the screenshot doesn't seem relevant to their question, just answer the question directly.
@@ -754,7 +836,18 @@ final class CompanionManager: ObservableObject {
     - don't read out code verbatim. describe what the code does or what needs to change conversationally.
     - focus on giving a thorough, useful explanation. don't end with simple yes/no questions like "want me to explain more?" or "should i show you?" — those are dead ends that force the user to just say yes.
     - instead, when it fits naturally, end by planting a seed — mention something bigger or more ambitious they could try, a related concept that goes deeper, or a next-level technique that builds on what you just explained. make it something worth coming back for, not a question they'd just nod to. it's okay to not end with anything extra if the answer is complete on its own.
-    - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
+    - you only see that one display — you cannot see other monitors. if the user needs help on another screen, tell them to move the pointer there and ask again.
+
+    loop control contract:
+    - always include a machine-readable block anywhere in your response using this exact format:
+      [LOOP_CONTROL]{"decision":"continue|complete","reason":"short reason","nextUserVisibleGoal":"short goal","mode":"act|observe","maxObserveSeconds":number}[/LOOP_CONTROL]
+    - choose "continue" only when there is a clear next autonomous step you can execute now.
+    - choose "complete" when the task is done, blocked, uncertain, waiting for user input, or your next step would repeat the same click or scroll without new visible progress.
+    - if you are waiting for a page, search results, spinner, or async ui update to settle, use "decision":"continue" with "mode":"observe" (never "complete" for that waiting state).
+    - use "mode":"act" when the next step should execute actions immediately.
+    - use "mode":"observe" when the app should poll screenshots for visual change first.
+    - keep reason and nextUserVisibleGoal short and plain text.
+    - never omit the [LOOP_CONTROL] block on any autonomous continuation turn — without it the app stops the loop.
 
     element pointing:
     you have a small blue triangle cursor that can fly to and point at things on screen. use it whenever pointing would genuinely help the user — if they're asking how to do something, looking for a menu, trying to find a button, or need help navigating an app, point at the relevant element. err on the side of pointing rather than not pointing, because it makes your help way more useful and concrete.
@@ -763,7 +856,7 @@ final class CompanionManager: ObservableObject {
 
     when you point, append a coordinate tag at the very end of your response, AFTER your spoken text. the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. the origin (0,0) is the top-left corner of the image. x increases rightward, y increases downward.
 
-    format: [POINT:x,y:label] where x,y are integer pixel coordinates in the screenshot's coordinate space, and label is a short 1-3 word description of the element (like "search bar" or "save button"). if the element is on the cursor's screen you can omit the screen number. if the element is on a DIFFERENT screen, append :screenN where N is the screen number from the image label (e.g. :screen2). this is important — without the screen number, the cursor will point at the wrong place.
+    format: [POINT:x,y:label] where x,y are integer pixel coordinates in the screenshot's coordinate space, and label is a short 1-3 word description of the element (like "search bar" or "save button"). do not use :screenN — only this one display is captured.
 
     if pointing wouldn't help, append [POINT:none].
 
@@ -771,11 +864,10 @@ final class CompanionManager: ObservableObject {
     - user asks how to color grade in final cut: "you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector]"
     - user asks what html is: "html stands for hypertext markup language, it's basically the skeleton of every web page. curious how it connects to the css you're looking at? [POINT:none]"
     - user asks how to commit in xcode: "see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control]"
-    - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
     """
 
     private static let companionVoiceResponseSystemPromptWhenComputerUseEnabled = """
-    you're clicky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
+    you're clicky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you get one screenshot: the display where their cursor is. your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
 
     rules:
     - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
@@ -783,6 +875,7 @@ final class CompanionManager: ObservableObject {
     - all lowercase, casual, warm. no emojis.
     - write for the ear, not the eye. short sentences. no lists, bullet points, markdown, or formatting — just natural speech.
     - never narrate internal metadata or control syntax in the spoken text. do not say things like actions json, point tag, coordinates, x/y values, screen numbers, cursor metadata, or execution metadata out loud.
+    - never read aloud bracket tags, json blocks, scroll deltas, loop control fields, or the phrases loop control or actions json — the app strips machine syntax from audio, but your spoken lines must stay conversational.
     - don't use abbreviations or symbols that sound weird read aloud. write "for example" not "e.g.", spell out small numbers.
     - if the user's question relates to what's on their screen, reference specific things you see.
     - if the screenshot doesn't seem relevant to their question, just answer the question directly.
@@ -792,21 +885,33 @@ final class CompanionManager: ObservableObject {
     - don't read out code verbatim. describe what the code does or what needs to change conversationally.
     - focus on giving a thorough, useful explanation. don't end with simple yes/no questions like "want me to explain more?" or "should i show you?" — those are dead ends that force the user to just say yes.
     - instead, when it fits naturally, end by planting a seed — mention something bigger or more ambitious they could try, a related concept that goes deeper, or a next-level technique that builds on what you just explained. make it something worth coming back for, not a question they'd just nod to. it's okay to not end with anything extra if the answer is complete on its own.
-    - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
+    - you only see that one display — you cannot see other monitors. if the user needs help on another screen, tell them to move the pointer there and ask again.
 
     computer use mode:
     - computer use is enabled. the app will execute your json actions locally. you are not allowed to only tell the user to click — you must emit the machine actions yourself.
     - critical: if the user asks you to click, double-click, right-click, type, press keys, scroll, or drag on screen, you MUST include a non-empty [ACTIONS_JSON] block before your [POINT:...] tag with at least one action that performs that step. pointing alone is never enough for those requests. do not answer with only "you should click" or "click that tab" without the actions json.
+    - scrolling web pages: the blue [POINT:...] cursor is visual only — it does not move the real mouse. put scroll "x" and "y" inside [ACTIONS_JSON] on the main scrollable page column (not the image bottom edge or dock); those coordinates move the real pointer for wheel events. the app does not replace scroll x,y with [POINT:...] — point is overlay-only for scroll. without x,y on scroll, wheel events may apply to the wrong window.
     - only use [ACTIONS_JSON]{"actions":[]}[/ACTIONS_JSON] when the user is not asking for any on-screen control (pure explanation, general knowledge, or no specific ui step).
     - prefer concrete operational guidance in speech, but the real click/type must appear in actions json.
     - if a request maps to a visible ui workflow, choose a specific next interaction target, put left_click (or type_text, etc.) in actions json, then point to the same target in [POINT:...] for the blue cursor.
-    - browser tab bars are easy to get wrong: read the exact tab title visible in the screenshot, place x,y at the horizontal center of that title (not an adjacent tab), and use the same integers for left_click in [ACTIONS_JSON] and for [POINT:...] (same screen number too).
-    - if there are multiple monitor images, only use coordinates from the image that actually shows the target ui; set "screen" and :screenN to that monitor’s index from the screenshot labels — wrong screen index shifts x and y even when pixel math is right.
+    - browser tab bars are easy to get wrong: read the exact tab title visible in the screenshot, place x,y at the horizontal center of that title (not an adjacent tab), and use the same integers for left_click in [ACTIONS_JSON] and for [POINT:...].
     - never claim you already clicked, typed, or completed a step unless that action is confirmed by visible state in the screenshots.
     - when the task cannot be confirmed from screenshots, still emit the best-effort actions json for the next likely step if the user asked for control; say you're trying that step in speech.
     - include an actions block before your [POINT:...] tag with exact json in this format:
-      [ACTIONS_JSON]{"actions":[{"type":"left_click","x":123,"y":456},{"type":"type_text","text":"hello"},{"type":"key_combo","key":"k","modifiers":["command"]},{"type":"scroll","deltaX":0,"deltaY":-6},{"type":"drag","startX":300,"startY":500,"endX":900,"endY":500},{"type":"right_click","x":444,"y":222},{"type":"double_click","x":444,"y":222},{"type":"key_press","key":"return"}]}[/ACTIONS_JSON]
-    - coordinates in the actions block use the same screenshot pixel coordinate system as [POINT:...], with optional "screen":N for non-primary screenshots.
+      [ACTIONS_JSON]{"actions":[{"type":"left_click","x":123,"y":456},{"type":"type_text","text":"hello"},{"type":"key_combo","key":"k","modifiers":["command"]},{"type":"scroll","x":640,"y":400,"deltaX":0,"deltaY":-24},{"type":"drag","startX":300,"startY":500,"endX":900,"endY":500},{"type":"right_click","x":444,"y":222},{"type":"double_click","x":444,"y":222},{"type":"key_press","key":"return"}]}[/ACTIONS_JSON]
+    - scroll deltas deltaX/deltaY are in wheel lines per step. negative deltaY reads further down the page in the screenshot; keep each scroll action roughly between -80 and -8 lines (or small positive values if you need the opposite) — the app clamps huge values and matches the user’s natural scrolling setting.
+    - coordinates in the actions block use the same screenshot pixel coordinate system as [POINT:...]. optional "screen" in json is ignored — only this display is captured.
+
+    loop control contract:
+    - always include a machine-readable block anywhere in your response using this exact format:
+      [LOOP_CONTROL]{"decision":"continue|complete","reason":"short reason","nextUserVisibleGoal":"short goal","mode":"act|observe","maxObserveSeconds":number}[/LOOP_CONTROL]
+    - choose "continue" only when there is a clear next autonomous step you can execute now.
+    - choose "complete" when the task is done, blocked, uncertain, waiting for user input, would otherwise loop, or your next step would repeat the same interaction without new visible progress.
+    - if you are waiting for a page, search results, spinner, or async ui update to settle, use "decision":"continue" with "mode":"observe" (never "complete" for that waiting state).
+    - use "mode":"act" when the next step should execute actions immediately.
+    - use "mode":"observe" when the app should poll screenshots for visual change first.
+    - keep reason and nextUserVisibleGoal short and plain text.
+    - never omit the [LOOP_CONTROL] block on any autonomous continuation turn — without it the app stops the loop.
 
     element pointing:
     you have a small blue triangle cursor that can fly to and point at things on screen. use it whenever pointing would genuinely help the user — if they're asking how to do something, looking for a menu, trying to find a button, or need help navigating an app, point at the relevant element. err on the side of pointing rather than not pointing, because it makes your help way more useful and concrete.
@@ -815,7 +920,7 @@ final class CompanionManager: ObservableObject {
 
     when you point, append a coordinate tag at the very end of your response, AFTER your spoken text. the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. the origin (0,0) is the top-left corner of the image. x increases rightward, y increases downward.
 
-    format: [POINT:x,y:label] where x,y are integer pixel coordinates in the screenshot's coordinate space, and label is a short 1-3 word description of the element (like "search bar" or "save button"). if the element is on the cursor's screen you can omit the screen number. if the element is on a DIFFERENT screen, append :screenN where N is the screen number from the image label (e.g. :screen2). this is important — without the screen number, the cursor will point at the wrong place.
+    format: [POINT:x,y:label] where x,y are integer pixel coordinates in the screenshot's coordinate space, and label is a short 1-3 word description of the element (like "search bar" or "save button"). do not use :screenN — only this one display is captured.
 
     if pointing wouldn't help, append [POINT:none].
 
@@ -823,7 +928,6 @@ final class CompanionManager: ObservableObject {
     - user asks how to color grade in final cut: "you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector]"
     - user asks what html is: "html stands for hypertext markup language, it's basically the skeleton of every web page. curious how it connects to the css you're looking at? [POINT:none]"
     - user asks how to commit in xcode: "see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control]"
-    - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
     """
 
     private var activeCompanionVoiceSystemPrompt: String {
@@ -835,6 +939,13 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - AI Response Pipeline
 
+    private func openRouterModelIDForMultiTurnLoopVisionCall(userPromptForCurrentTurn: String) -> String {
+        if Self.isMultiTurnContinuationUserPrompt(userPromptForCurrentTurn) {
+            return aiServiceSettings.orchestratorOpenRouterModelID
+        }
+        return aiServiceSettings.selectedOpenRouterModelID
+    }
+
     /// Captures a screenshot, sends it along with the transcript to Claude,
     /// and plays the response aloud via ElevenLabs TTS. The cursor stays in
     /// the spinner/processing state until TTS audio begins playing.
@@ -845,14 +956,16 @@ final class CompanionManager: ObservableObject {
         elevenLabsTTSClient.stopPlayback()
 
         currentResponseTask = Task {
-            // Stay in processing (spinner) state — no streaming text displayed
             voiceState = .processing
+            isOrchestratedLoopActive = true
+            defer { isOrchestratedLoopActive = false }
 
             do {
                 guard aiServiceSettings.hasOpenRouterAPIKey else {
                     throw NSError(domain: "CompanionManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing OpenRouter API key. Add it in Settings."])
                 }
 
+                var initialUserPromptForLoop = transcript
                 if isComputerUseEnabled, let pendingDestructiveActionPlan {
                     if isAffirmativeConfirmation(transcript) {
                         let pendingExecutionResults = runComputerUseActionsWithOverlaySuppressedIfNeeded(
@@ -875,7 +988,12 @@ final class CompanionManager: ObservableObject {
                             voiceID: aiServiceSettings.elevenLabsVoiceID
                         )
                         voiceState = .responding
-                        return
+                        if !isMultiTurnEnabled {
+                            return
+                        }
+                        // Resume the orchestrated loop automatically after explicit confirmation
+                        // so the user doesn't need another push-to-talk turn.
+                        initialUserPromptForLoop = Self.multiTurnContinuationUserPrompt
                     }
                     if isNegativeConfirmation(transcript) {
                         self.pendingDestructiveActionPlan = nil
@@ -888,226 +1006,349 @@ final class CompanionManager: ObservableObject {
                         voiceState = .responding
                         return
                     }
-                    // Transcript diverged from confirmation flow, so discard old pending action.
                     self.pendingDestructiveActionPlan = nil
                 }
 
-                // Capture all connected screens so the AI has full context
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                let shouldRunMultiTurnLoop = isMultiTurnEnabled
+                var userPromptForCurrentTurn = initialUserPromptForLoop
+                var scrollObserveLoopStreak = 0
+                var autonomousLoopIterationCount = 0
+                var previousSuccessfulAutonomousActionFingerprint: String?
+                var consecutiveDuplicateAutonomousActionPlanCount = 0
 
-                guard !Task.isCancelled else { return }
+                while true {
+                    guard !Task.isCancelled else { return }
 
-                // Build image labels with the actual screenshot pixel dimensions
-                // so Claude's coordinate space matches the image it sees. We
-                // scale from screenshot pixels to display points ourselves.
-                let labeledImages = screenCaptures.map { capture in
-                    let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
-                    return (data: capture.imageData, label: capture.label + dimensionInfo)
-                }
-
-                // Pass conversation history so Claude remembers prior exchanges
-                let historyForAPI = conversationHistory.map { entry in
-                    (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
-                }
-
-                let shouldSkipOpenRouterWebSearchAugmentation =
-                    isComputerUseEnabled && Self.userTranscriptImpliesComputerControlRequest(transcript)
-
-                var (fullResponseText, _) = try await openRouterAPI.analyzeImageStreaming(
-                    apiKey: aiServiceSettings.openRouterAPIKey,
-                    selectedModel: aiServiceSettings.selectedOpenRouterModelID,
-                    knownModels: availableOpenRouterModels,
-                    images: labeledImages,
-                    systemPrompt: activeCompanionVoiceSystemPrompt,
-                    conversationHistory: historyForAPI,
-                    userPrompt: transcript,
-                    forceDisableWebSearchAugmentation: shouldSkipOpenRouterWebSearchAugmentation,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
+                    autonomousLoopIterationCount += 1
+                    if autonomousLoopIterationCount > Self.maxAutonomousLoopIterationsPerVoiceRequest {
+                        print("🧠 Multi-turn loop stop reason: max_autonomous_iterations")
+                        break
                     }
-                )
 
-                guard !Task.isCancelled else { return }
+                    let screenCaptures = try await CompanionScreenCaptureUtility.captureCursorScreenAsJPEG()
+                    guard !Task.isCancelled else { return }
 
-                var parsedAssistantResponse = parseAssistantResponse(from: fullResponseText)
+                    let labeledImages = screenCaptures.map { capture in
+                        let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
+                        return (data: capture.imageData, label: capture.label + dimensionInfo)
+                    }
 
-                if isComputerUseEnabled,
-                   canExecuteComputerUseAction(),
-                   Self.userTranscriptImpliesComputerControlRequest(transcript) {
-                    let missingOrEmptyActions =
-                        !parsedAssistantResponse.didMatchActionsJSONDelimiters
-                        || parsedAssistantResponse.actionInstructions.isEmpty
-                    if missingOrEmptyActions {
+                    let historyForAPI = conversationHistory.map { entry in
+                        (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
+                    }
+
+                    let shouldSkipOpenRouterWebSearchAugmentation =
+                        isComputerUseEnabled && Self.userTranscriptImpliesComputerControlRequest(userPromptForCurrentTurn)
+
+                    let openRouterModelIDForThisVisionCall = openRouterModelIDForMultiTurnLoopVisionCall(
+                        userPromptForCurrentTurn: userPromptForCurrentTurn
+                    )
+                    print("🌐 OpenRouter model for this loop step: \(openRouterModelIDForThisVisionCall)")
+
+                    var (fullResponseText, _) = try await openRouterAPI.analyzeImageStreaming(
+                        apiKey: aiServiceSettings.openRouterAPIKey,
+                        selectedModel: openRouterModelIDForThisVisionCall,
+                        knownModels: availableOpenRouterModels,
+                        images: labeledImages,
+                        systemPrompt: activeCompanionVoiceSystemPrompt,
+                        conversationHistory: historyForAPI,
+                        userPrompt: userPromptForCurrentTurn,
+                        forceDisableWebSearchAugmentation: shouldSkipOpenRouterWebSearchAugmentation,
+                        onTextChunk: { _ in }
+                    )
+                    guard !Task.isCancelled else { return }
+
+                    var parsedAssistantResponse = parseAssistantResponse(from: fullResponseText)
+                    if isComputerUseEnabled,
+                       canExecuteComputerUseAction(),
+                       Self.userTranscriptImpliesComputerControlRequest(userPromptForCurrentTurn) {
+                        let missingOrEmptyActions =
+                            !parsedAssistantResponse.didMatchActionsJSONDelimiters
+                            || parsedAssistantResponse.actionInstructions.isEmpty
+                        if missingOrEmptyActions {
+                            (fullResponseText, _) = try await openRouterAPI.analyzeImageStreaming(
+                                apiKey: aiServiceSettings.openRouterAPIKey,
+                                selectedModel: openRouterModelIDForThisVisionCall,
+                                knownModels: availableOpenRouterModels,
+                                images: labeledImages,
+                                systemPrompt: activeCompanionVoiceSystemPrompt,
+                                conversationHistory: historyForAPI,
+                                userPrompt: userPromptForCurrentTurn + Self.computerUseRetryUserPromptSuffix,
+                                forceDisableWebSearchAugmentation: shouldSkipOpenRouterWebSearchAugmentation,
+                                onTextChunk: { _ in }
+                            )
+                            guard !Task.isCancelled else { return }
+                            parsedAssistantResponse = parseAssistantResponse(from: fullResponseText)
+                        }
+                    }
+
+                    if shouldRunMultiTurnLoop,
+                       !parsedAssistantResponse.loopControlResult.didMatchLoopControlDelimiters {
                         (fullResponseText, _) = try await openRouterAPI.analyzeImageStreaming(
                             apiKey: aiServiceSettings.openRouterAPIKey,
-                            selectedModel: aiServiceSettings.selectedOpenRouterModelID,
+                            selectedModel: openRouterModelIDForThisVisionCall,
                             knownModels: availableOpenRouterModels,
                             images: labeledImages,
                             systemPrompt: activeCompanionVoiceSystemPrompt,
                             conversationHistory: historyForAPI,
-                            userPrompt: transcript + Self.computerUseRetryUserPromptSuffix,
+                            userPrompt: userPromptForCurrentTurn + Self.loopControlRetryUserPromptSuffix,
                             forceDisableWebSearchAugmentation: shouldSkipOpenRouterWebSearchAugmentation,
-                            onTextChunk: { _ in
-                                // No streaming text display — spinner stays until TTS plays
-                            }
+                            onTextChunk: { _ in }
                         )
                         guard !Task.isCancelled else { return }
                         parsedAssistantResponse = parseAssistantResponse(from: fullResponseText)
                     }
-                }
-                var spokenText = parsedAssistantResponse.spokenText
-                let parseResult = parsedAssistantResponse.pointingResult
-                let mergedComputerUseActionInstructions = computerUseActionInstructionsByMergingPointTagIfUnambiguous(
-                    actionInstructions: parsedAssistantResponse.actionInstructions,
-                    pointingParseResult: parseResult,
-                    screenCaptures: screenCaptures
-                )
-                let resolvedComputerUseActions = resolveComputerUseActions(
-                    from: mergedComputerUseActionInstructions,
-                    using: screenCaptures
-                )
 
-                var didExecuteComputerUseActionsSuccessfully = false
-
-                if isComputerUseEnabled {
-                    if resolvedComputerUseActions.isEmpty,
-                       Self.userTranscriptImpliesComputerControlRequest(transcript) {
-                        print("🖱️ Computer use: no executable actions — check for missing or invalid [ACTIONS_JSON] in the model response.")
-                    } else {
-                        print("🖱️ Computer use: \(resolvedComputerUseActions.count) resolved action(s).")
+                    var spokenText = parsedAssistantResponse.spokenText
+                    let parseResult = parsedAssistantResponse.pointingResult
+                    let loopControlResult = parsedAssistantResponse.loopControlResult
+                    print(
+                        "🧠 Multi-turn loop decision: \(loopControlResult.decision.rawValue), " +
+                        "reason=\(loopControlResult.reason ?? "none"), " +
+                        "goal=\(loopControlResult.nextUserVisibleGoal ?? "none"), " +
+                        "mode=\(loopControlResult.mode.rawValue), " +
+                        "maxObserveSeconds=\(loopControlResult.maxObserveSeconds.map { String(format: "%.1f", $0) } ?? "none"), " +
+                        "validJSON=\(loopControlResult.wasValidJSON)"
+                    )
+                    let mergedComputerUseActionInstructions = computerUseActionInstructionsByMergingPointTagIfUnambiguous(
+                        actionInstructions: parsedAssistantResponse.actionInstructions,
+                        pointingParseResult: parseResult,
+                        screenCaptures: screenCaptures
+                    )
+                    let resolvedComputerUseActions = resolveComputerUseActions(
+                        from: mergedComputerUseActionInstructions,
+                        using: screenCaptures
+                    )
+                    let lastStepIncludedScrollWithFocus = resolvedComputerUseActions.contains { resolvedAction in
+                        if case .scroll(_, _, let focusGlobalPoint) = resolvedAction {
+                            return focusGlobalPoint != nil
+                        }
+                        return false
                     }
-                }
 
-                if isComputerUseEnabled, !resolvedComputerUseActions.isEmpty {
-                    if canExecuteComputerUseAction() {
-                        if actionPlanContainsDestructiveAction(resolvedComputerUseActions) {
-                            pendingDestructiveActionPlan = resolvedComputerUseActions
-                            computerUseRuntimeStatusMessage = "Waiting for destructive action confirmation."
-                            spokenText += " this step can be destructive. say confirm to run it, or say cancel."
+                    var didExecuteComputerUseActionsSuccessfully = false
+                    var isLoopBlockedByComputerUsePermissions = false
+
+                    if isComputerUseEnabled {
+                        if resolvedComputerUseActions.isEmpty,
+                           Self.userTranscriptImpliesComputerControlRequest(userPromptForCurrentTurn) {
+                            print("🖱️ Computer use: no executable actions — check for missing or invalid [ACTIONS_JSON] in the model response.")
                         } else {
-                            let executionResults = runComputerUseActionsWithOverlaySuppressedIfNeeded(
-                                actions: resolvedComputerUseActions
-                            )
-                            let didAllActionsSucceed = executionResults.allSatisfy(\.isSuccess)
-                            didExecuteComputerUseActionsSuccessfully = didAllActionsSucceed
-                            if didAllActionsSucceed {
-                                computerUseRuntimeStatusMessage = "Executed action."
+                            print("🖱️ Computer use: \(resolvedComputerUseActions.count) resolved action(s).")
+                        }
+                    }
+
+                    if isComputerUseEnabled, !resolvedComputerUseActions.isEmpty {
+                        if canExecuteComputerUseAction() {
+                            if actionPlanContainsDestructiveAction(resolvedComputerUseActions) {
+                                pendingDestructiveActionPlan = resolvedComputerUseActions
+                                computerUseRuntimeStatusMessage = "Waiting for destructive action confirmation."
+                                spokenText += " this step can be destructive. say confirm to run it, or say cancel."
                             } else {
-                                let failureSummary = executionResults.compactMap(\.failureReason).joined(separator: " ")
-                                computerUseRuntimeStatusMessage = "Action failed: \(failureSummary)"
-                                spokenText += " i tried to run that but hit an issue. \(failureSummary)"
+                                let executionResults = runComputerUseActionsWithOverlaySuppressedIfNeeded(
+                                    actions: resolvedComputerUseActions
+                                )
+                                let didAllActionsSucceed = executionResults.allSatisfy(\.isSuccess)
+                                didExecuteComputerUseActionsSuccessfully = didAllActionsSucceed
+                                if didAllActionsSucceed {
+                                    computerUseRuntimeStatusMessage = "Executed action."
+                                } else {
+                                    let failureSummary = executionResults.compactMap(\.failureReason).joined(separator: " ")
+                                    computerUseRuntimeStatusMessage = "Action failed: \(failureSummary)"
+                                    spokenText += " i tried to run that but hit an issue. \(failureSummary)"
+                                }
+                            }
+                        } else {
+                            isLoopBlockedByComputerUsePermissions = true
+                            if !hasAccessibilityPermission {
+                                let accessibilityBlockedReason = "Accessibility permission is required for Computer Use."
+                                computerUseRuntimeStatusMessage = accessibilityBlockedReason
+                                spokenText += " \(accessibilityBlockedReason)"
+                            } else if !hasAutomationPermission {
+                                computerUseRuntimeStatusMessage = Self.computerUseAutomationDeniedStatusMessage
+                                spokenText += " \(Self.computerUseAutomationDeniedSpokenGuidance)"
+                            } else {
+                                let blockedReason = computerUseBlockedReason ?? "Computer Use is not allowed right now."
+                                computerUseRuntimeStatusMessage = blockedReason
+                                spokenText += " \(blockedReason)"
+                            }
+                            pendingDestructiveActionPlan = nil
+                        }
+                    } else if isComputerUseEnabled {
+                        computerUseRuntimeStatusMessage = "Ready to control."
+                    }
+
+                    if didExecuteComputerUseActionsSuccessfully, !resolvedComputerUseActions.isEmpty {
+                        let autonomousActionFingerprint = Self.quantizedResolvedActionPlanFingerprint(
+                            resolvedComputerUseActions
+                        )
+                        if let previousFingerprint = previousSuccessfulAutonomousActionFingerprint,
+                           previousFingerprint == autonomousActionFingerprint {
+                            consecutiveDuplicateAutonomousActionPlanCount += 1
+                        } else {
+                            consecutiveDuplicateAutonomousActionPlanCount = 0
+                        }
+                        previousSuccessfulAutonomousActionFingerprint = autonomousActionFingerprint
+                    }
+
+                    let hasPointCoordinate = parseResult.coordinate != nil
+                    if hasPointCoordinate {
+                        voiceState = .idle
+                    }
+
+                    let targetScreenCapture: CompanionScreenCapture? = {
+                        if let screenNumber = parseResult.screenNumber,
+                           screenNumber >= 1 && screenNumber <= screenCaptures.count {
+                            return screenCaptures[screenNumber - 1]
+                        }
+                        return screenCaptures.first(where: { $0.isCursorScreen })
+                    }()
+
+                    if let pointCoordinate = parseResult.coordinate,
+                       let targetScreenCapture {
+                        let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
+                        let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
+                        let displayFrame = targetScreenCapture.displayFrame
+                        let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
+                        let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
+
+                        let globalLocation = targetScreenCapture.globalAppKitPointFromScreenshotPixelCoordinate(
+                            screenshotPixelX: clampedX,
+                            screenshotPixelY: clampedY
+                        )
+
+                        if didExecuteComputerUseActionsSuccessfully {
+                            shouldUseInstantBuddyNavigationToNextPoint = true
+                        }
+                        detectedElementScreenLocation = globalLocation
+                        detectedElementDisplayFrame = displayFrame
+                        logComputerUsePixelToGlobalMapping(
+                            context: "point_tag_overlay",
+                            screenshotPixelX: clampedX,
+                            screenshotPixelY: clampedY,
+                            targetScreenCapture: targetScreenCapture,
+                            globalPoint: globalLocation
+                        )
+                        print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
+                    } else {
+                        print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
+                    }
+
+                    conversationHistory.append((
+                        userTranscript: userPromptForCurrentTurn,
+                        assistantResponse: spokenText
+                    ))
+                    hasConversationHistory = !conversationHistory.isEmpty
+                    if conversationHistory.count > 10 {
+                        conversationHistory.removeFirst(conversationHistory.count - 10)
+                    }
+                    hasConversationHistory = !conversationHistory.isEmpty
+                    print("🧠 Conversation history: \(conversationHistory.count) exchanges")
+
+                    let shouldPlayVoiceThisTurn = Self.shouldPlayVoiceThisMultiTurnIteration(
+                        deferVoiceUntilAgenticLoopCompletes: aiServiceSettings.deferVoiceUntilAgenticLoopCompletes,
+                        shouldRunMultiTurnLoop: shouldRunMultiTurnLoop,
+                        pendingDestructiveActionPlan: pendingDestructiveActionPlan,
+                        isLoopBlockedByComputerUsePermissions: isLoopBlockedByComputerUsePermissions,
+                        loopControlResult: loopControlResult
+                    )
+
+                    if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        if shouldPlayVoiceThisTurn {
+                            do {
+                                try await elevenLabsTTSClient.speakText(
+                                    spokenText,
+                                    apiKey: aiServiceSettings.elevenLabsAPIKey,
+                                    voiceID: aiServiceSettings.elevenLabsVoiceID
+                                )
+                                voiceState = .responding
+                            } catch {
+                                print("⚠️ ElevenLabs TTS error: \(error)")
+                                if !isUserCancellationOrAbortError(error) {
+                                    speakErrorWithSystemSpeechSynthesizer(error: error, failureStage: .textToSpeech)
+                                }
+                            }
+                        } else {
+                            print("🔇 Voice deferred until agentic loop completes (settings).")
+                            voiceState = .processing
+                        }
+                    }
+
+                    if !shouldRunMultiTurnLoop || pendingDestructiveActionPlan != nil {
+                        if !shouldRunMultiTurnLoop {
+                            print("🧠 Multi-turn loop stop reason: multi_turn_disabled")
+                        } else {
+                            print("🧠 Multi-turn loop stop reason: pending_destructive_confirmation")
+                        }
+                        break
+                    }
+
+                    if isLoopBlockedByComputerUsePermissions {
+                        print("🧠 Multi-turn loop stop reason: computer_use_permission_blocked")
+                        break
+                    }
+
+                    let shouldContinueLoop = loopControlResult.decision == .continue
+                    if !shouldContinueLoop {
+                        let completionReason = loopControlResult.reason ?? "model_complete"
+                        print("🧠 Multi-turn loop stop reason: \(completionReason)")
+                        break
+                    }
+
+                    if loopControlResult.mode == .observe {
+                        let requestedObserveTimeoutInSeconds = loopControlResult.maxObserveSeconds
+                            ?? defaultObserveModeTimeoutInSeconds
+                        print(
+                            "🧠 Observe mode: polling for visual change up to " +
+                            "\(String(format: "%.1f", requestedObserveTimeoutInSeconds))s."
+                        )
+                        let observeOutcome = await waitForVisualChangeInObserveMode(
+                            maxObserveSeconds: requestedObserveTimeoutInSeconds
+                        )
+                        let didDetectVisualChange = observeOutcome.didDetectVisualChange
+                        if didDetectVisualChange {
+                            print("🧠 Observe mode: continuing after visual change.")
+                            if observeOutcome.pollCountWhenFinished == 1 && lastStepIncludedScrollWithFocus {
+                                scrollObserveLoopStreak += 1
+                            } else {
+                                scrollObserveLoopStreak = 0
+                            }
+                        } else {
+                            print("🧠 Observe mode: no visual change before timeout; continuing to next model turn.")
+                            if lastStepIncludedScrollWithFocus && observeOutcome.pollCountWhenFinished > 0 {
+                                scrollObserveLoopStreak += 1
+                            } else {
+                                scrollObserveLoopStreak = 0
                             }
                         }
                     } else {
-                        if !hasAccessibilityPermission {
-                            let accessibilityBlockedReason = "Accessibility permission is required for Computer Use."
-                            computerUseRuntimeStatusMessage = accessibilityBlockedReason
-                            spokenText += " \(accessibilityBlockedReason)"
-                        } else if !hasAutomationPermission {
-                            computerUseRuntimeStatusMessage = Self.computerUseAutomationDeniedStatusMessage
-                            spokenText += " \(Self.computerUseAutomationDeniedSpokenGuidance)"
-                        } else {
-                            let blockedReason = computerUseBlockedReason ?? "Computer Use is not allowed right now."
-                            computerUseRuntimeStatusMessage = blockedReason
-                            spokenText += " \(blockedReason)"
-                        }
-                        pendingDestructiveActionPlan = nil
+                        scrollObserveLoopStreak = 0
+                        try? await Task.sleep(nanoseconds: 500_000_000)
                     }
-                } else if isComputerUseEnabled {
-                    computerUseRuntimeStatusMessage = "Ready to control."
-                }
+                    guard !Task.isCancelled else { return }
 
-                // Handle element pointing if Claude returned coordinates.
-                // Switch to idle BEFORE setting the location so the triangle
-                // becomes visible and can fly to the target. Without this, the
-                // spinner hides the triangle and the flight animation is invisible.
-                let hasPointCoordinate = parseResult.coordinate != nil
-                if hasPointCoordinate {
-                    voiceState = .idle
-                }
-
-                // Pick the screen capture matching Claude's screen number,
-                // falling back to the cursor screen if not specified.
-                let targetScreenCapture: CompanionScreenCapture? = {
-                    if let screenNumber = parseResult.screenNumber,
-                       screenNumber >= 1 && screenNumber <= screenCaptures.count {
-                        return screenCaptures[screenNumber - 1]
+                    if consecutiveDuplicateAutonomousActionPlanCount >= 2 {
+                        print("🧠 Multi-turn loop stop reason: repeated_action_plan")
+                        break
                     }
-                    return screenCaptures.first(where: { $0.isCursorScreen })
-                }()
 
-                if let pointCoordinate = parseResult.coordinate,
-                   let targetScreenCapture {
-                    // Claude's coordinates are in the screenshot's pixel space
-                    // (top-left origin, e.g. 1280x831). Scale to the display's
-                    // point space (e.g. 1512x982), then convert to AppKit global coords.
-                    let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
-                    let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
-                    let displayFrame = targetScreenCapture.displayFrame
-
-                    // Clamp to screenshot coordinate space
-                    let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                    let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-
-                    let globalLocation = targetScreenCapture.globalAppKitPointFromScreenshotPixelCoordinate(
-                        screenshotPixelX: clampedX,
-                        screenshotPixelY: clampedY
-                    )
-
-                    if didExecuteComputerUseActionsSuccessfully {
-                        shouldUseInstantBuddyNavigationToNextPoint = true
+                    voiceState = .processing
+                    userPromptForCurrentTurn = Self.multiTurnContinuationUserPrompt
+                    if scrollObserveLoopStreak >= 3 {
+                        userPromptForCurrentTurn += Self.multiTurnScrollObserveRemediationUserPromptSuffix
+                        scrollObserveLoopStreak = 0
                     }
-                    detectedElementScreenLocation = globalLocation
-                    detectedElementDisplayFrame = displayFrame
-                    logComputerUsePixelToGlobalMapping(
-                        context: "point_tag_overlay",
-                        screenshotPixelX: clampedX,
-                        screenshotPixelY: clampedY,
-                        targetScreenCapture: targetScreenCapture,
-                        globalPoint: globalLocation
-                    )
-                    print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
-                } else {
-                    print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
-                }
-
-                // Save this exchange to conversation history (with the point tag
-                // stripped so it doesn't confuse future context)
-                conversationHistory.append((
-                    userTranscript: transcript,
-                    assistantResponse: spokenText
-                ))
-                hasConversationHistory = !conversationHistory.isEmpty
-
-                // Keep only the last 10 exchanges to avoid unbounded context growth
-                if conversationHistory.count > 10 {
-                    conversationHistory.removeFirst(conversationHistory.count - 10)
-                }
-                hasConversationHistory = !conversationHistory.isEmpty
-
-                print("🧠 Conversation history: \(conversationHistory.count) exchanges")
-
-                // Play the response via TTS. Keep the spinner (processing state)
-                // until the audio actually starts playing, then switch to responding.
-                if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    do {
-                        try await elevenLabsTTSClient.speakText(
-                            spokenText,
-                            apiKey: aiServiceSettings.elevenLabsAPIKey,
-                            voiceID: aiServiceSettings.elevenLabsVoiceID
-                        )
-                        // speakText returns after player.play() — audio is now playing
-                        voiceState = .responding
-                    } catch {
-                        print("⚠️ ElevenLabs TTS error: \(error)")
-                        speakErrorWithSystemSpeechSynthesizer(error: error, failureStage: .textToSpeech)
-                    }
+                    print("🧠 Multi-turn loop continuing autonomously.")
                 }
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
-                print("⚠️ Companion response error: \(error)")
-                speakErrorWithSystemSpeechSynthesizer(error: error, failureStage: .responsePipeline)
+                if isUserCancellationOrAbortError(error) {
+                    // Task or URLSession cancelled (e.g. user cleared context); do not speak.
+                } else {
+                    print("⚠️ Companion response error: \(error)")
+                    speakErrorWithSystemSpeechSynthesizer(error: error, failureStage: .responsePipeline)
+                }
             }
 
             if !Task.isCancelled {
@@ -1219,6 +1460,22 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    /// True when the failure was caused by cancelling the task or URLSession (e.g. user cleared
+    /// context), not a real network or API error — callers should not play error speech.
+    private func isUserCancellationOrAbortError(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+            return true
+        }
+        if let underlyingError = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return isUserCancellationOrAbortError(underlyingError)
+        }
+        return false
+    }
+
     /// Speaks using macOS system TTS when ElevenLabs playback fails or the main
     /// pipeline errors. Uses NSSpeechSynthesizer so something is still audible.
     private func speakErrorWithSystemSpeechSynthesizer(
@@ -1226,66 +1483,318 @@ final class CompanionManager: ObservableObject {
         failureStage: CompanionSystemSpeechFailureStage
     ) {
         let utterance = systemSpeechUtterance(for: error, failureStage: failureStage)
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
+        systemSpeechSynthesizerForErrors.stopSpeaking()
+        systemSpeechSynthesizerForErrors.startSpeaking(utterance)
         voiceState = .responding
     }
 
     // MARK: - Computer Use Action Parsing
 
-    struct ParsedAssistantResponse {
+    private struct ParsedAssistantResponse {
         let spokenText: String
         let pointingResult: PointingParseResult
         let actionInstructions: [ComputerUseActionInstruction]
         let didMatchActionsJSONDelimiters: Bool
+        let loopControlResult: LoopControlParseResult
     }
 
     private struct ComputerUseActionEnvelope: Decodable {
         let actions: [ComputerUseActionInstruction]
     }
 
+    private enum LoopControlDecision: String, Decodable {
+        case `continue`
+        case complete
+    }
+
+    private enum LoopControlMode: String, Decodable {
+        case act
+        case observe
+    }
+
+    private struct LoopControlEnvelope: Decodable {
+        let decision: LoopControlDecision
+        let reason: String?
+        let nextUserVisibleGoal: String?
+        let mode: LoopControlMode?
+        let maxObserveSeconds: Double?
+    }
+
+    private struct LoopControlParseResult {
+        let decision: LoopControlDecision
+        let reason: String?
+        let nextUserVisibleGoal: String?
+        let mode: LoopControlMode
+        let maxObserveSeconds: TimeInterval?
+        let didMatchLoopControlDelimiters: Bool
+        let wasValidJSON: Bool
+    }
+
+    /// When deferral is enabled, skip ElevenLabs on intermediate `[LOOP_CONTROL]` `continue` steps so the user only hears audio after the agentic loop exits.
+    private static func shouldPlayVoiceThisMultiTurnIteration(
+        deferVoiceUntilAgenticLoopCompletes: Bool,
+        shouldRunMultiTurnLoop: Bool,
+        pendingDestructiveActionPlan: [ResolvedComputerUseAction]?,
+        isLoopBlockedByComputerUsePermissions: Bool,
+        loopControlResult: LoopControlParseResult
+    ) -> Bool {
+        guard deferVoiceUntilAgenticLoopCompletes, shouldRunMultiTurnLoop else { return true }
+        if pendingDestructiveActionPlan != nil { return true }
+        if isLoopBlockedByComputerUsePermissions { return true }
+        return loopControlResult.decision != .continue
+    }
+
     private func parseAssistantResponse(from fullResponseText: String) -> ParsedAssistantResponse {
+        let loopControlParseResult = Self.parseLoopControlBlock(from: fullResponseText)
         let actionParseResult = Self.parseComputerUseActionsBlock(from: fullResponseText)
-        let pointingResult = Self.parsePointingCoordinates(from: actionParseResult.textWithoutActionsBlock)
+        let spokenTextSanitizedForVoice = Self.spokenTextSanitizedForVoice(from: fullResponseText)
+        let pointingResult = Self.parsePointingCoordinates(
+            from: fullResponseText,
+            sanitizedSpokenText: spokenTextSanitizedForVoice
+        )
+        let pointingResultWithSharedSpokenText = PointingParseResult(
+            spokenText: spokenTextSanitizedForVoice,
+            coordinate: pointingResult.coordinate,
+            elementLabel: pointingResult.elementLabel,
+            screenNumber: pointingResult.screenNumber
+        )
         return ParsedAssistantResponse(
-            spokenText: pointingResult.spokenText,
-            pointingResult: pointingResult,
+            spokenText: spokenTextSanitizedForVoice,
+            pointingResult: pointingResultWithSharedSpokenText,
             actionInstructions: actionParseResult.actionInstructions,
-            didMatchActionsJSONDelimiters: actionParseResult.didMatchActionsJSONDelimiters
+            didMatchActionsJSONDelimiters: actionParseResult.didMatchActionsJSONDelimiters,
+            loopControlResult: loopControlParseResult
+        )
+    }
+
+    // MARK: - Machine syntax stripping (TTS + conversation history)
+
+    private static let loopControlMachineBlockRegexPattern =
+        #"\[LOOP_CONTROL\]\s*\{[\s\S]*?\}\s*\[/LOOP_CONTROL\]"#
+    private static let actionsJsonMachineBlockRegexPattern =
+        #"\[ACTIONS_JSON\]\s*\{[\s\S]*?\}\s*\[/ACTIONS_JSON\]"#
+    /// Matches any `[POINT:...]` tag the overlay understands, for removal from spoken output.
+    private static let pointMachineTagRegexPattern =
+        #"\[POINT:(?:none|(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?)\]"#
+
+    private static func removeAllRegexMatches(from text: String, pattern: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return text
+        }
+        var result = text
+        while true {
+            let searchRange = NSRange(result.startIndex..., in: result)
+            guard let match = regex.firstMatch(in: result, options: [], range: searchRange),
+                  let swiftRange = Range(match.range, in: result) else {
+                break
+            }
+            result.removeSubrange(swiftRange)
+        }
+        return result
+    }
+
+    /// Removes every machine-readable block so ElevenLabs and history never receive JSON or tags.
+    private static func spokenTextSanitizedForVoice(from fullResponseText: String) -> String {
+        var result = fullResponseText
+        result = removeAllRegexMatches(from: result, pattern: loopControlMachineBlockRegexPattern)
+        result = removeAllRegexMatches(from: result, pattern: actionsJsonMachineBlockRegexPattern)
+        result = removeAllRegexMatches(from: result, pattern: pointMachineTagRegexPattern)
+        result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        while result.contains("\n\n\n") {
+            result = result.replacingOccurrences(of: "\n\n\n", with: "\n\n")
+        }
+        return result
+    }
+
+    private static func parseLoopControlBlock(from responseText: String) -> LoopControlParseResult {
+        let pattern = #"\[LOOP_CONTROL\]\s*(\{[\s\S]*?\})\s*\[/LOOP_CONTROL\]"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return LoopControlParseResult(
+                decision: .complete,
+                reason: "missing_loop_control_block",
+                nextUserVisibleGoal: nil,
+                mode: .act,
+                maxObserveSeconds: nil,
+                didMatchLoopControlDelimiters: false,
+                wasValidJSON: false
+            )
+        }
+
+        let allMatches = regex.matches(in: responseText, range: NSRange(responseText.startIndex..., in: responseText))
+        guard !allMatches.isEmpty else {
+            return LoopControlParseResult(
+                decision: .complete,
+                reason: "missing_loop_control_block",
+                nextUserVisibleGoal: nil,
+                mode: .act,
+                maxObserveSeconds: nil,
+                didMatchLoopControlDelimiters: false,
+                wasValidJSON: false
+            )
+        }
+
+        var lastSuccessfullyDecodedResult: LoopControlParseResult?
+        for match in allMatches {
+            guard let jsonRange = Range(match.range(at: 1), in: responseText) else { continue }
+            let jsonString = String(responseText[jsonRange])
+            guard let jsonData = jsonString.data(using: .utf8),
+                  let envelope = try? JSONDecoder().decode(LoopControlEnvelope.self, from: jsonData) else {
+                continue
+            }
+            lastSuccessfullyDecodedResult = LoopControlParseResult(
+                decision: envelope.decision,
+                reason: envelope.reason,
+                nextUserVisibleGoal: envelope.nextUserVisibleGoal,
+                mode: envelope.mode ?? .act,
+                maxObserveSeconds: envelope.maxObserveSeconds,
+                didMatchLoopControlDelimiters: true,
+                wasValidJSON: true
+            )
+        }
+
+        if let lastSuccessfullyDecodedResult {
+            return lastSuccessfullyDecodedResult
+        }
+
+        return LoopControlParseResult(
+            decision: .complete,
+            reason: "invalid_loop_control_json",
+            nextUserVisibleGoal: nil,
+            mode: .act,
+            maxObserveSeconds: nil,
+            didMatchLoopControlDelimiters: true,
+            wasValidJSON: false
         )
     }
 
     private static func parseComputerUseActionsBlock(
         from responseText: String
     ) -> (
-        textWithoutActionsBlock: String,
         actionInstructions: [ComputerUseActionInstruction],
         didMatchActionsJSONDelimiters: Bool
     ) {
-        let pattern = #"\[ACTIONS_JSON\](\{[\s\S]*?\})\[/ACTIONS_JSON\]"#
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: responseText, range: NSRange(responseText.startIndex..., in: responseText)),
-              let jsonRange = Range(match.range(at: 1), in: responseText),
-              let blockRange = Range(match.range(at: 0), in: responseText) else {
-            return (responseText, [], false)
+        let pattern = #"\[ACTIONS_JSON\]\s*(\{[\s\S]*?\})\s*\[/ACTIONS_JSON\]"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return ([], false)
         }
 
-        let jsonString = String(responseText[jsonRange])
-        let actionInstructions: [ComputerUseActionInstruction] = {
+        let allMatches = regex.matches(in: responseText, range: NSRange(responseText.startIndex..., in: responseText))
+        guard !allMatches.isEmpty else {
+            return ([], false)
+        }
+
+        var mergedActionInstructions: [ComputerUseActionInstruction] = []
+        for match in allMatches {
+            guard let jsonRange = Range(match.range(at: 1), in: responseText) else { continue }
+            let jsonString = String(responseText[jsonRange])
             guard let jsonData = jsonString.data(using: .utf8),
                   let envelope = try? JSONDecoder().decode(ComputerUseActionEnvelope.self, from: jsonData) else {
-                return []
+                continue
             }
-            return envelope.actions
-        }()
+            mergedActionInstructions.append(contentsOf: envelope.actions)
+        }
 
-        var textWithoutActionsBlock = responseText
-        textWithoutActionsBlock.removeSubrange(blockRange)
-        textWithoutActionsBlock = textWithoutActionsBlock.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (textWithoutActionsBlock, actionInstructions, true)
+        return (mergedActionInstructions, true)
     }
 
     /// True when the user is asking for on-screen control (click, type, etc.), not pure Q&A.
+    private static let maxAutonomousLoopIterationsPerVoiceRequest = 50
+    private static let autonomousLoopActionCoordinateQuantizationStepInPoints: CGFloat = 5
+
+    /// Caps model-provided scroll deltas so one step cannot post hundreds of wheel ticks.
+    private static let computerUseScrollDeltaMagnitudeCapInLines: Double = 120
+
+    private static func isMacOSNaturalScrollingEnabled() -> Bool {
+        guard let value = CFPreferencesCopyAppValue(
+            "com.apple.swipescrolldirection" as CFString,
+            kCFPreferencesAnyApplication
+        ) else {
+            return true
+        }
+        if let number = value as? NSNumber {
+            return number.boolValue
+        }
+        return true
+    }
+
+    /// Clamps per-step scroll deltas and inverts when macOS natural scrolling is on so synthetic wheel
+    /// events match how the user expects content to move for a given sign.
+    private static func normalizedScrollDeltaForComputerUse(deltaX: Double, deltaY: Double) -> (Double, Double) {
+        let cap = computerUseScrollDeltaMagnitudeCapInLines
+        func clampMagnitude(_ value: Double) -> Double {
+            guard value != 0 else { return 0 }
+            let sign = value > 0 ? 1.0 : -1.0
+            return sign * min(abs(value), cap)
+        }
+        var nextX = clampMagnitude(deltaX)
+        var nextY = clampMagnitude(deltaY)
+        if isMacOSNaturalScrollingEnabled() {
+            nextX = -nextX
+            nextY = -nextY
+        }
+        return (nextX, nextY)
+    }
+
+    /// Nudges scroll wheel focus away from the Dock (bottom) and menu bar (top) in AppKit global space.
+    private static func scrollFocusGlobalPointClampedToSafeDisplayInset(
+        rawGlobalPoint: CGPoint,
+        displayFrame: CGRect
+    ) -> CGPoint {
+        let horizontalInsetInPoints: CGFloat = 12
+        let topInsetInPoints: CGFloat = 28
+        let bottomInsetInPoints: CGFloat = 100
+
+        let minX = displayFrame.minX + horizontalInsetInPoints
+        let maxX = displayFrame.maxX - horizontalInsetInPoints
+        let minY = displayFrame.minY + bottomInsetInPoints
+        let maxY = displayFrame.maxY - topInsetInPoints
+
+        guard maxX >= minX, maxY >= minY else {
+            return rawGlobalPoint
+        }
+
+        return CGPoint(
+            x: min(max(rawGlobalPoint.x, minX), maxX),
+            y: min(max(rawGlobalPoint.y, minY), maxY)
+        )
+    }
+
+    /// Stable fingerprint for consecutive-turn duplicate detection after successful computer-use execution.
+    private static func quantizedResolvedActionPlanFingerprint(
+        _ actions: [ResolvedComputerUseAction]
+    ) -> String {
+        func quantizedGridIndex(for coordinateValue: CGFloat) -> Int {
+            Int(round(coordinateValue / autonomousLoopActionCoordinateQuantizationStepInPoints))
+        }
+        func quantizedPointFingerprint(_ point: CGPoint) -> String {
+            "\(quantizedGridIndex(for: point.x)),\(quantizedGridIndex(for: point.y))"
+        }
+        return actions.map { resolvedAction in
+            switch resolvedAction {
+            case .leftClick(let globalPoint):
+                return "L:\(quantizedPointFingerprint(globalPoint))"
+            case .doubleClick(let globalPoint):
+                return "D:\(quantizedPointFingerprint(globalPoint))"
+            case .rightClick(let globalPoint):
+                return "R:\(quantizedPointFingerprint(globalPoint))"
+            case .typeText(let text):
+                return "T:\(text.prefix(120))"
+            case .keyPress(let key):
+                return "K:\(key.lowercased())"
+            case .keyCombo(let key, let modifiers):
+                let sortedModifierSummary = modifiers.map { $0.lowercased() }.sorted().joined(separator: ",")
+                return "C:\(key.lowercased())[\(sortedModifierSummary)]"
+            case .scroll(let deltaX, let deltaY, let focusGlobalPoint):
+                let quantizedDeltaX = Int(round(deltaX / 2))
+                let quantizedDeltaY = Int(round(deltaY / 2))
+                let focusSummary = focusGlobalPoint.map { "F:\(quantizedPointFingerprint($0))" } ?? "F:nil"
+                return "S:\(quantizedDeltaX),\(quantizedDeltaY),\(focusSummary)"
+            case .drag(let startGlobalPoint, let endGlobalPoint):
+                return "G:\(quantizedPointFingerprint(startGlobalPoint))-\(quantizedPointFingerprint(endGlobalPoint))"
+            }
+        }.joined(separator: "|")
+    }
+
     private static func userTranscriptImpliesComputerControlRequest(_ transcript: String) -> Bool {
         let normalized = transcript.lowercased()
         let controlKeywords = [
@@ -1303,6 +1812,119 @@ final class CompanionManager: ObservableObject {
     [clicky system reminder: computer use is on. you MUST output a non-empty [ACTIONS_JSON] block before [POINT:...] for this request. use valid json like {"actions":[{"type":"left_click","x":123,"y":456}]} with integer x,y in screenshot pixel space from the image labels. do not only describe what the user should click.]
     """
 
+    private static let loopControlRetryUserPromptSuffix = """
+
+    [clicky system reminder: multi-turn loop is on. you MUST include a valid [LOOP_CONTROL]{...}[/LOOP_CONTROL] block in your reply with json keys decision, reason, nextUserVisibleGoal, mode, and maxObserveSeconds when relevant. example: [LOOP_CONTROL]{"decision":"continue","reason":"waiting for ui","nextUserVisibleGoal":"see results","mode":"observe","maxObserveSeconds":4}[/LOOP_CONTROL]
+    """
+
+    private static let multiTurnContinuationUserPrompt = """
+
+    [clicky system continuation: continue autonomously from the latest screen state and prior context. if more steps are needed, do the next best step now. if the task appears complete or blocked and needs user input, say so clearly.]
+    """
+
+    /// Appended to continuation turns when scrolling likely failed to move the viewport (observe-mode heuristics).
+    private static let multiTurnScrollObserveRemediationUserPromptSuffix = """
+
+    [clicky system reminder: if you were trying to scroll a web page, the viewport may not have moved. put x and y on the main page body inside [ACTIONS_JSON] scroll (not the dock or image bottom edge), use a moderate deltaY (e.g. -16 to -48 lines per step), or left_click the article body first then scroll — [POINT:...] does not override scroll coordinates and does not move the system pointer for scrolling.]
+    """
+
+    private static func isMultiTurnContinuationUserPrompt(_ userPromptForCurrentTurn: String) -> Bool {
+        let trimmed = userPromptForCurrentTurn.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseContinuation = multiTurnContinuationUserPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed == baseContinuation || trimmed.hasPrefix(baseContinuation)
+    }
+
+    private let observeModePollingIntervalInSeconds: TimeInterval = 0.6
+    private let defaultObserveModeTimeoutInSeconds: TimeInterval = 6
+    private let maxObserveModeTimeoutInSeconds: TimeInterval = 20
+
+    private func observeModeScreenshotSignatures(for screenCaptures: [CompanionScreenCapture]) -> [Int: UInt64] {
+        Dictionary(uniqueKeysWithValues: screenCaptures.enumerated().map { screenCaptureIndex, screenCapture in
+            (screenCaptureIndex, observeModeStableScreenshotSignature(for: screenCapture.imageData))
+        })
+    }
+
+    /// Stable signature for observe-mode polling: JPEG bytes vary run-to-run; TIFF from decoded bitmap is stable for identical pixels.
+    private func observeModeStableScreenshotSignature(for imageData: Data) -> UInt64 {
+        if let image = NSImage(data: imageData),
+           let stableBitmapData = image.tiffRepresentation {
+            return rollingScreenshotByteSampleSignature(for: stableBitmapData)
+        }
+        return rollingScreenshotByteSampleSignature(for: imageData)
+    }
+
+    private func rollingScreenshotByteSampleSignature(for imageData: Data) -> UInt64 {
+        let sampleLimit = min(imageData.count, 4096)
+        guard sampleLimit > 0 else { return 0 }
+        let samplingStride = max(sampleLimit / 64, 1)
+        var rollingSignature: UInt64 = 1469598103934665603
+        var sampledIndex = 0
+        while sampledIndex < sampleLimit {
+            let sampledByte = UInt64(imageData[sampledIndex])
+            rollingSignature ^= sampledByte
+            rollingSignature &*= 1099511628211
+            sampledIndex += samplingStride
+        }
+        rollingSignature ^= UInt64(imageData.count)
+        rollingSignature &*= 1099511628211
+        return rollingSignature
+    }
+
+    private func screenshotSignature(for imageData: Data) -> UInt64 {
+        rollingScreenshotByteSampleSignature(for: imageData)
+    }
+
+    private func didScreenSignaturesChange(
+        baselineSignatures: [Int: UInt64],
+        latestSignatures: [Int: UInt64]
+    ) -> Bool {
+        if baselineSignatures.count != latestSignatures.count {
+            return true
+        }
+        return baselineSignatures.contains { screenCaptureIndex, baselineSignature in
+            latestSignatures[screenCaptureIndex] != baselineSignature
+        }
+    }
+
+    private struct ObserveModeVisualChangeOutcome {
+        let didDetectVisualChange: Bool
+        /// Poll index when a change was first detected, or the number of polls completed before giving up.
+        let pollCountWhenFinished: Int
+    }
+
+    private func waitForVisualChangeInObserveMode(maxObserveSeconds: TimeInterval) async -> ObserveModeVisualChangeOutcome {
+        let clampedObserveTimeoutInSeconds = min(
+            max(maxObserveSeconds, observeModePollingIntervalInSeconds),
+            maxObserveModeTimeoutInSeconds
+        )
+        var pollAttemptCount = 0
+        do {
+            let baselineScreenCaptures = try await CompanionScreenCaptureUtility.captureCursorScreenAsJPEG()
+            let baselineSignatures = observeModeScreenshotSignatures(for: baselineScreenCaptures)
+            let observeDeadline = Date().addingTimeInterval(clampedObserveTimeoutInSeconds)
+            while Date() < observeDeadline {
+                guard !Task.isCancelled else {
+                    return ObserveModeVisualChangeOutcome(didDetectVisualChange: false, pollCountWhenFinished: pollAttemptCount)
+                }
+                pollAttemptCount += 1
+                try? await Task.sleep(nanoseconds: UInt64(observeModePollingIntervalInSeconds * 1_000_000_000))
+                guard !Task.isCancelled else {
+                    return ObserveModeVisualChangeOutcome(didDetectVisualChange: false, pollCountWhenFinished: pollAttemptCount)
+                }
+                let latestScreenCaptures = try await CompanionScreenCaptureUtility.captureCursorScreenAsJPEG()
+                let latestSignatures = observeModeScreenshotSignatures(for: latestScreenCaptures)
+                if didScreenSignaturesChange(baselineSignatures: baselineSignatures, latestSignatures: latestSignatures) {
+                    print("🧠 Observe mode: visual change detected after \(pollAttemptCount) poll(s).")
+                    return ObserveModeVisualChangeOutcome(didDetectVisualChange: true, pollCountWhenFinished: pollAttemptCount)
+                }
+                print("🧠 Observe mode: no visual change yet (poll \(pollAttemptCount)).")
+            }
+        } catch {
+            print("⚠️ Observe mode polling failed: \(error.localizedDescription)")
+        }
+        return ObserveModeVisualChangeOutcome(didDetectVisualChange: false, pollCountWhenFinished: pollAttemptCount)
+    }
+
     // MARK: - Point Tag Parsing
 
     /// Result of parsing a [POINT:...] tag from Claude's response.
@@ -1317,51 +1939,82 @@ final class CompanionManager: ObservableObject {
         let screenNumber: Int?
     }
 
-    /// Parses a [POINT:x,y:label:screenN] or [POINT:none] tag from the end of Claude's response.
-    /// Returns the spoken text (tag removed) and the optional coordinate + label + screen number.
-    static func parsePointingCoordinates(from responseText: String) -> PointingParseResult {
-        // Match [POINT:none] or [POINT:123,456:label] or [POINT:123,456:label:screen2]
-        let pattern = #"\[POINT:(?:none|(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?)\]\s*$"#
-
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
-              let match = regex.firstMatch(in: responseText, range: NSRange(responseText.startIndex..., in: responseText)) else {
-            // No tag found at all
-            return PointingParseResult(spokenText: responseText, coordinate: nil, elementLabel: nil, screenNumber: nil)
+    /// Parses the last `[POINT:x,y:label:screenN]` or `[POINT:none]` in the response (order-independent).
+    /// Pass `sanitizedSpokenText` when the caller already computed it to avoid stripping twice.
+    static func parsePointingCoordinates(
+        from responseText: String,
+        sanitizedSpokenText: String? = nil
+    ) -> PointingParseResult {
+        let sanitizedSpokenTextResolved = sanitizedSpokenText ?? spokenTextSanitizedForVoice(from: responseText)
+        guard let regex = try? NSRegularExpression(pattern: pointMachineTagRegexPattern, options: []) else {
+            return PointingParseResult(
+                spokenText: sanitizedSpokenTextResolved,
+                coordinate: nil,
+                elementLabel: nil,
+                screenNumber: nil
+            )
         }
 
-        // Remove the tag from the spoken text
-        let tagRange = Range(match.range, in: responseText)!
-        let spokenText = String(responseText[..<tagRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let allMatches = regex.matches(in: responseText, options: [], range: NSRange(responseText.startIndex..., in: responseText))
+        guard let match = allMatches.last else {
+            return PointingParseResult(
+                spokenText: sanitizedSpokenTextResolved,
+                coordinate: nil,
+                elementLabel: nil,
+                screenNumber: nil
+            )
+        }
 
-        // Check if it's [POINT:none]
-        guard match.numberOfRanges >= 3,
-              let xRange = Range(match.range(at: 1), in: responseText),
+        let xCaptureRange = match.range(at: 1)
+        if xCaptureRange.location == NSNotFound || xCaptureRange.length == 0 {
+            return PointingParseResult(
+                spokenText: sanitizedSpokenTextResolved,
+                coordinate: nil,
+                elementLabel: "none",
+                screenNumber: nil
+            )
+        }
+
+        guard let xRange = Range(xCaptureRange, in: responseText),
               let yRange = Range(match.range(at: 2), in: responseText),
               let x = Double(responseText[xRange]),
               let y = Double(responseText[yRange]) else {
-            return PointingParseResult(spokenText: spokenText, coordinate: nil, elementLabel: "none", screenNumber: nil)
+            return PointingParseResult(
+                spokenText: sanitizedSpokenTextResolved,
+                coordinate: nil,
+                elementLabel: "none",
+                screenNumber: nil
+            )
         }
 
-        var elementLabel: String? = nil
-        if match.numberOfRanges >= 4, let labelRange = Range(match.range(at: 3), in: responseText) {
+        var elementLabel: String?
+        let labelCaptureRange = match.range(at: 3)
+        if labelCaptureRange.location != NSNotFound,
+           labelCaptureRange.length > 0,
+           let labelRange = Range(labelCaptureRange, in: responseText) {
             elementLabel = String(responseText[labelRange]).trimmingCharacters(in: .whitespaces)
         }
 
-        var screenNumber: Int? = nil
-        if match.numberOfRanges >= 5, let screenRange = Range(match.range(at: 4), in: responseText) {
+        var screenNumber: Int?
+        let screenCaptureRange = match.range(at: 4)
+        if screenCaptureRange.location != NSNotFound,
+           screenCaptureRange.length > 0,
+           let screenRange = Range(screenCaptureRange, in: responseText) {
             screenNumber = Int(responseText[screenRange])
         }
 
         return PointingParseResult(
-            spokenText: spokenText,
+            spokenText: sanitizedSpokenTextResolved,
             coordinate: CGPoint(x: x, y: y),
             elementLabel: elementLabel,
             screenNumber: screenNumber
         )
     }
 
-    /// When the model emits both `[POINT:...]` and `[ACTIONS_JSON]` with a single click action,
-    /// use the point tag as the source of truth so the overlay and HID click stay aligned.
+    /// When the model emits both `[POINT:...]` and `[ACTIONS_JSON]` with a single spatial click action,
+    /// use the point tag as the source of truth so the overlay and HID actions stay aligned.
+    /// Scroll is excluded: `[ACTIONS_JSON]` scroll `x,y` must drive wheel focus (POINTER labels often sit on
+    /// bottom-of-image pixels that map to the Dock when merged).
     private func computerUseActionInstructionsByMergingPointTagIfUnambiguous(
         actionInstructions: [ComputerUseActionInstruction],
         pointingParseResult: PointingParseResult,
@@ -1376,8 +2029,8 @@ final class CompanionManager: ObservableObject {
         }
 
         let normalizedType = onlyInstruction.type.lowercased()
-        let singleSpatialClickTypes: Set<String> = ["left_click", "double_click", "right_click"]
-        guard singleSpatialClickTypes.contains(normalizedType) else {
+        let singleSpatialMergeTypes: Set<String> = ["left_click", "double_click", "right_click"]
+        guard singleSpatialMergeTypes.contains(normalizedType) else {
             return actionInstructions
         }
 
@@ -1401,7 +2054,7 @@ final class CompanionManager: ObservableObject {
             let captureForJson = screenCaptureForComputerUse(screen: jsonScreen, screenCaptures: screenCaptures)
             let mergedCapture = captureForJson ?? captureForPoint
             print(
-                "🖱️ Computer use: [POINT:...] overrides [ACTIONS_JSON] for single click — " +
+                "🖱️ Computer use: [POINT:...] overrides [ACTIONS_JSON] for single spatial action — " +
                 "POINT=(\(pointX),\(pointY)) screen=\(String(describing: pointScreen)) " +
                 "vs JSON=(\(String(describing: jsonX)),\(String(describing: jsonY))) screen=\(String(describing: jsonScreen))"
             )
@@ -1500,9 +2153,47 @@ final class CompanionManager: ObservableObject {
                 guard let key = actionInstruction.key else { return nil }
                 return .keyCombo(key: key, modifiers: actionInstruction.modifiers ?? [])
             case "scroll":
-                let deltaX = actionInstruction.deltaX ?? 0
-                let deltaY = actionInstruction.deltaY ?? 0
-                return .scroll(deltaX: deltaX, deltaY: deltaY)
+                let rawDeltaX = actionInstruction.deltaX ?? 0
+                let rawDeltaY = actionInstruction.deltaY ?? 0
+                let (deltaX, deltaY) = Self.normalizedScrollDeltaForComputerUse(deltaX: rawDeltaX, deltaY: rawDeltaY)
+                let focusGlobalPoint: CGPoint? = {
+                    guard let focusX = actionInstruction.x, let focusY = actionInstruction.y else {
+                        return nil
+                    }
+                    guard let resolvedFocus = resolveGlobalPoint(
+                        x: focusX,
+                        y: focusY,
+                        screen: actionInstruction.screen,
+                        screenCaptures: screenCaptures
+                    ),
+                          let targetScreenCapture = screenCaptureForComputerUse(
+                            screen: actionInstruction.screen,
+                            screenCaptures: screenCaptures
+                          ) else {
+                        return nil
+                    }
+                    let clampedFocus = Self.scrollFocusGlobalPointClampedToSafeDisplayInset(
+                        rawGlobalPoint: resolvedFocus,
+                        displayFrame: targetScreenCapture.displayFrame
+                    )
+                    let driftInPoints = hypot(clampedFocus.x - resolvedFocus.x, clampedFocus.y - resolvedFocus.y)
+                    if driftInPoints > 0.5 {
+                        print(
+                            "🖱️ Computer use scroll: focus clamped for Dock/menu clearance " +
+                            "raw=\(resolvedFocus) clamped=\(clampedFocus) displayFrame=\(targetScreenCapture.displayFrame)"
+                        )
+                    }
+                    return clampedFocus
+                }()
+                if abs(rawDeltaX - deltaX) > 0.01 || abs(rawDeltaY - deltaY) > 0.01 {
+                    print(
+                        "🖱️ Computer use scroll: normalized model delta " +
+                        "(\(rawDeltaX),\(rawDeltaY)) → (\(deltaX),\(deltaY)) " +
+                        "(cap=\(Int(Self.computerUseScrollDeltaMagnitudeCapInLines)) lines, " +
+                        "naturalScroll=\(Self.isMacOSNaturalScrollingEnabled()))"
+                    )
+                }
+                return .scroll(deltaX: deltaX, deltaY: deltaY, focusGlobalPoint: focusGlobalPoint)
             case "drag":
                 guard let startGlobalPoint = resolveGlobalPoint(
                     x: actionInstruction.startX,
@@ -1555,23 +2246,23 @@ final class CompanionManager: ObservableObject {
     private func actionPlanContainsDestructiveAction(_ actionPlan: [ResolvedComputerUseAction]) -> Bool {
         actionPlan.contains { resolvedComputerUseAction in
             switch resolvedComputerUseAction {
-            case .rightClick:
-                return true
             case .keyPress(let key):
                 let normalizedKey = key.lowercased()
-                return normalizedKey == "delete" || normalizedKey == "backspace" || normalizedKey == "return" || normalizedKey == "enter"
+                // Return/enter are common for normal navigation/search and should not require confirmation.
+                return normalizedKey == "delete" || normalizedKey == "backspace"
             case .keyCombo(let key, let modifiers):
                 let normalizedKey = key.lowercased()
                 let normalizedModifiers = Set(modifiers.map { $0.lowercased() })
                 if normalizedModifiers.contains("command") || normalizedModifiers.contains("cmd") {
-                    return ["q", "w", "r", "backspace", "delete", "return", "enter"].contains(normalizedKey)
+                    // Restrict destructive confirmation to high-risk quit/delete combos.
+                    return ["q", "backspace", "delete"].contains(normalizedKey)
                 }
                 return false
             case .typeText(let text):
                 let normalizedText = text.lowercased()
                 let destructiveKeywords = ["delete", "quit", "close", "send", "submit", "purchase", "install", "rm ", "sudo ", "git reset --hard"]
                 return destructiveKeywords.contains(where: { normalizedText.contains($0) })
-            case .leftClick, .doubleClick, .scroll, .drag:
+            case .leftClick, .doubleClick, .rightClick, .scroll(_, _, _), .drag:
                 return false
             }
         }
@@ -1741,12 +2432,9 @@ final class CompanionManager: ObservableObject {
                     print("🎯 Onboarding demo skipped: missing OpenRouter API key")
                     return
                 }
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
-
-                // Only send the cursor screen so Claude can't pick something
-                // on a different monitor that we can't point at.
-                guard let cursorScreenCapture = screenCaptures.first(where: { $0.isCursorScreen }) else {
-                    print("🎯 Onboarding demo: no cursor screen found")
+                let screenCaptures = try await CompanionScreenCaptureUtility.captureCursorScreenAsJPEG()
+                guard let cursorScreenCapture = screenCaptures.first else {
+                    print("🎯 Onboarding demo: no screen capture")
                     return
                 }
 

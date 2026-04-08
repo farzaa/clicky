@@ -14,6 +14,11 @@ final class AIServiceSettings: ObservableObject {
     @Published var elevenLabsVoiceID: String
     @Published var showOnlyWebEnabledModels: Bool
     @Published var isComputerUseEnabled: Bool
+    @Published var isMultiTurnEnabled: Bool
+    /// When true, ElevenLabs voice runs only after the multi-turn loop stops, not after each continuation step.
+    @Published var deferVoiceUntilAgenticLoopCompletes: Bool
+    /// OpenRouter model for Multi-Turn continuation steps (orchestration / loop control).
+    @Published var orchestratorOpenRouterModelID: String
     @Published var openRouterAPIKey: String = ""
     @Published var elevenLabsAPIKey: String = ""
 
@@ -22,14 +27,24 @@ final class AIServiceSettings: ObservableObject {
     private let elevenLabsVoiceIDDefaultsKey = "elevenLabsVoiceID"
     private let showOnlyWebEnabledModelsDefaultsKey = "showOnlyWebEnabledModels"
     private let isComputerUseEnabledDefaultsKey = "isComputerUseEnabled"
+    private let isMultiTurnEnabledDefaultsKey = "isMultiTurnEnabled"
+    private let deferVoiceUntilAgenticLoopCompletesDefaultsKey = "deferVoiceUntilAgenticLoopCompletes"
+    private let orchestratorOpenRouterModelIDDefaultsKey = "orchestratorOpenRouterModelID"
 
     init() {
-        selectedOpenRouterModelID = UserDefaults.standard.string(forKey: selectedOpenRouterModelDefaultsKey)
+        let persistedSelectedOpenRouterModelID = UserDefaults.standard.string(forKey: selectedOpenRouterModelDefaultsKey)
             ?? "openai/gpt-4o-mini"
+        selectedOpenRouterModelID = persistedSelectedOpenRouterModelID
+        orchestratorOpenRouterModelID = UserDefaults.standard.string(forKey: orchestratorOpenRouterModelIDDefaultsKey)
+            ?? persistedSelectedOpenRouterModelID
         elevenLabsVoiceID = UserDefaults.standard.string(forKey: elevenLabsVoiceIDDefaultsKey)
             ?? "EXAVITQu4vr4xnSDxMaL"
         showOnlyWebEnabledModels = UserDefaults.standard.bool(forKey: showOnlyWebEnabledModelsDefaultsKey)
         isComputerUseEnabled = UserDefaults.standard.bool(forKey: isComputerUseEnabledDefaultsKey)
+        isMultiTurnEnabled = UserDefaults.standard.object(forKey: isMultiTurnEnabledDefaultsKey) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: isMultiTurnEnabledDefaultsKey)
+        deferVoiceUntilAgenticLoopCompletes = UserDefaults.standard.bool(forKey: deferVoiceUntilAgenticLoopCompletesDefaultsKey)
         reloadSecureValues()
     }
 
@@ -54,6 +69,23 @@ final class AIServiceSettings: ObservableObject {
     func saveComputerUseEnabled(_ isComputerUseEnabled: Bool) {
         self.isComputerUseEnabled = isComputerUseEnabled
         UserDefaults.standard.set(isComputerUseEnabled, forKey: isComputerUseEnabledDefaultsKey)
+    }
+
+    func saveMultiTurnEnabled(_ isMultiTurnEnabled: Bool) {
+        self.isMultiTurnEnabled = isMultiTurnEnabled
+        UserDefaults.standard.set(isMultiTurnEnabled, forKey: isMultiTurnEnabledDefaultsKey)
+    }
+
+    func saveDeferVoiceUntilAgenticLoopCompletes(_ deferVoiceUntilAgenticLoopCompletes: Bool) {
+        self.deferVoiceUntilAgenticLoopCompletes = deferVoiceUntilAgenticLoopCompletes
+        UserDefaults.standard.set(deferVoiceUntilAgenticLoopCompletes, forKey: deferVoiceUntilAgenticLoopCompletesDefaultsKey)
+    }
+
+    func saveOrchestratorOpenRouterModelID(_ orchestratorOpenRouterModelID: String) {
+        let trimmedOrchestratorOpenRouterModelID = orchestratorOpenRouterModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedOrchestratorOpenRouterModelID.isEmpty else { return }
+        self.orchestratorOpenRouterModelID = trimmedOrchestratorOpenRouterModelID
+        UserDefaults.standard.set(trimmedOrchestratorOpenRouterModelID, forKey: orchestratorOpenRouterModelIDDefaultsKey)
     }
 
     func saveOpenRouterAPIKey(_ openRouterAPIKey: String) throws {

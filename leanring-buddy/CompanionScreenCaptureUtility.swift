@@ -93,10 +93,15 @@ enum CompanionScreenCaptureUtility {
         return (nsFrame, "global_origin_and_size_from_nsscreen_fallback")
     }
 
-    /// Captures all connected displays as JPEG data, labeling each with
-    /// whether the user's cursor is on that screen. This gives the AI
-    /// full context across multiple monitors.
-    static func captureAllScreensAsJPEG() async throws -> [CompanionScreenCapture] {
+    private struct ShareableContentContext {
+        let sortedDisplays: [SCDisplay]
+        let nsScreenByDisplayID: [CGDirectDisplayID: NSScreen]
+        let ownAppWindows: [SCWindow]
+        let mouseLocation: CGPoint
+    }
+
+    /// Shared setup: SC shareable content, windows to exclude, NSScreen map, cursor-first display order.
+    private static func makeShareableContentContext() async throws -> ShareableContentContext {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
 
         guard !content.displays.isEmpty else {
@@ -106,19 +111,11 @@ enum CompanionScreenCaptureUtility {
 
         let mouseLocation = NSEvent.mouseLocation
 
-        // Exclude all windows belonging to this app so the AI sees
-        // only the user's content, not our overlays or panels.
         let ownBundleIdentifier = Bundle.main.bundleIdentifier
         let ownAppWindows = content.windows.filter { window in
             window.owningApplication?.bundleIdentifier == ownBundleIdentifier
         }
 
-        // Build a lookup from display ID to NSScreen so we can use AppKit-coordinate
-        // frames instead of CG-coordinate frames. NSEvent.mouseLocation and NSScreen.frame
-        // both use AppKit coordinates (bottom-left origin), while SCDisplay.frame uses
-        // Core Graphics coordinates (top-left origin). On multi-display setups, the Y
-        // origins differ for secondary displays, which breaks cursor-contains checks
-        // and downstream coordinate conversions.
         var nsScreenByDisplayID: [CGDirectDisplayID: NSScreen] = [:]
         for screen in NSScreen.screens {
             if let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID {
@@ -126,7 +123,6 @@ enum CompanionScreenCaptureUtility {
             }
         }
 
-        // Sort displays so the cursor screen is always first
         let sortedDisplays = content.displays.sorted { displayA, displayB in
             let frameA = nsScreenByDisplayID[displayA.displayID]?.frame ?? displayA.frame
             let frameB = nsScreenByDisplayID[displayB.displayID]?.frame ?? displayB.frame
@@ -136,78 +132,137 @@ enum CompanionScreenCaptureUtility {
             return false
         }
 
+        return ShareableContentContext(
+            sortedDisplays: sortedDisplays,
+            nsScreenByDisplayID: nsScreenByDisplayID,
+            ownAppWindows: ownAppWindows,
+            mouseLocation: mouseLocation
+        )
+    }
+
+    /// Captures one display as JPEG; returns nil if JPEG encoding fails.
+    /// When `totalDisplayCount` is 1, the label is always the single-screen cursor line (used for cursor-only vision).
+    private static func captureDisplayAsJPEG(
+        display: SCDisplay,
+        displayIndex: Int,
+        totalDisplayCount: Int,
+        context: ShareableContentContext
+    ) async throws -> CompanionScreenCapture? {
+        let filter = SCContentFilter(display: display, excludingWindows: context.ownAppWindows)
+        filter.includeMenuBar = true
+
+        let nsscreenForDisplay = context.nsScreenByDisplayID[display.displayID]
+        var contentRect = filter.contentRect
+        if contentRect.width < 1 || contentRect.height < 1, let fallback = nsscreenForDisplay?.frame {
+            contentRect = fallback
+        }
+
+        let nsscreenFrame = nsscreenForDisplay?.frame
+        let mappingChoice = displayFrameForMappingScreenshotToGlobalMouse(
+            nsscreenFrame: nsscreenFrame,
+            filterContentRect: contentRect,
+            displayID: display.displayID
+        )
+        let displayFrame = mappingChoice.frame
+        let displayFrameMappingSourceDescription = mappingChoice.mappingSourceDescription
+        let mouseLocation = context.mouseLocation
+        let isCursorScreen = displayFrame.contains(mouseLocation)
+
+        let screenLabel: String
+        if totalDisplayCount == 1 {
+            screenLabel = "user's screen (cursor is here)"
+        } else if isCursorScreen {
+            screenLabel = "screen \(displayIndex + 1) of \(totalDisplayCount) — cursor is on this screen (primary focus)"
+        } else {
+            screenLabel = "screen \(displayIndex + 1) of \(totalDisplayCount) — secondary screen"
+        }
+
+        let configuration = SCStreamConfiguration()
+        let maxDimension = CGFloat(1280)
+        var pixelScale = CGFloat(filter.pointPixelScale)
+        if pixelScale <= 0, let screen = nsscreenForDisplay {
+            pixelScale = screen.backingScaleFactor
+        }
+        if pixelScale <= 0 {
+            pixelScale = 2
+        }
+        let nativePixelWidth = contentRect.width * pixelScale
+        let nativePixelHeight = contentRect.height * pixelScale
+        let uniformScale = min(maxDimension / max(nativePixelWidth, 1), maxDimension / max(nativePixelHeight, 1))
+        configuration.width = Int(max(1, round(nativePixelWidth * uniformScale)))
+        configuration.height = Int(max(1, round(nativePixelHeight * uniformScale)))
+
+        let cgImage = try await SCScreenshotManager.captureImage(
+            contentFilter: filter,
+            configuration: configuration
+        )
+
+        let capturedPixelWidth = cgImage.width
+        let capturedPixelHeight = cgImage.height
+
+        guard let jpegData = NSBitmapImageRep(cgImage: cgImage)
+                .representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
+            return nil
+        }
+
+        return CompanionScreenCapture(
+            imageData: jpegData,
+            label: screenLabel,
+            isCursorScreen: isCursorScreen,
+            displayFrame: displayFrame,
+            displayFrameMappingSourceDescription: displayFrameMappingSourceDescription,
+            screenshotWidthInPixels: capturedPixelWidth,
+            screenshotHeightInPixels: capturedPixelHeight
+        )
+    }
+
+    /// Vision-only capture: the display that currently contains the cursor (matches push-to-talk “active” workspace).
+    static func captureCursorScreenAsJPEG() async throws -> [CompanionScreenCapture] {
+        let context = try await makeShareableContentContext()
+        let mouseLocation = context.mouseLocation
+
+        let targetDisplay: SCDisplay = {
+            for display in context.sortedDisplays {
+                let frame = context.nsScreenByDisplayID[display.displayID]?.frame ?? display.frame
+                if frame.contains(mouseLocation) {
+                    return display
+                }
+            }
+            return context.sortedDisplays[0]
+        }()
+
+        guard let capture = try await captureDisplayAsJPEG(
+            display: targetDisplay,
+            displayIndex: 0,
+            totalDisplayCount: 1,
+            context: context
+        ) else {
+            throw NSError(domain: "CompanionScreenCapture", code: -2,
+                          userInfo: [NSLocalizedDescriptionKey: "Failed to capture cursor screen"])
+        }
+
+        return [capture]
+    }
+
+    /// Captures all connected displays as JPEG data, labeling each with
+    /// whether the user's cursor is on that screen. This gives the AI
+    /// full context across multiple monitors.
+    static func captureAllScreensAsJPEG() async throws -> [CompanionScreenCapture] {
+        let context = try await makeShareableContentContext()
+        let sortedDisplays = context.sortedDisplays
+        let totalDisplayCount = sortedDisplays.count
+
         var capturedScreens: [CompanionScreenCapture] = []
 
         for (displayIndex, display) in sortedDisplays.enumerated() {
-            let filter = SCContentFilter(display: display, excludingWindows: ownAppWindows)
-            filter.includeMenuBar = true
-
-            let nsscreenForDisplay = nsScreenByDisplayID[display.displayID]
-            var contentRect = filter.contentRect
-            if contentRect.width < 1 || contentRect.height < 1, let fallback = nsscreenForDisplay?.frame {
-                contentRect = fallback
+            if let one = try await captureDisplayAsJPEG(
+                display: display,
+                displayIndex: displayIndex,
+                totalDisplayCount: totalDisplayCount,
+                context: context
+            ) {
+                capturedScreens.append(one)
             }
-
-            let nsscreenFrame = nsscreenForDisplay?.frame
-            let mappingChoice = displayFrameForMappingScreenshotToGlobalMouse(
-                nsscreenFrame: nsscreenFrame,
-                filterContentRect: contentRect,
-                displayID: display.displayID
-            )
-            let displayFrame = mappingChoice.frame
-            let displayFrameMappingSourceDescription = mappingChoice.mappingSourceDescription
-            let isCursorScreen = displayFrame.contains(mouseLocation)
-
-            let configuration = SCStreamConfiguration()
-            let maxDimension = CGFloat(1280)
-            var pixelScale = CGFloat(filter.pointPixelScale)
-            if pixelScale <= 0, let screen = nsscreenForDisplay {
-                pixelScale = screen.backingScaleFactor
-            }
-            if pixelScale <= 0 {
-                pixelScale = 2
-            }
-            let nativePixelWidth = contentRect.width * pixelScale
-            let nativePixelHeight = contentRect.height * pixelScale
-            let uniformScale = min(maxDimension / max(nativePixelWidth, 1), maxDimension / max(nativePixelHeight, 1))
-            configuration.width = Int(max(1, round(nativePixelWidth * uniformScale)))
-            configuration.height = Int(max(1, round(nativePixelHeight * uniformScale)))
-
-            let cgImage = try await SCScreenshotManager.captureImage(
-                contentFilter: filter,
-                configuration: configuration
-            )
-
-            // Use the bitmap’s real pixel dimensions for AI labels and for mapping clicks/pointer
-            // back to screen space. `SCStreamConfiguration` width/height can differ slightly from
-            // the returned `CGImage` (rounding, capture pipeline); using the wrong denominator
-            // skews horizontal/vertical scale (often pushing tab clicks to the wrong column).
-            let capturedPixelWidth = cgImage.width
-            let capturedPixelHeight = cgImage.height
-
-            guard let jpegData = NSBitmapImageRep(cgImage: cgImage)
-                    .representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
-                continue
-            }
-
-            let screenLabel: String
-            if sortedDisplays.count == 1 {
-                screenLabel = "user's screen (cursor is here)"
-            } else if isCursorScreen {
-                screenLabel = "screen \(displayIndex + 1) of \(sortedDisplays.count) — cursor is on this screen (primary focus)"
-            } else {
-                screenLabel = "screen \(displayIndex + 1) of \(sortedDisplays.count) — secondary screen"
-            }
-
-            capturedScreens.append(CompanionScreenCapture(
-                imageData: jpegData,
-                label: screenLabel,
-                isCursorScreen: isCursorScreen,
-                displayFrame: displayFrame,
-                displayFrameMappingSourceDescription: displayFrameMappingSourceDescription,
-                screenshotWidthInPixels: capturedPixelWidth,
-                screenshotHeightInPixels: capturedPixelHeight
-            ))
         }
 
         guard !capturedScreens.isEmpty else {

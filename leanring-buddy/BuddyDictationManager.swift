@@ -342,8 +342,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             draftCallbacks?.updateDraftText(currentDraftText)
         }
 
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
+        tearDownAudioEngineInputTap()
         activeTranscriptionSession?.cancel()
 
         resetSessionState()
@@ -451,9 +450,9 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             try await startRecognitionSession()
             guard !Task.isCancelled else {
                 print("🎙️ BuddyDictationManager: start cancelled (shortcut released during session start)")
-                audioEngine.stop()
-                audioEngine.inputNode.removeTap(onBus: 0)
+                tearDownAudioEngineInputTap()
                 activeTranscriptionSession?.cancel()
+                activeTranscriptionSession = nil
                 resetSessionState()
                 return
             }
@@ -464,6 +463,9 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             print("🎙️ BuddyDictationManager: recognition session started")
         } catch {
             isPreparingToRecord = false
+            tearDownAudioEngineInputTap()
+            activeTranscriptionSession?.cancel()
+            activeTranscriptionSession = nil
             lastErrorMessage = userFacingErrorMessage(
                 from: error,
                 fallback: "couldn't start voice input. try again."
@@ -491,8 +493,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         let finalTranscriptFallbackDelaySeconds = activeTranscriptionSession?.finalTranscriptFallbackDelaySeconds
             ?? Self.defaultFinalTranscriptFallbackDelaySeconds
 
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
+        tearDownAudioEngineInputTap()
         activeTranscriptionSession?.requestFinalTranscript()
 
         finalizeFallbackWorkItem?.cancel()
@@ -511,9 +512,40 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         )
     }
 
+    /// Stops capture and resets the engine graph. `removeTap` must run **before** `stop()` per
+    /// `AVAudioEngine` docs; the reverse order correlated with Core Audio `HAL` errors and silent
+    /// buffers (Speech then reports `kAFAssistantErrorDomain` / 1110 “No speech detected”).
+    private func tearDownAudioEngineInputTap() {
+        audioEngine.inputNode.removeTap(onBus: 0)
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+        audioEngine.reset()
+    }
+
     private func startRecognitionSession() async throws {
         activeTranscriptionSession?.cancel()
         activeTranscriptionSession = nil
+        tearDownAudioEngineInputTap()
+
+        let inputNode = audioEngine.inputNode
+        audioEngine.prepare()
+        let inputFormat = inputNode.outputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            print(
+                "❌ BuddyDictationManager: invalid microphone format (sampleRate=\(inputFormat.sampleRate), channels=\(inputFormat.channelCount)) — check System Settings › Sound › Input"
+            )
+            throw NSError(
+                domain: "BuddyDictationManager",
+                code: 2,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "could not read from the microphone. check your input device in system settings."
+                ]
+            )
+        }
+        print(
+            "🎙️ BuddyDictationManager: mic input format sampleRate=\(inputFormat.sampleRate) channels=\(inputFormat.channelCount) commonFormat=\(inputFormat.commonFormat.rawValue)"
+        )
 
         print("🎙️ BuddyDictationManager: opening transcription provider \(transcriptionProvider.displayName)")
 
@@ -546,17 +578,20 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         self.activeTranscriptionSession = activeTranscriptionSession
         print("🎙️ BuddyDictationManager: provider ready, starting audio engine")
 
-        let inputNode = audioEngine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
-
-        inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
             self?.activeTranscriptionSession?.appendAudioBuffer(buffer)
             self?.updateAudioPowerLevel(from: buffer)
         }
 
         audioEngine.prepare()
-        try audioEngine.start()
+        do {
+            try audioEngine.start()
+        } catch {
+            tearDownAudioEngineInputTap()
+            activeTranscriptionSession.cancel()
+            self.activeTranscriptionSession = nil
+            throw error
+        }
     }
 
     private func handleRecognitionError(_ error: Error) {
@@ -593,8 +628,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             currentDraftCallbacks?.updateDraftText(finalDraftText)
         }
 
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
+        tearDownAudioEngineInputTap()
         activeTranscriptionSession?.cancel()
 
         resetSessionState()
@@ -684,19 +718,29 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     }
 
     private func updateAudioPowerLevel(from audioBuffer: AVAudioPCMBuffer) {
-        guard let channelData = audioBuffer.floatChannelData else { return }
-
-        let channelSamples = channelData[0]
         let frameCount = Int(audioBuffer.frameLength)
         guard frameCount > 0 else { return }
 
-        var summedSquares: Float = 0
-        for sampleIndex in 0..<frameCount {
-            let sample = channelSamples[sampleIndex]
-            summedSquares += sample * sample
+        let rootMeanSquare: Float
+        if let channelData = audioBuffer.floatChannelData {
+            let channelSamples = channelData[0]
+            var summedSquares: Float = 0
+            for sampleIndex in 0..<frameCount {
+                let sample = channelSamples[sampleIndex]
+                summedSquares += sample * sample
+            }
+            rootMeanSquare = sqrt(summedSquares / Float(frameCount))
+        } else if let channelData = audioBuffer.int16ChannelData {
+            let channelSamples = channelData[0]
+            var summedSquares: Float = 0
+            for sampleIndex in 0..<frameCount {
+                let normalizedSample = Float(channelSamples[sampleIndex]) / Float(Int16.max)
+                summedSquares += normalizedSample * normalizedSample
+            }
+            rootMeanSquare = sqrt(summedSquares / Float(frameCount))
+        } else {
+            return
         }
-
-        let rootMeanSquare = sqrt(summedSquares / Float(frameCount))
         let boostedLevel = min(max(rootMeanSquare * 10.2, 0), 1)
 
         DispatchQueue.main.async { [weak self] in

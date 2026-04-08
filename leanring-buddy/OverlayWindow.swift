@@ -373,6 +373,13 @@ struct BlueCursorView: View {
                 self.cursorOpacity = 1.0
             }
         }
+        .onChange(of: companionManager.voiceState) { newVoiceState in
+            // Skip the slow first-launch fade when the user already started push-to-talk:
+            // otherwise the waveform can stay nearly invisible while logs show "listening".
+            if newVoiceState == .listening || newVoiceState == .processing {
+                cursorOpacity = 1.0
+            }
+        }
         .onDisappear {
             timer?.invalidate()
             navigationAnimationTimer?.invalidate()
