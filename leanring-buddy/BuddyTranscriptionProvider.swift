@@ -87,14 +87,7 @@ enum BuddyTranscriptionProviderFactory {
             return AppleSpeechTranscriptionProvider()
         }
 
-        if assemblyAIProvider.isConfigured {
-            return assemblyAIProvider
-        }
-
-        if openAIProvider.isConfigured {
-            return openAIProvider
-        }
-
+        // Default to Apple Speech (free, local, no API keys needed)
         return AppleSpeechTranscriptionProvider()
     }
 }
