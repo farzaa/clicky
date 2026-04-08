@@ -699,22 +699,30 @@ struct CompanionPanelView: View {
         if isShowingLocalAPIKeyField {
             HStack {
                 HStack(spacing: 8) {
-                    if isAPIKeyVisible {
-                        TextField("", text: Binding(
-                            get: { companionManager.lmStudioAPIKey },
-                            set: { companionManager.lmStudioAPIKey = $0 }
-                        ), prompt: Text("LM Studio API Key (leave empty if none)").foregroundColor(.white))
-                        .textFieldStyle(PlainTextFieldStyle())
-                        .font(.system(size: 11))
-                        .foregroundColor(.white)
-                    } else {
-                        SecureField("", text: Binding(
-                            get: { companionManager.lmStudioAPIKey },
-                            set: { companionManager.lmStudioAPIKey = $0 }
-                        ), prompt: Text("LM Studio API Key (leave empty if none)").foregroundColor(.white))
-                        .textFieldStyle(PlainTextFieldStyle())
-                        .font(.system(size: 11))
-                        .foregroundColor(.white)
+                    ZStack(alignment: .leading) {
+                        if companionManager.lmStudioAPIKey.isEmpty {
+                            Text("LM Studio API Key (leave empty if none)")
+                                .font(.system(size: 11))
+                                .foregroundColor(.white.opacity(0.6))
+                        }
+                        
+                        if isAPIKeyVisible {
+                            TextField("", text: Binding(
+                                get: { companionManager.lmStudioAPIKey },
+                                set: { companionManager.lmStudioAPIKey = $0 }
+                            ))
+                            .textFieldStyle(PlainTextFieldStyle())
+                            .font(.system(size: 11))
+                            .foregroundColor(.white)
+                        } else {
+                            SecureField("", text: Binding(
+                                get: { companionManager.lmStudioAPIKey },
+                                set: { companionManager.lmStudioAPIKey = $0 }
+                            ))
+                            .textFieldStyle(PlainTextFieldStyle())
+                            .font(.system(size: 11))
+                            .foregroundColor(.white)
+                        }
                     }
                     
                     Button(action: {
