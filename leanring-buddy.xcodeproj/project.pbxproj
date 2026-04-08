@@ -419,7 +419,6 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "leanring-buddy/Info.plist";
-				INFOPLIST_KEY_AnthropicAPIKey = "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";
 				INFOPLIST_KEY_AnthropicAPIURL = "https://api.anthropic.com/v1/messages";
 				INFOPLIST_KEY_AnthropicModel = "claude-sonnet-4-6";
 				INFOPLIST_KEY_CFBundleDisplayName = Clicky;
@@ -460,7 +459,6 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "leanring-buddy/Info.plist";
-				INFOPLIST_KEY_AnthropicAPIKey = "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";
 				INFOPLIST_KEY_AnthropicAPIURL = "https://api.anthropic.com/v1/messages";
 				INFOPLIST_KEY_AnthropicModel = "claude-sonnet-4-6";
 				INFOPLIST_KEY_CFBundleDisplayName = Clicky;
