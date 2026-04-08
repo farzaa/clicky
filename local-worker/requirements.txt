@@ -1,0 +1,11 @@
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+mlx>=0.16.0
+mlx-vlm>=0.1.18
+mlx-whisper>=0.3.0
+kokoro-onnx>=0.4.0
+soundfile>=0.12.1
+numpy>=1.26.0
+pillow>=10.3.0
+huggingface_hub>=0.22.0
+python-multipart>=0.0.9

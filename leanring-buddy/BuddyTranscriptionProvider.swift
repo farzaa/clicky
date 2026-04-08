@@ -34,6 +34,7 @@ enum BuddyTranscriptionProviderFactory {
         case assemblyAI = "assemblyai"
         case openAI = "openai"
         case appleSpeech = "apple"
+        case localWhisper = "localwhisper"
     }
 
     static func makeDefaultProvider() -> any BuddyTranscriptionProvider {
@@ -85,6 +86,10 @@ enum BuddyTranscriptionProviderFactory {
 
             print("⚠️ Transcription: using Apple Speech as fallback")
             return AppleSpeechTranscriptionProvider()
+        }
+
+        if preferredProvider == .localWhisper {
+            return LocalWhisperTranscriptionProvider()
         }
 
         if assemblyAIProvider.isConfigured {

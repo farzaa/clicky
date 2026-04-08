@@ -5,36 +5,37 @@
 
 ## Overview
 
-macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to Claude. Claude responds with text (streamed via SSE) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements Claude references on any connected monitor.
+macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via local Whisper (MLX), and sends the transcript + a screenshot of the user's screen to a local vision model (Qwen2.5-VL-7B). The model responds with text (streamed via SSE) and voice (Kokoro TTS). A blue cursor overlay can fly to and point at UI elements the model references on any connected monitor.
 
-All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in the app.
+**Local-first stack**: All inference runs on-device via a FastAPI server at `http://localhost:8787`. No cloud APIs or API keys required. The original Cloudflare Worker proxy code is retained for reference but is not used.
 
 ## Architecture
 
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via Cloudflare Worker proxy with SSE streaming
-- **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with OpenAI and Apple Speech as fallbacks
-- **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy
+- **AI Chat**: Qwen2.5-VL-7B-Instruct (4-bit MLX quantized) via local FastAPI server with SSE streaming
+- **Speech-to-Text**: MLX-Whisper (base model) via local FastAPI server, with Apple Speech as fallback
+- **Text-to-Speech**: Kokoro-82M (ONNX) via local FastAPI server, returns WAV audio
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
 - **Analytics**: PostHog via `ClickyAnalytics.swift`
 
-### API Proxy (Cloudflare Worker)
+### Local FastAPI Backend (`local-worker/`)
 
-The app never calls external APIs directly. All requests go through a Cloudflare Worker (`worker/src/index.ts`) that holds the real API keys as secrets.
+All inference runs locally via a FastAPI server at `http://localhost:8787`. No API keys needed.
 
-| Route | Upstream | Purpose |
-|-------|----------|---------|
-| `POST /chat` | `api.anthropic.com/v1/messages` | Claude vision + streaming chat |
-| `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
-| `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Fetches a short-lived (480s) AssemblyAI websocket token |
+| Route | Local Model | Purpose |
+|-------|-------------|---------|
+| `POST /chat` | Qwen2.5-VL-7B-Instruct (4-bit MLX) | Vision + streaming chat (Anthropic SSE format) |
+| `POST /tts` | Kokoro-82M (ONNX) | Text-to-speech, returns WAV audio |
+| `POST /transcribe` | MLX-Whisper (base) | Speech-to-text from WAV upload |
+| `GET /health` | — | Model readiness check |
 
-Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`
-Worker vars: `ELEVENLABS_VOICE_ID`
+Models load in parallel on startup (~30s). Returns 503 until all models are ready.
+Peak memory: ~8 GB (fits comfortably on 18 GB M3 Pro).
 
 ### Key Architecture Decisions
 
@@ -60,7 +61,8 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
 | `BuddyDictationManager.swift` | ~866 | Push-to-talk voice pipeline. Handles microphone capture via `AVAudioEngine`, provider-aware permission checks, keyboard/button dictation sessions, transcript finalization, shortcut parsing, contextual keyterms, and live audio-level reporting for waveform feedback. |
-| `BuddyTranscriptionProvider.swift` | ~100 | Protocol surface and provider factory for voice transcription backends. Resolves provider based on `VoiceTranscriptionProvider` in Info.plist — AssemblyAI, OpenAI, or Apple Speech. |
+| `BuddyTranscriptionProvider.swift` | ~107 | Protocol surface and provider factory for voice transcription backends. Resolves provider based on `VoiceTranscriptionProvider` in Info.plist — LocalWhisper (default), AssemblyAI, OpenAI, or Apple Speech. |
+| `LocalWhisperTranscriptionProvider.swift` | ~252 | Local Whisper transcription provider. Buffers push-to-talk audio, uploads WAV to `localhost:8787/transcribe`, returns finalized transcript. No API key needed. |
 | `AssemblyAIStreamingTranscriptionProvider.swift` | ~478 | Streaming transcription provider. Fetches temp tokens from the Cloudflare Worker, opens an AssemblyAI v3 websocket, streams PCM16 audio, tracks turn-based transcripts, and delivers finalized text on key-up. Shares a single URLSession across all sessions. |
 | `OpenAIAudioTranscriptionProvider.swift` | ~317 | Upload-based transcription provider. Buffers push-to-talk audio locally, uploads as WAV on release, returns finalized transcript. |
 | `AppleSpeechTranscriptionProvider.swift` | ~147 | Local fallback transcription provider backed by Apple's Speech framework. |
@@ -74,9 +76,31 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
-| `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
+| `worker/src/index.ts` | ~142 | Cloudflare Worker proxy (retained for reference, not used in local mode). |
+| `local-worker/main.py` | ~160 | Local FastAPI server. Three endpoints: `/chat` (Qwen VLM), `/tts` (Kokoro), `/transcribe` (Whisper). |
+| `local-worker/models/vision_model.py` | ~145 | Qwen2.5-VL-7B-Instruct via mlx-vlm. Singleton loader with async streaming generation. |
+| `local-worker/models/tts_model.py` | ~85 | Kokoro-82M ONNX TTS. Returns WAV bytes at 24 kHz. |
+| `local-worker/models/whisper_model.py` | ~95 | MLX-Whisper base. Accepts WAV bytes, returns transcribed text. |
+| `local-worker/setup_models.py` | ~53 | One-time model download script (~6 GB total to `~/.clicky-local/models/`). |
 
 ## Build & Run
+
+### 1. Start the Local Backend (required before running the app)
+
+```bash
+cd local-worker
+
+# First-time setup
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python setup_models.py           # Downloads ~6 GB of models (one-time)
+
+# Start the server
+uvicorn main:app --host 127.0.0.1 --port 8787 --log-level info
+```
+
+### 2. Build the Swift App
 
 ```bash
 # Open in Xcode
@@ -90,22 +114,22 @@ open leanring-buddy.xcodeproj
 
 **Do NOT run `xcodebuild` from the terminal** — it invalidates TCC (Transparency, Consent, and Control) permissions and the app will need to re-request screen recording, accessibility, etc.
 
-## Cloudflare Worker
+### 3. Verify Endpoints
 
 ```bash
-cd worker
-npm install
+# Health check
+curl http://localhost:8787/health
 
-# Add secrets
-npx wrangler secret put ANTHROPIC_API_KEY
-npx wrangler secret put ASSEMBLYAI_API_KEY
-npx wrangler secret put ELEVENLABS_API_KEY
+# Chat test
+curl -X POST http://localhost:8787/chat \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen-local","max_tokens":512,"stream":true,"system":"You are helpful.","messages":[{"role":"user","content":[{"type":"text","text":"Say hello."}]}]}'
 
-# Deploy
-npx wrangler deploy
-
-# Local dev (create worker/.dev.vars with your keys)
-npx wrangler dev
+# TTS test
+curl -X POST http://localhost:8787/tts \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Hello world","model_id":"kokoro","voice_settings":{}}' \
+  --output /tmp/test.wav && afplay /tmp/test.wav
 ```
 
 ## Code Style & Conventions
