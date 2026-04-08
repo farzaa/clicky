@@ -13,6 +13,7 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    @State private var isSystemPromptSectionExpanded: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -57,6 +58,14 @@ struct CompanionPanelView: View {
             //     showClickyCursorToggleRow
             //         .padding(.horizontal, 16)
             // }
+
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 12)
+
+                customSystemPromptSection
+                    .padding(.horizontal, 16)
+            }
 
             if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
                 Spacer()
@@ -639,6 +648,111 @@ struct CompanionPanelView: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
+    }
+
+    // MARK: - Custom System Prompt
+
+    private var customSystemPromptSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Collapsible header — clicking toggles the text editor visibility
+            Button(action: {
+                withAnimation(.easeInOut(duration: DS.Animation.normal)) {
+                    isSystemPromptSectionExpanded.toggle()
+                }
+            }) {
+                HStack {
+                    Image(systemName: "text.quote")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .frame(width: 16)
+
+                    Text("System Prompt")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+
+                    Spacer()
+
+                    // Show a small dot indicator when a custom prompt is set
+                    // so the user knows it's active even when collapsed
+                    if !companionManager.customSystemPromptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Circle()
+                            .fill(DS.Colors.accent)
+                            .frame(width: 6, height: 6)
+                    }
+
+                    Image(systemName: isSystemPromptSectionExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+
+            if isSystemPromptSectionExpanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    // Multi-line text editor for the custom system prompt
+                    ZStack(alignment: .topLeading) {
+                        // Placeholder text shown when the editor is empty
+                        if companionManager.customSystemPromptText.isEmpty {
+                            Text("e.g., You are a senior Swift developer")
+                                .font(.system(size: 12))
+                                .foregroundColor(DS.Colors.textTertiary)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 8)
+                                .allowsHitTesting(false)
+                        }
+
+                        TextEditor(text: Binding(
+                            get: { companionManager.customSystemPromptText },
+                            set: { companionManager.setCustomSystemPromptText($0) }
+                        ))
+                        .font(.system(size: 12))
+                        .foregroundColor(DS.Colors.textPrimary)
+                        .scrollContentBackground(.hidden)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 4)
+                    }
+                    .frame(height: 72)
+                    .background(
+                        RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                            .fill(Color.white.opacity(0.06))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                            .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                    )
+
+                    // Clear button — only visible when there's text to clear
+                    if !companionManager.customSystemPromptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        HStack {
+                            Spacer()
+                            Button(action: {
+                                companionManager.clearCustomSystemPrompt()
+                            }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "xmark.circle")
+                                        .font(.system(size: 10, weight: .medium))
+                                    Text("Clear")
+                                        .font(.system(size: 11, weight: .medium))
+                                }
+                                .foregroundColor(DS.Colors.textTertiary)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(
+                                    Capsule()
+                                        .fill(Color.white.opacity(0.06))
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .pointerCursor()
+                        }
+                    }
+                }
+                .padding(.top, 6)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
     }
 
     // MARK: - DM Farza Button
