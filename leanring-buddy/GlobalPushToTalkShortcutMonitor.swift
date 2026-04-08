@@ -27,6 +27,15 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         stop()
     }
 
+    /// Resets the pressed state when the user changes the push-to-talk shortcut
+    /// in settings. Without this, switching shortcuts while the old one is held
+    /// would leave isShortcutCurrentlyPressed stuck as true.
+    func resetShortcutPressedState() {
+        guard isShortcutCurrentlyPressed else { return }
+        isShortcutCurrentlyPressed = false
+        shortcutTransitionPublisher.send(.released)
+    }
+
     func start() {
         // If the event tap is already running, don't restart it.
         // Restarting resets isShortcutCurrentlyPressed, which would kill

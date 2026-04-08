@@ -14,12 +14,14 @@ import Foundation
 import Speech
 
 enum BuddyPushToTalkShortcut {
-    enum ShortcutOption {
-        case shiftFunction
-        case controlOption
-        case shiftControl
-        case controlOptionSpace
-        case shiftControlSpace
+    /// The modifier key combinations available for the push-to-talk shortcut.
+    /// Backed by String raw values so the user's choice can be persisted to UserDefaults.
+    enum ShortcutOption: String, CaseIterable {
+        case shiftFunction = "shiftFunction"
+        case controlOption = "controlOption"
+        case shiftControl = "shiftControl"
+        case controlOptionSpace = "controlOptionSpace"
+        case shiftControlSpace = "shiftControlSpace"
 
         var displayText: String {
             switch self {
@@ -33,6 +35,22 @@ enum BuddyPushToTalkShortcut {
                 return "ctrl + option + space"
             case .shiftControlSpace:
                 return "shift + control + space"
+            }
+        }
+
+        /// Human-readable label for the shortcut picker UI in the companion panel.
+        var pickerLabel: String {
+            switch self {
+            case .shiftFunction:
+                return "Shift + Fn"
+            case .controlOption:
+                return "Ctrl + Option"
+            case .shiftControl:
+                return "Shift + Control"
+            case .controlOptionSpace:
+                return "Ctrl + Option + Space"
+            case .shiftControlSpace:
+                return "Shift + Control + Space"
             }
         }
 
@@ -92,10 +110,22 @@ enum BuddyPushToTalkShortcut {
         case keyUp
     }
 
-    static let currentShortcutOption: ShortcutOption = .controlOption
+    /// The UserDefaults key used to persist the user's chosen push-to-talk shortcut.
+    static let pushToTalkShortcutUserDefaultsKey = "pushToTalkShortcutOption"
+
+    /// Reads the user's chosen shortcut from UserDefaults, falling back to
+    /// Ctrl+Option if no preference has been saved yet.
+    static var currentShortcutOption: ShortcutOption {
+        guard let savedRawValue = UserDefaults.standard.string(forKey: pushToTalkShortcutUserDefaultsKey),
+              let savedOption = ShortcutOption(rawValue: savedRawValue) else {
+            return .controlOption
+        }
+        return savedOption
+    }
+
     static let pushToTalkKeyCode: UInt16 = 49 // Space
-    static let pushToTalkDisplayText = currentShortcutOption.displayText
-    static let pushToTalkTooltipText = "push to talk (\(pushToTalkDisplayText))"
+    static var pushToTalkDisplayText: String { currentShortcutOption.displayText }
+    static var pushToTalkTooltipText: String { "push to talk (\(pushToTalkDisplayText))" }
 
     static func shortcutTransition(
         for event: NSEvent,
