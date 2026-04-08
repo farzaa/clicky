@@ -705,6 +705,7 @@ struct CompanionPanelView: View {
                 Button("🇮🇹 Italian") { companionManager.selectedLanguageCode = "it" }
                 Button("🇯🇵 Japanese") { companionManager.selectedLanguageCode = "ja" }
                 Button("🇵🇹 Portuguese") { companionManager.selectedLanguageCode = "pt" }
+                Button("🇷🇺 Russian") { companionManager.selectedLanguageCode = "ru" }
                 // AssemblyAI supports these natively
             } label: {
                 HStack(spacing: 4) {
@@ -740,6 +741,7 @@ struct CompanionPanelView: View {
         case "it": return "🇮🇹"
         case "ja": return "🇯🇵"
         case "pt": return "🇵🇹"
+        case "ru": return "🇷🇺"
         default: return "🇺🇸"
         }
     }
