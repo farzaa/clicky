@@ -116,7 +116,7 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var isOverlayVisible: Bool = false
 
     /// The Claude model used for voice responses. Persisted to UserDefaults.
-    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedGemmaModel") ?? "gemma-4-e4b-uncensored-hauhaucs-aggressive"
+    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedGemmaModel") ?? ""
 
     /// The API key for local LLM requests. Persisted to UserDefaults.
     @Published var lmStudioAPIKey: String = UserDefaults.standard.string(forKey: "lmStudioAPIKey") ?? "" {

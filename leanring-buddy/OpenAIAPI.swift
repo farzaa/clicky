@@ -12,7 +12,7 @@ class OpenAIAPI {
     var model: String
     private let session: URLSession
 
-    init(apiKey: String = "", model: String = "gemma-4-e4b-uncensored-hauhaucs-aggressive") {
+    init(apiKey: String = "", model: String = "") {
         self.apiKey = apiKey
         self.apiURL = URL(string: "http://127.0.0.1:1234/v1/chat/completions")!
         self.model = model
