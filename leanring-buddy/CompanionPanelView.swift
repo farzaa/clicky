@@ -11,8 +11,18 @@ import AVFoundation
 import SwiftUI
 
 struct CompanionPanelView: View {
+    private enum PanelTab {
+        case main
+        case settings
+    }
+
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    @State private var selectedTab: PanelTab = .main
+    @State private var openRouterAPIKeyInput: String = ""
+    @State private var elevenLabsAPIKeyInput: String = ""
+    @State private var elevenLabsVoiceIDInput: String = ""
+    @State private var settingsErrorMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -21,49 +31,14 @@ struct CompanionPanelView: View {
                 .background(DS.Colors.borderSubtle)
                 .padding(.horizontal, 16)
 
-            permissionsCopySection
-                .padding(.top, 16)
+            tabSwitcherRow
+                .padding(.top, 12)
                 .padding(.horizontal, 16)
 
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 12)
-
-                modelPickerRow
-                    .padding(.horizontal, 16)
-            }
-
-            if !companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                settingsSection
-                    .padding(.horizontal, 16)
-            }
-
-            if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                startButton
-                    .padding(.horizontal, 16)
-            }
-
-            // Show Clicky toggle — hidden for now
-            // if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            //     Spacer()
-            //         .frame(height: 16)
-            //
-            //     showClickyCursorToggleRow
-            //         .padding(.horizontal, 16)
-            // }
-
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                dmFarzaButton
-                    .padding(.horizontal, 16)
+            if selectedTab == .main {
+                mainTabContent
+            } else {
+                settingsTabContent
             }
 
             Spacer()
@@ -79,6 +54,189 @@ struct CompanionPanelView: View {
         }
         .frame(width: 320)
         .background(panelBackground)
+        .onAppear {
+            openRouterAPIKeyInput = companionManager.aiServiceSettings.openRouterAPIKey
+            elevenLabsAPIKeyInput = companionManager.aiServiceSettings.elevenLabsAPIKey
+            elevenLabsVoiceIDInput = companionManager.aiServiceSettings.elevenLabsVoiceID
+            if companionManager.availableOpenRouterModels.isEmpty && companionManager.aiServiceSettings.hasOpenRouterAPIKey {
+                companionManager.refreshOpenRouterModels()
+            }
+        }
+    }
+
+    private var tabSwitcherRow: some View {
+        HStack(spacing: 8) {
+            tabButton(title: "Main", isSelected: selectedTab == .main) {
+                selectedTab = .main
+            }
+            tabButton(title: "Settings", isSelected: selectedTab == .settings) {
+                selectedTab = .settings
+            }
+            Spacer()
+        }
+    }
+
+    private func tabButton(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.12) : Color.white.opacity(0.04))
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    @ViewBuilder
+    private var mainTabContent: some View {
+        permissionsCopySection
+            .padding(.top, 16)
+            .padding(.horizontal, 16)
+
+        if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+            Spacer().frame(height: 12)
+            modelPickerRow
+                .padding(.horizontal, 16)
+        }
+
+        if !companionManager.allPermissionsGranted {
+            Spacer().frame(height: 16)
+            settingsSection
+                .padding(.horizontal, 16)
+        }
+
+        if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+            Spacer().frame(height: 16)
+            startButton
+                .padding(.horizontal, 16)
+        }
+
+        if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+            Spacer().frame(height: 16)
+            dmFarzaButton
+                .padding(.horizontal, 16)
+        }
+    }
+
+    private var settingsTabContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("LOCAL SETTINGS")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundColor(DS.Colors.textTertiary)
+                .padding(.top, 14)
+
+            settingInputRow(title: "OpenRouter API Key", text: $openRouterAPIKeyInput, isSensitive: true)
+            settingInputRow(title: "ElevenLabs API Key", text: $elevenLabsAPIKeyInput, isSensitive: true)
+            settingInputRow(title: "ElevenLabs Voice ID", text: $elevenLabsVoiceIDInput, isSensitive: false)
+
+            Button(action: saveServiceSettings) {
+                Text("Save Keys")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(DS.Colors.textOnAccent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                            .fill(DS.Colors.accent)
+                    )
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+
+            HStack {
+                Text("OpenRouter Model")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                Spacer()
+                Button(action: {
+                    companionManager.refreshOpenRouterModels()
+                }) {
+                    Text(companionManager.isLoadingOpenRouterModels ? "Loading..." : "Refresh")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(DS.Colors.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .disabled(companionManager.isLoadingOpenRouterModels)
+            }
+
+            Picker("OpenRouter Model", selection: Binding(
+                get: { companionManager.selectedModel },
+                set: { companionManager.setSelectedModel($0) }
+            )) {
+                ForEach(companionManager.availableOpenRouterModels, id: \.id) { model in
+                    Text(modelDisplayLabel(for: model))
+                        .tag(model.id)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(companionManager.availableOpenRouterModels.isEmpty)
+
+            if let settingsErrorMessage, !settingsErrorMessage.isEmpty {
+                Text(settingsErrorMessage)
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.warning)
+            } else if let modelError = companionManager.openRouterModelsErrorMessage, !modelError.isEmpty {
+                Text(modelError)
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.warning)
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func settingInputRow(title: String, text: Binding<String>, isSensitive: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+            Group {
+                if isSensitive {
+                    SecureField("", text: text)
+                } else {
+                    TextField("", text: text)
+                }
+            }
+            .textFieldStyle(.plain)
+            .font(.system(size: 12))
+            .foregroundColor(DS.Colors.textPrimary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .fill(Color.white.opacity(0.08))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+    }
+
+    private func saveServiceSettings() {
+        if let errorMessage = companionManager.saveOpenRouterAPIKey(openRouterAPIKeyInput) {
+            settingsErrorMessage = errorMessage
+            return
+        }
+        if let errorMessage = companionManager.saveElevenLabsAPIKey(elevenLabsAPIKeyInput) {
+            settingsErrorMessage = errorMessage
+            return
+        }
+        companionManager.saveElevenLabsVoiceID(elevenLabsVoiceIDInput)
+        settingsErrorMessage = nil
+        companionManager.refreshOpenRouterModels()
+    }
+
+    private func modelDisplayLabel(for model: OpenRouterModel) -> String {
+        guard let modelName = model.name, !modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return model.id
+        }
+        return "\(modelName) (\(model.id))"
     }
 
     // MARK: - Header
@@ -600,45 +758,18 @@ struct CompanionPanelView: View {
 
     private var modelPickerRow: some View {
         HStack {
-            Text("Model")
+            Text("OpenRouter Model")
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(DS.Colors.textSecondary)
 
             Spacer()
 
-            HStack(spacing: 0) {
-                modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
-                modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
-            }
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-            )
+            Text(companionManager.selectedModel)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textTertiary)
+                .lineLimit(1)
         }
         .padding(.vertical, 4)
-    }
-
-    private func modelOptionButton(label: String, modelID: String) -> some View {
-        let isSelected = companionManager.selectedModel == modelID
-        return Button(action: {
-            companionManager.setSelectedModel(modelID)
-        }) {
-            Text(label)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
-                )
-        }
-        .buttonStyle(.plain)
-        .pointerCursor()
     }
 
     // MARK: - DM Farza Button

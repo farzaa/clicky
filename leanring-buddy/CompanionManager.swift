@@ -10,7 +10,6 @@
 import AVFoundation
 import Combine
 import Foundation
-import PostHog
 import ScreenCaptureKit
 import SwiftUI
 
@@ -68,17 +67,10 @@ final class CompanionManager: ObservableObject {
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
-    /// Base URL for the Cloudflare Worker proxy. All API requests route
-    /// through this so keys never ship in the app binary.
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
+    let aiServiceSettings = AIServiceSettings()
 
-    private lazy var claudeAPI: ClaudeAPI = {
-        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
-    }()
-
-    private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
-        return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
-    }()
+    private lazy var openRouterAPI = OpenRouterAPI()
+    private lazy var elevenLabsTTSClient = ElevenLabsTTSClient()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
     /// Each entry is the user's transcript and Claude's response.
@@ -107,13 +99,69 @@ final class CompanionManager: ObservableObject {
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
 
-    /// The Claude model used for voice responses. Persisted to UserDefaults.
-    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+    @Published var availableOpenRouterModels: [OpenRouterModel] = []
+    @Published var isLoadingOpenRouterModels = false
+    @Published var openRouterModelsErrorMessage: String?
+
+    var selectedModel: String {
+        aiServiceSettings.selectedOpenRouterModelID
+    }
 
     func setSelectedModel(_ model: String) {
-        selectedModel = model
-        UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
-        claudeAPI.model = model
+        aiServiceSettings.saveSelectedOpenRouterModelID(model)
+    }
+
+    func saveOpenRouterAPIKey(_ openRouterAPIKey: String) -> String? {
+        do {
+            try aiServiceSettings.saveOpenRouterAPIKey(openRouterAPIKey)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    func saveElevenLabsAPIKey(_ elevenLabsAPIKey: String) -> String? {
+        do {
+            try aiServiceSettings.saveElevenLabsAPIKey(elevenLabsAPIKey)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    func saveElevenLabsVoiceID(_ elevenLabsVoiceID: String) {
+        aiServiceSettings.saveElevenLabsVoiceID(elevenLabsVoiceID)
+    }
+
+    func refreshOpenRouterModels() {
+        guard aiServiceSettings.hasOpenRouterAPIKey else {
+            availableOpenRouterModels = []
+            openRouterModelsErrorMessage = "Add an OpenRouter API key first."
+            return
+        }
+
+        openRouterModelsErrorMessage = nil
+        isLoadingOpenRouterModels = true
+
+        Task {
+            defer { isLoadingOpenRouterModels = false }
+            do {
+                let models = try await openRouterAPI.fetchModels(apiKey: aiServiceSettings.openRouterAPIKey)
+                await MainActor.run {
+                    availableOpenRouterModels = models
+                    openRouterModelsErrorMessage = models.isEmpty ? "No models returned from OpenRouter." : nil
+                    if let firstModel = models.first,
+                       !models.contains(where: { $0.id == aiServiceSettings.selectedOpenRouterModelID }) {
+                        aiServiceSettings.saveSelectedOpenRouterModelID(firstModel.id)
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    availableOpenRouterModels = []
+                    openRouterModelsErrorMessage = error.localizedDescription
+                }
+            }
+        }
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -149,39 +197,29 @@ final class CompanionManager: ObservableObject {
     /// Whether the user has submitted their email during onboarding.
     @Published var hasSubmittedEmail: Bool = UserDefaults.standard.bool(forKey: "hasSubmittedEmail")
 
-    /// Submits the user's email to FormSpark and identifies them in PostHog.
+    /// Stores onboarding email locally only.
     func submitEmail(_ email: String) {
         let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedEmail.isEmpty else { return }
 
         hasSubmittedEmail = true
         UserDefaults.standard.set(true, forKey: "hasSubmittedEmail")
-
-        // Identify user in PostHog
-        PostHogSDK.shared.identify(trimmedEmail, userProperties: [
-            "email": trimmedEmail
-        ])
-
-        // Submit to FormSpark
-        Task {
-            var request = URLRequest(url: URL(string: "https://submit-form.com/RWbGJxmIs")!)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try? JSONSerialization.data(withJSONObject: ["email": trimmedEmail])
-            _ = try? await URLSession.shared.data(for: request)
-        }
     }
 
     func start() {
+        aiServiceSettings.reloadSecureValues()
         refreshAllPermissions()
         print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
-        // Eagerly touch the Claude API so its TLS warmup handshake completes
+        // Eagerly touch the OpenRouter API so TLS warmup completes early.
         // well before the onboarding demo fires at ~40s into the video.
-        _ = claudeAPI
+        _ = openRouterAPI
+        if aiServiceSettings.hasOpenRouterAPIKey {
+            refreshOpenRouterModels()
+        }
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -520,7 +558,6 @@ final class CompanionManager: ObservableObject {
                     submitDraftText: { [weak self] finalTranscript in
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
-                        ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
                         self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
                     }
                 )
@@ -592,6 +629,10 @@ final class CompanionManager: ObservableObject {
             voiceState = .processing
 
             do {
+                guard aiServiceSettings.hasOpenRouterAPIKey else {
+                    throw NSError(domain: "CompanionManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing OpenRouter API key. Add it in Settings."])
+                }
+
                 // Capture all connected screens so the AI has full context
                 let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
 
@@ -610,7 +651,9 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                let (fullResponseText, _) = try await openRouterAPI.analyzeImageStreaming(
+                    apiKey: aiServiceSettings.openRouterAPIKey,
+                    selectedModel: aiServiceSettings.selectedOpenRouterModelID,
                     images: labeledImages,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt,
                     conversationHistory: historyForAPI,
@@ -675,7 +718,6 @@ final class CompanionManager: ObservableObject {
 
                     detectedElementScreenLocation = globalLocation
                     detectedElementDisplayFrame = displayFrame
-                    ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
                     print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
                 } else {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
@@ -695,17 +737,18 @@ final class CompanionManager: ObservableObject {
 
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")
 
-                ClickyAnalytics.trackAIResponseReceived(response: spokenText)
-
                 // Play the response via TTS. Keep the spinner (processing state)
                 // until the audio actually starts playing, then switch to responding.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     do {
-                        try await elevenLabsTTSClient.speakText(spokenText)
+                        try await elevenLabsTTSClient.speakText(
+                            spokenText,
+                            apiKey: aiServiceSettings.elevenLabsAPIKey,
+                            voiceID: aiServiceSettings.elevenLabsVoiceID
+                        )
                         // speakText returns after player.play() — audio is now playing
                         voiceState = .responding
                     } catch {
-                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
                         print("⚠️ ElevenLabs TTS error: \(error)")
                         speakCreditsErrorFallback()
                     }
@@ -713,7 +756,6 @@ final class CompanionManager: ObservableObject {
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
-                ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
                 speakCreditsErrorFallback()
             }
@@ -970,6 +1012,10 @@ final class CompanionManager: ObservableObject {
 
         Task {
             do {
+                guard aiServiceSettings.hasOpenRouterAPIKey else {
+                    print("🎯 Onboarding demo skipped: missing OpenRouter API key")
+                    return
+                }
                 let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
 
                 // Only send the cursor screen so Claude can't pick something
@@ -982,7 +1028,9 @@ final class CompanionManager: ObservableObject {
                 let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
                 let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                let (fullResponseText, _) = try await openRouterAPI.analyzeImageStreaming(
+                    apiKey: aiServiceSettings.openRouterAPIKey,
+                    selectedModel: aiServiceSettings.selectedOpenRouterModelID,
                     images: labeledImages,
                     systemPrompt: Self.onboardingDemoSystemPrompt,
                     userPrompt: "look around my screen and find something interesting to point at",
