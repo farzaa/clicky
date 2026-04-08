@@ -139,6 +139,39 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    // MARK: - Screenshot Settings
+
+    /// When enabled, only the screen containing the cursor is captured and
+    /// sent to Claude. Reduces token usage on multi-monitor setups.
+    /// Off by default so Claude has full multi-monitor context.
+    @Published var captureOnlyPrimaryScreen: Bool = UserDefaults.standard.bool(forKey: "captureOnlyPrimaryScreen")
+
+    func setCaptureOnlyPrimaryScreen(_ enabled: Bool) {
+        captureOnlyPrimaryScreen = enabled
+        UserDefaults.standard.set(enabled, forKey: "captureOnlyPrimaryScreen")
+    }
+
+    /// JPEG compression quality for screenshots sent to Claude.
+    /// Lower values reduce payload size (faster uploads) but not token count.
+    /// Range: 0.0 (most compression) to 1.0 (least compression). Default: 0.8.
+    @Published var screenshotJPEGQuality: Double = UserDefaults.standard.object(forKey: "screenshotJPEGQuality") == nil
+        ? 0.8
+        : UserDefaults.standard.double(forKey: "screenshotJPEGQuality")
+
+    func setScreenshotJPEGQuality(_ quality: Double) {
+        screenshotJPEGQuality = quality
+        UserDefaults.standard.set(quality, forKey: "screenshotJPEGQuality")
+    }
+
+    /// When enabled, captures only the frontmost application window instead
+    /// of the entire screen. Useful for reducing noise in screenshots.
+    @Published var captureActiveWindowOnly: Bool = UserDefaults.standard.bool(forKey: "captureActiveWindowOnly")
+
+    func setCaptureActiveWindowOnly(_ enabled: Bool) {
+        captureActiveWindowOnly = enabled
+        UserDefaults.standard.set(enabled, forKey: "captureActiveWindowOnly")
+    }
+
     /// Whether the user has completed onboarding at least once. Persisted
     /// to UserDefaults so the Start button only appears on first launch.
     var hasCompletedOnboarding: Bool {
@@ -592,8 +625,12 @@ final class CompanionManager: ObservableObject {
             voiceState = .processing
 
             do {
-                // Capture all connected screens so the AI has full context
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                // Capture screens using the user's screenshot settings
+                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(
+                    captureOnlyPrimaryScreen: captureOnlyPrimaryScreen,
+                    captureActiveWindowOnly: captureActiveWindowOnly,
+                    jpegCompressionQuality: CGFloat(screenshotJPEGQuality)
+                )
 
                 guard !Task.isCancelled else { return }
 
@@ -970,7 +1007,11 @@ final class CompanionManager: ObservableObject {
 
         Task {
             do {
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(
+                    captureOnlyPrimaryScreen: true,
+                    captureActiveWindowOnly: captureActiveWindowOnly,
+                    jpegCompressionQuality: CGFloat(screenshotJPEGQuality)
+                )
 
                 // Only send the cursor screen so Claude can't pick something
                 // on a different monitor that we can't point at.
