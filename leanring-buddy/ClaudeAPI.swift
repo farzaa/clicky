@@ -141,7 +141,7 @@ class ClaudeAPI {
 
         let body: [String: Any] = [
             "model": model,
-            "max_tokens": 1024,
+            "max_tokens": 2048,
             "stream": true,
             "system": systemPrompt,
             "messages": messages

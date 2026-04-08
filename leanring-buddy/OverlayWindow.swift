@@ -589,7 +589,7 @@ struct BlueCursorView: View {
 
         streamNavigationBubbleCharacter(phrase: pointerPhrase, characterIndex: 0) {
             // All characters streamed — hold for 3 seconds, then fly back
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {
                 guard self.buddyNavigationMode == .pointingAtTarget else { return }
                 self.navigationBubbleOpacity = 0.0
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {

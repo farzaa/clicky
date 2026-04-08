@@ -60,6 +60,12 @@ struct CompanionPanelView: View {
 
             if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
                 Spacer()
+                    .frame(height: 12)
+
+                quickCoachingButtonsSection
+                    .padding(.horizontal, 16)
+
+                Spacer()
                     .frame(height: 16)
 
                 dmFarzaButton
@@ -636,6 +642,73 @@ struct CompanionPanelView: View {
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
                         .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
                 )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    // MARK: - Quick Coaching Buttons
+
+    /// One-tap coaching questions that send a pre-filled question to Claude with
+    /// a fresh screenshot — no push-to-talk required. Dismisses the panel so the
+    /// user sees the overlay response.
+    private var quickCoachingButtonsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("QUICK COACH")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(DS.Colors.textTertiary)
+                .tracking(0.5)
+
+            VStack(spacing: 6) {
+                quickCoachingButton("What should I buy?", icon: "cart", question: "look at my shop and board and tell me what I should buy right now")
+                quickCoachingButton("Should I level?", icon: "arrow.up.circle", question: "look at my gold, level, and stage and tell me if I should level up right now or save gold")
+                quickCoachingButton("What comp am I playing?", icon: "sparkles", question: "look at my board and tell me what comp I'm building, how strong it is, and what I should be looking for next")
+                quickCoachingButton("How's my econ?", icon: "dollarsign.circle", question: "look at my gold, stage, health, and level and tell me if my economy is good, and what I should do with my gold right now")
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                .fill(Color.white.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+        )
+    }
+
+    /// A single quick coaching button that sends a pre-filled question to Claude
+    /// and dismisses the panel so the user sees the overlay response immediately.
+    private func quickCoachingButton(_ label: String, icon: String, question: String) -> some View {
+        Button(action: {
+            NotificationCenter.default.post(
+                name: NSNotification.Name("quickCoachingQuestion"),
+                object: question
+            )
+            NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+        }) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.accent)
+                    .frame(width: 16)
+
+                Text(label)
+                    .font(.system(size: 12, weight: .medium))
+
+                Spacer()
+
+                Image(systemName: "arrowtriangle.right.fill")
+                    .font(.system(size: 7))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+            .foregroundColor(DS.Colors.textSecondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
         }
         .buttonStyle(.plain)
         .pointerCursor()

@@ -92,6 +92,7 @@ final class CompanionManager: ObservableObject {
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
+    private var quickCoachingObserver: NSObjectProtocol?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
@@ -182,6 +183,19 @@ final class CompanionManager: ObservableObject {
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
+
+        // Listen for quick coaching button taps from the panel — these send a
+        // pre-filled question to Claude with a fresh screenshot, just like
+        // push-to-talk but without requiring the user to speak.
+        quickCoachingObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("quickCoachingQuestion"),
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let question = notification.object as? String else { return }
+            self.sendTranscriptToClaudeWithScreenshot(transcript: question)
+        }
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -292,6 +306,11 @@ final class CompanionManager: ObservableObject {
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
         transientHideTask?.cancel()
+
+        if let quickCoachingObserver {
+            NotificationCenter.default.removeObserver(quickCoachingObserver)
+        }
+        quickCoachingObserver = nil
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
@@ -591,14 +610,27 @@ final class CompanionManager: ObservableObject {
 
     classes: arcanist, bastion, brawler, challenger, disruptor, fateweaver, gunslinger, invoker, juggernaut, longshot, marauder, quickstriker, replicator, rogue, shepherd, slayer, sniper, vanquisher, vanguard, voyager, warden.
 
-    meta compositions (s-tier):
-    - meeple fast 8: bard, corki, rammus, fizz, gnar, meepsie, poppy, riven. corki carries with guardbreaker, shojin, last whisper. rammus tanks with fimbulwinter, steadfast, bramble.
-    - ap vanguards level 5 slow roll: karma, leblanc, nunu, illaoi, meepsie, mordekaiser, zoe, leona. karma carries with shojin, morello, void staff.
-    - redeemer level 7 slow roll: maokai, miss fortune, rhaast, riven, shen, gwen, pantheon, aatrox. mf carries with infinity edge, deathblade, shojin.
-    - conduit reroll level 7: mf, ornn, viktor, bard, maokai, rhaast, gragas, zoe, aatrox. mf carries with guardbreaker, infinity edge, shojin.
-    - space opera fast 9: jhin, karma, nunu, morgana, blitzcrank, shen, xayah, aurora, jax. jhin carries with guinsoo's, infinity edge, deathblade.
-    - mecha fast 8: urgot, aurelion sol, the mighty mech plus flex. transform 3 mecha minimum.
-    - nova fast 8: aatrox, caitlyn, akali, maokai, kindred. play around striker selector at 5 nova.
+    meta compositions (from tft academy, current patch):
+
+    s-tier:
+    - karma leblanc duo: leblanc carry with guinsoo's, madred's bloodrazor, hextech gunblade. play early arbiters with zoe as item holder. vanguard shepherd core. roll for leblanc 2 and nunu 2 in stage 4.
+    - mecha aurelion sol: asol carry with rabadon's, statikk shiv, jeweled gauntlet. keep everything in mecha form. urgot and viktor early. don't push 9 until 2-star since mecha units take 2 slots. easy comp.
+    - veigar printer: veigar 3 star carry with leviathan, leviathan, jeweled gauntlet. do NOT reroll veigar at low levels. push for 7 meeple to print veigar 3. rush meeples for unit printing.
+
+    a-tier:
+    - nami flex: nami carry with leviathan, leviathan, jeweled gauntlet. 4 true flex slots from levels 7 to 10. play 4 replicator until strong 5-costs appear.
+    - corki riven: corki carry with last whisper, deathblade, power gauntlet. play for win streak around meeple. finish tank items before carry items.
+    - anima reroll: aurora 3 star carry with leviathan, jeweled gauntlet, leviathan. open with anima to begin lose streak. aim for 300 to 400 cashout. slow roll for 3-star 3-costs by end of stage 4. hard comp.
+    - psionic master yi: master yi carry with psyops targetlock mod, guardian angel, madred's bloodrazor. play with ad psionic item only. very strong with bronze for life augment.
+    - primordian bel'veth reroll: bel'veth 3 star carry with quicksilver, runaan's hurricane, madred's bloodrazor. slow roll on level 5. rush level 8 for 5 nova.
+    - nova marauders: kindred carry with guinsoo's, runaan's, power gauntlet. always selector the nova emblem unit.
+    - kizz (kai'sa fizz reroll): kai'sa 3 star carry with shojin, power gauntlet, infinity edge. rogue psionic core. slow roll for 3-star 3-costs by stage 4 end.
+
+    b-tier:
+    - conduit mf reroll: mf 3 star with infinity edge, power gauntlet, blue buff. conduit mode on mf. easy comp.
+    - shepherd pie: leblanc carry with guinsoo's, hextech gunblade, madred's bloodrazor. play 5 shepherd with vanguard frontline.
+    - fast 9 jhin stargazer: jhin carry with infinity edge, deathblade, hextech gunblade. only play from high hp win streak. level 9 is the objective.
+    - fateweaver reroll: twisted fate 3 star with leviathan, rabadon's, leviathan. don't level early. slow roll above 50g. easy comp.
 
     item priorities:
     - ad carries (jhin, mf, fiora): infinity edge, deathblade, last whisper, guinsoo's, giant slayer.
@@ -632,6 +664,18 @@ final class CompanionManager: ObservableObject {
     - versus aoe: spread units across the board.
     - versus snipers: position same side to reduce distance bonus.
     - scout opponents with hotkeys before each round.
+
+    tft screen layout (so you know what you're looking at in screenshots):
+    the tft game interface has a consistent layout at 1920x1080 native resolution. when you see a tft screenshot, scale these positions proportionally to the actual screenshot dimensions:
+    - top center (around x:860-1060, y:0-40): stage and round indicator like "3-2" or "4-1", with countdown timer just below
+    - left side vertical strip (x:0-200, y:150-650): trait panel listing all active synergies. gold = max tier, silver = mid, bronze = base, gray = inactive
+    - right side vertical strip (x:1720-1920, y:150-750): player list showing all 8 players, their hp bars, and little legend icons. click to scout their boards
+    - center (x:400-1520, y:250-750): the hex board grid, 4 rows by 7 columns of hexagonal tiles. your units bottom half, enemy top half during combat
+    - below board center (x:400-1520, y:760-840): your bench with up to 9 unit slots
+    - bottom-left of shop bar (x:50-350, y:760-860): item bench showing unequipped item components
+    - bottom strip full width (y:960-1080): the shop bar. left side has gold count and level/xp with buy xp button (4 gold for 4 xp). center shows 5 champion cards to buy (x:460-1460). right side has refresh button (2 gold to reroll) and lock button
+    - augment selection (x:360-1560, y:300-700): appears as overlay at rounds 2-1, 3-2, 4-2. three cards horizontally. rest of screen dimmed.
+    - items equipped on champions appear as small icons below the unit model on the board
 
     element pointing:
     you have a small blue triangle cursor that can fly to and point at things on the user's screen. this is incredibly powerful for tft coaching — use it to point at specific units, items, buttons, board positions, gold count, or anything relevant.
