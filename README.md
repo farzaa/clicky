@@ -29,17 +29,58 @@ That's it. It'll clone the repo, read the docs, and walk you through the whole s
 
 ## Manual setup
 
-If you want to do it yourself, here's the deal.
+### Option 1: Local-first (Recommended — No API keys needed)
 
-### Prerequisites
+Run 100% locally on your Mac. Vision, speech-to-text, and text-to-speech all run on your machine via a local FastAPI server.
 
+**Prerequisites:**
+- macOS 14.2+ (for ScreenCaptureKit)
+- Xcode 15+
+- Python 3.9+ with pip
+- ~8 GB RAM (tested on 18 GB M3 Pro; fits in ~10 GB working set)
+
+**Setup:**
+
+```bash
+cd local-worker
+
+# Create virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Download models (~6 GB, one-time, goes to ~/.clicky-local/models/)
+python setup_models.py
+
+# Start the server (keep this running)
+uvicorn main:app --host 127.0.0.1 --port 8787 --log-level info
+```
+
+Then open Xcode, build, and run. The app will auto-connect to the local server.
+
+**Models used:**
+- **Vision**: Qwen2.5-VL-7B-Instruct (4-bit MLX) — ~5.5 GB
+- **Speech-to-text**: MLX-Whisper base — ~290 MB
+- **Text-to-speech**: Kokoro-82M ONNX — ~330 MB
+
+---
+
+### Option 2: Cloud-based (Original — Requires API keys)
+
+Use cloud APIs via a Cloudflare Worker proxy. No local GPU/memory constraints.
+
+**Prerequisites:**
 - macOS 14.2+ (for ScreenCaptureKit)
 - Xcode 15+
 - Node.js 18+ (for the Cloudflare Worker)
 - A [Cloudflare](https://cloudflare.com) account (free tier works)
 - API keys for: [Anthropic](https://console.anthropic.com), [AssemblyAI](https://www.assemblyai.com), [ElevenLabs](https://elevenlabs.io)
 
-### 1. Set up the Cloudflare Worker
+**Setup:**
+
+#### 2.1 Set up the Cloudflare Worker
 
 The Worker is a tiny proxy that holds your API keys. The app talks to the Worker, the Worker talks to the APIs. This way your keys never ship in the app binary.
 
@@ -71,7 +112,7 @@ npx wrangler deploy
 
 It'll give you a URL like `https://your-worker-name.your-subdomain.workers.dev`. Copy that.
 
-### 2. Run the Worker locally (for development)
+#### 2.2 Run the Worker locally (for development)
 
 If you want to test changes to the Worker without deploying:
 
@@ -91,7 +132,7 @@ ELEVENLABS_VOICE_ID=...
 
 Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing. Grep for `clicky-proxy` to find them all.
 
-### 3. Update the proxy URLs in the app
+#### 2.3 Update the proxy URLs in the app
 
 The app has the Worker URL hardcoded in a few places. Search for `your-worker-name.your-subdomain.workers.dev` and replace it with your Worker URL:
 
@@ -103,7 +144,11 @@ You'll find it in:
 - `CompanionManager.swift` — Claude chat + ElevenLabs TTS
 - `AssemblyAIStreamingTranscriptionProvider.swift` — AssemblyAI token endpoint
 
-### 4. Open in Xcode and run
+---
+
+## Build and run
+
+Whether you chose local or cloud, the next steps are the same:
 
 ```bash
 open leanring-buddy.xcodeproj
@@ -125,24 +170,40 @@ The app will appear in your menu bar (not the dock). Click the icon to open the 
 
 ## Architecture
 
-If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
+If you want the full technical breakdown, read `AGENTS.md` (or `CLAUDE.md` — they're the same file). But here's the short version:
 
-**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied through a Cloudflare Worker.
+**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk captures audio, sends the transcript + screenshot to a vision model via streaming SSE, and plays the response through TTS. The model can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors.
+
+**Two modes:**
+- **Local** (recommended): Vision (Qwen2.5-VL), TTS (Kokoro), and STT (Whisper) all run locally via a FastAPI server. No API keys, no network calls beyond localhost.
+- **Cloud** (original): All three services proxied through a Cloudflare Worker that calls Anthropic Claude, ElevenLabs, and AssemblyAI APIs.
 
 ## Project structure
 
 ```
-leanring-buddy/          # Swift source (yes, the typo stays)
-  CompanionManager.swift    # Central state machine
-  CompanionPanelView.swift  # Menu bar panel UI
-  ClaudeAPI.swift           # Claude streaming client
-  ElevenLabsTTSClient.swift # Text-to-speech playback
-  OverlayWindow.swift       # Blue cursor overlay
-  AssemblyAI*.swift         # Real-time transcription
-  BuddyDictation*.swift     # Push-to-talk pipeline
-worker/                  # Cloudflare Worker proxy
-  src/index.ts              # Three routes: /chat, /tts, /transcribe-token
-CLAUDE.md                # Full architecture doc (agents read this)
+leanring-buddy/                      # Swift source (yes, the typo stays)
+  CompanionManager.swift               # Central state machine
+  CompanionPanelView.swift             # Menu bar panel UI
+  ClaudeAPI.swift                      # Claude/local vision streaming client
+  ElevenLabsTTSClient.swift            # ElevenLabs TTS (cloud mode only)
+  LocalWhisperTranscriptionProvider.swift  # Local Whisper provider
+  OverlayWindow.swift                  # Blue cursor overlay
+  AssemblyAI*.swift                    # AssemblyAI provider (cloud mode only)
+  BuddyDictation*.swift                # Push-to-talk pipeline
+
+local-worker/                        # FastAPI server for local inference
+  main.py                              # /chat, /tts, /transcribe endpoints
+  models/
+    vision_model.py                    # Qwen2.5-VL-7B via mlx-vlm
+    tts_model.py                       # Kokoro-82M ONNX synthesis
+    whisper_model.py                   # MLX-Whisper transcription
+  setup_models.py                      # Auto-download models to ~/.clicky-local/models/
+  requirements.txt                     # Python dependencies
+
+worker/                              # Cloudflare Worker proxy (cloud mode only)
+  src/index.ts                         # Three routes: /chat, /tts, /transcribe-token
+
+AGENTS.md (CLAUDE.md)                # Full architecture doc (agents read this)
 ```
 
 ## Contributing
