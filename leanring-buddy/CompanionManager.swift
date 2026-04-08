@@ -23,6 +23,10 @@ enum CompanionVoiceState {
 
 @MainActor
 final class CompanionManager: ObservableObject {
+    /// Maximum number of conversation exchanges persisted to disk.
+    /// Oldest exchanges are dropped when this limit is exceeded.
+    static let maximumStoredConversationMessageCount = 50
+
     @Published private(set) var voiceState: CompanionVoiceState = .idle
     @Published private(set) var lastTranscript: String?
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
@@ -80,9 +84,16 @@ final class CompanionManager: ObservableObject {
         return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
     }()
 
-    /// Conversation history so Claude remembers prior exchanges within a session.
-    /// Each entry is the user's transcript and Claude's response.
-    private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
+    /// A single user–assistant exchange, stored as a Codable struct so
+    /// conversation history can be serialized to JSON on disk.
+    struct ConversationExchange: Codable {
+        let userTranscript: String
+        let assistantResponse: String
+    }
+
+    /// Conversation history so Claude remembers prior exchanges across sessions.
+    /// Persisted to Application Support/Clicky/conversation_history.json.
+    private var conversationHistory: [ConversationExchange] = []
 
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
@@ -173,6 +184,7 @@ final class CompanionManager: ObservableObject {
     }
 
     func start() {
+        loadConversationHistoryFromDisk()
         refreshAllPermissions()
         print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
@@ -606,8 +618,8 @@ final class CompanionManager: ObservableObject {
                 }
 
                 // Pass conversation history so Claude remembers prior exchanges
-                let historyForAPI = conversationHistory.map { entry in
-                    (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
+                let historyForAPI = conversationHistory.map { exchange in
+                    (userPlaceholder: exchange.userTranscript, assistantResponse: exchange.assistantResponse)
                 }
 
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
@@ -683,16 +695,17 @@ final class CompanionManager: ObservableObject {
 
                 // Save this exchange to conversation history (with the point tag
                 // stripped so it doesn't confuse future context)
-                conversationHistory.append((
+                conversationHistory.append(ConversationExchange(
                     userTranscript: transcript,
                     assistantResponse: spokenText
                 ))
 
-                // Keep only the last 10 exchanges to avoid unbounded context growth
-                if conversationHistory.count > 10 {
-                    conversationHistory.removeFirst(conversationHistory.count - 10)
+                // Drop oldest exchanges when the stored limit is exceeded
+                if conversationHistory.count > Self.maximumStoredConversationMessageCount {
+                    conversationHistory.removeFirst(conversationHistory.count - Self.maximumStoredConversationMessageCount)
                 }
 
+                saveConversationHistoryToDisk()
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")
 
                 ClickyAnalytics.trackAIResponseReceived(response: spokenText)
@@ -763,6 +776,73 @@ final class CompanionManager: ObservableObject {
         let synthesizer = NSSpeechSynthesizer()
         synthesizer.startSpeaking(utterance)
         voiceState = .responding
+    }
+
+    // MARK: - Conversation History Persistence
+
+    /// Returns the URL for the conversation history JSON file inside
+    /// ~/Library/Application Support/Clicky/. Creates the directory
+    /// if it doesn't exist yet.
+    private static var conversationHistoryFileURL: URL? {
+        guard let applicationSupportDirectory = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else {
+            return nil
+        }
+        let clickyApplicationSupportDirectory = applicationSupportDirectory.appendingPathComponent("Clicky")
+        // Ensure the Clicky directory exists so writes don't fail
+        try? FileManager.default.createDirectory(
+            at: clickyApplicationSupportDirectory,
+            withIntermediateDirectories: true
+        )
+        return clickyApplicationSupportDirectory.appendingPathComponent("conversation_history.json")
+    }
+
+    /// Writes the current conversation history to disk as JSON.
+    /// Called after each new exchange is appended so history survives app restarts.
+    private func saveConversationHistoryToDisk() {
+        guard let fileURL = Self.conversationHistoryFileURL else {
+            print("⚠️ Clicky: Could not resolve Application Support path for conversation history")
+            return
+        }
+        do {
+            let encodedData = try JSONEncoder().encode(conversationHistory)
+            try encodedData.write(to: fileURL, options: .atomic)
+        } catch {
+            print("⚠️ Clicky: Failed to save conversation history: \(error)")
+        }
+    }
+
+    /// Reads conversation history from the JSON file on disk.
+    /// Called once during start() so prior exchanges are available immediately.
+    private func loadConversationHistoryFromDisk() {
+        guard let fileURL = Self.conversationHistoryFileURL,
+              FileManager.default.fileExists(atPath: fileURL.path) else {
+            return
+        }
+        do {
+            let savedData = try Data(contentsOf: fileURL)
+            let decodedExchanges = try JSONDecoder().decode([ConversationExchange].self, from: savedData)
+            // Apply the stored limit in case it was lowered since the last save
+            if decodedExchanges.count > Self.maximumStoredConversationMessageCount {
+                conversationHistory = Array(decodedExchanges.suffix(Self.maximumStoredConversationMessageCount))
+            } else {
+                conversationHistory = decodedExchanges
+            }
+            print("🧠 Loaded \(conversationHistory.count) conversation exchanges from disk")
+        } catch {
+            print("⚠️ Clicky: Failed to load conversation history: \(error)")
+        }
+    }
+
+    /// Clears all conversation history from memory and deletes the on-disk
+    /// JSON file. Called from the "Clear History" button in the panel.
+    func clearConversationHistory() {
+        conversationHistory.removeAll()
+        guard let fileURL = Self.conversationHistoryFileURL else { return }
+        try? FileManager.default.removeItem(at: fileURL)
+        print("🧠 Conversation history cleared")
     }
 
     // MARK: - Point Tag Parsing
