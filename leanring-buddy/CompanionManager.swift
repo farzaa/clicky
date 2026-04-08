@@ -70,7 +70,7 @@ final class CompanionManager: ObservableObject {
 
     /// Base URL for the local FastAPI server. All API requests route
     /// through this for 100% local inference on 18GB M3 Pro Mac.
-    private static let workerBaseURL = "http://localhost:8787"
+    private static let workerBaseURL = "http://127.0.0.1:8787"
 
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)

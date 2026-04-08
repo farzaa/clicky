@@ -50,7 +50,7 @@ private final class LocalWhisperTranscriptionSession: BuddyStreamingTranscriptio
         let text: String
     }
 
-    private static let transcriptionURL = URL(string: "http://localhost:8787/transcribe")!
+    private static let transcriptionURL = URL(string: "http://127.0.0.1:8787/transcribe")!
     private static let targetSampleRate = 16_000
 
     private let keyterms: [String]
@@ -226,7 +226,15 @@ private final class LocalWhisperTranscriptionSession: BuddyStreamingTranscriptio
     }
 
     deinit {
-        cancel()
+        // Use sync directly here instead of calling cancel(), which uses stateQueue.async.
+        // An async dispatch in deinit captures self strongly, extending the object's
+        // lifetime past deinit and causing a dangling reference warning.
+        stateQueue.sync {
+            isCancelled = true
+            bufferedPCM16AudioData.removeAll(keepingCapacity: false)
+        }
+        transcriptionUploadTask?.cancel()
+        urlSession.invalidateAndCancel()
     }
 }
 
