@@ -13,6 +13,9 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    /// Briefly set to true after the user copies the conversation, so the
+    /// button label changes to "Copied!" for visual feedback.
+    @State private var hasRecentlyCopiedConversation: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -63,6 +66,14 @@ struct CompanionPanelView: View {
                     .frame(height: 16)
 
                 dmFarzaButton
+                    .padding(.horizontal, 16)
+            }
+
+            if companionManager.hasConversationHistory {
+                Spacer()
+                    .frame(height: 8)
+
+                copyConversationButton
                     .padding(.horizontal, 16)
             }
 
@@ -676,6 +687,46 @@ struct CompanionPanelView: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
+    }
+
+    // MARK: - Copy Conversation
+
+    private var copyConversationButton: some View {
+        Button(action: {
+            let conversationMarkdown = companionManager.formatConversationHistoryAsMarkdown()
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(conversationMarkdown, forType: .string)
+
+            hasRecentlyCopiedConversation = true
+
+            // Reset the button label back to "Copy Conversation" after 2 seconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                hasRecentlyCopiedConversation = false
+            }
+        }) {
+            HStack(spacing: 8) {
+                Image(systemName: hasRecentlyCopiedConversation ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 12, weight: .medium))
+
+                Text(hasRecentlyCopiedConversation ? "Copied!" : "Copy Conversation")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundColor(hasRecentlyCopiedConversation ? DS.Colors.success : DS.Colors.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+        .animation(.easeInOut(duration: 0.2), value: hasRecentlyCopiedConversation)
     }
 
     // MARK: - Footer

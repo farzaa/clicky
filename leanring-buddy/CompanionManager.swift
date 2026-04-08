@@ -84,6 +84,36 @@ final class CompanionManager: ObservableObject {
     /// Each entry is the user's transcript and Claude's response.
     private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
 
+    /// Whether there is at least one exchange in the conversation history.
+    /// Used by the panel to decide whether to show the "Copy Conversation" button.
+    var hasConversationHistory: Bool {
+        !conversationHistory.isEmpty
+    }
+
+    /// Formats the full conversation history as a human-readable markdown string.
+    /// Each user message is prefixed with "**You:**" and each assistant message
+    /// with "**Clicky:**", separated by blank lines for readability.
+    func formatConversationHistoryAsMarkdown() -> String {
+        var markdownLines: [String] = []
+        markdownLines.append("# Clicky Conversation")
+        markdownLines.append("")
+
+        for (exchangeIndex, exchange) in conversationHistory.enumerated() {
+            markdownLines.append("**You:** \(exchange.userTranscript)")
+            markdownLines.append("")
+            markdownLines.append("**Clicky:** \(exchange.assistantResponse)")
+
+            // Add a separator between exchanges, but not after the last one
+            if exchangeIndex < conversationHistory.count - 1 {
+                markdownLines.append("")
+                markdownLines.append("---")
+                markdownLines.append("")
+            }
+        }
+
+        return markdownLines.joined(separator: "\n")
+    }
+
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
