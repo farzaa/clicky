@@ -1,8 +1,0 @@
-name = "clicky-proxy"
-main = "src/index.ts"
-compatibility_date = "2024-01-01"
-
-[vars]
-ELEVENLABS_VOICE_ID = "CwhRBWXzGAHq8TQ4Fs17"
-ASSEMBLYAI_API_KEY = "c777ed6a2e9041969f4a1fc3995fa189"
-LM_STUDIO_API_KEY = "sk-lm-aAxaxZte:mOc432tNRd7CWCOh57g3"

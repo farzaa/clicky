@@ -606,62 +606,40 @@ struct CompanionPanelView: View {
 
             Spacer()
 
-            Menu {
-                if companionManager.availableModels.isEmpty {
-                    Text("No models found").disabled(true)
-                } else {
-                    ForEach(companionManager.availableModels, id: \.self) { modelID in
-                        Button(action: {
-                            companionManager.setSelectedModel(modelID)
-                        }) {
-                            HStack {
-                                Text(modelID)
-                                if companionManager.selectedModel == modelID {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                    }
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    Text(companionManager.selectedModel)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(DS.Colors.textPrimary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 9))
-                        .foregroundColor(DS.Colors.textTertiary)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color.white.opacity(0.06))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-                )
+            HStack(spacing: 0) {
+                modelOptionButton(label: "Gemma 4", modelID: "gemma-4-e4b-uncensored-hauhaucs-aggressive")
+                modelOptionButton(label: "Gemma 4 IT", modelID: "gemma-4-e4b-uncensored-hauhaucs-aggressive-it")
             }
-            .menuStyle(.borderlessButton)
-            .frame(maxWidth: 180)
-
-            Button(action: {
-                companionManager.fetchAvailableModels()
-            }) {
-                Image(systemName: "arrow.triangle.2.circlepath")
-                    .font(.system(size: 11))
-                    .foregroundColor(DS.Colors.textTertiary)
-            }
-            .buttonStyle(.plain)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
         }
         .padding(.vertical, 4)
     }
 
-
+    private func modelOptionButton(label: String, modelID: String) -> some View {
+        let isSelected = companionManager.selectedModel == modelID
+        return Button(action: {
+            companionManager.setSelectedModel(modelID)
+        }) {
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
 
     // MARK: - DM Farza Button
 
