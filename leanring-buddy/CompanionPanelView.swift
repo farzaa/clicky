@@ -13,6 +13,8 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    @State private var isShowingLocalAPIKeyField: Bool = false
+    @State private var isAPIKeyVisible: Bool = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -599,16 +601,29 @@ struct CompanionPanelView: View {
     // MARK: - Model Picker
     
     private var modelPickerRow: some View {
-        HStack {
-            Text("Model")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-            
-            Spacer()
-            
-            Menu {
-                // Section for Local LM Studio Models
-                Section(header: Text("LM Studio (Local)")) {
+        VStack(spacing: 8) {
+            HStack {
+                Text("Model")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                
+                Button(action: {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        isShowingLocalAPIKeyField.toggle()
+                    }
+                }) {
+                    Image(systemName: "gear")
+                        .font(.system(size: 11))
+                        .foregroundColor(isShowingLocalAPIKeyField ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                
+                Spacer()
+                
+                Menu {
+                    // Section for Local LM Studio Models
+                    Section(header: Text("LM Studio (Local)")) {
                     if companionManager.availableModels.isEmpty {
                         Text("No models found").disabled(true)
                     } else {
@@ -679,6 +694,51 @@ struct CompanionPanelView: View {
             }
             .menuStyle(.borderlessButton)
             .frame(maxWidth: 200)
+        }
+            
+        if isShowingLocalAPIKeyField {
+            HStack {
+                HStack(spacing: 8) {
+                    if isAPIKeyVisible {
+                        TextField("", text: Binding(
+                            get: { companionManager.lmStudioAPIKey },
+                            set: { companionManager.lmStudioAPIKey = $0 }
+                        ), prompt: Text("LM Studio API Key (leave empty if none)").foregroundColor(.white.opacity(0.4)))
+                        .textFieldStyle(PlainTextFieldStyle())
+                        .font(.system(size: 11))
+                        .foregroundColor(.white)
+                    } else {
+                        SecureField("", text: Binding(
+                            get: { companionManager.lmStudioAPIKey },
+                            set: { companionManager.lmStudioAPIKey = $0 }
+                        ), prompt: Text("LM Studio API Key (leave empty if none)").foregroundColor(.white.opacity(0.4)))
+                        .textFieldStyle(PlainTextFieldStyle())
+                        .font(.system(size: 11))
+                        .foregroundColor(.white)
+                    }
+                    
+                    Button(action: {
+                        isAPIKeyVisible.toggle()
+                    }) {
+                        Image(systemName: isAPIKeyVisible ? "eye.slash.fill" : "eye.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(DS.Colors.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(0.06))
+                .cornerRadius(6)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+            }
+            .transition(.opacity.combined(with: .move(edge: .top)))
+            .padding(.top, 4)
+        }
         }
         .padding(.vertical, 4)
     }

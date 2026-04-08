@@ -81,7 +81,7 @@ final class CompanionManager: ObservableObject {
     }()
 
     private lazy var openAIAPI: OpenAIAPI = {
-        return OpenAIAPI(model: selectedModel)
+        return OpenAIAPI(apiKey: lmStudioAPIKey, model: selectedModel)
     }()
 
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
@@ -118,6 +118,14 @@ final class CompanionManager: ObservableObject {
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedGemmaModel") ?? "gemma-4-e4b-uncensored-hauhaucs-aggressive"
 
+    /// The API key for local LLM requests. Persisted to UserDefaults.
+    @Published var lmStudioAPIKey: String = UserDefaults.standard.string(forKey: "lmStudioAPIKey") ?? "" {
+        didSet {
+            UserDefaults.standard.set(lmStudioAPIKey, forKey: "lmStudioAPIKey")
+            openAIAPI.apiKey = lmStudioAPIKey
+        }
+    }
+
     /// List of available models fetched from LM Studio API
     @Published var availableModels: [String] = []
 
@@ -125,6 +133,9 @@ final class CompanionManager: ObservableObject {
         guard let url = URL(string: "http://127.0.0.1:1234/v1/models") else { return }
         var request = URLRequest(url: url)
         request.timeoutInterval = 3
+        if !lmStudioAPIKey.isEmpty {
+            request.setValue("Bearer \(lmStudioAPIKey)", forHTTPHeaderField: "Authorization")
+        }
         
         Task {
             do {

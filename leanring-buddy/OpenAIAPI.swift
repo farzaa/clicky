@@ -7,12 +7,12 @@ import Foundation
 
 /// OpenAI API helper for vision analysis
 class OpenAIAPI {
-    private let apiKey: String
+    var apiKey: String
     private let apiURL: URL
     var model: String
     private let session: URLSession
 
-    init(apiKey: String = "sk-lm-aAxaxZte:mOc432tNRd7CWCOh57g3", model: String = "gemma-4-e4b-uncensored-hauhaucs-aggressive") {
+    init(apiKey: String = "", model: String = "gemma-4-e4b-uncensored-hauhaucs-aggressive") {
         self.apiKey = apiKey
         self.apiURL = URL(string: "http://127.0.0.1:1234/v1/chat/completions")!
         self.model = model
