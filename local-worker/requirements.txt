@@ -9,3 +9,5 @@ numpy>=1.26.0
 pillow>=10.3.0
 huggingface_hub>=0.22.0
 python-multipart>=0.0.9
+torch
+torchvision

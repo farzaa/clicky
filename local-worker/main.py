@@ -59,12 +59,26 @@ async def startup_event():
             initialize_tts_model(),
             initialize_whisper_model(),
         )
-        _initialization_complete = True
-        print("\n✨ All models ready! Server is operational.\n")
     except Exception as e:
-        print(f"\n❌ Model initialization failed: {e}\n")
+        print(f"\n❌ Unexpected error during model initialization: {e}\n")
     finally:
+        _initialization_complete = True
         _models_initializing = False
+
+    vision_ok = get_vision_model().is_ready()
+    tts_ok = get_tts_model().is_ready()
+    whisper_ok = get_whisper_model().is_ready()
+
+    if vision_ok and tts_ok and whisper_ok:
+        print("\n✨ All models ready! Server is operational.\n")
+    else:
+        not_ready = [
+            name for name, ok in
+            [("vision", vision_ok), ("tts", tts_ok), ("whisper", whisper_ok)]
+            if not ok
+        ]
+        print(f"\n⚠️  Server started but these models failed to load: {', '.join(not_ready)}")
+        print("   Those endpoints will return 503. Run setup_models.py if you haven't yet.\n")
 
 
 def require_models_ready():

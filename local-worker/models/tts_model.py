@@ -4,11 +4,17 @@ TTS model: Kokoro-82M ONNX
 
 import asyncio
 import io
+from pathlib import Path
 
 try:
     from kokoro_onnx import Kokoro
 except ImportError:
     Kokoro = None
+
+# Model files are downloaded by setup_models.py to this location
+_KOKORO_DIR = Path.home() / ".clicky-local" / "models" / "kokoro"
+_ONNX_PATH = _KOKORO_DIR / "kokoro-v1.0.onnx"
+_VOICES_PATH = _KOKORO_DIR / "voices-v1.0.bin"
 
 
 class TTSModel:
@@ -31,8 +37,14 @@ class TTSModel:
         loop = asyncio.get_event_loop()
 
         def _load():
+            if not _ONNX_PATH.exists() or not _VOICES_PATH.exists():
+                print(
+                    f"❌ Kokoro model files not found at {_KOKORO_DIR}\n"
+                    "   Run: python setup_models.py"
+                )
+                return None
             try:
-                return Kokoro("kokoro-v1.0.onnx", "voices-v1.0.bin")
+                return Kokoro(str(_ONNX_PATH), str(_VOICES_PATH))
             except Exception as e:
                 print(f"❌ Failed to load TTS model: {e}")
                 return None
