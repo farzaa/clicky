@@ -14,15 +14,84 @@ struct CompanionScreenCapture {
     let imageData: Data
     let label: String
     let isCursorScreen: Bool
-    let displayWidthInPoints: Int
-    let displayHeightInPoints: Int
     let displayFrame: CGRect
+    /// How `displayFrame` was chosen relative to `NSScreen.frame` vs `SCContentFilter.contentRect` (for logs / debugging).
+    let displayFrameMappingSourceDescription: String
     let screenshotWidthInPixels: Int
     let screenshotHeightInPixels: Int
+
+    /// Rounded point dimensions for prompts and logging (avoid `Int(frame)` truncation skew).
+    var displayWidthInPoints: Int { Int(round(displayFrame.width)) }
+    var displayHeightInPoints: Int { Int(round(displayFrame.height)) }
+
+    /// Maps a point from screenshot image space (origin top-left, pixels) to AppKit global
+    /// coordinates (same space as `NSEvent.mouseLocation` and `CGEvent` posting).
+    func globalAppKitPointFromScreenshotPixelCoordinate(screenshotPixelX: CGFloat, screenshotPixelY: CGFloat) -> CGPoint {
+        let screenshotWidth = CGFloat(screenshotWidthInPixels)
+        let screenshotHeight = CGFloat(screenshotHeightInPixels)
+        let displayWidth = displayFrame.width
+        let displayHeight = displayFrame.height
+
+        let clampedX = max(0, min(screenshotPixelX, screenshotWidth))
+        let clampedY = max(0, min(screenshotPixelY, screenshotHeight))
+        let displayLocalX = clampedX * (displayWidth / screenshotWidth)
+        let displayLocalY = clampedY * (displayHeight / screenshotHeight)
+        let appKitY = displayHeight - displayLocalY
+        return CGPoint(x: displayLocalX + displayFrame.origin.x, y: appKitY + displayFrame.origin.y)
+    }
 }
 
 @MainActor
 enum CompanionScreenCaptureUtility {
+
+    /// Builds the mapping frame used to convert screenshot pixels to AppKit global points.
+    /// Origin must remain AppKit-global (`NSScreen.frame.origin`) so point conversion aligns
+    /// with CGEvent/NSEvent coordinates; size should come from what ScreenCaptureKit captured.
+    private static func displayFrameForMappingScreenshotToGlobalMouse(
+        nsscreenFrame: CGRect?,
+        filterContentRect: CGRect,
+        displayID: CGDirectDisplayID
+    ) -> (frame: CGRect, mappingSourceDescription: String) {
+        let contentRect = filterContentRect
+        guard let nsFrame = nsscreenFrame else {
+            print(
+                "⚠️ CompanionScreenCapture: no NSScreen for displayID \(displayID); " +
+                "using SCContentFilter.contentRect for click/pointer mapping"
+            )
+            return (contentRect, "content_rect_no_matching_nsscreen")
+        }
+
+        let epsilon: CGFloat = 0.5
+        let sizesMatch =
+            abs(nsFrame.width - contentRect.width) < epsilon
+            && abs(nsFrame.height - contentRect.height) < epsilon
+
+        if sizesMatch {
+            return (nsFrame, "nsscreen_matches_content_filter")
+        }
+
+        let contentRectHasUsableSize = contentRect.width >= 1 && contentRect.height >= 1
+        if contentRectHasUsableSize {
+            let mappingFrame = CGRect(
+                x: nsFrame.origin.x,
+                y: nsFrame.origin.y,
+                width: contentRect.width,
+                height: contentRect.height
+            )
+            print(
+                "🖼️ CompanionScreenCapture: mapping frame uses NSScreen origin + contentRect size " +
+                "(displayID \(displayID)) nsscreenFrame=\(nsFrame) contentRect=\(contentRect) " +
+                "mappingFrame=\(mappingFrame)"
+            )
+            return (mappingFrame, "global_origin_from_nsscreen_size_from_content_rect")
+        }
+
+        print(
+            "⚠️ CompanionScreenCapture: contentRect size unusable; using NSScreen.frame for mapping " +
+            "(displayID \(displayID)) nsscreenFrame=\(nsFrame) contentRect=\(contentRect)"
+        )
+        return (nsFrame, "global_origin_and_size_from_nsscreen_fallback")
+    }
 
     /// Captures all connected displays as JPEG data, labeling each with
     /// whether the user's cursor is on that screen. This gives the AI
@@ -70,31 +139,51 @@ enum CompanionScreenCaptureUtility {
         var capturedScreens: [CompanionScreenCapture] = []
 
         for (displayIndex, display) in sortedDisplays.enumerated() {
-            // Use NSScreen.frame (AppKit coordinates, bottom-left origin) so
-            // displayFrame is in the same coordinate system as NSEvent.mouseLocation
-            // and the overlay window's screenFrame in BlueCursorView.
-            let displayFrame = nsScreenByDisplayID[display.displayID]?.frame
-                ?? CGRect(x: display.frame.origin.x, y: display.frame.origin.y,
-                          width: CGFloat(display.width), height: CGFloat(display.height))
+            let filter = SCContentFilter(display: display, excludingWindows: ownAppWindows)
+            filter.includeMenuBar = true
+
+            let nsscreenForDisplay = nsScreenByDisplayID[display.displayID]
+            var contentRect = filter.contentRect
+            if contentRect.width < 1 || contentRect.height < 1, let fallback = nsscreenForDisplay?.frame {
+                contentRect = fallback
+            }
+
+            let nsscreenFrame = nsscreenForDisplay?.frame
+            let mappingChoice = displayFrameForMappingScreenshotToGlobalMouse(
+                nsscreenFrame: nsscreenFrame,
+                filterContentRect: contentRect,
+                displayID: display.displayID
+            )
+            let displayFrame = mappingChoice.frame
+            let displayFrameMappingSourceDescription = mappingChoice.mappingSourceDescription
             let isCursorScreen = displayFrame.contains(mouseLocation)
 
-            let filter = SCContentFilter(display: display, excludingWindows: ownAppWindows)
-
             let configuration = SCStreamConfiguration()
-            let maxDimension = 1280
-            let aspectRatio = CGFloat(display.width) / CGFloat(display.height)
-            if display.width >= display.height {
-                configuration.width = maxDimension
-                configuration.height = Int(CGFloat(maxDimension) / aspectRatio)
-            } else {
-                configuration.height = maxDimension
-                configuration.width = Int(CGFloat(maxDimension) * aspectRatio)
+            let maxDimension = CGFloat(1280)
+            var pixelScale = CGFloat(filter.pointPixelScale)
+            if pixelScale <= 0, let screen = nsscreenForDisplay {
+                pixelScale = screen.backingScaleFactor
             }
+            if pixelScale <= 0 {
+                pixelScale = 2
+            }
+            let nativePixelWidth = contentRect.width * pixelScale
+            let nativePixelHeight = contentRect.height * pixelScale
+            let uniformScale = min(maxDimension / max(nativePixelWidth, 1), maxDimension / max(nativePixelHeight, 1))
+            configuration.width = Int(max(1, round(nativePixelWidth * uniformScale)))
+            configuration.height = Int(max(1, round(nativePixelHeight * uniformScale)))
 
             let cgImage = try await SCScreenshotManager.captureImage(
                 contentFilter: filter,
                 configuration: configuration
             )
+
+            // Use the bitmap’s real pixel dimensions for AI labels and for mapping clicks/pointer
+            // back to screen space. `SCStreamConfiguration` width/height can differ slightly from
+            // the returned `CGImage` (rounding, capture pipeline); using the wrong denominator
+            // skews horizontal/vertical scale (often pushing tab clicks to the wrong column).
+            let capturedPixelWidth = cgImage.width
+            let capturedPixelHeight = cgImage.height
 
             guard let jpegData = NSBitmapImageRep(cgImage: cgImage)
                     .representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
@@ -114,11 +203,10 @@ enum CompanionScreenCaptureUtility {
                 imageData: jpegData,
                 label: screenLabel,
                 isCursorScreen: isCursorScreen,
-                displayWidthInPoints: Int(displayFrame.width),
-                displayHeightInPoints: Int(displayFrame.height),
                 displayFrame: displayFrame,
-                screenshotWidthInPixels: configuration.width,
-                screenshotHeightInPixels: configuration.height
+                displayFrameMappingSourceDescription: displayFrameMappingSourceDescription,
+                screenshotWidthInPixels: capturedPixelWidth,
+                screenshotHeightInPixels: capturedPixelHeight
             ))
         }
 

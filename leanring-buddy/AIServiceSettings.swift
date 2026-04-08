@@ -12,18 +12,24 @@ import Combine
 final class AIServiceSettings: ObservableObject {
     @Published var selectedOpenRouterModelID: String
     @Published var elevenLabsVoiceID: String
+    @Published var showOnlyWebEnabledModels: Bool
+    @Published var isComputerUseEnabled: Bool
     @Published var openRouterAPIKey: String = ""
     @Published var elevenLabsAPIKey: String = ""
 
     private let secureSettingsStore = SecureSettingsStore()
     private let selectedOpenRouterModelDefaultsKey = "selectedOpenRouterModelID"
     private let elevenLabsVoiceIDDefaultsKey = "elevenLabsVoiceID"
+    private let showOnlyWebEnabledModelsDefaultsKey = "showOnlyWebEnabledModels"
+    private let isComputerUseEnabledDefaultsKey = "isComputerUseEnabled"
 
     init() {
         selectedOpenRouterModelID = UserDefaults.standard.string(forKey: selectedOpenRouterModelDefaultsKey)
             ?? "openai/gpt-4o-mini"
         elevenLabsVoiceID = UserDefaults.standard.string(forKey: elevenLabsVoiceIDDefaultsKey)
             ?? "EXAVITQu4vr4xnSDxMaL"
+        showOnlyWebEnabledModels = UserDefaults.standard.bool(forKey: showOnlyWebEnabledModelsDefaultsKey)
+        isComputerUseEnabled = UserDefaults.standard.bool(forKey: isComputerUseEnabledDefaultsKey)
         reloadSecureValues()
     }
 
@@ -38,6 +44,16 @@ final class AIServiceSettings: ObservableObject {
         let trimmedElevenLabsVoiceID = elevenLabsVoiceID.trimmingCharacters(in: .whitespacesAndNewlines)
         self.elevenLabsVoiceID = trimmedElevenLabsVoiceID
         UserDefaults.standard.set(trimmedElevenLabsVoiceID, forKey: elevenLabsVoiceIDDefaultsKey)
+    }
+
+    func saveShowOnlyWebEnabledModels(_ showOnlyWebEnabledModels: Bool) {
+        self.showOnlyWebEnabledModels = showOnlyWebEnabledModels
+        UserDefaults.standard.set(showOnlyWebEnabledModels, forKey: showOnlyWebEnabledModelsDefaultsKey)
+    }
+
+    func saveComputerUseEnabled(_ isComputerUseEnabled: Bool) {
+        self.isComputerUseEnabled = isComputerUseEnabled
+        UserDefaults.standard.set(isComputerUseEnabled, forKey: isComputerUseEnabledDefaultsKey)
     }
 
     func saveOpenRouterAPIKey(_ openRouterAPIKey: String) throws {

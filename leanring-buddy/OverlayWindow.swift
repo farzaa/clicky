@@ -181,6 +181,16 @@ struct BlueCursorView: View {
         "found it!"
     ]
 
+    /// Matches `Triangle`’s `.frame(width: 16, height: 16)` in this view tree.
+    private static let buddyTrianglePointerFrameSize: CGFloat = 16
+
+    /// SwiftUI +y is downward. The triangle’s tip sits above the view’s layout center by this amount
+    /// (see `Triangle.path(in:)`), so we add this to the tip’s y to get the center `cursorPosition`.
+    private static var buddyTriangleTipOffsetFromLayoutCenterDownward: CGFloat {
+        let equilateralHeight = buddyTrianglePointerFrameSize * sqrt(3.0) / 2.0
+        return equilateralHeight / 1.5
+    }
+
     var body: some View {
         ZStack {
             // Nearly transparent background (helps with compositing)
@@ -304,7 +314,7 @@ struct BlueCursorView: View {
             // timer controls position directly at 60fps for a smooth arc flight.
             Triangle()
                 .fill(DS.Colors.overlayCursorBlue)
-                .frame(width: 16, height: 16)
+                .frame(width: Self.buddyTrianglePointerFrameSize, height: Self.buddyTrianglePointerFrameSize)
                 .rotationEffect(.degrees(triangleRotationDegrees))
                 .shadow(color: DS.Colors.overlayCursorBlue, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
                 .scaleEffect(buddyFlightScale)
@@ -382,7 +392,11 @@ struct BlueCursorView: View {
                 return
             }
 
-            startNavigatingToElement(screenLocation: screenLocation)
+            if companionManager.shouldUseInstantBuddyNavigationToNextPoint {
+                jumpBuddyToElementWithoutAnimation(screenLocation: screenLocation)
+            } else {
+                startNavigatingToElement(screenLocation: screenLocation)
+            }
         }
     }
 
@@ -452,26 +466,51 @@ struct BlueCursorView: View {
 
     // MARK: - Element Navigation
 
+    /// Triangle layout center in this overlay’s SwiftUI space so the **tip** sits on `screenLocation`
+    /// (same math for animated flight and instant jump after Computer Use).
+    private func clampedTriangleCenterSwiftUI(forScreenLocation screenLocation: CGPoint) -> CGPoint {
+        let targetInSwiftUI = convertScreenPointToSwiftUICoordinates(screenLocation)
+        let triangleCenterInSwiftUI = CGPoint(
+            x: targetInSwiftUI.x,
+            y: targetInSwiftUI.y + Self.buddyTriangleTipOffsetFromLayoutCenterDownward
+        )
+        let edgeMargin: CGFloat = 8
+        return CGPoint(
+            x: max(edgeMargin, min(triangleCenterInSwiftUI.x, screenFrame.width - edgeMargin)),
+            y: max(0, min(triangleCenterInSwiftUI.y, screenFrame.height - edgeMargin))
+        )
+    }
+
+    /// Snaps the buddy to the target and enters pointing mode with no bezier animation (Computer Use turns).
+    private func jumpBuddyToElementWithoutAnimation(screenLocation: CGPoint) {
+        companionManager.shouldUseInstantBuddyNavigationToNextPoint = false
+
+        guard !showWelcome || welcomeText.isEmpty else {
+            startNavigatingToElement(screenLocation: screenLocation)
+            return
+        }
+
+        navigationAnimationTimer?.invalidate()
+        navigationAnimationTimer = nil
+
+        let clampedTarget = clampedTriangleCenterSwiftUI(forScreenLocation: screenLocation)
+        let mouseLocation = NSEvent.mouseLocation
+        cursorPositionWhenNavigationStarted = convertScreenPointToSwiftUICoordinates(mouseLocation)
+
+        cursorPosition = clampedTarget
+        buddyFlightScale = 1.0
+        triangleRotationDegrees = 0.0
+        isReturningToCursor = false
+
+        startPointingAtElement()
+    }
+
     /// Starts animating the buddy toward a detected UI element location.
     private func startNavigatingToElement(screenLocation: CGPoint) {
         // Don't interrupt welcome animation
         guard !showWelcome || welcomeText.isEmpty else { return }
 
-        // Convert the AppKit screen location to SwiftUI coordinates for this screen
-        let targetInSwiftUI = convertScreenPointToSwiftUICoordinates(screenLocation)
-
-        // Offset the target so the buddy sits beside the element rather than
-        // directly on top of it — 8px to the right, 12px below.
-        let offsetTarget = CGPoint(
-            x: targetInSwiftUI.x + 8,
-            y: targetInSwiftUI.y + 12
-        )
-
-        // Clamp target to screen bounds with padding
-        let clampedTarget = CGPoint(
-            x: max(20, min(offsetTarget.x, screenFrame.width - 20)),
-            y: max(20, min(offsetTarget.y, screenFrame.height - 20))
-        )
+        let clampedTarget = clampedTriangleCenterSwiftUI(forScreenLocation: screenLocation)
 
         // Record the current cursor position so we can detect if the user
         // moves the mouse enough to cancel the return flight
@@ -572,8 +611,9 @@ struct BlueCursorView: View {
     private func startPointingAtElement() {
         buddyNavigationMode = .pointingAtTarget
 
-        // Rotate back to default pointer angle now that we've arrived
-        triangleRotationDegrees = -35.0
+        // Keep the triangle unrotated so the tip (aligned in `startNavigatingToElement`) matches
+        // the same global coordinate as Computer Use clicks. Cursor-following mode restores -35°.
+        triangleRotationDegrees = 0.0
 
         // Reset navigation bubble state — start small for the scale-bounce entrance
         navigationBubbleText = ""
@@ -803,6 +843,21 @@ class OverlayWindowManager {
             window.contentView = hostingView
 
             overlayWindows.append(window)
+            window.orderFrontRegardless()
+        }
+    }
+
+    /// Hides overlay windows without tearing down hosting views so they can be shown again
+    /// immediately. Used before posting synthetic mouse events so WindowServer targets the app
+    /// below our full-screen `.screenSaver`-level windows.
+    func orderOutOverlayForSyntheticInput() {
+        for window in overlayWindows {
+            window.orderOut(nil)
+        }
+    }
+
+    func restoreOverlayAfterSyntheticInput() {
+        for window in overlayWindows {
             window.orderFrontRegardless()
         }
     }

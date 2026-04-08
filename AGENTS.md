@@ -35,17 +35,19 @@ API keys are stored locally in macOS Keychain via the Settings tab.
 
 **Transient Cursor Mode**: When "Show Clicky" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
 
+**Hardened Runtime / Apple Events**: The target enables Hardened Runtime; `leanring-buddy.entitlements` includes `com.apple.security.automation.apple-events` so macOS can prompt for Automation when AppleScript targets System Events (paired with `NSAppleEventsUsageDescription` in Info.plist).
+
 ## Key Files
 
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1080 | Central state machine. Owns dictation, shortcut monitoring, screen capture, OpenRouter API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → OpenRouter → TTS → pointing pipeline. |
+| `CompanionManager.swift` | ~1800 | Central state machine. Owns dictation, shortcut monitoring, screen capture, OpenRouter API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → OpenRouter → TTS → pointing pipeline. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
 | `CompanionPanelView.swift` | ~900 | SwiftUI panel content for the menu bar dropdown. Includes Main and Settings tabs, permission UI, key management, OpenRouter model selection, and app controls using the `DS` design system. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
-| `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
+| `CompanionScreenCaptureUtility.swift` | ~225 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data per display and maps screenshot pixels to global AppKit coordinates for clicks and pointing. |
 | `BuddyDictationManager.swift` | ~866 | Push-to-talk voice pipeline. Handles microphone capture via `AVAudioEngine`, provider-aware permission checks, keyboard/button dictation sessions, transcript finalization, shortcut parsing, contextual keyterms, and live audio-level reporting for waveform feedback. |
 | `BuddyTranscriptionProvider.swift` | ~40 | Protocol surface and provider factory for voice transcription backends. Defaults to Apple Speech local provider. |
 | `AppleSpeechTranscriptionProvider.swift` | ~147 | Local fallback transcription provider backed by Apple's Speech framework. |
@@ -59,6 +61,7 @@ API keys are stored locally in macOS Keychain via the Settings tab.
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AIServiceSettings.swift` | ~80 | Local settings state for OpenRouter model and ElevenLabs voice preferences plus Keychain-backed key loading. |
 | `SecureSettingsStore.swift` | ~120 | macOS Keychain helper for storing/retrieving OpenRouter and ElevenLabs API keys securely. |
+| `ComputerUseActionExecutor.swift` | ~514 | Executes local computer-control actions for Computer Use (CGEvent clicks with warp verification, System Events fallback, scroll, drag). |
 
 ## Build & Run
 

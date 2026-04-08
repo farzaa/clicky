@@ -8,6 +8,73 @@ import Foundation
 struct OpenRouterModel: Decodable, Identifiable, Hashable {
     let id: String
     let name: String?
+    let supportedParameters: [String]
+    let architectureInputModalities: [String]
+    let architectureOutputModalities: [String]
+    let endpointTools: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case supportedParameters = "supported_parameters"
+        case architecture
+        case endpoint
+    }
+
+    enum ArchitectureCodingKeys: String, CodingKey {
+        case inputModalities = "input_modalities"
+        case outputModalities = "output_modalities"
+    }
+
+    enum EndpointCodingKeys: String, CodingKey {
+        case supportedTools = "supported_tools"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try? container.decode(String.self, forKey: .name)
+        supportedParameters = (try? container.decode([String].self, forKey: .supportedParameters)) ?? []
+
+        if let architectureContainer = try? container.nestedContainer(keyedBy: ArchitectureCodingKeys.self, forKey: .architecture) {
+            architectureInputModalities = (try? architectureContainer.decode([String].self, forKey: .inputModalities)) ?? []
+            architectureOutputModalities = (try? architectureContainer.decode([String].self, forKey: .outputModalities)) ?? []
+        } else {
+            architectureInputModalities = []
+            architectureOutputModalities = []
+        }
+
+        if let endpointContainer = try? container.nestedContainer(keyedBy: EndpointCodingKeys.self, forKey: .endpoint) {
+            endpointTools = (try? endpointContainer.decode([String].self, forKey: .supportedTools)) ?? []
+        } else {
+            endpointTools = []
+        }
+    }
+
+    var isWebBrowsingCapable: Bool {
+        let lowercaseModelID = id.lowercased()
+        let lowercaseTools = endpointTools.map { $0.lowercased() }
+        let lowercaseSupportedParameters = supportedParameters.map { $0.lowercased() }
+        let lowercaseInputModalities = architectureInputModalities.map { $0.lowercased() }
+
+        if lowercaseTools.contains(where: { $0.contains("web") || $0.contains("search") || $0.contains("browser") }) {
+            return true
+        }
+
+        if lowercaseSupportedParameters.contains(where: { $0.contains("web") || $0.contains("search") || $0.contains("browser") }) {
+            return true
+        }
+
+        if lowercaseInputModalities.contains(where: { $0.contains("web") }) {
+            return true
+        }
+
+        // OpenRouter model IDs for web-capable models often include these tokens.
+        return lowercaseModelID.contains("search")
+            || lowercaseModelID.contains("online")
+            || lowercaseModelID.contains("web")
+            || lowercaseModelID.contains("sonar")
+    }
 }
 
 /// OpenRouter API helper with streaming for progressive text display.
@@ -39,6 +106,167 @@ final class OpenRouterAPI {
         request.setValue("https://clicky.so", forHTTPHeaderField: "HTTP-Referer")
         request.setValue("Clicky", forHTTPHeaderField: "X-Title")
         return request
+    }
+
+    private func extractWebSearchQuery(from argumentsJSONString: String) -> String? {
+        guard let data = argumentsJSONString.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let query = json["query"] as? String else {
+            return nil
+        }
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedQuery.isEmpty ? nil : trimmedQuery
+    }
+
+    private func performWebSearch(query: String) async -> String {
+        guard let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://api.duckduckgo.com/?q=\(encodedQuery)&format=json&no_html=1&skip_disambig=1") else {
+            return "Web search failed because the query could not be encoded."
+        }
+
+        do {
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.timeoutInterval = 15
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode),
+                  let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return "Web search did not return a usable response."
+            }
+
+            var resultLines: [String] = []
+
+            if let abstractText = json["AbstractText"] as? String,
+               !abstractText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                resultLines.append("Summary: \(abstractText)")
+            }
+
+            if let abstractURL = json["AbstractURL"] as? String,
+               !abstractURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                resultLines.append("Source: \(abstractURL)")
+            }
+
+            if let relatedTopics = json["RelatedTopics"] as? [[String: Any]] {
+                let compactRelatedTopics: [String] = relatedTopics
+                    .compactMap { topic in
+                        if let text = topic["Text"] as? String, let firstURL = topic["FirstURL"] as? String {
+                            return "- \(text) (\(firstURL))"
+                        }
+                        if let nestedTopics = topic["Topics"] as? [[String: Any]] {
+                            return nestedTopics.first.flatMap { nestedTopic in
+                                guard let text = nestedTopic["Text"] as? String,
+                                      let firstURL = nestedTopic["FirstURL"] as? String else {
+                                    return nil
+                                }
+                                return "- \(text) (\(firstURL))"
+                            }
+                        }
+                        return nil
+                    }
+                if !compactRelatedTopics.isEmpty {
+                    resultLines.append("Related:\n" + compactRelatedTopics.prefix(4).joined(separator: "\n"))
+                }
+            }
+
+            if resultLines.isEmpty {
+                return "No strong web result was found for query: \(query)"
+            }
+
+            return resultLines.joined(separator: "\n")
+        } catch {
+            return "Web search failed with error: \(error.localizedDescription)"
+        }
+    }
+
+    private func maybeAugmentMessagesWithWebSearch(
+        apiKey: String,
+        selectedModel: String,
+        systemPrompt: String,
+        messages: [[String: Any]]
+    ) async -> [[String: Any]] {
+        var toolRequest = makeChatRequest(apiKey: apiKey)
+        let toolDefinition: [String: Any] = [
+            "type": "function",
+            "function": [
+                "name": "web_search",
+                "description": "Search the web for current, factual information and return concise source-backed notes.",
+                "parameters": [
+                    "type": "object",
+                    "properties": [
+                        "query": [
+                            "type": "string",
+                            "description": "The search query."
+                        ]
+                    ],
+                    "required": ["query"]
+                ]
+            ]
+        ]
+
+        let body: [String: Any] = [
+            "model": selectedModel,
+            "max_tokens": 512,
+            "stream": false,
+            "messages": [["role": "system", "content": systemPrompt]] + messages,
+            "tools": [toolDefinition],
+            "tool_choice": "auto"
+        ]
+
+        guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
+            return messages
+        }
+        toolRequest.httpBody = bodyData
+
+        do {
+            let (data, response) = try await session.data(for: toolRequest)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode),
+                  let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = json["choices"] as? [[String: Any]],
+                  let firstChoice = choices.first,
+                  let assistantMessage = firstChoice["message"] as? [String: Any],
+                  let toolCalls = assistantMessage["tool_calls"] as? [[String: Any]],
+                  !toolCalls.isEmpty else {
+                return messages
+            }
+
+            var augmentedMessages = messages
+            augmentedMessages.append(assistantMessage)
+
+            for toolCall in toolCalls {
+                guard let toolCallID = toolCall["id"] as? String,
+                      let functionPayload = toolCall["function"] as? [String: Any],
+                      let functionName = functionPayload["name"] as? String,
+                      functionName == "web_search",
+                      let argumentsJSONString = functionPayload["arguments"] as? String,
+                      let query = extractWebSearchQuery(from: argumentsJSONString) else {
+                    continue
+                }
+
+                let toolResult = await performWebSearch(query: query)
+                augmentedMessages.append([
+                    "role": "tool",
+                    "tool_call_id": toolCallID,
+                    "content": toolResult
+                ])
+            }
+
+            return augmentedMessages
+        } catch {
+            return messages
+        }
+    }
+
+    private func shouldUseFallbackWebSearch(
+        selectedModel: String,
+        knownModels: [OpenRouterModel]
+    ) -> Bool {
+        guard let selectedOpenRouterModel = knownModels.first(where: { $0.id == selectedModel }) else {
+            // If capabilities are unknown, keep fallback on to avoid losing web access.
+            return true
+        }
+        return !selectedOpenRouterModel.isWebBrowsingCapable
     }
 
     /// Detects the MIME type of image data by inspecting the first bytes.
@@ -84,10 +312,15 @@ final class OpenRouterAPI {
     func analyzeImageStreaming(
         apiKey: String,
         selectedModel: String,
+        knownModels: [OpenRouterModel],
         images: [(data: Data, label: String)],
         systemPrompt: String,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
         userPrompt: String,
+        /// When true, skips the optional prefetch round that can call `web_search` before the vision stream.
+        /// Use for local UI control (Computer Use) so words in the transcript (e.g. product names in tab titles)
+        /// do not trigger irrelevant search results that confuse coordinate output.
+        forceDisableWebSearchAugmentation: Bool = false,
         onTextChunk: @MainActor @Sendable (String) -> Void
     ) async throws -> (text: String, duration: TimeInterval) {
         let startTime = Date()
@@ -121,11 +354,34 @@ final class OpenRouterAPI {
         ])
         messages.append(["role": "user", "content": contentBlocks])
 
+        let shouldUseFallbackSearch = shouldUseFallbackWebSearch(
+            selectedModel: selectedModel,
+            knownModels: knownModels
+        )
+
+        let augmentedMessages: [[String: Any]]
+        if shouldUseFallbackSearch, !forceDisableWebSearchAugmentation {
+            print("🌐 OpenRouter path: fallback web_search tool enabled")
+            augmentedMessages = await maybeAugmentMessagesWithWebSearch(
+                apiKey: apiKey,
+                selectedModel: selectedModel,
+                systemPrompt: systemPrompt,
+                messages: messages
+            )
+        } else {
+            if shouldUseFallbackSearch, forceDisableWebSearchAugmentation {
+                print("🌐 OpenRouter path: web_search augmentation skipped (local UI / computer control)")
+            } else if !shouldUseFallbackSearch {
+                print("🌐 OpenRouter path: native model browsing preferred")
+            }
+            augmentedMessages = messages
+        }
+
         let body: [String: Any] = [
             "model": selectedModel,
             "max_tokens": 1024,
             "stream": true,
-            "messages": [["role": "system", "content": systemPrompt]] + messages
+            "messages": [["role": "system", "content": systemPrompt]] + augmentedMessages
         ]
 
         let bodyData = try JSONSerialization.data(withJSONObject: body)

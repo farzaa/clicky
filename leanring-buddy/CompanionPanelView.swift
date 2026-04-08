@@ -117,6 +117,13 @@ struct CompanionPanelView: View {
         }
 
         if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+            Spacer().frame(height: 12)
+            clearContextButton
+                .padding(.horizontal, 16)
+
+        }
+
+        if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
             Spacer().frame(height: 16)
             dmFarzaButton
                 .padding(.horizontal, 16)
@@ -148,6 +155,39 @@ struct CompanionPanelView: View {
             .buttonStyle(.plain)
             .pointerCursor()
 
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("Computer Use", isOn: Binding(
+                    get: { companionManager.isComputerUseEnabled },
+                    set: { companionManager.setComputerUseEnabled($0) }
+                ))
+                .toggleStyle(.switch)
+                .tint(DS.Colors.accent)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+                Text("When enabled, Clicky uses AppleScript (System Events) for most clicks and for typing. Coordinate clicks go to the frontmost app under the pointer; macOS may list each target app (Safari, Opera, Chrome, etc.) under Automation—allow Clicky for every app you want to control.")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if companionManager.isComputerUseEnabled {
+                    computerUsePermissionRows
+                    if !companionManager.hasAutomationPermission {
+                        Text("Clicks and typing need Automation for System Events: use Grant next to Automation above, or System Settings → Privacy & Security → Automation. If a browser or editor does not respond, check that same Automation list for that app and enable Clicky.")
+                            .font(.system(size: 10))
+                            .foregroundColor(DS.Colors.warning)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("If no consent dialog appears: quit and reopen Clicky, open this panel so the app is in the foreground, then tap Grant again. For local builds, set Xcode Signing & Capabilities → Team to your Apple ID (Personal Team is fine and does not require a paid membership); unsigned ad-hoc runs often fail Automation. If still stuck: Terminal — tccutil reset AppleEvents com.yourcompany.leanring-buddy — then Product → Clean Build Folder in Xcode, run again, and try Grant.")
+                            .font(.system(size: 10))
+                            .foregroundColor(DS.Colors.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Text(companionManager.computerUseRuntimeStatusMessage)
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+            }
+
             HStack {
                 Text("OpenRouter Model")
                     .font(.system(size: 12, weight: .medium))
@@ -165,17 +205,34 @@ struct CompanionPanelView: View {
                 .disabled(companionManager.isLoadingOpenRouterModels)
             }
 
+            Toggle("Web-enabled only", isOn: Binding(
+                get: { companionManager.showOnlyWebEnabledModels },
+                set: { companionManager.setShowOnlyWebEnabledModels($0) }
+            ))
+            .toggleStyle(.switch)
+            .tint(DS.Colors.accent)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(DS.Colors.textSecondary)
+
             Picker("OpenRouter Model", selection: Binding(
                 get: { companionManager.selectedModel },
                 set: { companionManager.setSelectedModel($0) }
             )) {
-                ForEach(companionManager.availableOpenRouterModels, id: \.id) { model in
+                ForEach(companionManager.visibleOpenRouterModels, id: \.id) { model in
                     Text(modelDisplayLabel(for: model))
                         .tag(model.id)
                 }
             }
             .pickerStyle(.menu)
-            .disabled(companionManager.availableOpenRouterModels.isEmpty)
+            .disabled(companionManager.visibleOpenRouterModels.isEmpty)
+
+            if companionManager.showOnlyWebEnabledModels
+                && !companionManager.selectedModel.isEmpty
+                && !companionManager.visibleOpenRouterModels.contains(where: { $0.id == companionManager.selectedModel }) {
+                Text("Current selection is not web-enabled; choose a visible model to force native browsing.")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
 
             if let settingsErrorMessage, !settingsErrorMessage.isEmpty {
                 Text(settingsErrorMessage)
@@ -188,6 +245,72 @@ struct CompanionPanelView: View {
             }
         }
         .padding(.horizontal, 16)
+    }
+
+    @ViewBuilder
+    private var computerUsePermissionRows: some View {
+        computerUsePermissionStatusRow(
+            label: "Accessibility",
+            isGranted: companionManager.hasAccessibilityPermission,
+            grantAction: {
+                _ = WindowPositionManager.requestAccessibilityPermission()
+                companionManager.refreshAllPermissions(forceImmediateAutomationPermissionRecheck: true)
+            }
+        )
+
+        computerUsePermissionStatusRow(
+            label: "Automation",
+            isGranted: companionManager.hasAutomationPermission,
+            grantAction: {
+                _ = companionManager.requestAutomationPermissionForComputerUse()
+                companionManager.refreshAllPermissions(forceImmediateAutomationPermissionRecheck: true)
+            }
+        )
+
+        if !companionManager.areComputerUsePermissionsGranted {
+            Text("Grant Accessibility and Automation to enable computer control.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.warning)
+        }
+    }
+
+    private func computerUsePermissionStatusRow(
+        label: String,
+        isGranted: Bool,
+        grantAction: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Spacer()
+
+            if isGranted {
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(DS.Colors.success)
+                        .frame(width: 6, height: 6)
+                    Text("Granted")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(DS.Colors.success)
+                }
+            } else {
+                Button(action: grantAction) {
+                    Text("Grant")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(DS.Colors.textOnAccent)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(DS.Colors.accent)
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+        }
     }
 
     private func settingInputRow(title: String, text: Binding<String>, isSensitive: Bool) -> some View {
@@ -773,6 +896,35 @@ struct CompanionPanelView: View {
     }
 
     // MARK: - DM Farza Button
+
+    private var clearContextButton: some View {
+        Button(action: {
+            companionManager.clearConversationContext()
+        }) {
+            HStack(spacing: 8) {
+                Image(systemName: "trash")
+                    .font(.system(size: 12, weight: .medium))
+                Text("Clear Context")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundColor(companionManager.hasConversationHistory ? DS.Colors.warning : DS.Colors.textTertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+        .disabled(!companionManager.hasConversationHistory)
+        .opacity(companionManager.hasConversationHistory ? 1.0 : 0.6)
+    }
 
     private var dmFarzaButton: some View {
         Button(action: {

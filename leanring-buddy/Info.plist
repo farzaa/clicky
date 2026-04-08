@@ -10,5 +10,7 @@
 	<string>Clicky needs screen recording access to see your screen and help you.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Clicky uses speech recognition to transcribe your voice when you talk to it</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Clicky uses Automation to control System Events so it can click and type on your behalf when Computer Use is enabled.</string>
 </dict>
 </plist>

@@ -19,6 +19,7 @@ enum PermissionRequestPresentationDestination: Equatable {
 @MainActor
 class WindowPositionManager {
     private static var hasAttemptedAccessibilitySystemPromptDuringCurrentLaunch = false
+    private static var hasAttemptedAutomationSystemPromptDuringCurrentLaunch = false
     private static var hasAttemptedScreenRecordingSystemPromptDuringCurrentLaunch = false
     private static let hasPreviouslyConfirmedScreenRecordingPermissionUserDefaultsKey = "com.learningbuddy.hasPreviouslyConfirmedScreenRecordingPermission"
 
@@ -71,6 +72,59 @@ class WindowPositionManager {
     static func revealAppInFinder() {
         guard let appURL = Bundle.main.bundleURL as URL? else { return }
         NSWorkspace.shared.activateFileViewerSelecting([appURL])
+    }
+
+    // MARK: - Automation Permission (Apple Events)
+
+    /// Returns true if the app can send Apple Events to System Events.
+    /// This is required for AppleScript-driven click/type control.
+    static func hasAutomationPermissionForSystemEvents() -> Bool {
+        executeSystemEventsAuthorizationProbeScript(logAppleScriptDiagnostics: false)
+    }
+
+    /// Requests Automation permission for System Events.
+    /// Every Grant tap runs the AppleScript probe so macOS can register the app for Automation.
+    /// The first tap in a session also follows the usual one-time system prompt path; later taps
+    /// run the probe again and open the Automation settings pane (not Settings alone).
+    @discardableResult
+    static func requestAutomationPermissionForSystemEvents() -> PermissionRequestPresentationDestination {
+        // Menu-bar (LSUIElement) apps often do not become key; fronting the app improves visibility
+        // of the Automation consent UI when macOS shows it.
+        NSApp.activate(ignoringOtherApps: true)
+        NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+
+        let probeSucceeded = executeSystemEventsAuthorizationProbeScript(logAppleScriptDiagnostics: true)
+        if probeSucceeded {
+            return .alreadyGranted
+        }
+
+        print("🔑 Automation: System Events AppleScript probe ran; Automation not granted yet.")
+
+        let presentationDestination = permissionRequestPresentationDestination(
+            hasPermissionNow: false,
+            hasAttemptedSystemPrompt: hasAttemptedAutomationSystemPromptDuringCurrentLaunch
+        )
+
+        switch presentationDestination {
+        case .systemPrompt:
+            hasAttemptedAutomationSystemPromptDuringCurrentLaunch = true
+            _ = executeSystemEventsAuthorizationProbeScript(logAppleScriptDiagnostics: true)
+            print("🔑 Automation: second probe after first Grant in this session (system prompt path).")
+            return .systemPrompt
+        case .systemSettings:
+            _ = executeSystemEventsAuthorizationProbeScript(logAppleScriptDiagnostics: true)
+            print("🔑 Automation: probe before opening System Settings (repeat Grant).")
+            openAutomationSettings()
+            return .systemSettings
+        case .alreadyGranted:
+            fatalError("requestAutomationPermissionForSystemEvents: unexpected alreadyGranted after probe reported failure")
+        }
+    }
+
+    /// Opens System Settings to the Automation pane.
+    static func openAutomationSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     // MARK: - Screen Recording Permission
@@ -148,6 +202,56 @@ class WindowPositionManager {
         }
 
         return .systemPrompt
+    }
+
+    /// Executes a no-op System Events script and inspects the AppleScript error code.
+    /// Error -1743 means Automation permission was denied/not granted.
+    /// - Parameter logAppleScriptDiagnostics: When true (user-initiated Grant), logs `NSAppleScript` error
+    ///   number/message and ambiguous outcomes so Console shows the exact failure code.
+    private static func executeSystemEventsAuthorizationProbeScript(logAppleScriptDiagnostics: Bool) -> Bool {
+        let scriptSource = """
+        tell application "System Events"
+            get name of first process
+        end tell
+        """
+        guard let script = NSAppleScript(source: scriptSource) else {
+            if logAppleScriptDiagnostics {
+                print("🔑 Automation probe: could not allocate NSAppleScript for System Events probe.")
+            }
+            return false
+        }
+
+        var scriptError: NSDictionary?
+        _ = script.executeAndReturnError(&scriptError)
+
+        guard let scriptError else {
+            if logAppleScriptDiagnostics {
+                print("🔑 Automation probe: AppleScript finished with no error dictionary (Automation allowed).")
+            }
+            return true
+        }
+
+        let errorNumber = scriptError[NSAppleScript.errorNumber] as? Int
+        let errorMessage = scriptError[NSAppleScript.errorMessage] as? String
+
+        if logAppleScriptDiagnostics {
+            print("🔑 Automation probe: AppleScript error — number: \(String(describing: errorNumber)), message: \(errorMessage ?? "(nil)"), dictionary: \(scriptError)")
+        }
+
+        if let errorNumber {
+            if errorNumber == -1743 {
+                return false
+            }
+            // -600 means app not running; that still confirms automation entitlement
+            if errorNumber == -600 {
+                return true
+            }
+        }
+
+        if logAppleScriptDiagnostics {
+            print("🔑 Automation probe: ambiguous AppleScript result; treating as not authorized.")
+        }
+        return false
     }
 
     // MARK: - Window Positioning

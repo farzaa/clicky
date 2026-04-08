@@ -20,10 +20,13 @@ import Foundation
 /// Macs are 16:10 → 1280x800. This avoids distorting the image Claude sees, which
 /// significantly improves X-axis coordinate accuracy.
 class ElementLocationDetector {
+    typealias ComputerUseAuthorizationProvider = () -> (isAllowed: Bool, blockedReason: String?)
+
     private let apiKey: String
     private let apiURL: URL
     private let model: String
     private let session: URLSession
+    private let computerUseAuthorizationProvider: ComputerUseAuthorizationProvider?
 
     /// Anthropic-recommended resolutions for Computer Use, paired with their aspect ratios.
     /// We pick the one closest to the actual display aspect ratio to avoid distortion.
@@ -35,10 +38,15 @@ class ElementLocationDetector {
         (1366, 768,  1366.0 / 768.0)   // ~16:9  = 1.779 (external monitors, ultrawide fallback)
     ]
 
-    init(apiKey: String, model: String = "claude-sonnet-4-6") {
+    init(
+        apiKey: String,
+        model: String = "claude-sonnet-4-6",
+        computerUseAuthorizationProvider: ComputerUseAuthorizationProvider? = nil
+    ) {
         self.apiKey = apiKey
         self.apiURL = URL(string: "https://api.anthropic.com/v1/messages")!
         self.model = model
+        self.computerUseAuthorizationProvider = computerUseAuthorizationProvider
 
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 15
@@ -65,6 +73,15 @@ class ElementLocationDetector {
         displayWidthInPoints: Int,
         displayHeightInPoints: Int
     ) async -> CGPoint? {
+        if let computerUseAuthorizationProvider {
+            let authorization = computerUseAuthorizationProvider()
+            if !authorization.isAllowed {
+                let blockedReason = authorization.blockedReason ?? "Computer Use is currently blocked."
+                print("⚠️ ElementLocationDetector: \(blockedReason)")
+                return nil
+            }
+        }
+
         // Pick the Computer Use resolution that best matches this display's aspect ratio.
         // This avoids stretching the screenshot (e.g., squishing a 16:10 Mac display
         // into 4:3), which would distort the image Claude sees and degrade X-axis accuracy.
