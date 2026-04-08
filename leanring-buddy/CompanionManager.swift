@@ -116,6 +116,20 @@ final class CompanionManager: ObservableObject {
         claudeAPI.model = model
     }
 
+    /// Custom system prompt that users can set to customize Claude's behavior.
+    /// Appended to the built-in companion system prompt when making API calls.
+    /// Persisted to UserDefaults so it survives app restarts.
+    @Published var customSystemPromptText: String = UserDefaults.standard.string(forKey: "customSystemPromptText") ?? ""
+
+    func setCustomSystemPromptText(_ customSystemPromptText: String) {
+        self.customSystemPromptText = customSystemPromptText
+        UserDefaults.standard.set(customSystemPromptText, forKey: "customSystemPromptText")
+    }
+
+    func clearCustomSystemPrompt() {
+        setCustomSystemPromptText("")
+    }
+
     /// User preference for whether the Clicky cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
@@ -610,9 +624,19 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
+                // Build the system prompt by appending the user's custom instructions
+                // (if any) to the built-in companion voice response prompt.
+                let systemPromptForRequest: String
+                let trimmedCustomSystemPrompt = customSystemPromptText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmedCustomSystemPrompt.isEmpty {
+                    systemPromptForRequest = Self.companionVoiceResponseSystemPrompt
+                } else {
+                    systemPromptForRequest = Self.companionVoiceResponseSystemPrompt + "\n\nadditional user instructions:\n" + trimmedCustomSystemPrompt
+                }
+
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                    systemPrompt: systemPromptForRequest,
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
                     onTextChunk: { _ in
