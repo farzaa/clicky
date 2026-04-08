@@ -14,68 +14,53 @@ import Foundation
 import Speech
 
 enum BuddyPushToTalkShortcut {
-    enum ShortcutOption {
-        case shiftFunction
-        case controlOption
-        case shiftControl
-        case controlOptionSpace
-        case shiftControlSpace
+    /// The UserDefaults key used to persist the user's chosen push-to-talk shortcut.
+    static let userDefaultsKeyForSelectedShortcut = "selectedPushToTalkShortcut"
+
+    enum ShortcutOption: String, CaseIterable, Identifiable {
+        case controlOption = "controlOption"
+        case commandShift = "commandShift"
+        case controlShift = "controlShift"
+        case functionOption = "functionOption"
+
+        var id: String { rawValue }
 
         var displayText: String {
             switch self {
-            case .shiftFunction:
-                return "shift + fn"
             case .controlOption:
                 return "ctrl + option"
-            case .shiftControl:
-                return "shift + control"
-            case .controlOptionSpace:
-                return "ctrl + option + space"
-            case .shiftControlSpace:
-                return "shift + control + space"
+            case .commandShift:
+                return "cmd + shift"
+            case .controlShift:
+                return "ctrl + shift"
+            case .functionOption:
+                return "fn + option"
             }
         }
 
         var keyCapsuleLabels: [String] {
             switch self {
-            case .shiftFunction:
-                return ["shift", "fn"]
             case .controlOption:
                 return ["ctrl", "option"]
-            case .shiftControl:
-                return ["shift", "control"]
-            case .controlOptionSpace:
-                return ["ctrl", "option", "space"]
-            case .shiftControlSpace:
-                return ["shift", "control", "space"]
+            case .commandShift:
+                return ["cmd", "shift"]
+            case .controlShift:
+                return ["ctrl", "shift"]
+            case .functionOption:
+                return ["fn", "option"]
             }
         }
 
-        fileprivate var modifierOnlyFlags: NSEvent.ModifierFlags? {
+        fileprivate var modifierOnlyFlags: NSEvent.ModifierFlags {
             switch self {
-            case .shiftFunction:
-                return [.shift, .function]
             case .controlOption:
                 return [.control, .option]
-            case .shiftControl:
+            case .commandShift:
+                return [.command, .shift]
+            case .controlShift:
                 return [.shift, .control]
-            case .controlOptionSpace, .shiftControlSpace:
-                return nil
-            }
-        }
-
-        fileprivate var spaceShortcutModifierFlags: NSEvent.ModifierFlags? {
-            switch self {
-            case .shiftFunction:
-                return nil
-            case .controlOption:
-                return nil
-            case .shiftControl:
-                return nil
-            case .controlOptionSpace:
-                return [.control, .option]
-            case .shiftControlSpace:
-                return [.shift, .control]
+            case .functionOption:
+                return [.function, .option]
             }
         }
     }
@@ -92,10 +77,23 @@ enum BuddyPushToTalkShortcut {
         case keyUp
     }
 
-    static let currentShortcutOption: ShortcutOption = .controlOption
-    static let pushToTalkKeyCode: UInt16 = 49 // Space
-    static let pushToTalkDisplayText = currentShortcutOption.displayText
-    static let pushToTalkTooltipText = "push to talk (\(pushToTalkDisplayText))"
+    /// Reads the user's selected push-to-talk shortcut from UserDefaults,
+    /// falling back to ctrl+option if no preference has been saved yet.
+    static var currentShortcutOption: ShortcutOption {
+        guard let savedRawValue = UserDefaults.standard.string(forKey: userDefaultsKeyForSelectedShortcut),
+              let savedOption = ShortcutOption(rawValue: savedRawValue) else {
+            return .controlOption
+        }
+        return savedOption
+    }
+
+    /// Persists the user's chosen push-to-talk shortcut to UserDefaults.
+    static func setSelectedShortcutOption(_ shortcutOption: ShortcutOption) {
+        UserDefaults.standard.set(shortcutOption.rawValue, forKey: userDefaultsKeyForSelectedShortcut)
+    }
+
+    static var pushToTalkDisplayText: String { currentShortcutOption.displayText }
+    static var pushToTalkTooltipText: String { "push to talk (\(pushToTalkDisplayText))" }
 
     static func shortcutTransition(
         for event: NSEvent,
@@ -160,38 +158,16 @@ enum BuddyPushToTalkShortcut {
         modifierFlags: NSEvent.ModifierFlags,
         wasShortcutPreviouslyPressed: Bool
     ) -> ShortcutTransition {
-        if let modifierOnlyFlags = currentShortcutOption.modifierOnlyFlags {
-            guard shortcutEventType == .flagsChanged else { return .none }
+        let modifierOnlyFlags = currentShortcutOption.modifierOnlyFlags
+        guard shortcutEventType == .flagsChanged else { return .none }
 
-            let isShortcutCurrentlyPressed = modifierFlags.contains(modifierOnlyFlags)
+        let isShortcutCurrentlyPressed = modifierFlags.contains(modifierOnlyFlags)
 
-            if isShortcutCurrentlyPressed && !wasShortcutPreviouslyPressed {
-                return .pressed
-            }
-
-            if !isShortcutCurrentlyPressed && wasShortcutPreviouslyPressed {
-                return .released
-            }
-
-            return .none
-        }
-
-        guard let pushToTalkModifierFlags = currentShortcutOption.spaceShortcutModifierFlags else {
-            return .none
-        }
-
-        let matchesModifierFlags = modifierFlags.isSuperset(of: pushToTalkModifierFlags)
-
-        if shortcutEventType == .keyDown
-            && keyCode == pushToTalkKeyCode
-            && matchesModifierFlags
-            && !wasShortcutPreviouslyPressed {
+        if isShortcutCurrentlyPressed && !wasShortcutPreviouslyPressed {
             return .pressed
         }
 
-        if shortcutEventType == .keyUp
-            && keyCode == pushToTalkKeyCode
-            && wasShortcutPreviouslyPressed {
+        if !isShortcutCurrentlyPressed && wasShortcutPreviouslyPressed {
             return .released
         }
 

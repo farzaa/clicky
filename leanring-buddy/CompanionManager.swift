@@ -116,6 +116,15 @@ final class CompanionManager: ObservableObject {
         claudeAPI.model = model
     }
 
+    /// The user's selected push-to-talk keyboard shortcut. Persisted to UserDefaults
+    /// via BuddyPushToTalkShortcut so the CGEvent tap reads the same value.
+    @Published var selectedPushToTalkShortcut: BuddyPushToTalkShortcut.ShortcutOption = BuddyPushToTalkShortcut.currentShortcutOption
+
+    func setSelectedPushToTalkShortcut(_ shortcutOption: BuddyPushToTalkShortcut.ShortcutOption) {
+        selectedPushToTalkShortcut = shortcutOption
+        BuddyPushToTalkShortcut.setSelectedShortcutOption(shortcutOption)
+    }
+
     /// User preference for whether the Clicky cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
@@ -894,7 +903,7 @@ final class CompanionManager: ObservableObject {
     }
 
     private func startOnboardingPromptStream() {
-        let message = "press control + option and introduce yourself"
+        let message = "press \(selectedPushToTalkShortcut.displayText) and introduce yourself"
         onboardingPromptText = ""
         showOnboardingPrompt = true
         onboardingPromptOpacity = 0.0
