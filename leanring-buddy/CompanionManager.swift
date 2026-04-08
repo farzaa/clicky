@@ -175,6 +175,10 @@ final class CompanionManager: ObservableObject {
     private static let computerUseAutomationDeniedSpokenGuidance =
         "i can't run clicks or typing until automation is on for system events. open clicky's settings tab and tap grant next to automation, or open system settings, privacy and security, automation, and allow clicky to control system events."
 
+    private static let computerUseEnabledRecommendedOpenRouterModelID = "openai/gpt-5.4-mini"
+    private static let computerUseEnabledRecommendedOrchestratorOpenRouterModelID = "openai/gpt-5.4"
+    private static let computerUseDisabledRecommendedOpenRouterModelID = "anthropic/claude-sonnet-4.6"
+
     func computerUseAuthorizationStatus() -> (isAllowed: Bool, blockedReason: String?) {
         (canPerformComputerUseActions, computerUseBlockedReason)
     }
@@ -208,6 +212,13 @@ final class CompanionManager: ObservableObject {
 
     func setComputerUseEnabled(_ isComputerUseEnabled: Bool) {
         aiServiceSettings.saveComputerUseEnabled(isComputerUseEnabled)
+        if isComputerUseEnabled {
+            aiServiceSettings.saveSelectedOpenRouterModelID(Self.computerUseEnabledRecommendedOpenRouterModelID)
+            aiServiceSettings.saveOrchestratorOpenRouterModelID(Self.computerUseEnabledRecommendedOrchestratorOpenRouterModelID)
+        } else {
+            aiServiceSettings.saveSelectedOpenRouterModelID(Self.computerUseDisabledRecommendedOpenRouterModelID)
+            aiServiceSettings.saveOrchestratorOpenRouterModelID(Self.computerUseDisabledRecommendedOpenRouterModelID)
+        }
         if isComputerUseEnabled {
             hasAutomationPermission = WindowPositionManager.hasAutomationPermissionForSystemEvents()
             lastAutomationPermissionProbeDateDuringPolling = Date()
