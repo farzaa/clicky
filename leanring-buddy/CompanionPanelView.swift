@@ -12,6 +12,7 @@ import SwiftUI
 
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
+    @ObservedObject private var themeManager = ThemeManager.shared
     @State private var emailInput: String = ""
 
     var body: some View {
@@ -30,6 +31,12 @@ struct CompanionPanelView: View {
                     .frame(height: 12)
 
                 modelPickerRow
+                    .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 8)
+
+                themePickerRow
                     .padding(.horizontal, 16)
             }
 
@@ -112,7 +119,7 @@ struct CompanionPanelView: View {
                     .frame(width: 20, height: 20)
                     .background(
                         Circle()
-                            .fill(Color.white.opacity(0.08))
+                            .fill(DS.Colors.surface3)
                     )
             }
             .buttonStyle(.plain)
@@ -194,7 +201,7 @@ struct CompanionPanelView: View {
                         .padding(.vertical, 8)
                         .background(
                             RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                                .fill(Color.white.opacity(0.08))
+                                .fill(DS.Colors.surface2)
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
@@ -612,7 +619,7 @@ struct CompanionPanelView: View {
             }
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
+                    .fill(DS.Colors.surface2)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -634,7 +641,52 @@ struct CompanionPanelView: View {
                 .padding(.vertical, 5)
                 .background(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                        .fill(isSelected ? DS.Colors.surface3 : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    // MARK: - Theme Picker
+
+    private var themePickerRow: some View {
+        HStack {
+            Text("Theme")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Spacer()
+
+            HStack(spacing: 0) {
+                themeOptionButton(label: "Dark", theme: .dark)
+                themeOptionButton(label: "Light", theme: .light)
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(DS.Colors.surface2)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func themeOptionButton(label: String, theme: AppTheme) -> some View {
+        let isSelected = themeManager.activeTheme == theme
+        return Button(action: {
+            themeManager.setTheme(theme)
+        }) {
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isSelected ? DS.Colors.surface3 : Color.clear)
                 )
         }
         .buttonStyle(.plain)
@@ -667,7 +719,7 @@ struct CompanionPanelView: View {
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
+                    .fill(DS.Colors.surface2)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
@@ -721,8 +773,14 @@ struct CompanionPanelView: View {
     private var panelBackground: some View {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
             .fill(DS.Colors.background)
-            .shadow(color: Color.black.opacity(0.5), radius: 20, x: 0, y: 10)
-            .shadow(color: Color.black.opacity(0.3), radius: 4, x: 0, y: 2)
+            .shadow(
+                color: Color.black.opacity(themeManager.activeTheme == .dark ? 0.5 : 0.15),
+                radius: 20, x: 0, y: 10
+            )
+            .shadow(
+                color: Color.black.opacity(themeManager.activeTheme == .dark ? 0.3 : 0.08),
+                radius: 4, x: 0, y: 2
+            )
     }
 
     private var statusDotColor: Color {
