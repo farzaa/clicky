@@ -9,4 +9,7 @@ coding-plans/
 
 /worker/wrangler.toml
 
-/worker/.wrangler/xcuserdata/
+/worker/.wrangler/
+
+xcuserdata/
+*.xcuserdatad/
