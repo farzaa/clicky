@@ -139,6 +139,15 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    /// Whether Clicky's responses are automatically copied to the clipboard.
+    /// Defaults to OFF. Persisted to UserDefaults.
+    @Published var isAutoCopyResponseEnabled: Bool = UserDefaults.standard.bool(forKey: "isAutoCopyResponseEnabled")
+
+    func setAutoCopyResponseEnabled(_ enabled: Bool) {
+        isAutoCopyResponseEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isAutoCopyResponseEnabled")
+    }
+
     /// Whether the user has completed onboarding at least once. Persisted
     /// to UserDefaults so the Start button only appears on first launch.
     var hasCompletedOnboarding: Bool {
@@ -679,6 +688,12 @@ final class CompanionManager: ObservableObject {
                     print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
                 } else {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
+                }
+
+                // Copy the clean response to the clipboard if the user has enabled auto-copy
+                if isAutoCopyResponseEnabled {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(spokenText, forType: .string)
                 }
 
                 // Save this exchange to conversation history (with the point tag
