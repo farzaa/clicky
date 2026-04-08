@@ -111,6 +111,13 @@ final class CompanionManager: ObservableObject {
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
 
+    /// The user's preferred spoken and transcribing language code (e.g. "en", "fr").
+    @Published var selectedLanguageCode: String = UserDefaults.standard.string(forKey: "selectedLanguageCode") ?? "en" {
+        didSet {
+            UserDefaults.standard.set(selectedLanguageCode, forKey: "selectedLanguageCode")
+        }
+    }
+
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedGemmaModel") ?? ""
 
@@ -674,7 +681,7 @@ final class CompanionManager: ObservableObject {
                 if selectedModel.lowercased().contains("claude") {
                     (fullResponseText, duration) = try await claudeAPI.analyzeImageStreaming(
                         images: labeledImages,
-                        systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                        systemPrompt: Self.companionVoiceResponseSystemPrompt + "\n\nCRITICAL: Respond EXCLUSIVELY in the following language code: \(selectedLanguageCode)",
                         conversationHistory: historyForAPI,
                         userPrompt: transcript,
                         onTextChunk: { _ in
@@ -684,7 +691,7 @@ final class CompanionManager: ObservableObject {
                 } else {
                     (fullResponseText, duration) = try await openAIAPI.analyzeImageStreaming(
                         images: labeledImages,
-                        systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                        systemPrompt: Self.companionVoiceResponseSystemPrompt + "\n\nCRITICAL: Respond EXCLUSIVELY in the following language code: \(selectedLanguageCode)",
                         conversationHistory: historyForAPI,
                         userPrompt: transcript,
                         onTextChunk: { _ in
@@ -1061,14 +1068,14 @@ final class CompanionManager: ObservableObject {
                 if selectedModel.lowercased().contains("claude") {
                     (fullResponseText, duration) = try await claudeAPI.analyzeImageStreaming(
                         images: labeledImages,
-                        systemPrompt: Self.onboardingDemoSystemPrompt,
+                        systemPrompt: Self.onboardingDemoSystemPrompt + "\n\nCRITICAL: Respond EXCLUSIVELY in the following language code: \(selectedLanguageCode)",
                         userPrompt: "look around my screen and find something interesting to point at",
                         onTextChunk: { _ in }
                     )
                 } else {
                     (fullResponseText, duration) = try await openAIAPI.analyzeImageStreaming(
                         images: labeledImages,
-                        systemPrompt: Self.onboardingDemoSystemPrompt,
+                        systemPrompt: Self.onboardingDemoSystemPrompt + "\n\nCRITICAL: Respond EXCLUSIVELY in the following language code: \(selectedLanguageCode)",
                         userPrompt: "look around my screen and find something interesting to point at",
                         onTextChunk: { _ in }
                     )

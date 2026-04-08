@@ -13,8 +13,8 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
-    @State private var isShowingLocalAPIKeyField: Bool = false
     @State private var isAPIKeyVisible: Bool = false
+    @State private var isShowingSettings: Bool = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -23,17 +23,92 @@ struct CompanionPanelView: View {
                 .background(DS.Colors.borderSubtle)
                 .padding(.horizontal, 16)
             
+            if isShowingSettings {
+                settingsView
+            } else {
+                mainContentView
+            }
+            
+            Spacer()
+                .frame(height: 12)
+            
+            Divider()
+                .background(DS.Colors.borderSubtle)
+                .padding(.horizontal, 16)
+            
+            footerSection // <-- This is now defined below
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+        }
+        .frame(width: 320)
+        .background(panelBackground) // <-- This is now defined below
+    }
+    
+    private var settingsView: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            modelPickerRow
+            localAPIKeyRow
+            languagePickerRow
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 16)
+    }
+
+    private var localAPIKeyRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                ZStack(alignment: .leading) {
+                    if companionManager.lmStudioAPIKey.isEmpty {
+                        Text("LM Studio API Key (leave empty if none)")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.6))
+                    }
+                    
+                    if isAPIKeyVisible {
+                        TextField("", text: Binding(
+                            get: { companionManager.lmStudioAPIKey },
+                            set: { companionManager.lmStudioAPIKey = $0 }
+                        ))
+                        .textFieldStyle(PlainTextFieldStyle())
+                        .font(.system(size: 11))
+                        .foregroundColor(.white)
+                    } else {
+                        SecureField("", text: Binding(
+                            get: { companionManager.lmStudioAPIKey },
+                            set: { companionManager.lmStudioAPIKey = $0 }
+                        ))
+                        .textFieldStyle(PlainTextFieldStyle())
+                        .font(.system(size: 11))
+                        .foregroundColor(.white)
+                    }
+                }
+                
+                Button(action: {
+                    isAPIKeyVisible.toggle()
+                }) {
+                    Image(systemName: isAPIKeyVisible ? "eye.slash.fill" : "eye.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.white.opacity(0.06))
+            .cornerRadius(6)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+    }
+
+    private var mainContentView: some View {
+        VStack(alignment: .leading, spacing: 0) {
             permissionsCopySection
                 .padding(.top, 16)
                 .padding(.horizontal, 16)
-            
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 12)
-                
-                modelPickerRow
-                    .padding(.horizontal, 16)
-            }
             
             if !companionManager.allPermissionsGranted {
                 Spacer()
@@ -67,20 +142,7 @@ struct CompanionPanelView: View {
                 dmFarzaButton // <-- This is now defined below
                     .padding(.horizontal, 16)
             }
-            
-            Spacer()
-                .frame(height: 12)
-            
-            Divider()
-                .background(DS.Colors.borderSubtle)
-                .padding(.horizontal, 16)
-            
-            footerSection // <-- This is now defined below
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
         }
-        .frame(width: 320)
-        .background(panelBackground) // <-- This is now defined below
     }
     
     // MARK: - Header
@@ -104,6 +166,25 @@ struct CompanionPanelView: View {
             Text(statusText) // <-- This is now defined below
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(DS.Colors.textTertiary)
+            
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Button(action: {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        isShowingSettings.toggle()
+                    }
+                }) {
+                    Image(systemName: "gear")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(isShowingSettings ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                        .frame(width: 20, height: 20)
+                        .background(
+                            Circle()
+                                .fill(isShowingSettings ? Color.white.opacity(0.12) : Color.white.opacity(0.08))
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
             
             Button(action: {
                 NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
@@ -598,6 +679,71 @@ struct CompanionPanelView: View {
         .padding(.vertical, 4)
     }
     
+    // MARK: - Language Picker
+    
+    private var languagePickerRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "globe")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 16)
+                
+                Text("Language")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+            
+            Spacer()
+            
+            Menu {
+                // ElevenLabs supports up to 32 base languages automatically on flash 2.5
+                Button("🇺🇸 English") { companionManager.selectedLanguageCode = "en" }
+                Button("🇫🇷 French") { companionManager.selectedLanguageCode = "fr" }
+                Button("🇪🇸 Spanish") { companionManager.selectedLanguageCode = "es" }
+                Button("🇩🇪 German") { companionManager.selectedLanguageCode = "de" }
+                Button("🇮🇹 Italian") { companionManager.selectedLanguageCode = "it" }
+                Button("🇯🇵 Japanese") { companionManager.selectedLanguageCode = "ja" }
+                Button("🇵🇹 Portuguese") { companionManager.selectedLanguageCode = "pt" }
+                // AssemblyAI supports these natively
+            } label: {
+                HStack(spacing: 4) {
+                    Text(flagForLanguage(companionManager.selectedLanguageCode))
+                        .font(.system(size: 14))
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .frame(maxWidth: 80)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func flagForLanguage(_ code: String) -> String {
+        switch code {
+        case "fr": return "🇫🇷"
+        case "es": return "🇪🇸"
+        case "de": return "🇩🇪"
+        case "it": return "🇮🇹"
+        case "ja": return "🇯🇵"
+        case "pt": return "🇵🇹"
+        default: return "🇺🇸"
+        }
+    }
+    
     // MARK: - Model Picker
     
     private var modelPickerRow: some View {
@@ -606,18 +752,6 @@ struct CompanionPanelView: View {
                 Text("Model")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
-                
-                Button(action: {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                        isShowingLocalAPIKeyField.toggle()
-                    }
-                }) {
-                    Image(systemName: "gear")
-                        .font(.system(size: 11))
-                        .foregroundColor(isShowingLocalAPIKeyField ? DS.Colors.textPrimary : DS.Colors.textTertiary)
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
                 
                 Spacer()
                 
@@ -677,7 +811,7 @@ struct CompanionPanelView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     
-                    Image(systemName: "chevron.up.chevron.down")
+                    Image(systemName: "chevron.down")
                         .font(.system(size: 9))
                         .foregroundColor(DS.Colors.textTertiary)
                 }
@@ -693,59 +827,8 @@ struct CompanionPanelView: View {
                 )
             }
             .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
             .frame(maxWidth: 200)
-        }
-            
-        if isShowingLocalAPIKeyField {
-            HStack {
-                HStack(spacing: 8) {
-                    ZStack(alignment: .leading) {
-                        if companionManager.lmStudioAPIKey.isEmpty {
-                            Text("LM Studio API Key (leave empty if none)")
-                                .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.6))
-                        }
-                        
-                        if isAPIKeyVisible {
-                            TextField("", text: Binding(
-                                get: { companionManager.lmStudioAPIKey },
-                                set: { companionManager.lmStudioAPIKey = $0 }
-                            ))
-                            .textFieldStyle(PlainTextFieldStyle())
-                            .font(.system(size: 11))
-                            .foregroundColor(.white)
-                        } else {
-                            SecureField("", text: Binding(
-                                get: { companionManager.lmStudioAPIKey },
-                                set: { companionManager.lmStudioAPIKey = $0 }
-                            ))
-                            .textFieldStyle(PlainTextFieldStyle())
-                            .font(.system(size: 11))
-                            .foregroundColor(.white)
-                        }
-                    }
-                    
-                    Button(action: {
-                        isAPIKeyVisible.toggle()
-                    }) {
-                        Image(systemName: isAPIKeyVisible ? "eye.slash.fill" : "eye.fill")
-                            .font(.system(size: 11))
-                            .foregroundColor(DS.Colors.textTertiary)
-                    }
-                    .buttonStyle(.plain)
-                    .pointerCursor()
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.white.opacity(0.06))
-                .cornerRadius(6)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-                )
-            }
-            .transition(.opacity.combined(with: .move(edge: .top)))
-            .padding(.top, 4)
         }
         }
         .padding(.vertical, 4)

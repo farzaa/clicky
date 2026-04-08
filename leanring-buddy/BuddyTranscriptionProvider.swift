@@ -22,6 +22,7 @@ protocol BuddyTranscriptionProvider {
     var unavailableExplanation: String? { get }
 
     func startStreamingSession(
+        languageCode: String,
         keyterms: [String],
         onTranscriptUpdate: @escaping (String) -> Void,
         onFinalTranscriptReady: @escaping (String) -> Void,

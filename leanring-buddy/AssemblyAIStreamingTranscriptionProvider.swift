@@ -30,6 +30,7 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
     private let sharedWebSocketURLSession = URLSession(configuration: .default)
 
     func startStreamingSession(
+        languageCode: String,
         keyterms: [String],
         onTranscriptUpdate: @escaping (String) -> Void,
         onFinalTranscriptReady: @escaping (String) -> Void,
@@ -44,6 +45,7 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
             temporaryToken: temporaryToken,
             urlSession: sharedWebSocketURLSession,
             keyterms: keyterms,
+            languageCode: languageCode,
             onTranscriptUpdate: onTranscriptUpdate,
             onFinalTranscriptReady: onFinalTranscriptReady,
             onError: onError
@@ -114,6 +116,7 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
     private let apiKey: String?
     private let temporaryToken: String?
     private let keyterms: [String]
+    private let languageCode: String
     private let onTranscriptUpdate: (String) -> Void
     private let onFinalTranscriptReady: (String) -> Void
     private let onError: (Error) -> Void
@@ -139,6 +142,7 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
         temporaryToken: String?,
         urlSession: URLSession,
         keyterms: [String],
+        languageCode: String,
         onTranscriptUpdate: @escaping (String) -> Void,
         onFinalTranscriptReady: @escaping (String) -> Void,
         onError: @escaping (Error) -> Void
@@ -147,6 +151,7 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
         self.temporaryToken = temporaryToken
         self.urlSession = urlSession
         self.keyterms = keyterms
+        self.languageCode = languageCode
         self.onTranscriptUpdate = onTranscriptUpdate
         self.onFinalTranscriptReady = onFinalTranscriptReady
         self.onError = onError
@@ -155,7 +160,8 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
     func open() async throws {
         let websocketURL = try Self.makeWebsocketURL(
             temporaryToken: temporaryToken,
-            keyterms: keyterms
+            keyterms: keyterms,
+            languageCode: languageCode
         )
 
         var websocketRequest = URLRequest(url: websocketURL)
@@ -433,7 +439,8 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
 
     private static func makeWebsocketURL(
         temporaryToken: String?,
-        keyterms: [String]
+        keyterms: [String],
+        languageCode: String
     ) throws -> URL {
         guard var websocketURLComponents = URLComponents(string: websocketBaseURLString) else {
             throw AssemblyAIStreamingTranscriptionProviderError(
@@ -447,6 +454,12 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
             URLQueryItem(name: "format_turns", value: "true"),
             URLQueryItem(name: "speech_model", value: "u3-rt-pro")
         ]
+
+        if languageCode != "en" {
+            // AssemblyAI supports multiple language codes.
+            queryItems.append(URLQueryItem(name: "language_code", value: languageCode))
+            // u3-rt-pro generally supports multi lingual. If any errors happen, we might need a different speech_model or drop it.
+        }
 
         let normalizedKeyterms = keyterms
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
