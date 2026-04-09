@@ -1,0 +1,109 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background: #0a0a0f;
+  color: #e0e0e8;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+#status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: #12121a;
+  border-bottom: 1px solid #1a1a2e;
+  font-size: 13px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.status-dot.connected { background: #22c55e; }
+.status-dot.disconnected { background: #6b7280; }
+.status-dot.connecting { background: #eab308; }
+
+#messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.message {
+  padding: 8px 12px;
+  border-radius: 8px;
+  max-width: 85%;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.message.user {
+  background: #1e3a5f;
+  align-self: flex-end;
+}
+
+.message.assistant {
+  background: #1a1a2e;
+  align-self: flex-start;
+}
+
+.message .source {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 4px;
+}
+
+#chat-form {
+  display: flex;
+  padding: 12px;
+  gap: 8px;
+  background: #12121a;
+  border-top: 1px solid #1a1a2e;
+}
+
+#chat-input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #1a1a2e;
+  border-radius: 6px;
+  background: #0a0a0f;
+  color: #e0e0e8;
+  font-size: 14px;
+  outline: none;
+}
+
+#chat-input:focus {
+  border-color: #3b82f6;
+}
+
+#chat-form button {
+  padding: 8px 16px;
+  background: #3b82f6;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+#chat-form button:hover {
+  background: #2563eb;
+}

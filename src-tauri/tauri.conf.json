@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
+  "productName": "Sewa Companion",
+  "version": "0.1.0",
+  "identifier": "lol.goobsquire.sewa-companion",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Sewa Companion",
+        "width": 400,
+        "height": 600,
+        "visible": false,
+        "decorations": false,
+        "skipTaskbar": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png"
+    ]
+  }
+}

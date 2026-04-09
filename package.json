@@ -1,0 +1,13 @@
+{
+  "name": "sewa-companion",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "cargo tauri dev",
+    "build": "cargo tauri build",
+    "tauri": "cargo tauri"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}
