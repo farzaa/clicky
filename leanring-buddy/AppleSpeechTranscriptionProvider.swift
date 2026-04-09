@@ -33,6 +33,8 @@ final class AppleSpeechTranscriptionProvider: BuddyTranscriptionProvider {
             throw AppleSpeechTranscriptionProviderError(message: "dictation is not available on this mac.")
         }
 
+        print("🎙️ Apple Speech: starting session with locale \(speechRecognizer.locale.identifier)")
+
         return try AppleSpeechTranscriptionSession(
             speechRecognizer: speechRecognizer,
             onTranscriptUpdate: onTranscriptUpdate,
@@ -58,6 +60,9 @@ final class AppleSpeechTranscriptionProvider: BuddyTranscriptionProvider {
 }
 
 private final class AppleSpeechTranscriptionSession: NSObject, BuddyStreamingTranscriptionSession {
+    private static let assistantErrorDomain = "kAFAssistantErrorDomain"
+    private static let noSpeechDetectedErrorCode = 1110
+
     let finalTranscriptFallbackDelaySeconds: TimeInterval = 1.8
 
     private let recognitionRequest: SFSpeechAudioBufferRecognitionRequest
@@ -104,10 +109,12 @@ private final class AppleSpeechTranscriptionSession: NSObject, BuddyStreamingTra
     func requestFinalTranscript() {
         guard !hasRequestedFinalTranscript else { return }
         hasRequestedFinalTranscript = true
+        print("🎙️ Apple Speech: requesting final transcript")
         recognitionRequest.endAudio()
     }
 
     func cancel() {
+        print("🎙️ Apple Speech: cancelling session")
         recognitionTask?.cancel()
         recognitionTask = nil
     }
@@ -128,16 +135,36 @@ private final class AppleSpeechTranscriptionSession: NSObject, BuddyStreamingTra
 
         guard let error else { return }
 
+        if hasRequestedFinalTranscript && shouldTreatAsEmptyFinalTranscript(error) {
+            print("🎙️ Apple Speech: treating no-speech result as empty final transcript")
+            deliverFinalTranscriptIfNeeded(latestRecognizedText)
+            return
+        }
+
         if hasRequestedFinalTranscript && !latestRecognizedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             deliverFinalTranscriptIfNeeded(latestRecognizedText)
         } else {
+            print("❌ Apple Speech: recognition error: \(error)")
             onError(error)
         }
+    }
+
+    private func shouldTreatAsEmptyFinalTranscript(_ error: Error) -> Bool {
+        let recognitionError = error as NSError
+
+        if recognitionError.domain == Self.assistantErrorDomain
+            && recognitionError.code == Self.noSpeechDetectedErrorCode {
+            return true
+        }
+
+        return recognitionError.localizedDescription
+            .localizedCaseInsensitiveContains("no speech detected")
     }
 
     private func deliverFinalTranscriptIfNeeded(_ transcriptText: String) {
         guard !hasDeliveredFinalTranscript else { return }
         hasDeliveredFinalTranscript = true
+        print("🎙️ Apple Speech: delivering final transcript: \"\(transcriptText)\"")
         onFinalTranscriptReady(transcriptText)
     }
 

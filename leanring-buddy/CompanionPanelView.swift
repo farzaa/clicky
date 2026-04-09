@@ -29,8 +29,22 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 12)
 
-                modelPickerRow
+                inferenceModeRow
                     .padding(.horizontal, 16)
+
+                if companionManager.isUsingLocalInference {
+                    Spacer()
+                        .frame(height: 8)
+
+                    modelPickerRow
+                        .padding(.horizontal, 16)
+                } else {
+                    Spacer()
+                        .frame(height: 8)
+
+                    claudeModeInfoRow
+                        .padding(.horizontal, 16)
+                }
             }
 
             if !companionManager.allPermissionsGranted {
@@ -596,19 +610,19 @@ struct CompanionPanelView: View {
         .padding(.vertical, 4)
     }
 
-    // MARK: - Model Picker
+    // MARK: - Inference Mode
 
-    private var modelPickerRow: some View {
+    private var inferenceModeRow: some View {
         HStack {
-            Text("Model")
+            Text("Inference")
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(DS.Colors.textSecondary)
 
             Spacer()
 
             HStack(spacing: 0) {
-                modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
-                modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
+                inferenceModeButton(.local)
+                inferenceModeButton(.claude)
             }
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -622,12 +636,12 @@ struct CompanionPanelView: View {
         .padding(.vertical, 4)
     }
 
-    private func modelOptionButton(label: String, modelID: String) -> some View {
-        let isSelected = companionManager.selectedModel == modelID
+    private func inferenceModeButton(_ inferenceMode: CompanionInferenceMode) -> some View {
+        let isSelected = companionManager.selectedInferenceMode == inferenceMode
         return Button(action: {
-            companionManager.setSelectedModel(modelID)
+            companionManager.setInferenceMode(inferenceMode)
         }) {
-            Text(label)
+            Text(inferenceMode.shortLabel)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
                 .padding(.horizontal, 10)
@@ -639,6 +653,142 @@ struct CompanionPanelView: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
+    }
+
+    private var claudeModeInfoRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Cloud Model")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                HStack(spacing: 0) {
+                    ForEach(companionManager.availableClaudeModelOptions) { modelOption in
+                        claudeModelButton(modelOption)
+                    }
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+            }
+
+            Text(companionManager.claudeModelDisplayName)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textTertiary)
+
+            Text("Local MLX model is offloaded to reduce memory usage.")
+                .font(.system(size: 11))
+                .foregroundColor(DS.Colors.textTertiary)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func claudeModelButton(_ modelOption: CompanionClaudeModelOption) -> some View {
+        let isSelected = companionManager.selectedClaudeModel == modelOption
+        return Button(action: {
+            companionManager.setClaudeModel(modelOption)
+        }) {
+            Text(modelOption.shortLabel)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    // MARK: - Local Model
+
+    private var modelPickerRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Local Model")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                Text(companionManager.localModelDisplayName)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(DS.Colors.textPrimary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color.white.opacity(0.06))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                    )
+            }
+
+            Text("Runs fully on-device with MLX.")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textTertiary)
+
+            if let modelDownloadProgress = companionManager.modelDownloadProgress {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Downloading local model")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(DS.Colors.textSecondary)
+
+                        Spacer()
+
+                        Text(modelDownloadProgress.localizedDescription)
+                            .font(.system(size: 10))
+                            .foregroundColor(DS.Colors.textTertiary)
+                    }
+
+                    ProgressView(value: modelDownloadProgress.fractionCompleted)
+                        .progressViewStyle(.linear)
+                        .tint(DS.Colors.accent)
+                }
+            } else if companionManager.isPreparingSelectedModel {
+                Text("loading model...")
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+
+            if let modelPreparationErrorMessage = companionManager.modelPreparationErrorMessage {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(modelPreparationErrorMessage)
+                        .font(.system(size: 11))
+                        .foregroundColor(Color(red: 0.9, green: 0.4, blue: 0.4))
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Button(action: {
+                        companionManager.retrySelectedModelPreparation()
+                    }) {
+                        Text("Retry Download")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(DS.Colors.textOnAccent)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(
+                                Capsule()
+                                    .fill(DS.Colors.accent)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                }
+            }
+        }
+        .padding(.vertical, 4)
     }
 
     // MARK: - DM Farza Button
@@ -742,6 +892,10 @@ struct CompanionPanelView: View {
     private var statusText: String {
         if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
             return "Setup"
+        }
+        if companionManager.isUsingLocalInference
+            && (companionManager.modelDownloadProgress != nil || companionManager.isPreparingSelectedModel) {
+            return "Preparing"
         }
         if !companionManager.isOverlayVisible {
             return "Ready"
