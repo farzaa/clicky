@@ -1,10 +1,12 @@
-// Sewa Companion — Phase 1: text chat over Phoenix channel
+// Sewa Companion — Phoenix channel client (chat + pointer overlay dispatch)
 
 /** @type {WebSocket | null} */
 let socket = null;
 /** @type {string | null} */
 let channelJoinRef = null;
 let msgRef = 0;
+/** @type {number|null} */
+let heartbeatInterval = null;
 
 function nextRef() {
   return String(++msgRef);
@@ -33,6 +35,31 @@ function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text;
   return div.innerHTML;
+}
+
+function handlePointerEvent(payload) {
+  if (!window.__TAURI__ || !payload || !payload.instructions) return;
+
+  // Group instructions by target screen
+  const byScreen = new Map();
+  for (const instr of payload.instructions) {
+    if (instr.type === "chain" && instr.steps) {
+      // Chain targets the screen of its first step
+      const screen = instr.steps[0]?.screen ?? 0;
+      if (!byScreen.has(screen)) byScreen.set(screen, []);
+      byScreen.get(screen).push(instr);
+    } else {
+      const screen = instr.screen ?? 0;
+      if (!byScreen.has(screen)) byScreen.set(screen, []);
+      byScreen.get(screen).push(instr);
+    }
+  }
+
+  // Show each overlay and emit only its instructions
+  for (const [screen, instructions] of byScreen) {
+    window.__TAURI__.core.invoke("show_overlay", { screen });
+    window.__TAURI__.event.emitTo(`overlay-${screen}`, "pointer-instructions", { instructions });
+  }
 }
 
 function connect() {
@@ -65,6 +92,10 @@ function connect() {
     if (eventName === "new_message" && topic === "companion:chat") {
       addMessage(payload);
     }
+
+    if (eventName === "pointer" && topic === "companion:chat") {
+      handlePointerEvent(payload);
+    }
   };
 
   socket.onclose = () => {
@@ -76,8 +107,9 @@ function connect() {
     setStatus("disconnected");
   };
 
-  // Heartbeat every 30 seconds
-  setInterval(() => {
+  // Heartbeat every 30 seconds (clear previous on reconnect)
+  if (heartbeatInterval) clearInterval(heartbeatInterval);
+  heartbeatInterval = setInterval(() => {
     if (socket?.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify([null, nextRef(), "phoenix", "heartbeat", {}]));
     }

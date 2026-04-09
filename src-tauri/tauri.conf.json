@@ -25,5 +25,8 @@
     "icon": [
       "icons/icon.png"
     ]
+  },
+  "plugins": {
+    "global-shortcut": {}
   }
 }

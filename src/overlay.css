@@ -1,0 +1,114 @@
+/* src/overlay.css */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+#overlay-root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+/* -- Pointer --------------------------------------------------------- */
+
+#pointer {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  transform: translate(-50%, -50%);
+  transition: left 0.5s ease, top 0.5s ease;
+  z-index: 100;
+}
+
+#pointer .pointer-dot {
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: #3b82f6;
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.8);
+}
+
+#pointer .pointer-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(59, 130, 246, 0.6);
+  animation: pulse-ring 1.5s ease-out infinite;
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(2.5); opacity: 0; }
+}
+
+/* -- Chat bubble ----------------------------------------------------- */
+
+.label {
+  position: absolute;
+  background: rgba(10, 10, 15, 0.92);
+  color: #e0e0e8;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  max-width: 300px;
+  z-index: 101;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+#bubble {
+  transform: translate(24px, 24px);
+}
+
+#bubble .step-indicator {
+  display: inline-block;
+  background: rgba(59, 130, 246, 0.3);
+  color: #93c5fd;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-right: 6px;
+}
+
+/* -- Region mask ----------------------------------------------------- */
+
+#region-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 50;
+  transition: opacity 0.3s ease, clip-path 0.3s ease;
+}
+
+#region-label {
+  z-index: 51;
+}
+
+/* -- Visibility ------------------------------------------------------ */
+
+.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.visible {
+  opacity: 1;
+}
+
+.fade-out {
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
