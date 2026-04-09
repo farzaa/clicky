@@ -126,7 +126,7 @@ If you want to run Clicky fully on-device, use the app's **Local** inference mod
 5. Choose your local backend:
 
    - **MLX** for the built-in on-device model
-   - **LM Studio** to use any model currently loaded in LM Studio on your Mac
+   - **LM Studio** to use a vision-capable model currently loaded in LM Studio on your Mac
 
 6. If you choose **LM Studio**, enter the server URL in the panel.
 
@@ -136,14 +136,15 @@ If you want to run Clicky fully on-device, use the app's **Local** inference mod
    http://localhost:1234
    ```
 
-   Clicky expects LM Studio's local server to be running and any model to already be loaded in LM Studio.
+   Clicky expects LM Studio's local server to be running and a vision-capable model to already be loaded in LM Studio.
 
 7. Wait for the selected local backend to finish preparing.
 
-   The first MLX run may download and prepare the model before it is ready. LM Studio mode validates the server URL and checks for a loaded model.
+   The first MLX run may download and prepare the model before it is ready. LM Studio mode validates the server URL and checks for a loaded model. Since Clicky always sends screenshots with each request, LM Studio works best with a vision-capable model.
 
 In **Local** mode:
 - chat responses come from either the built-in MLX model or LM Studio, depending on the selected local backend
+- LM Studio should use a vision-capable model, because Clicky always includes screenshots in local requests
 - speech playback uses the local speech synthesizer client
 - transcription uses Apple Speech when `VoiceTranscriptionProvider` is set to `apple`
 
@@ -180,7 +181,7 @@ If you want the full technical breakdown, read `CLAUDE.md`. But here's the short
 
 **Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk always captures mic audio locally and sends screenshots of your screen into the response pipeline. From there, Clicky can run in two modes:
 
-- **Local**: transcript is captured with Apple Speech, responses come from either the built-in MLX model or an LM Studio local server, and speech playback uses the local speech synthesizer
+- **Local**: transcript is captured with Apple Speech, responses come from either the built-in MLX model or a vision-capable LM Studio local server, and speech playback uses the local speech synthesizer
 - **Claude**: transcript, chat, and TTS use the configured cloud providers, with Claude, AssemblyAI, and ElevenLabs all proxied through the Cloudflare Worker
 
 Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors.

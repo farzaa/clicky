@@ -5,7 +5,7 @@
 
 ## Overview
 
-macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to Claude or to a selectable local backend (`MLX` or `LM Studio`). Responses can be spoken with local macOS speech or ElevenLabs TTS depending on the selected inference mode. A blue cursor overlay can fly to and point at UI elements the assistant references on any connected monitor.
+macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it through the configured provider layer (Apple Speech by default in this repo, with AssemblyAI and OpenAI also supported), and sends the transcript + a screenshot of the user's screen to Claude or to a selectable local backend (`MLX` or `LM Studio`). Responses can be spoken with local macOS speech or ElevenLabs TTS depending on the selected inference mode. A blue cursor overlay can fly to and point at UI elements the assistant references on any connected monitor.
 
 All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in the app.
 
@@ -14,7 +14,7 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: Switchable between Claude (Sonnet 4.6 or Opus 4.6) and local inference. Local inference supports the built-in MLX vision model (`Qwen 3 VL 4B`) or any loaded LM Studio model served on `http://localhost:1234` (configurable in the panel).
+- **AI Chat**: Switchable between Claude (Sonnet 4.6 or Opus 4.6) and local inference. Local inference supports the built-in MLX vision model (`Qwen 3 VL 4B`) or an LM Studio model served on `http://localhost:1234` (configurable in the panel). Because Clicky always sends screenshots, LM Studio should use a vision-capable model.
 - **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with OpenAI and Apple Speech as fallbacks
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy in Claude mode, or local macOS speech synthesis in local mode
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
@@ -68,7 +68,7 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
 | `ClaudeAPI.swift` | ~291 | Claude vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
 | `Local-AI-Mode/LocalMLXVLMClient.swift` | ~291 | On-device MLX vision-language client. Downloads/caches the fixed `Qwen 3 VL 4B` model, warms it up, streams responses, and exposes progress updates for the panel UI. |
-| `Local-AI-Mode/LMStudioLocalChatClient.swift` | ~441 | Local backend that connects directly to an LM Studio server. Validates the configured server URL, checks for any loaded model from LM Studio's `/api/v1/models` endpoint, and streams screenshot chat through the OpenAI-compatible local chat completions endpoint. |
+| `Local-AI-Mode/LMStudioLocalChatClient.swift` | ~441 | Local backend that connects directly to an LM Studio server. Validates the configured server URL, checks for a loaded model from LM Studio's `/api/v1/models` endpoint, and streams screenshot chat through the OpenAI-compatible local chat completions endpoint. Use a vision-capable LM Studio model, since Clicky includes screenshots in every request. |
 | `Local-AI-Mode/LocalSpeechSynthesizerClient.swift` | ~32 | Lightweight local speech client backed by `AVSpeechSynthesizer` for spoken responses in local inference mode. |
 | `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
 | `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
