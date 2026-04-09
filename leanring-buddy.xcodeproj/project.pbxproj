@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		8C1C3F5B2F87A26100547584 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 8C1C3F5A2F87A26100547584 /* MLXLLM */; };
+		8C1C3F5D2F87A26100547584 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 8C1C3F5C2F87A26100547584 /* MLXLMCommon */; };
+		8C1C3F5F2F87A26100547584 /* MLXVLM in Frameworks */ = {isa = PBXBuildFile; productRef = 8C1C3F5E2F87A26100547584 /* MLXVLM */; };
 		AA00BB032F6500030039DA55 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB022F6500020039DA55 /* Sparkle */; };
 		AA00BB062F6500060039DA55 /* PostHog in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB052F6500050039DA55 /* PostHog */; };
 /* End PBXBuildFile section */
@@ -57,7 +60,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				8C1C3F5F2F87A26100547584 /* MLXVLM in Frameworks */,
+				8C1C3F5B2F87A26100547584 /* MLXLLM in Frameworks */,
 				AA00BB032F6500030039DA55 /* Sparkle in Frameworks */,
+				8C1C3F5D2F87A26100547584 /* MLXLMCommon in Frameworks */,
 				AA00BB062F6500060039DA55 /* PostHog in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -121,6 +127,9 @@
 			packageProductDependencies = (
 				AA00BB022F6500020039DA55 /* Sparkle */,
 				AA00BB052F6500050039DA55 /* PostHog */,
+				8C1C3F5A2F87A26100547584 /* MLXLLM */,
+				8C1C3F5C2F87A26100547584 /* MLXLMCommon */,
+				8C1C3F5E2F87A26100547584 /* MLXVLM */,
 			);
 			productName = "leanring-buddy";
 			productReference = 28F22CBF2F56440300A0FC59 /* Clicky.app */;
@@ -207,6 +216,7 @@
 			packageReferences = (
 				AA00BB012F6500010039DA55 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				AA00BB042F6500040039DA55 /* XCRemoteSwiftPackageReference "posthog-ios" */,
+				8C1C3F592F87A26100547584 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 28F22CC02F56440300A0FC59 /* Products */;
@@ -606,6 +616,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		8C1C3F592F87A26100547584 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift-examples";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.29.1;
+			};
+		};
 		AA00BB012F6500010039DA55 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/sparkle-project/Sparkle";
@@ -625,6 +643,21 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		8C1C3F5A2F87A26100547584 /* MLXLLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8C1C3F592F87A26100547584 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
+			productName = MLXLLM;
+		};
+		8C1C3F5C2F87A26100547584 /* MLXLMCommon */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8C1C3F592F87A26100547584 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
+			productName = MLXLMCommon;
+		};
+		8C1C3F5E2F87A26100547584 /* MLXVLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8C1C3F592F87A26100547584 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
+			productName = MLXVLM;
+		};
 		AA00BB022F6500020039DA55 /* Sparkle */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AA00BB012F6500010039DA55 /* XCRemoteSwiftPackageReference "Sparkle" */;
