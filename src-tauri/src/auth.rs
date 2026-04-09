@@ -11,6 +11,7 @@ const SERVICE_NAME: &str = "sewa-companion";
 #[derive(Serialize)]
 pub struct OidcCallbackResult {
     pub code: String,
+    pub port: u16,
 }
 
 #[command]
@@ -67,6 +68,7 @@ pub async fn start_oidc_flow(
     open::that(&full_url).map_err(|e| format!("Failed to open browser: {}", e))?;
 
     // Wait for the callback (with 120s timeout)
+    let callback_port = port;
     let code = tokio::task::spawn_blocking(move || -> Result<String, String> {
         let request = server
             .recv_timeout(std::time::Duration::from_secs(120))
@@ -102,5 +104,5 @@ pub async fn start_oidc_flow(
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
 
-    Ok(OidcCallbackResult { code })
+    Ok(OidcCallbackResult { code, port: callback_port })
 }

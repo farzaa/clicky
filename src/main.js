@@ -250,6 +250,12 @@ async function connect() {
 
     // --- Voice events ---
     if (topic === "companion:voice") {
+      if (eventName === "phx_reply") {
+        if (payload.status !== "ok") {
+          console.error("[voice] Channel join failed:", payload.response);
+        }
+        return;
+      }
       handleVoiceEvent(eventName, payload);
       return;
     }
@@ -284,9 +290,7 @@ function startHeartbeat() {
   heartbeatInterval = setInterval(() => {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
-    missedHeartbeats++;
-
-    if (missedHeartbeats > 2) {
+    if (missedHeartbeats >= 2) {
       // Two missed heartbeats — force reconnect
       console.warn("[main] Missed 2 heartbeats, reconnecting");
       stopHeartbeat();
@@ -295,6 +299,7 @@ function startHeartbeat() {
     }
 
     socket.send(JSON.stringify([null, nextRef(), "phoenix", "heartbeat", {}]));
+    missedHeartbeats++;
   }, 30000);
 }
 
@@ -439,8 +444,6 @@ async function init() {
     const content = input?.value.trim();
     if (!content) return;
     sendMessage(content);
-    // Optimistic: show user message immediately
-    addMessage({ role: "user", content });
     input.value = "";
   });
 

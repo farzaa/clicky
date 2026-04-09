@@ -234,10 +234,8 @@ function bindEvents() {
     setAutostart(e.target.checked);
   });
 
-  // Hotkey button
-  document.getElementById("hotkey-display")?.addEventListener("click", () => {
-    startHotkeyRecording();
-  });
+  // Hotkey button — runtime rebinding not yet supported; display-only
+  // document.getElementById("hotkey-display") — no click handler
 
   // Animation speed buttons
   document.querySelectorAll(".speed-btn").forEach((btn) => {

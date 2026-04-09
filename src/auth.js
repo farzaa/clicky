@@ -87,7 +87,7 @@ export async function authenticate() {
   }
 
   // Step 3: Exchange id_token for OpenBao token via Sewa
-  const sewaResponse = await fetch(`${httpSewaUrl}/api/companion/tokens`, {
+  const sewaResponse = await fetch(`${httpSewaUrl}/api/companion/token`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ oidc_token: idToken }),

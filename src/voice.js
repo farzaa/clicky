@@ -82,7 +82,12 @@ export async function startListening(socket, nextRef) {
     recorder.ondataavailable = async (event) => {
       if (event.data.size > 0 && socket.readyState === WebSocket.OPEN && voiceJoinRef) {
         const buffer = await event.data.arrayBuffer();
-        const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        const base64 = btoa(binary);
         const frameMsg = [
           voiceJoinRef,
           nextRef(),
