@@ -8,6 +8,9 @@
   },
   "app": {
     "withGlobalTauri": true,
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' wss://*.1-800-goobsquire.lol https://*.1-800-goobsquire.lol ws://localhost:* http://localhost:*; media-src 'self' blob:; script-src 'self'"
+    },
     "windows": [
       {
         "title": "Sewa Companion",
