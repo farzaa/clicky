@@ -37,6 +37,41 @@ enum CompanionInferenceMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum CompanionLocalBackend: String, CaseIterable, Identifiable {
+    case mlx
+    case lmStudio
+
+    var id: String { rawValue }
+
+    var shortLabel: String {
+        switch self {
+        case .mlx:
+            return "MLX"
+        case .lmStudio:
+            return "LM Studio"
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .mlx:
+            return LocalMLXVLMClient.fixedModelDisplayName
+        case .lmStudio:
+            return "LM Studio"
+        }
+    }
+}
+
+enum LMStudioConnectionStatus: Equatable {
+    case idle
+    case checking
+    case connected(modelDisplayName: String)
+    case invalidServerURL
+    case serverUnavailable(message: String)
+    case noModelLoaded
+    case error(message: String)
+}
+
 enum CompanionClaudeModelOption: String, CaseIterable, Identifiable {
     case sonnet46 = "claude-sonnet-4-6"
     case opus46 = "claude-opus-4-6"
@@ -111,7 +146,8 @@ final class CompanionManager: ObservableObject {
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
-    private let localCompanionChatClient: LocalMLXVLMClient
+    private let localMLXCompanionChatClient: LocalMLXVLMClient
+    private let localLMStudioChatClient: LMStudioLocalChatClient
 
     private lazy var claudeAPI: ClaudeAPI = {
         ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedClaudeModel.id)
@@ -158,10 +194,21 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var modelPreparationErrorMessage: String?
     @Published private(set) var isPreparingSelectedModel = false
     @Published private(set) var selectedInferenceMode: CompanionInferenceMode
+    @Published private(set) var selectedLocalBackend: CompanionLocalBackend
     @Published private(set) var selectedClaudeModel: CompanionClaudeModelOption
+    @Published private(set) var lmStudioConnectionStatus: LMStudioConnectionStatus = .idle
+    @Published var lmStudioServerURLDraft: String
 
     var localModelDisplayName: String {
-        LocalMLXVLMClient.fixedModelDisplayName
+        switch selectedLocalBackend {
+        case .mlx:
+            return LocalMLXVLMClient.fixedModelDisplayName
+        case .lmStudio:
+            if case .connected(let modelDisplayName) = lmStudioConnectionStatus {
+                return modelDisplayName
+            }
+            return selectedLocalBackend.displayName
+        }
     }
 
     var claudeModelDisplayName: String {
@@ -172,12 +219,128 @@ final class CompanionManager: ObservableObject {
         selectedInferenceMode == .local
     }
 
+    var isUsingLMStudioLocalBackend: Bool {
+        selectedLocalBackend == .lmStudio
+    }
+
+    var availableLocalBackendOptions: [CompanionLocalBackend] {
+        CompanionLocalBackend.allCases
+    }
+
+    var localModeDescriptionText: String {
+        switch selectedLocalBackend {
+        case .mlx:
+            return "Runs fully on-device with MLX."
+        case .lmStudio:
+            return "Uses the currently loaded LM Studio model on this Mac."
+        }
+    }
+
+    var localModelStatusTitle: String {
+        switch selectedLocalBackend {
+        case .mlx:
+            if modelPreparationErrorMessage != nil {
+                return "Local model error"
+            }
+            if modelDownloadProgress != nil {
+                return "Downloading local model"
+            }
+            if isPreparingSelectedModel {
+                return "Loading local model"
+            }
+            return "Local model ready"
+        case .lmStudio:
+            switch lmStudioConnectionStatus {
+            case .idle:
+                return "LM Studio ready"
+            case .checking:
+                return "Checking LM Studio server"
+            case .connected:
+                return "LM Studio connected"
+            case .invalidServerURL:
+                return "Invalid server URL"
+            case .serverUnavailable:
+                return "LM Studio unavailable"
+            case .noModelLoaded:
+                return "No model loaded"
+            case .error:
+                return "LM Studio error"
+            }
+        }
+    }
+
+    var localModelStatusDetail: String {
+        switch selectedLocalBackend {
+        case .mlx:
+            if let modelPreparationErrorMessage {
+                return modelPreparationErrorMessage
+            }
+            if let modelDownloadProgress {
+                return modelDownloadProgress.localizedDescription
+            }
+            if isPreparingSelectedModel {
+                return "Finishing setup so Clicky can answer on-device."
+            }
+            return "Runs fully on-device with MLX."
+        case .lmStudio:
+            switch lmStudioConnectionStatus {
+            case .idle:
+                return "Enter an LM Studio server URL to connect."
+            case .checking:
+                return "Checking the local server and looking for a loaded model."
+            case .connected(let modelDisplayName):
+                return "Connected to \(modelDisplayName) at \(trimmedLMStudioServerURL)."
+            case .invalidServerURL:
+                return "Enter a valid server URL, for example http://localhost:1234."
+            case .serverUnavailable(let message):
+                return message
+            case .noModelLoaded:
+                return "LM Studio is reachable, but no model is currently loaded. Load any model in LM Studio first."
+            case .error(let message):
+                return message
+            }
+        }
+    }
+
+    var localRetryButtonTitle: String {
+        switch selectedLocalBackend {
+        case .mlx:
+            return "Retry Local Model"
+        case .lmStudio:
+            return "Reconnect LM Studio"
+        }
+    }
+
+    var trimmedLMStudioServerURL: String {
+        let trimmedServerURL = lmStudioServerURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedServerURL.isEmpty ? LMStudioLocalChatClient.defaultServerBaseURLString : trimmedServerURL
+    }
+
     var availableClaudeModelOptions: [CompanionClaudeModelOption] {
         CompanionClaudeModelOption.allCases
     }
 
+    private var activeLocalCompanionChatClient: CompanionChatClient {
+        switch selectedLocalBackend {
+        case .mlx:
+            return localMLXCompanionChatClient
+        case .lmStudio:
+            return localLMStudioChatClient
+        }
+    }
+
+    private func offloadInactiveLocalBackendResources() {
+        switch selectedLocalBackend {
+        case .mlx:
+            localLMStudioChatClient.offloadResources()
+        case .lmStudio:
+            localMLXCompanionChatClient.offloadResources()
+        }
+    }
+
     init(
-        localCompanionChatClient: LocalMLXVLMClient? = nil
+        localMLXCompanionChatClient: LocalMLXVLMClient? = nil,
+        localLMStudioChatClient: LMStudioLocalChatClient? = nil
     ) {
         let persistedClaudeModel = UserDefaults.standard.string(forKey: "selectedClaudeModel")
         let resolvedClaudeModel = CompanionClaudeModelOption(rawValue: persistedClaudeModel ?? "") ?? .sonnet46
@@ -187,10 +350,26 @@ final class CompanionManager: ObservableObject {
         let resolvedMode = CompanionInferenceMode(rawValue: persistedMode ?? "") ?? .local
         self.selectedInferenceMode = resolvedMode
 
-        let resolvedLocalCompanionChatClient = localCompanionChatClient
-            ?? LocalMLXVLMClient()
+        let persistedLocalBackend = UserDefaults.standard.string(forKey: "selectedCompanionLocalBackend")
+        let resolvedLocalBackend = CompanionLocalBackend(rawValue: persistedLocalBackend ?? "") ?? .mlx
+        self.selectedLocalBackend = resolvedLocalBackend
 
-        self.localCompanionChatClient = resolvedLocalCompanionChatClient
+        let persistedLMStudioServerURL = UserDefaults.standard.string(forKey: "lmStudioServerURL")
+        let resolvedLMStudioServerURL = persistedLMStudioServerURL?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let defaultedLMStudioServerURL = (resolvedLMStudioServerURL?.isEmpty == false
+            ? resolvedLMStudioServerURL
+            : LMStudioLocalChatClient.defaultServerBaseURLString) ?? LMStudioLocalChatClient.defaultServerBaseURLString
+        self.lmStudioServerURLDraft = defaultedLMStudioServerURL
+
+        let resolvedLocalMLXCompanionChatClient = localMLXCompanionChatClient
+            ?? LocalMLXVLMClient()
+        self.localMLXCompanionChatClient = resolvedLocalMLXCompanionChatClient
+
+        let resolvedLocalLMStudioChatClient = localLMStudioChatClient
+            ?? LMStudioLocalChatClient()
+        resolvedLocalLMStudioChatClient.updateServerBaseURLString(defaultedLMStudioServerURL)
+        self.localLMStudioChatClient = resolvedLocalLMStudioChatClient
     }
 
     func setClaudeModel(_ modelOption: CompanionClaudeModelOption) {
@@ -202,6 +381,29 @@ final class CompanionManager: ObservableObject {
 
         guard selectedInferenceMode == .claude else { return }
         resetActiveResponseUIState()
+    }
+
+    func setLocalBackend(_ localBackend: CompanionLocalBackend) {
+        guard selectedLocalBackend != localBackend else { return }
+
+        selectedLocalBackend = localBackend
+        UserDefaults.standard.set(localBackend.rawValue, forKey: "selectedCompanionLocalBackend")
+
+        resetActiveResponseUIState()
+
+        if selectedInferenceMode == .local {
+            prepareSelectedModelInBackground(forceReloadUIState: true)
+        }
+    }
+
+    func commitLMStudioServerURLDraft() {
+        let sanitizedServerURL = trimmedLMStudioServerURL
+        lmStudioServerURLDraft = sanitizedServerURL
+        UserDefaults.standard.set(sanitizedServerURL, forKey: "lmStudioServerURL")
+        localLMStudioChatClient.updateServerBaseURLString(sanitizedServerURL)
+
+        guard selectedInferenceMode == .local, selectedLocalBackend == .lmStudio else { return }
+        prepareSelectedModelInBackground(forceReloadUIState: true)
     }
 
     func setInferenceMode(_ inferenceMode: CompanionInferenceMode) {
@@ -218,7 +420,9 @@ final class CompanionManager: ObservableObject {
             isPreparingSelectedModel = false
             modelDownloadProgress = nil
             modelPreparationErrorMessage = nil
-            localCompanionChatClient.offloadResources()
+            lmStudioConnectionStatus = .idle
+            localMLXCompanionChatClient.offloadResources()
+            localLMStudioChatClient.offloadResources()
             return
         }
 
@@ -234,6 +438,7 @@ final class CompanionManager: ObservableObject {
         clearDetectedElementLocation()
         voiceState = .idle
         modelDownloadProgress = nil
+        modelPreparationErrorMessage = nil
     }
 
     func retrySelectedModelPreparation() {
@@ -246,6 +451,10 @@ final class CompanionManager: ObservableObject {
         guard selectedInferenceMode == .local else { return }
         modelPreparationTask?.cancel()
 
+        let localBackendToPrepare = selectedLocalBackend
+        let localCompanionChatClientToPrepare = activeLocalCompanionChatClient
+        offloadInactiveLocalBackendResources()
+
         if forceReloadUIState {
             modelDownloadProgress = nil
         }
@@ -255,17 +464,28 @@ final class CompanionManager: ObservableObject {
 
             await MainActor.run {
                 self.isPreparingSelectedModel = true
+                if localBackendToPrepare == .lmStudio {
+                    self.lmStudioConnectionStatus = .checking
+                }
             }
 
             do {
-                try await self.localCompanionChatClient.prepareSelectedModel { progress in
+                try await localCompanionChatClientToPrepare.prepareSelectedModel { progress in
                     self.modelDownloadProgress = progress
                 }
 
                 await MainActor.run {
+                    guard self.selectedInferenceMode == .local,
+                          self.selectedLocalBackend == localBackendToPrepare else {
+                        return
+                    }
                     self.isPreparingSelectedModel = false
                     self.modelPreparationErrorMessage = nil
                     self.modelDownloadProgress = nil
+                    if localBackendToPrepare == .lmStudio {
+                        let connectedModelDisplayName = self.localLMStudioChatClient.connectedModelDisplayName ?? "Loaded model"
+                        self.lmStudioConnectionStatus = .connected(modelDisplayName: connectedModelDisplayName)
+                    }
                 }
             } catch is CancellationError {
                 await MainActor.run {
@@ -273,11 +493,37 @@ final class CompanionManager: ObservableObject {
                 }
             } catch {
                 await MainActor.run {
+                    guard self.selectedInferenceMode == .local,
+                          self.selectedLocalBackend == localBackendToPrepare else {
+                        return
+                    }
                     self.isPreparingSelectedModel = false
                     self.modelPreparationErrorMessage = error.localizedDescription
                     self.modelDownloadProgress = nil
+                    if localBackendToPrepare == .lmStudio {
+                        self.lmStudioConnectionStatus = self.lmStudioConnectionStatus(for: error)
+                    }
                 }
             }
+        }
+    }
+
+    private func lmStudioConnectionStatus(for error: Error) -> LMStudioConnectionStatus {
+        guard let lmStudioError = error as? LMStudioLocalChatClientError else {
+            return .error(message: error.localizedDescription)
+        }
+
+        switch lmStudioError {
+        case .invalidServerURL:
+            return .invalidServerURL
+        case .serverUnavailable(let message):
+            return .serverUnavailable(message: message)
+        case .noModelLoaded:
+            return .noModelLoaded
+        case .invalidModelsResponse:
+            return .error(message: "LM Studio responded, but Clicky could not read the model list.")
+        case .apiError(let message):
+            return .error(message: message)
         }
     }
 
@@ -347,7 +593,8 @@ final class CompanionManager: ObservableObject {
         if selectedInferenceMode == .local {
             prepareSelectedModelInBackground()
         } else {
-            localCompanionChatClient.offloadResources()
+            localMLXCompanionChatClient.offloadResources()
+            localLMStudioChatClient.offloadResources()
             _ = claudeAPI
         }
 
@@ -461,6 +708,8 @@ final class CompanionManager: ObservableObject {
         overlayWindowManager.hideOverlay()
         transientHideTask?.cancel()
         modelPreparationTask?.cancel()
+        localMLXCompanionChatClient.offloadResources()
+        localLMStudioChatClient.offloadResources()
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
@@ -762,6 +1011,8 @@ final class CompanionManager: ObservableObject {
             // Stay in processing (spinner) state — no streaming text displayed
             voiceState = .processing
             let responseMode = self.selectedInferenceMode
+            let localBackendForResponse = self.selectedLocalBackend
+            let localCompanionChatClientForResponse = self.activeLocalCompanionChatClient
 
             if responseMode == .local {
                 modelPreparationErrorMessage = nil
@@ -788,7 +1039,7 @@ final class CompanionManager: ObservableObject {
 
                 let fullResponseText: String
                 if responseMode == .local {
-                    let (localResponseText, _) = try await localCompanionChatClient.analyzeImageStreaming(
+                    let (localResponseText, _) = try await localCompanionChatClientForResponse.analyzeImageStreaming(
                         images: labeledImages,
                         systemPrompt: Self.companionVoiceResponseSystemPrompt,
                         conversationHistory: historyForAPI,
@@ -902,7 +1153,7 @@ final class CompanionManager: ObservableObject {
                         }
                         // speakText returns after player.play() — audio is now playing
                         voiceState = .responding
-                    } catch {
+                } catch {
                         ClickyAnalytics.trackTTSError(error: error.localizedDescription)
                         if responseMode == .local {
                             print("⚠️ Local speech error: \(error)")
@@ -920,6 +1171,9 @@ final class CompanionManager: ObservableObject {
                 print("⚠️ Companion response error: \(error)")
                 if responseMode == .local {
                     modelPreparationErrorMessage = error.localizedDescription
+                    if localBackendForResponse == .lmStudio {
+                        lmStudioConnectionStatus = lmStudioConnectionStatus(for: error)
+                    }
                     speakResponseErrorFallback()
                 } else {
                     speakCreditsErrorFallback()
@@ -1200,10 +1454,11 @@ final class CompanionManager: ObservableObject {
                 let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
                 let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
                 let responseMode = self.selectedInferenceMode
+                let localCompanionChatClientForResponse = self.activeLocalCompanionChatClient
 
                 let fullResponseText: String
                 if responseMode == .local {
-                    let (localResponseText, _) = try await localCompanionChatClient.analyzeImageStreaming(
+                    let (localResponseText, _) = try await localCompanionChatClientForResponse.analyzeImageStreaming(
                         images: labeledImages,
                         systemPrompt: Self.onboardingDemoSystemPrompt,
                         conversationHistory: [],

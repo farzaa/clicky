@@ -5,7 +5,7 @@
 
 ## Overview
 
-macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to either a local MLX vision model or Claude. Responses can be spoken with local macOS speech or ElevenLabs TTS depending on the selected inference mode. A blue cursor overlay can fly to and point at UI elements the assistant references on any connected monitor.
+macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to Claude or to a selectable local backend (`MLX` or `LM Studio`). Responses can be spoken with local macOS speech or ElevenLabs TTS depending on the selected inference mode. A blue cursor overlay can fly to and point at UI elements the assistant references on any connected monitor.
 
 All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in the app.
 
@@ -14,7 +14,7 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: Switchable between local MLX vision inference (`Qwen 3 VL 4B`) and Claude (Sonnet 4.6 or Opus 4.6) via the Cloudflare Worker proxy
+- **AI Chat**: Switchable between Claude (Sonnet 4.6 or Opus 4.6) and local inference. Local inference supports the built-in MLX vision model (`Qwen 3 VL 4B`) or any loaded LM Studio model served on `http://localhost:1234` (configurable in the panel).
 - **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with OpenAI and Apple Speech as fallbacks
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy in Claude mode, or local macOS speech synthesis in local mode
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
@@ -25,7 +25,7 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 
 ### API Proxy (Cloudflare Worker)
 
-Claude mode never calls external APIs directly. All cloud requests go through a Cloudflare Worker (`worker/src/index.ts`) that holds the real API keys as secrets. Local MLX mode runs chat and speech synthesis on-device and only relies on the worker for AssemblyAI transcription tokens.
+Claude mode never calls external APIs directly. All cloud requests go through a Cloudflare Worker (`worker/src/index.ts`) that holds the real API keys as secrets. Local MLX mode runs chat and speech synthesis on-device, and LM Studio local mode talks directly to the user's LM Studio server. Both local modes only rely on the worker for AssemblyAI transcription tokens when AssemblyAI is the selected transcription provider.
 
 | Route | Upstream | Purpose |
 |-------|----------|---------|
@@ -53,9 +53,9 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1244 | Central state machine. Owns dictation, shortcut monitoring, screen capture, local-vs-Claude inference routing, local-vs-remote TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model preparation/download state, selected inference mode, and cursor visibility. Coordinates the full push-to-talk → screenshot → model response → TTS → pointing pipeline. |
+| `CompanionManager.swift` | ~1526 | Central state machine. Owns dictation, shortcut monitoring, screen capture, local-vs-Claude inference routing, MLX-vs-LM-Studio local backend selection, local-vs-remote TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, backend preparation/connection state, selected inference mode, and cursor visibility. Coordinates the full push-to-talk → screenshot → model response → TTS → pointing pipeline. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
-| `CompanionPanelView.swift` | ~915 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, local-vs-Claude inference controls, local model download/preparation state, permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
+| `CompanionPanelView.swift` | ~987 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, local-vs-Claude inference controls, MLX-vs-LM-Studio local backend controls, LM Studio server URL input, local backend readiness/download state, permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
@@ -68,6 +68,7 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
 | `ClaudeAPI.swift` | ~291 | Claude vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
 | `Local-AI-Mode/LocalMLXVLMClient.swift` | ~291 | On-device MLX vision-language client. Downloads/caches the fixed `Qwen 3 VL 4B` model, warms it up, streams responses, and exposes progress updates for the panel UI. |
+| `Local-AI-Mode/LMStudioLocalChatClient.swift` | ~441 | Local backend that connects directly to an LM Studio server. Validates the configured server URL, checks for any loaded model from LM Studio's `/api/v1/models` endpoint, and streams screenshot chat through the OpenAI-compatible local chat completions endpoint. |
 | `Local-AI-Mode/LocalSpeechSynthesizerClient.swift` | ~32 | Lightweight local speech client backed by `AVSpeechSynthesizer` for spoken responses in local inference mode. |
 | `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
 | `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |

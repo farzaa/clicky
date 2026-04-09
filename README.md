@@ -117,18 +117,33 @@ If you want to run Clicky fully on-device, use the app's **Local** inference mod
 
 2. Open `leanring-buddy.xcodeproj` in Xcode and let Swift Package Manager resolve the local model dependencies.
 
-   The local path depends on the MLX packages used by the app, including `MLX`, `MLXLMCommon`, and `MLXVLM`. If Xcode shows package resolution issues, run **File > Packages > Resolve Package Versions**.
+   The built-in MLX path depends on the MLX packages used by the app, including `MLX`, `MLXLMCommon`, and `MLXVLM`. If Xcode shows package resolution issues, run **File > Packages > Resolve Package Versions**.
 
 3. Build and run the app.
 
 4. Open the Clicky menu bar panel and switch the inference selector from **Claude** to **Local**.
 
-5. Wait for the local model to finish preparing.
+5. Choose your local backend:
 
-   The first local run may download and prepare the model before it is ready. The panel shows download/progress state while this happens.
+   - **MLX** for the built-in on-device model
+   - **LM Studio** to use any model currently loaded in LM Studio on your Mac
+
+6. If you choose **LM Studio**, enter the server URL in the panel.
+
+   The default is:
+
+   ```
+   http://localhost:1234
+   ```
+
+   Clicky expects LM Studio's local server to be running and any model to already be loaded in LM Studio.
+
+7. Wait for the selected local backend to finish preparing.
+
+   The first MLX run may download and prepare the model before it is ready. LM Studio mode validates the server URL and checks for a loaded model.
 
 In **Local** mode:
-- chat responses come from the on-device MLX vision-language model
+- chat responses come from either the built-in MLX model or LM Studio, depending on the selected local backend
 - speech playback uses the local speech synthesizer client
 - transcription uses Apple Speech when `VoiceTranscriptionProvider` is set to `apple`
 
@@ -137,7 +152,7 @@ In **Claude** mode:
 - transcription can use the configured provider from `Info.plist`
 - speech playback goes through the Worker to ElevenLabs
 
-You do **not** need the Cloudflare Worker, Anthropic, AssemblyAI, or ElevenLabs keys just to run the local MLX path.
+You do **not** need the Cloudflare Worker, Anthropic, AssemblyAI, or ElevenLabs keys just to run the local MLX or LM Studio path.
 
 ### 5. Open in Xcode and run
 
@@ -165,7 +180,7 @@ If you want the full technical breakdown, read `CLAUDE.md`. But here's the short
 
 **Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk always captures mic audio locally and sends screenshots of your screen into the response pipeline. From there, Clicky can run in two modes:
 
-- **Local**: transcript is captured with Apple Speech, responses come from the on-device MLX model, and speech playback uses the local speech synthesizer
+- **Local**: transcript is captured with Apple Speech, responses come from either the built-in MLX model or an LM Studio local server, and speech playback uses the local speech synthesizer
 - **Claude**: transcript, chat, and TTS use the configured cloud providers, with Claude, AssemblyAI, and ElevenLabs all proxied through the Cloudflare Worker
 
 Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors.
@@ -178,7 +193,7 @@ leanring-buddy/          # Swift source (yes, the typo stays)
   CompanionPanelView.swift  # Menu bar panel UI
   ClaudeAPI.swift           # Claude streaming client
   ElevenLabsTTSClient.swift # Text-to-speech playback
-  Local-AI-Mode/            # On-device MLX chat + local speech synthesis
+  Local-AI-Mode/            # On-device MLX + LM Studio chat backends and local speech synthesis
   OverlayWindow.swift       # Blue cursor overlay
   AssemblyAI*.swift         # Real-time transcription
   BuddyDictation*.swift     # Push-to-talk pipeline

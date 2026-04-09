@@ -714,9 +714,31 @@ struct CompanionPanelView: View {
     private var modelPickerRow: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Local Model")
+                Text("Local Backend")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                HStack(spacing: 0) {
+                    ForEach(companionManager.availableLocalBackendOptions) { localBackend in
+                        localBackendButton(localBackend)
+                    }
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+            }
+
+            HStack {
+                Text(companionManager.localModeDescriptionText)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
 
                 Spacer()
 
@@ -735,45 +757,77 @@ struct CompanionPanelView: View {
                     )
             }
 
-            Text("Runs fully on-device with MLX.")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(DS.Colors.textTertiary)
-
-            if let modelDownloadProgress = companionManager.modelDownloadProgress {
+            if companionManager.isUsingLMStudioLocalBackend {
                 VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Downloading local model")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(DS.Colors.textPrimary)
+                    Text("LM Studio Server")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
 
-                        Spacer()
+                    TextField("http://localhost:1234", text: $companionManager.lmStudioServerURLDraft)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13))
+                        .foregroundColor(DS.Colors.textPrimary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                                .fill(Color.white.opacity(0.08))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                                .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                        )
+                        .onSubmit {
+                            companionManager.commitLMStudioServerURLDraft()
+                        }
 
-                        Text(modelDownloadProgress.localizedDescription)
-                            .font(.system(size: 10))
-                            .foregroundColor(DS.Colors.textTertiary)
-                    }
+                    Text("Press return to reconnect. Default: http://localhost:1234")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+            }
 
+            VStack(alignment: .leading, spacing: 4) {
+                Text(companionManager.localModelStatusTitle)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(DS.Colors.textPrimary)
+
+                Text(companionManager.localModelStatusDetail)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(companionManager.modelPreparationErrorMessage == nil ? DS.Colors.textPrimary : Color(red: 0.9, green: 0.4, blue: 0.4))
+                    .opacity(companionManager.modelPreparationErrorMessage == nil ? 0.9 : 1.0)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let modelDownloadProgress = companionManager.modelDownloadProgress,
+               !companionManager.isUsingLMStudioLocalBackend {
+                VStack(alignment: .leading, spacing: 6) {
                     ProgressView(value: modelDownloadProgress.fractionCompleted)
                         .progressViewStyle(.linear)
                         .tint(DS.Colors.accent)
                 }
             } else if companionManager.isPreparingSelectedModel {
-                Text("loading model...")
-                    .font(.system(size: 11))
-                    .foregroundColor(DS.Colors.textPrimary)
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(DS.Colors.accent)
+
+                    Text(companionManager.isUsingLMStudioLocalBackend ? "Checking LM Studio connection..." : "Loading weights into memory...")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.textPrimary)
+                }
             }
 
-            if let modelPreparationErrorMessage = companionManager.modelPreparationErrorMessage {
+            if companionManager.modelPreparationErrorMessage != nil {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(modelPreparationErrorMessage)
-                        .font(.system(size: 11))
-                        .foregroundColor(Color(red: 0.9, green: 0.4, blue: 0.4))
-                        .fixedSize(horizontal: false, vertical: true)
-
                     Button(action: {
-                        companionManager.retrySelectedModelPreparation()
+                        if companionManager.isUsingLMStudioLocalBackend {
+                            companionManager.commitLMStudioServerURLDraft()
+                        } else {
+                            companionManager.retrySelectedModelPreparation()
+                        }
                     }) {
-                        Text("Retry Download")
+                        Text(companionManager.localRetryButtonTitle)
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundColor(DS.Colors.textOnAccent)
                             .padding(.horizontal, 10)
@@ -789,6 +843,25 @@ struct CompanionPanelView: View {
             }
         }
         .padding(.vertical, 4)
+    }
+
+    private func localBackendButton(_ localBackend: CompanionLocalBackend) -> some View {
+        let isSelected = companionManager.selectedLocalBackend == localBackend
+        return Button(action: {
+            companionManager.setLocalBackend(localBackend)
+        }) {
+            Text(localBackend.shortLabel)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
     }
 
     // MARK: - DM Farza Button
@@ -893,9 +966,8 @@ struct CompanionPanelView: View {
         if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
             return "Setup"
         }
-        if companionManager.isUsingLocalInference
-            && (companionManager.modelDownloadProgress != nil || companionManager.isPreparingSelectedModel) {
-            return "Preparing"
+        if companionManager.isUsingLocalInference && companionManager.isPreparingSelectedModel {
+            return companionManager.isUsingLMStudioLocalBackend ? "Checking" : (companionManager.modelDownloadProgress != nil ? "Downloading" : "Loading")
         }
         if !companionManager.isOverlayVisible {
             return "Ready"
