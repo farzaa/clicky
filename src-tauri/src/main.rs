@@ -23,6 +23,12 @@ fn main() {
             overlay::show_overlay,
             overlay::hide_overlay,
             overlay::hide_all_overlays,
+            auth::keyring_store,
+            auth::keyring_read,
+            auth::keyring_delete,
+            auth::start_oidc_flow,
+            autostart::get_autostart_enabled,
+            autostart::set_autostart_enabled,
         ])
         .setup(|app| {
             // System tray
