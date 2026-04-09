@@ -744,7 +744,7 @@ struct CompanionPanelView: View {
                     HStack {
                         Text("Downloading local model")
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(DS.Colors.textSecondary)
+                            .foregroundColor(DS.Colors.textPrimary)
 
                         Spacer()
 
@@ -760,7 +760,7 @@ struct CompanionPanelView: View {
             } else if companionManager.isPreparingSelectedModel {
                 Text("loading model...")
                     .font(.system(size: 11))
-                    .foregroundColor(DS.Colors.textTertiary)
+                    .foregroundColor(DS.Colors.textPrimary)
             }
 
             if let modelPreparationErrorMessage = companionManager.modelPreparationErrorMessage {
