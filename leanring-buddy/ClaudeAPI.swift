@@ -288,4 +288,45 @@ class ClaudeAPI {
         let duration = Date().timeIntervalSince(startTime)
         return (text: text, duration: duration)
     }
+
+    /// Suggests one safe, screenshot-grounded practice challenge for the
+    /// current cursor screen and parses the structured response.
+    func suggestPracticeChallenge(
+        cursorScreenImage: (data: Data, label: String)
+    ) async throws -> (suggestion: PracticeChallengeSuggestion, duration: TimeInterval) {
+        let (responseText, duration) = try await analyzeImage(
+            images: [cursorScreenImage],
+            systemPrompt: PracticePromptBuilder.challengeSuggestionSystemPrompt,
+            userPrompt: PracticePromptBuilder.makeChallengeSuggestionUserPrompt()
+        )
+
+        return (
+            suggestion: PracticeSessionManager.parseChallengeSuggestion(from: responseText),
+            duration: duration
+        )
+    }
+
+    /// Evaluates the current cursor screen against the active practice
+    /// challenge and parses the structured practice response.
+    func evaluatePracticeSession(
+        cursorScreenImage: (data: Data, label: String),
+        sessionContextSnapshot: PracticeSessionContextSnapshot,
+        userTranscript: String?,
+        isPassiveMonitorCheck: Bool
+    ) async throws -> (evaluation: PracticeEvaluation, duration: TimeInterval) {
+        let (responseText, duration) = try await analyzeImage(
+            images: [cursorScreenImage],
+            systemPrompt: PracticePromptBuilder.practiceEvaluationSystemPrompt,
+            userPrompt: PracticePromptBuilder.makePracticeEvaluationUserPrompt(
+                sessionContextSnapshot: sessionContextSnapshot,
+                userTranscript: userTranscript,
+                isPassiveMonitorCheck: isPassiveMonitorCheck
+            )
+        )
+
+        return (
+            evaluation: PracticeSessionManager.parseEvaluation(from: responseText),
+            duration: duration
+        )
+    }
 }

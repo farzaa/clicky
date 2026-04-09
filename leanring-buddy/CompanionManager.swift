@@ -21,6 +21,13 @@ enum CompanionVoiceState {
     case responding
 }
 
+private enum PracticeSessionStopReason {
+    case userDisabled
+    case userTerminated
+    case completed
+    case startupFailed
+}
+
 @MainActor
 final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle
@@ -41,6 +48,13 @@ final class CompanionManager: ObservableObject {
     /// Custom speech bubble text for the pointing animation. When set,
     /// BlueCursorView uses this instead of a random pointer phrase.
     @Published var detectedElementBubbleText: String?
+    @Published private(set) var isPracticeModeEnabled = false
+    @Published private(set) var practiceSessionState: PracticeSessionState = .inactive
+    @Published private(set) var activePracticeChallenge: PracticeChallenge?
+    @Published private(set) var lastPracticeFeedback: String?
+    @Published private(set) var lastPracticeHint: String?
+    @Published private(set) var lastResolvedPracticeIntent: PracticeVoiceIntent?
+    @Published private(set) var isPracticeEvaluationInFlight = false
 
     // MARK: - Onboarding Video State (shared across all screen overlays)
 
@@ -70,7 +84,7 @@ final class CompanionManager: ObservableObject {
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
+    private static let workerBaseURL = "https://clicky-proxy.clickyext.workers.dev"
 
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
@@ -79,6 +93,7 @@ final class CompanionManager: ObservableObject {
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
         return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
     }()
+    private let practiceSessionManager = PracticeSessionManager()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
     /// Each entry is the user's transcript and Claude's response.
@@ -96,6 +111,13 @@ final class CompanionManager: ObservableObject {
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
+    private var practiceStartupTask: Task<Void, Never>?
+    private var practiceMonitorTask: Task<Void, Never>?
+    private var practiceEvaluationTask: Task<Void, Never>?
+    private var currentPracticeEvaluationID: UUID?
+    private var didPracticeModeForceOverlayVisible = false
+
+    private static let practiceMonitorIntervalNanoseconds: UInt64 = 8_000_000_000
 
     /// True when all three required permissions (accessibility, screen recording,
     /// microphone) are granted. Used by the panel to show a single "all good" state.
@@ -133,7 +155,7 @@ final class CompanionManager: ObservableObject {
             overlayWindowManager.hasShownOverlayBefore = true
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
-        } else {
+        } else if !isPracticeModeEnabled {
             overlayWindowManager.hideOverlay()
             isOverlayVisible = false
         }
@@ -287,6 +309,341 @@ final class CompanionManager: ObservableObject {
         detectedElementBubbleText = nil
     }
 
+    func setPracticeModeEnabled(_ enabled: Bool) {
+        if enabled {
+            guard !isPracticeModeEnabled else { return }
+
+            practiceStartupTask?.cancel()
+            practiceStartupTask = Task { [weak self] in
+                await self?.startPracticeSessionFromCurrentScreen()
+            }
+        } else {
+            stopPracticeMode(reason: .userDisabled)
+        }
+    }
+
+    private func startPracticeSessionFromCurrentScreen() async {
+        defer {
+            practiceStartupTask = nil
+        }
+
+        currentResponseTask?.cancel()
+        practiceMonitorTask?.cancel()
+        practiceEvaluationTask?.cancel()
+        currentPracticeEvaluationID = nil
+        elevenLabsTTSClient.stopPlayback()
+        clearDetectedElementLocation()
+
+        isPracticeModeEnabled = true
+        lastPracticeFeedback = nil
+        lastPracticeHint = nil
+        lastResolvedPracticeIntent = nil
+        practiceSessionManager.markSessionStarting()
+        syncPracticePublishedState()
+        transientHideTask?.cancel()
+        transientHideTask = nil
+        ensureOverlayVisibleForPracticeMode()
+
+        do {
+            let cursorScreenCapture = try await captureCursorScreenForPractice()
+            guard !Task.isCancelled else { return }
+
+            let (practiceChallengeSuggestion, _) = try await claudeAPI.suggestPracticeChallenge(
+                cursorScreenImage: makePracticeLabeledImage(from: cursorScreenCapture)
+            )
+            guard !Task.isCancelled else { return }
+
+            guard practiceChallengeSuggestion.isChallengeAvailable,
+                  let practiceChallenge = practiceChallengeSuggestion.challenge else {
+                lastPracticeFeedback = practiceChallengeSuggestion.unsuitableReason
+                    ?? "I couldn't find a good practice challenge on this screen."
+                stopPracticeMode(reason: .startupFailed)
+                return
+            }
+
+            practiceSessionManager.beginSession(with: practiceChallenge)
+            syncPracticePublishedState()
+
+            let challengeAnnouncement = "practice mode is on. your challenge is: \(practiceChallenge.goal)"
+            await speakPracticeText(challengeAnnouncement)
+            voiceState = .idle
+
+            startPracticeMonitorLoop()
+        } catch is CancellationError {
+            stopPracticeMode(reason: .startupFailed)
+        } catch {
+            print("⚠️ Practice Mode start error: \(error)")
+            lastPracticeFeedback = "I couldn't start practice mode on this screen."
+            stopPracticeMode(reason: .startupFailed)
+        }
+    }
+
+    private func stopPracticeMode(reason: PracticeSessionStopReason) {
+        practiceStartupTask?.cancel()
+        practiceMonitorTask?.cancel()
+        practiceEvaluationTask?.cancel()
+        practiceStartupTask = nil
+        practiceMonitorTask = nil
+        practiceEvaluationTask = nil
+        currentPracticeEvaluationID = nil
+        isPracticeEvaluationInFlight = false
+
+        if reason == .userDisabled || reason == .startupFailed {
+            elevenLabsTTSClient.stopPlayback()
+        }
+
+        isPracticeModeEnabled = false
+        clearDetectedElementLocation()
+        practiceSessionManager.resetSession()
+        syncPracticePublishedState()
+
+        if didPracticeModeForceOverlayVisible && !isClickyCursorEnabled {
+            scheduleTransientHideIfNeeded()
+        }
+        didPracticeModeForceOverlayVisible = false
+        voiceState = .idle
+    }
+
+    private func startPracticeMonitorLoop() {
+        practiceMonitorTask?.cancel()
+        practiceMonitorTask = Task { [weak self] in
+            guard let self else { return }
+            self.practiceSessionManager.markMonitorStatus(.running)
+
+            while self.isPracticeModeEnabled && !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.practiceMonitorIntervalNanoseconds)
+                guard !Task.isCancelled, self.isPracticeModeEnabled else { return }
+
+                if self.shouldSkipPassivePracticeCheck() {
+                    continue
+                }
+
+                self.startPracticeEvaluation(
+                    userTranscript: nil,
+                    isPassiveMonitorCheck: true
+                )
+            }
+        }
+    }
+
+    private func shouldSkipPassivePracticeCheck() -> Bool {
+        buddyDictationManager.isDictationInProgress
+            || isPracticeEvaluationInFlight
+            || elevenLabsTTSClient.isPlaying
+            || showOnboardingVideo
+    }
+
+    private func startPracticeEvaluation(
+        userTranscript: String?,
+        isPassiveMonitorCheck: Bool
+    ) {
+        guard isPracticeModeEnabled,
+              practiceSessionManager.makeSessionContextSnapshot() != nil else {
+            return
+        }
+
+        if !isPassiveMonitorCheck {
+            practiceEvaluationTask?.cancel()
+            elevenLabsTTSClient.stopPlayback()
+            clearDetectedElementLocation()
+        } else if isPracticeEvaluationInFlight {
+            return
+        }
+
+        let practiceEvaluationID = UUID()
+        currentPracticeEvaluationID = practiceEvaluationID
+        isPracticeEvaluationInFlight = true
+
+        practiceEvaluationTask = Task { [weak self] in
+            await self?.runPracticeEvaluation(
+                userTranscript: userTranscript,
+                isPassiveMonitorCheck: isPassiveMonitorCheck,
+                practiceEvaluationID: practiceEvaluationID
+            )
+        }
+    }
+
+    private func runPracticeEvaluation(
+        userTranscript: String?,
+        isPassiveMonitorCheck: Bool,
+        practiceEvaluationID: UUID
+    ) async {
+        defer {
+            if currentPracticeEvaluationID == practiceEvaluationID {
+                isPracticeEvaluationInFlight = false
+                currentPracticeEvaluationID = nil
+                practiceEvaluationTask = nil
+            }
+        }
+
+        guard let practiceSessionContextSnapshot = practiceSessionManager.makeSessionContextSnapshot() else {
+            return
+        }
+
+        if !isPassiveMonitorCheck {
+            voiceState = .processing
+        }
+
+        do {
+            let cursorScreenCapture = try await captureCursorScreenForPractice()
+            guard !Task.isCancelled else { return }
+
+            let (practiceEvaluation, _) = try await claudeAPI.evaluatePracticeSession(
+                cursorScreenImage: makePracticeLabeledImage(from: cursorScreenCapture),
+                sessionContextSnapshot: practiceSessionContextSnapshot,
+                userTranscript: userTranscript,
+                isPassiveMonitorCheck: isPassiveMonitorCheck
+            )
+            guard !Task.isCancelled else { return }
+
+            practiceSessionManager.applyEvaluation(practiceEvaluation)
+            syncPracticePublishedState()
+
+            if practiceEvaluation.shouldTerminate {
+                clearDetectedElementLocation()
+                if !isPassiveMonitorCheck {
+                    await speakPracticeText(
+                        practiceEvaluation.feedback.isEmpty
+                            ? "okay, ending practice mode."
+                            : practiceEvaluation.feedback
+                    )
+                }
+                stopPracticeMode(reason: .userTerminated)
+                return
+            }
+
+            if practiceEvaluation.isComplete {
+                clearDetectedElementLocation()
+                await speakPracticeText("nice, you completed the challenge.")
+                stopPracticeMode(reason: .completed)
+                return
+            }
+
+            if isPassiveMonitorCheck {
+                clearDetectedElementLocation()
+                return
+            }
+
+            if practiceEvaluation.resolvedIntent == .answer,
+               let practicePointingDirective = practiceEvaluation.pointingDirective {
+                voiceState = .idle
+                applyPracticePointingDirective(
+                    practicePointingDirective,
+                    on: cursorScreenCapture
+                )
+            } else {
+                clearDetectedElementLocation()
+            }
+
+            let spokenPracticeText = practiceSpeechText(for: practiceEvaluation)
+            await speakPracticeText(spokenPracticeText)
+            voiceState = .idle
+        } catch is CancellationError {
+            if !isPassiveMonitorCheck {
+                voiceState = .idle
+            }
+        } catch {
+            print("⚠️ Practice Mode evaluation error: \(error)")
+            if !isPassiveMonitorCheck {
+                speakCreditsErrorFallback()
+                voiceState = .idle
+            }
+        }
+    }
+
+    private func practiceSpeechText(for practiceEvaluation: PracticeEvaluation) -> String {
+        switch practiceEvaluation.resolvedIntent {
+        case .smallHint, .hint, .answer:
+            let trimmedHintText = practiceEvaluation.hint.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedHintText.isEmpty {
+                return trimmedHintText
+            }
+
+            return practiceEvaluation.feedback
+        case .checkProgress, .terminate, .unknown:
+            return practiceEvaluation.feedback
+        }
+    }
+
+    private func ensureOverlayVisibleForPracticeMode() {
+        didPracticeModeForceOverlayVisible = !isClickyCursorEnabled
+        guard !isOverlayVisible else { return }
+
+        overlayWindowManager.hasShownOverlayBefore = true
+        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+        isOverlayVisible = true
+    }
+
+    private func captureCursorScreenForPractice() async throws -> CompanionScreenCapture {
+        let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+
+        if let cursorScreenCapture = screenCaptures.first(where: { $0.isCursorScreen }) {
+            return cursorScreenCapture
+        }
+
+        guard let firstScreenCapture = screenCaptures.first else {
+            throw NSError(
+                domain: "PracticeMode",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "No screen capture was available for Practice Mode."]
+            )
+        }
+
+        return firstScreenCapture
+    }
+
+    private func makePracticeLabeledImage(
+        from cursorScreenCapture: CompanionScreenCapture
+    ) -> (data: Data, label: String) {
+        let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
+        return (data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)
+    }
+
+    private func applyPracticePointingDirective(
+        _ practicePointingDirective: PracticePointingDirective,
+        on cursorScreenCapture: CompanionScreenCapture
+    ) {
+        let screenshotWidth = CGFloat(cursorScreenCapture.screenshotWidthInPixels)
+        let screenshotHeight = CGFloat(cursorScreenCapture.screenshotHeightInPixels)
+        let displayWidth = CGFloat(cursorScreenCapture.displayWidthInPoints)
+        let displayHeight = CGFloat(cursorScreenCapture.displayHeightInPoints)
+        let displayFrame = cursorScreenCapture.displayFrame
+
+        let clampedX = max(0, min(practicePointingDirective.coordinate.x, screenshotWidth))
+        let clampedY = max(0, min(practicePointingDirective.coordinate.y, screenshotHeight))
+        let displayLocalX = clampedX * (displayWidth / screenshotWidth)
+        let displayLocalY = clampedY * (displayHeight / screenshotHeight)
+        let appKitY = displayHeight - displayLocalY
+
+        detectedElementScreenLocation = CGPoint(
+            x: displayLocalX + displayFrame.origin.x,
+            y: appKitY + displayFrame.origin.y
+        )
+        detectedElementDisplayFrame = displayFrame
+        detectedElementBubbleText = practicePointingDirective.label
+    }
+
+    private func speakPracticeText(_ text: String) async {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else { return }
+
+        do {
+            try await elevenLabsTTSClient.speakText(trimmedText)
+            voiceState = .responding
+        } catch {
+            print("⚠️ Practice Mode TTS error: \(error)")
+            speakCreditsErrorFallback()
+        }
+    }
+
+    private func syncPracticePublishedState() {
+        practiceSessionState = practiceSessionManager.practiceSessionState
+        activePracticeChallenge = practiceSessionManager.activeChallenge
+        lastPracticeFeedback = practiceSessionManager.lastEvaluation?.feedback
+        lastPracticeHint = practiceSessionManager.lastHintText
+        lastResolvedPracticeIntent = practiceSessionManager.lastResolvedIntent
+    }
+
     func stop() {
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
@@ -294,6 +651,9 @@ final class CompanionManager: ObservableObject {
         transientHideTask?.cancel()
 
         currentResponseTask?.cancel()
+        practiceStartupTask?.cancel()
+        practiceMonitorTask?.cancel()
+        practiceEvaluationTask?.cancel()
         currentResponseTask = nil
         shortcutTransitionCancellable?.cancel()
         voiceStateCancellable?.cancel()
@@ -454,7 +814,7 @@ final class CompanionManager: ObservableObject {
                     // Only do this when no response is in flight, otherwise
                     // the brief idle gap between recording and processing
                     // would prematurely hide the overlay.
-                    if self.currentResponseTask == nil {
+                    if self.currentResponseTask == nil && self.practiceEvaluationTask == nil {
                         self.scheduleTransientHideIfNeeded()
                     }
                 }
@@ -493,6 +853,7 @@ final class CompanionManager: ObservableObject {
 
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
+            practiceEvaluationTask?.cancel()
             elevenLabsTTSClient.stopPlayback()
             clearDetectedElementLocation()
 
@@ -521,7 +882,14 @@ final class CompanionManager: ObservableObject {
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
                         ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
-                        self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                        if self?.isPracticeModeEnabled == true {
+                            self?.startPracticeEvaluation(
+                                userTranscript: finalTranscript,
+                                isPassiveMonitorCheck: false
+                            )
+                        } else {
+                            self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                        }
                     }
                 )
             }
@@ -730,6 +1098,7 @@ final class CompanionManager: ObservableObject {
     /// fades out the overlay after a 1-second pause. Cancelled automatically
     /// if the user starts another push-to-talk interaction.
     private func scheduleTransientHideIfNeeded() {
+        guard !isPracticeModeEnabled else { return }
         guard !isClickyCursorEnabled && isOverlayVisible else { return }
 
         transientHideTask?.cancel()

@@ -31,6 +31,12 @@ struct CompanionPanelView: View {
 
                 modelPickerRow
                     .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 12)
+
+                practiceModeToggleSection
+                    .padding(.horizontal, 16)
             }
 
             if !companionManager.allPermissionsGranted {
@@ -546,6 +552,48 @@ struct CompanionPanelView: View {
 
 
     // MARK: - Show Clicky Cursor Toggle
+
+    private var practiceModeToggleSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                HStack(spacing: 8) {
+                    Image(systemName: "figure.mind.and.body")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .frame(width: 16)
+
+                    Text("Practice Mode")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+                }
+
+                Spacer()
+
+                Toggle("", isOn: Binding(
+                    get: { companionManager.isPracticeModeEnabled },
+                    set: { companionManager.setPracticeModeEnabled($0) }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .tint(DS.Colors.accent)
+                .scaleEffect(0.8)
+            }
+
+            Text("Background capture while practice mode is on.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+
+            if companionManager.isPracticeModeEnabled,
+               let activePracticeChallenge = companionManager.activePracticeChallenge {
+                Text(activePracticeChallenge.title)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.vertical, 4)
+        .pointerCursor()
+    }
 
     private var showClickyCursorToggleRow: some View {
         HStack {
