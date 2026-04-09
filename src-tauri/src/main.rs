@@ -1,6 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod overlay;
+mod auth;
+mod autostart;
+mod screenshot;
 
 use tauri::{
     menu::{Menu, MenuItem},
