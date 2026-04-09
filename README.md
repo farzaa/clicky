@@ -35,13 +35,13 @@ If you want to do it yourself, here's the deal.
 
 - macOS 14.2+ (for ScreenCaptureKit)
 - Xcode 15+
-- Node.js 18+ (for the Cloudflare Worker)
-- A [Cloudflare](https://cloudflare.com) account (free tier works)
-- API keys for: [Anthropic](https://console.anthropic.com), [AssemblyAI](https://www.assemblyai.com), [ElevenLabs](https://elevenlabs.io)
+- For **Claude mode** only: Node.js 18+ (for the Cloudflare Worker)
+- For **Claude mode** only: a [Cloudflare](https://cloudflare.com) account (free tier works)
+- For **Claude mode** only: API keys for [Anthropic](https://console.anthropic.com), [AssemblyAI](https://www.assemblyai.com), and [ElevenLabs](https://elevenlabs.io)
 
-### 1. Set up the Cloudflare Worker
+### 1. Set up the Cloudflare Worker for Claude mode
 
-The Worker is a tiny proxy that holds your API keys. The app talks to the Worker, the Worker talks to the APIs. This way your keys never ship in the app binary.
+If you want to use **Claude** in the app, the Worker is a tiny proxy that holds your API keys. The app talks to the Worker, the Worker talks to the APIs. This way your keys never ship in the app binary.
 
 ```bash
 cd worker
@@ -71,7 +71,7 @@ npx wrangler deploy
 
 It'll give you a URL like `https://your-worker-name.your-subdomain.workers.dev`. Copy that.
 
-### 2. Run the Worker locally (for development)
+### 2. Run the Worker locally for Claude mode development
 
 If you want to test changes to the Worker without deploying:
 
@@ -91,9 +91,9 @@ ELEVENLABS_VOICE_ID=...
 
 Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing. Grep for `clicky-proxy` to find them all.
 
-### 3. Update the proxy URLs in the app
+### 3. Update the proxy URLs in the app for Claude mode
 
-The app has the Worker URL hardcoded in a few places. Search for `your-worker-name.your-subdomain.workers.dev` and replace it with your Worker URL:
+The Claude path has the Worker URL hardcoded in a few places. Search for `your-worker-name.your-subdomain.workers.dev` and replace it with your Worker URL:
 
 ```bash
 grep -r "clicky-proxy" leanring-buddy/
@@ -103,7 +103,43 @@ You'll find it in:
 - `CompanionManager.swift` — Claude chat + ElevenLabs TTS
 - `AssemblyAIStreamingTranscriptionProvider.swift` — AssemblyAI token endpoint
 
-### 4. Open in Xcode and run
+### 4. Local model setup
+
+If you want to run Clicky fully on-device, use the app's **Local** inference mode.
+
+1. Open `leanring-buddy/Info.plist` and make sure this key is set:
+
+   ```
+   VoiceTranscriptionProvider = apple
+   ```
+
+   Local mode is intended to use Apple Speech for transcription.
+
+2. Open `leanring-buddy.xcodeproj` in Xcode and let Swift Package Manager resolve the local model dependencies.
+
+   The local path depends on the MLX packages used by the app, including `MLX`, `MLXLMCommon`, and `MLXVLM`. If Xcode shows package resolution issues, run **File > Packages > Resolve Package Versions**.
+
+3. Build and run the app.
+
+4. Open the Clicky menu bar panel and switch the inference selector from **Claude** to **Local**.
+
+5. Wait for the local model to finish preparing.
+
+   The first local run may download and prepare the model before it is ready. The panel shows download/progress state while this happens.
+
+In **Local** mode:
+- chat responses come from the on-device MLX vision-language model
+- speech playback uses the local speech synthesizer client
+- transcription uses Apple Speech when `VoiceTranscriptionProvider` is set to `apple`
+
+In **Claude** mode:
+- chat responses go through the Cloudflare Worker to Claude
+- transcription can use the configured provider from `Info.plist`
+- speech playback goes through the Worker to ElevenLabs
+
+You do **not** need the Cloudflare Worker, Anthropic, AssemblyAI, or ElevenLabs keys just to run the local MLX path.
+
+### 5. Open in Xcode and run
 
 ```bash
 open leanring-buddy.xcodeproj
@@ -127,7 +163,12 @@ The app will appear in your menu bar (not the dock). Click the icon to open the 
 
 If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
 
-**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied through a Cloudflare Worker.
+**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk always captures mic audio locally and sends screenshots of your screen into the response pipeline. From there, Clicky can run in two modes:
+
+- **Local**: transcript is captured with Apple Speech, responses come from the on-device MLX model, and speech playback uses the local speech synthesizer
+- **Claude**: transcript, chat, and TTS use the configured cloud providers, with Claude, AssemblyAI, and ElevenLabs all proxied through the Cloudflare Worker
+
+Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors.
 
 ## Project structure
 
@@ -137,6 +178,7 @@ leanring-buddy/          # Swift source (yes, the typo stays)
   CompanionPanelView.swift  # Menu bar panel UI
   ClaudeAPI.swift           # Claude streaming client
   ElevenLabsTTSClient.swift # Text-to-speech playback
+  Local-AI-Mode/            # On-device MLX chat + local speech synthesis
   OverlayWindow.swift       # Blue cursor overlay
   AssemblyAI*.swift         # Real-time transcription
   BuddyDictation*.swift     # Push-to-talk pipeline
