@@ -16,6 +16,11 @@ let onTranscript = () => {};
 let onResponse = () => {};
 let onError = () => {};
 
+/** @type {WebSocket|null} */
+let localSttSocket = null;
+/** @type {Function|null} */
+let onFinalTranscript = null;
+
 function isSocketOpen(socket) {
   return !!socket && socket.readyState === 1;
 }
@@ -39,6 +44,7 @@ export function configure(callbacks) {
   if (callbacks.onTranscript) onTranscript = callbacks.onTranscript;
   if (callbacks.onResponse) onResponse = callbacks.onResponse;
   if (callbacks.onError) onError = callbacks.onError;
+  if (callbacks.onFinalTranscript) onFinalTranscript = callbacks.onFinalTranscript;
 }
 
 let voiceJoinRef = null;
@@ -144,6 +150,96 @@ export function stopListening(socket, nextRef) {
   cleanupCaptureState();
 }
 
+export async function startListeningLocal() {
+  if (isListening) return;
+  isListening = true;
+  onStatusChange("listening");
+
+  const sttUrl = localStorage.getItem("stt_local_url") || "ws://localhost:9200";
+
+  try {
+    localSttSocket = new WebSocket(sttUrl);
+
+    localSttSocket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        onTranscript(data.text, data.final);
+        if (data.final && onFinalTranscript) {
+          onFinalTranscript(data.text);
+        }
+      } catch (err) {
+        console.warn("[voice] Failed to parse STT message:", err);
+      }
+    };
+
+    localSttSocket.onerror = () => {
+      onError("Local STT connection failed — is parakeet-stt-server running?");
+      cleanupLocalStt();
+      onStatusChange("connected");
+    };
+
+    localSttSocket.onclose = () => {
+      if (isListening) {
+        cleanupLocalStt();
+        onStatusChange("connected");
+      }
+    };
+
+    await new Promise((resolve, reject) => {
+      localSttSocket.onopen = resolve;
+      const origError = localSttSocket.onerror;
+      localSttSocket.onerror = (err) => {
+        origError(err);
+        reject(err);
+      };
+    });
+
+    const deviceId = localStorage.getItem("audio_input") || undefined;
+    const constraints = {
+      audio: deviceId ? { deviceId: { exact: deviceId } } : true,
+    };
+
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
+    recorder = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
+
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0 && localSttSocket && localSttSocket.readyState === WebSocket.OPEN) {
+        localSttSocket.send(event.data);
+      }
+    };
+
+    recorder.start(250);
+  } catch (err) {
+    cleanupLocalStt();
+    isListening = false;
+    onError(`Local STT failed: ${err.message || err}`);
+    onStatusChange("connected");
+  }
+}
+
+export function stopListeningLocal() {
+  if (!isListening && !recorder && !stream && !localSttSocket) return;
+
+  if (isListening) {
+    onStatusChange("processing");
+  }
+
+  cleanupCaptureState();
+
+  if (localSttSocket) {
+    localSttSocket.close();
+    localSttSocket = null;
+  }
+}
+
+function cleanupLocalStt() {
+  cleanupCaptureState();
+  if (localSttSocket) {
+    localSttSocket.close();
+    localSttSocket = null;
+  }
+}
+
 export function handleSocketDisconnect() {
   cleanupCaptureState();
   voiceJoinRef = null;
@@ -153,7 +249,7 @@ export function isVoiceSessionActive() {
   return isListening || !!recorder || !!stream;
 }
 
-function playTtsAudio(base64Data) {
+export function playTtsAudio(base64Data) {
   const binary = atob(base64Data);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
