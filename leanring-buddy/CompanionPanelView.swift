@@ -7,12 +7,16 @@
 //  like Loom's recording panel — dark, rounded, minimal, and special.
 //
 
+import AppKit
 import AVFoundation
 import SwiftUI
 
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    @State private var workspaceEmailInput: String = ""
+    @State private var workspacePasswordInput: String = ""
+    @State private var isWorkspaceRegistrationMode = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -21,48 +25,45 @@ struct CompanionPanelView: View {
                 .background(DS.Colors.borderSubtle)
                 .padding(.horizontal, 16)
 
-            permissionsCopySection
-                .padding(.top, 16)
-                .padding(.horizontal, 16)
-
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 12)
-
-                modelPickerRow
+            if companionManager.panelMode == .voiceAssistant {
+                permissionsCopySection
+                    .padding(.top, 16)
                     .padding(.horizontal, 16)
-            }
 
-            if !companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
+                if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                    Spacer()
+                        .frame(height: 12)
 
-                settingsSection
-                    .padding(.horizontal, 16)
-            }
+                    modelPickerRow
+                        .padding(.horizontal, 16)
+                }
 
-            if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
+                if !companionManager.allPermissionsGranted {
+                    Spacer()
+                        .frame(height: 16)
 
-                startButton
-                    .padding(.horizontal, 16)
-            }
+                    settingsSection
+                        .padding(.horizontal, 16)
+                }
 
-            // Show Clicky toggle — hidden for now
-            // if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            //     Spacer()
-            //         .frame(height: 16)
-            //
-            //     showClickyCursorToggleRow
-            //         .padding(.horizontal, 16)
-            // }
+                if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                    Spacer()
+                        .frame(height: 16)
 
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
+                    startButton
+                        .padding(.horizontal, 16)
+                }
 
-                dmFarzaButton
+                if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                    Spacer()
+                        .frame(height: 16)
+
+                    dmFarzaButton
+                        .padding(.horizontal, 16)
+                }
+            } else {
+                workspacePanelSection
+                    .padding(.top, 12)
                     .padding(.horizontal, 16)
             }
 
@@ -85,16 +86,9 @@ struct CompanionPanelView: View {
 
     private var panelHeader: some View {
         HStack {
-            HStack(spacing: 8) {
-                // Animated status dot
-                Circle()
-                    .fill(statusDotColor)
-                    .frame(width: 8, height: 8)
-                    .shadow(color: statusDotColor.opacity(0.6), radius: 4)
-
-                Text("Clicky")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(DS.Colors.textPrimary)
+            HStack(spacing: 4) {
+                panelModeButton(title: "Voice", mode: .voiceAssistant)
+                panelModeButton(title: "Workspace", mode: .workspace)
             }
 
             Spacer()
@@ -120,6 +114,32 @@ struct CompanionPanelView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
+    }
+
+    private func panelModeButton(
+        title: String,
+        mode: CompanionPanelMode
+    ) -> some View {
+        let isSelected = companionManager.panelMode == mode
+        return Button(action: {
+            if mode == .voiceAssistant {
+                companionManager.showVoiceAssistantPanel()
+            } else {
+                companionManager.showWorkspacePanel()
+            }
+        }) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.14) : Color.white.opacity(0.06))
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
     }
 
     // MARK: - Permissions Copy
@@ -718,6 +738,267 @@ struct CompanionPanelView: View {
 
     // MARK: - Visual Helpers
 
+    @ViewBuilder
+    private var workspacePanelSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !companionManager.isWorkspaceAuthenticated {
+                workspaceAuthenticationSection
+            } else {
+                workspaceBrowserSection
+            }
+
+            if let workspaceErrorMessage = companionManager.workspaceErrorMessage,
+               !workspaceErrorMessage.isEmpty {
+                Text(workspaceErrorMessage)
+                    .font(.system(size: 11))
+                    .foregroundColor(Color(red: 0.9, green: 0.4, blue: 0.4))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let workspaceStatusMessage = companionManager.workspaceStatusMessage,
+               !workspaceStatusMessage.isEmpty {
+                Text(workspaceStatusMessage)
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var workspaceAuthenticationSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(isWorkspaceRegistrationMode ? "Create workspace account" : "Sign in to workspace")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(DS.Colors.textPrimary)
+
+            TextField("Email", text: $workspaceEmailInput)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .foregroundColor(DS.Colors.textPrimary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.white.opacity(0.08))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+
+            SecureField("Password", text: $workspacePasswordInput)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .foregroundColor(DS.Colors.textPrimary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.white.opacity(0.08))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+
+            Button(action: {
+                Task {
+                    if isWorkspaceRegistrationMode {
+                        await companionManager.registerWorkspaceUser(
+                            emailAddress: workspaceEmailInput,
+                            password: workspacePasswordInput
+                        )
+                    } else {
+                        await companionManager.loginWorkspaceUser(
+                            emailAddress: workspaceEmailInput,
+                            password: workspacePasswordInput
+                        )
+                    }
+                }
+            }) {
+                Text(isWorkspaceRegistrationMode ? "Create account" : "Sign in")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(DS.Colors.textOnAccent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(DS.Colors.accent)
+                    )
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+
+            Button(action: {
+                isWorkspaceRegistrationMode.toggle()
+            }) {
+                Text(isWorkspaceRegistrationMode ? "Have an account? Sign in" : "Need an account? Register")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+        }
+    }
+
+    private var workspaceBrowserSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(companionManager.workspaceDisplayName ?? "Workspace")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(DS.Colors.textPrimary)
+                    if let workspaceAuthenticatedUserEmailAddress = companionManager.workspaceAuthenticatedUserEmailAddress {
+                        Text(workspaceAuthenticatedUserEmailAddress)
+                            .font(.system(size: 10))
+                            .foregroundColor(DS.Colors.textTertiary)
+                    }
+                }
+                Spacer()
+                Button("Refresh") {
+                    Task { await companionManager.refreshWorkspacePanel() }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textTertiary)
+                .pointerCursor()
+
+                Button("Logout") {
+                    Task { await companionManager.logoutWorkspaceUser() }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textTertiary)
+                .pointerCursor()
+            }
+
+            HStack {
+                Text(companionManager.workspaceCurrentDirectoryPath)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Spacer()
+
+                Button("Up") {
+                    companionManager.openWorkspaceParentDirectory()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textTertiary)
+                .pointerCursor()
+            }
+
+            Button(action: {
+                let selectedURLs = chooseWorkspaceImportURLs()
+                guard !selectedURLs.isEmpty else { return }
+                Task {
+                    await companionManager.uploadWorkspaceFileSystemItems(selectedURLs)
+                }
+            }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Add files or folders")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundColor(DS.Colors.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.white.opacity(0.08))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(companionManager.workspaceEntries) { workspaceEntry in
+                        Button(action: {
+                            companionManager.openWorkspaceEntry(workspaceEntry)
+                        }) {
+                            HStack(spacing: 8) {
+                                Image(systemName: workspaceEntry.isDirectory ? "folder" : "doc")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(DS.Colors.textTertiary)
+                                    .frame(width: 14)
+
+                                Text(workspaceEntry.entryName)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(DS.Colors.textSecondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+
+                                Spacer()
+
+                                if let sizeBytes = workspaceEntry.sizeBytes, !workspaceEntry.isDirectory {
+                                    Text(ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file))
+                                        .font(.system(size: 10))
+                                        .foregroundColor(DS.Colors.textTertiary)
+                                }
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(Color.white.opacity(0.05))
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .pointerCursor()
+                    }
+                }
+            }
+            .frame(maxHeight: 170)
+
+            if let selectedWorkspaceFilePath = companionManager.selectedWorkspaceFilePath {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(selectedWorkspaceFilePath)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    ScrollView {
+                        Text(companionManager.selectedWorkspaceFileTextPreview ?? "")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(DS.Colors.textSecondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxHeight: 120)
+                    .padding(8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.white.opacity(0.05))
+                    )
+                }
+            }
+        }
+    }
+
+    private func chooseWorkspaceImportURLs() -> [URL] {
+        let openPanel = NSOpenPanel()
+        openPanel.canChooseFiles = true
+        openPanel.canChooseDirectories = true
+        openPanel.allowsMultipleSelection = true
+        openPanel.treatsFilePackagesAsDirectories = true
+        openPanel.prompt = "Add"
+        let panelResponse = openPanel.runModal()
+        guard panelResponse == .OK else {
+            return []
+        }
+        return openPanel.urls
+    }
+
     private var panelBackground: some View {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
             .fill(DS.Colors.background)
@@ -740,6 +1021,16 @@ struct CompanionPanelView: View {
     }
 
     private var statusText: String {
+        if companionManager.panelMode == .workspace {
+            if companionManager.isWorkspaceUploading {
+                return "Uploading"
+            }
+            if companionManager.isWorkspaceLoading {
+                return "Loading"
+            }
+            return companionManager.isWorkspaceAuthenticated ? "Workspace" : "Sign in"
+        }
+
         if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
             return "Setup"
         }

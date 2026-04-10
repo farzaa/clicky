@@ -62,6 +62,12 @@ class WorkspaceFileReadResponse(WorkspaceEntryResponse):
     binary_content_base64: str | None = None
 
 
+class WorkspaceEntriesListResponse(BaseModel):
+    workspace_id: str
+    parent_entry_path: str
+    entries: list[WorkspaceEntryResponse]
+
+
 def build_workspace_response(
     workspace: Workspace,
     membership_role: WorkspaceMembershipRole,
@@ -524,3 +530,59 @@ async def read_workspace_file(
         )
 
     return build_workspace_file_read_response(workspace_entry)
+
+
+@workspaces_router.get(
+    "/{workspace_id}/entries",
+    response_model=WorkspaceEntriesListResponse,
+)
+async def list_workspace_entries(
+    workspace_id: UUID,
+    parent_entry_path: str = Query(default="/"),
+    current_user: User = Depends(get_current_user),
+    database_session: AsyncSession = Depends(get_database_session),
+) -> WorkspaceEntriesListResponse:
+    _ = await get_accessible_workspace_membership(
+        workspace_id,
+        current_user,
+        database_session,
+    )
+    normalized_parent_entry_path = normalize_workspace_entry_path(parent_entry_path)
+    parent_workspace_entry = await get_workspace_entry_by_path(
+        workspace_id,
+        normalized_parent_entry_path,
+        database_session,
+    )
+    if parent_workspace_entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Parent path `{normalized_parent_entry_path}` was not found.",
+        )
+    if parent_workspace_entry.entry_type != WorkspaceEntryType.directory:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"`{normalized_parent_entry_path}` is not a directory.",
+        )
+
+    child_workspace_entries_query = (
+        select(WorkspaceEntry)
+        .where(
+            and_(
+                WorkspaceEntry.workspace_id == workspace_id,
+                WorkspaceEntry.parent_entry_id == parent_workspace_entry.id,
+            )
+        )
+        .order_by(WorkspaceEntry.entry_type.asc(), WorkspaceEntry.entry_name.asc())
+    )
+    child_workspace_entries = list(
+        (await database_session.execute(child_workspace_entries_query)).scalars().all()
+    )
+
+    return WorkspaceEntriesListResponse(
+        workspace_id=str(workspace_id),
+        parent_entry_path=normalized_parent_entry_path,
+        entries=[
+            build_workspace_entry_response(workspace_entry)
+            for workspace_entry in child_workspace_entries
+        ],
+    )

@@ -13,12 +13,61 @@ import Foundation
 import PostHog
 import ScreenCaptureKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum CompanionVoiceState {
     case idle
     case listening
     case processing
     case responding
+}
+
+private extension Data {
+    mutating func appendString(_ string: String) {
+        append(string.data(using: .utf8)!)
+    }
+
+    mutating func appendMultipartFormField(
+        named fieldName: String,
+        value: String,
+        usingBoundary boundary: String
+    ) {
+        appendString("--\(boundary)\r\n")
+        appendString("Content-Disposition: form-data; name=\"\(fieldName)\"\r\n\r\n")
+        appendString("\(value)\r\n")
+    }
+
+    mutating func appendMultipartFileField(
+        named fieldName: String,
+        filename: String,
+        mimeType: String,
+        fileData: Data,
+        usingBoundary boundary: String
+    ) {
+        appendString("--\(boundary)\r\n")
+        appendString("Content-Disposition: form-data; name=\"\(fieldName)\"; filename=\"\(filename)\"\r\n")
+        appendString("Content-Type: \(mimeType)\r\n\r\n")
+        append(fileData)
+        appendString("\r\n")
+    }
+}
+
+enum CompanionPanelMode {
+    case voiceAssistant
+    case workspace
+}
+
+struct WorkspacePanelEntry: Identifiable {
+    let id: String
+    let entryName: String
+    let entryPath: String
+    let entryType: String
+    let contentType: String?
+    let sizeBytes: Int?
+
+    var isDirectory: Bool {
+        entryType == "directory"
+    }
 }
 
 @MainActor
@@ -33,6 +82,18 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var hasScreenRecordingPermission = false
     @Published private(set) var hasMicrophonePermission = false
     @Published private(set) var hasScreenContentPermission = false
+    @Published var panelMode: CompanionPanelMode = .voiceAssistant
+    @Published private(set) var isWorkspaceAuthenticated = false
+    @Published private(set) var workspaceAuthenticatedUserEmailAddress: String?
+    @Published private(set) var workspaceDisplayName: String?
+    @Published private(set) var workspaceCurrentDirectoryPath: String = "/"
+    @Published private(set) var workspaceEntries: [WorkspacePanelEntry] = []
+    @Published private(set) var selectedWorkspaceFilePath: String?
+    @Published private(set) var selectedWorkspaceFileTextPreview: String?
+    @Published private(set) var isWorkspaceLoading = false
+    @Published private(set) var isWorkspaceUploading = false
+    @Published private(set) var workspaceStatusMessage: String?
+    @Published private(set) var workspaceErrorMessage: String?
 
     /// Screen location (global AppKit coords) of a detected UI element the
     /// buddy should fly to and point at. Parsed from Claude's response;
@@ -546,6 +607,516 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    // MARK: - Workspace Panel
+
+    func showVoiceAssistantPanel() {
+        panelMode = .voiceAssistant
+    }
+
+    func showWorkspacePanel() {
+        panelMode = .workspace
+        Task {
+            await refreshWorkspacePanel()
+        }
+    }
+
+    func refreshWorkspacePanel() async {
+        workspaceErrorMessage = nil
+        workspaceStatusMessage = nil
+        selectedWorkspaceFilePath = nil
+        selectedWorkspaceFileTextPreview = nil
+
+        guard let accessToken = backendAgentAuthToken else {
+            clearWorkspacePanelSessionState()
+            return
+        }
+
+        isWorkspaceLoading = true
+        defer { isWorkspaceLoading = false }
+
+        do {
+            let authenticatedUserResponseObject = try await sendBackendRequest(
+                path: "/auth/me",
+                method: "GET",
+                accessToken: accessToken,
+                jsonBody: nil
+            )
+            guard let authenticatedUserPayload = authenticatedUserResponseObject as? [String: Any] else {
+                throw NSError(
+                    domain: "CompanionManager",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Expected object response for /auth/me."]
+                )
+            }
+            workspaceAuthenticatedUserEmailAddress = authenticatedUserPayload["email_address"] as? String
+            isWorkspaceAuthenticated = true
+
+            let workspaceContext = try await resolveWorkspaceContext(accessToken: accessToken)
+            persistBackendSession(
+                accessToken: accessToken,
+                workspaceID: workspaceContext.workspaceID
+            )
+            workspaceDisplayName = workspaceContext.workspaceDisplayName
+            await loadWorkspaceDirectory(parentEntryPath: "/")
+        } catch {
+            if isUnauthorizedBackendError(error) {
+                clearBackendSession()
+            }
+            clearWorkspacePanelSessionState()
+            workspaceErrorMessage = error.localizedDescription
+        }
+    }
+
+    func loginWorkspaceUser(
+        emailAddress: String,
+        password: String
+    ) async {
+        await authenticateWorkspaceUser(
+            path: "/auth/login",
+            emailAddress: emailAddress,
+            password: password
+        )
+    }
+
+    func registerWorkspaceUser(
+        emailAddress: String,
+        password: String
+    ) async {
+        await authenticateWorkspaceUser(
+            path: "/auth/register",
+            emailAddress: emailAddress,
+            password: password
+        )
+    }
+
+    func logoutWorkspaceUser() async {
+        if let accessToken = backendAgentAuthToken {
+            _ = try? await sendBackendRequest(
+                path: "/auth/logout",
+                method: "POST",
+                accessToken: accessToken,
+                jsonBody: nil
+            )
+        }
+        clearBackendSession()
+        clearWorkspacePanelSessionState()
+    }
+
+    func openWorkspaceParentDirectory() {
+        let parentDirectoryPath = parentWorkspaceEntryPath(for: workspaceCurrentDirectoryPath)
+        Task {
+            await loadWorkspaceDirectory(parentEntryPath: parentDirectoryPath)
+        }
+    }
+
+    func openWorkspaceEntry(_ workspaceEntry: WorkspacePanelEntry) {
+        Task {
+            if workspaceEntry.isDirectory {
+                await loadWorkspaceDirectory(parentEntryPath: workspaceEntry.entryPath)
+            } else {
+                await loadWorkspaceFilePreview(entryPath: workspaceEntry.entryPath)
+            }
+        }
+    }
+
+    func uploadWorkspaceFileSystemItems(_ selectedURLs: [URL]) async {
+        workspaceErrorMessage = nil
+        workspaceStatusMessage = nil
+        selectedWorkspaceFilePath = nil
+        selectedWorkspaceFileTextPreview = nil
+
+        guard let accessToken = backendAgentAuthToken,
+              let workspaceID = backendAgentWorkspaceID else {
+            workspaceErrorMessage = "Sign in before uploading files."
+            return
+        }
+
+        let uploadItems = collectWorkspaceUploadItems(
+            from: selectedURLs,
+            destinationDirectoryPath: workspaceCurrentDirectoryPath
+        )
+        guard !uploadItems.isEmpty else {
+            workspaceStatusMessage = "No files selected."
+            return
+        }
+
+        isWorkspaceUploading = true
+        defer { isWorkspaceUploading = false }
+
+        do {
+            for (uploadIndex, workspaceUploadItem) in uploadItems.enumerated() {
+                workspaceStatusMessage = "Uploading \(uploadIndex + 1)/\(uploadItems.count)…"
+                try await uploadWorkspaceFile(
+                    workspaceUploadItem: workspaceUploadItem,
+                    workspaceID: workspaceID,
+                    accessToken: accessToken
+                )
+            }
+            workspaceStatusMessage = "Uploaded \(uploadItems.count) file(s)."
+            await loadWorkspaceDirectory(parentEntryPath: workspaceCurrentDirectoryPath)
+        } catch {
+            workspaceErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func authenticateWorkspaceUser(
+        path: String,
+        emailAddress: String,
+        password: String
+    ) async {
+        workspaceErrorMessage = nil
+        workspaceStatusMessage = nil
+        isWorkspaceLoading = true
+        defer { isWorkspaceLoading = false }
+
+        let normalizedEmailAddress = emailAddress.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedEmailAddress.isEmpty else {
+            workspaceErrorMessage = "Email is required."
+            return
+        }
+
+        do {
+            let authPayload = try await sendBackendJSONRequest(
+                path: path,
+                method: "POST",
+                accessToken: nil,
+                jsonBody: [
+                    "email_address": normalizedEmailAddress,
+                    "password": password,
+                ]
+            )
+            guard let accessToken = authPayload["access_token"] as? String else {
+                throw NSError(
+                    domain: "CompanionManager",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Authentication did not return access_token."]
+                )
+            }
+            let authUserPayload = authPayload["user"] as? [String: Any]
+            workspaceAuthenticatedUserEmailAddress = authUserPayload?["email_address"] as? String
+            isWorkspaceAuthenticated = true
+
+            let workspaceContext = try await resolveWorkspaceContext(accessToken: accessToken)
+            persistBackendSession(
+                accessToken: accessToken,
+                workspaceID: workspaceContext.workspaceID
+            )
+            workspaceDisplayName = workspaceContext.workspaceDisplayName
+            await loadWorkspaceDirectory(parentEntryPath: "/")
+        } catch {
+            if isUnauthorizedBackendError(error) {
+                clearBackendSession()
+                clearWorkspacePanelSessionState()
+            }
+            workspaceErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func resolveWorkspaceContext(
+        accessToken: String
+    ) async throws -> (workspaceID: String, workspaceDisplayName: String) {
+        var workspacesPayload = try await sendBackendJSONArrayRequest(
+            path: "/workspaces/",
+            method: "GET",
+            accessToken: accessToken
+        )
+        if workspacesPayload.isEmpty {
+            let createdWorkspacePayload = try await sendBackendJSONRequest(
+                path: "/workspaces/",
+                method: "POST",
+                accessToken: accessToken,
+                jsonBody: [
+                    "display_name": "My Workspace",
+                    "workspace_metadata": [
+                        "created_from_companion_panel": true,
+                    ],
+                ]
+            )
+            workspacesPayload = [createdWorkspacePayload]
+        }
+
+        guard let firstWorkspace = workspacesPayload.first,
+              let workspaceID = firstWorkspace["id"] as? String else {
+            throw NSError(
+                domain: "CompanionManager",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "No accessible workspace was found."]
+            )
+        }
+        let workspaceDisplayName = (firstWorkspace["display_name"] as? String) ?? "My Workspace"
+        return (workspaceID, workspaceDisplayName)
+    }
+
+    private func loadWorkspaceDirectory(parentEntryPath: String) async {
+        workspaceErrorMessage = nil
+        isWorkspaceLoading = true
+        defer { isWorkspaceLoading = false }
+
+        guard let accessToken = backendAgentAuthToken,
+              let workspaceID = backendAgentWorkspaceID else {
+            clearWorkspacePanelSessionState()
+            return
+        }
+
+        do {
+            let encodedParentEntryPath = parentEntryPath.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "/"
+            let entriesResponseObject = try await sendBackendRequest(
+                path: "/workspaces/\(workspaceID)/entries?parent_entry_path=\(encodedParentEntryPath)",
+                method: "GET",
+                accessToken: accessToken,
+                jsonBody: nil
+            )
+            guard let entriesPayload = entriesResponseObject as? [String: Any] else {
+                throw NSError(
+                    domain: "CompanionManager",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Expected object response for workspace entries."]
+                )
+            }
+            let entryPayloads = entriesPayload["entries"] as? [[String: Any]] ?? []
+            workspaceEntries = entryPayloads.compactMap { workspaceEntryPayload in
+                guard let entryPath = workspaceEntryPayload["entry_path"] as? String,
+                      let entryName = workspaceEntryPayload["entry_name"] as? String,
+                      let entryType = workspaceEntryPayload["entry_type"] as? String else {
+                    return nil
+                }
+                return WorkspacePanelEntry(
+                    id: entryPath,
+                    entryName: entryName,
+                    entryPath: entryPath,
+                    entryType: entryType,
+                    contentType: workspaceEntryPayload["content_type"] as? String,
+                    sizeBytes: workspaceEntryPayload["size_bytes"] as? Int
+                )
+            }
+            workspaceCurrentDirectoryPath = (entriesPayload["parent_entry_path"] as? String) ?? parentEntryPath
+            selectedWorkspaceFilePath = nil
+            selectedWorkspaceFileTextPreview = nil
+        } catch {
+            if isUnauthorizedBackendError(error) {
+                clearBackendSession()
+                clearWorkspacePanelSessionState()
+            }
+            workspaceErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func loadWorkspaceFilePreview(entryPath: String) async {
+        workspaceErrorMessage = nil
+        isWorkspaceLoading = true
+        defer { isWorkspaceLoading = false }
+
+        guard let accessToken = backendAgentAuthToken,
+              let workspaceID = backendAgentWorkspaceID else {
+            clearWorkspacePanelSessionState()
+            return
+        }
+
+        do {
+            let encodedEntryPath = entryPath.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? entryPath
+            let workspaceFileResponseObject = try await sendBackendRequest(
+                path: "/workspaces/\(workspaceID)/entries/read?entry_path=\(encodedEntryPath)",
+                method: "GET",
+                accessToken: accessToken,
+                jsonBody: nil
+            )
+            guard let workspaceFilePayload = workspaceFileResponseObject as? [String: Any] else {
+                throw NSError(
+                    domain: "CompanionManager",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Expected object response for workspace file read."]
+                )
+            }
+            selectedWorkspaceFilePath = entryPath
+            let hasBinaryContent = workspaceFilePayload["has_binary_content"] as? Bool ?? false
+            let textContent = workspaceFilePayload["text_content"] as? String
+            if let textContent, !textContent.isEmpty {
+                selectedWorkspaceFileTextPreview = textContent
+            } else if hasBinaryContent {
+                selectedWorkspaceFileTextPreview = "[Binary content]"
+            } else {
+                selectedWorkspaceFileTextPreview = ""
+            }
+        } catch {
+            if isUnauthorizedBackendError(error) {
+                clearBackendSession()
+                clearWorkspacePanelSessionState()
+            }
+            workspaceErrorMessage = error.localizedDescription
+        }
+    }
+
+    private struct WorkspaceUploadItem {
+        let fileURL: URL
+        let entryPath: String
+    }
+
+    private func collectWorkspaceUploadItems(
+        from selectedURLs: [URL],
+        destinationDirectoryPath: String
+    ) -> [WorkspaceUploadItem] {
+        let fileManager = FileManager.default
+        var workspaceUploadItems: [WorkspaceUploadItem] = []
+
+        for selectedURL in selectedURLs {
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: selectedURL.path, isDirectory: &isDirectory) else {
+                continue
+            }
+
+            if isDirectory.boolValue {
+                guard let fileEnumerator = fileManager.enumerator(
+                    at: selectedURL,
+                    includingPropertiesForKeys: [.isRegularFileKey],
+                    options: [.skipsHiddenFiles]
+                ) else {
+                    continue
+                }
+
+                for case let descendantURL as URL in fileEnumerator {
+                    let resourceValues = try? descendantURL.resourceValues(forKeys: [.isRegularFileKey])
+                    guard resourceValues?.isRegularFile == true else {
+                        continue
+                    }
+                    let relativePath = descendantURL.path.replacingOccurrences(
+                        of: selectedURL.path + "/",
+                        with: ""
+                    )
+                    let uploadPath = normalizeWorkspaceEntryPathForUpload(
+                        workspacePathByAppending(
+                            destinationDirectoryPath,
+                            relativePath: selectedURL.lastPathComponent + "/" + relativePath
+                        )
+                    )
+                    workspaceUploadItems.append(
+                        WorkspaceUploadItem(fileURL: descendantURL, entryPath: uploadPath)
+                    )
+                }
+            } else {
+                let uploadPath = normalizeWorkspaceEntryPathForUpload(
+                    workspacePathByAppending(
+                        destinationDirectoryPath,
+                        relativePath: selectedURL.lastPathComponent
+                    )
+                )
+                workspaceUploadItems.append(
+                    WorkspaceUploadItem(fileURL: selectedURL, entryPath: uploadPath)
+                )
+            }
+        }
+
+        return workspaceUploadItems.sorted { leftWorkspaceUploadItem, rightWorkspaceUploadItem in
+            leftWorkspaceUploadItem.entryPath < rightWorkspaceUploadItem.entryPath
+        }
+    }
+
+    private func uploadWorkspaceFile(
+        workspaceUploadItem: WorkspaceUploadItem,
+        workspaceID: String,
+        accessToken: String
+    ) async throws {
+        let fileData = try Data(contentsOf: workspaceUploadItem.fileURL)
+        let multipartBoundary = "Boundary-\(UUID().uuidString)"
+        let fileName = workspaceUploadItem.fileURL.lastPathComponent
+        let mimeType = UTType(filenameExtension: workspaceUploadItem.fileURL.pathExtension)?
+            .preferredMIMEType ?? "application/octet-stream"
+
+        var multipartBody = Data()
+        multipartBody.appendMultipartFormField(
+            named: "entry_path",
+            value: workspaceUploadItem.entryPath,
+            usingBoundary: multipartBoundary
+        )
+        multipartBody.appendMultipartFileField(
+            named: "file",
+            filename: fileName,
+            mimeType: mimeType,
+            fileData: fileData,
+            usingBoundary: multipartBoundary
+        )
+        multipartBody.appendString("--\(multipartBoundary)--\r\n")
+
+        _ = try await sendBackendMultipartRequest(
+            path: "/workspaces/\(workspaceID)/entries/upload",
+            method: "POST",
+            accessToken: accessToken,
+            contentTypeHeader: "multipart/form-data; boundary=\(multipartBoundary)",
+            bodyData: multipartBody
+        )
+    }
+
+    private func persistBackendSession(
+        accessToken: String,
+        workspaceID: String
+    ) {
+        backendAgentAuthToken = accessToken
+        backendAgentWorkspaceID = workspaceID
+        UserDefaults.standard.set(accessToken, forKey: Self.backendAgentAuthTokenUserDefaultsKey)
+        UserDefaults.standard.set(workspaceID, forKey: Self.backendAgentWorkspaceIDUserDefaultsKey)
+    }
+
+    private func clearBackendSession() {
+        backendAgentAuthToken = nil
+        backendAgentWorkspaceID = nil
+        cachedBackendAgentTools = nil
+        UserDefaults.standard.removeObject(forKey: Self.backendAgentAuthTokenUserDefaultsKey)
+        UserDefaults.standard.removeObject(forKey: Self.backendAgentWorkspaceIDUserDefaultsKey)
+    }
+
+    private func clearWorkspacePanelSessionState() {
+        isWorkspaceAuthenticated = false
+        workspaceAuthenticatedUserEmailAddress = nil
+        workspaceDisplayName = nil
+        workspaceCurrentDirectoryPath = "/"
+        workspaceEntries = []
+        selectedWorkspaceFilePath = nil
+        selectedWorkspaceFileTextPreview = nil
+        workspaceStatusMessage = nil
+        workspaceErrorMessage = nil
+    }
+
+    private func isUnauthorizedBackendError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.code == 401 || nsError.code == 403
+    }
+
+    private func parentWorkspaceEntryPath(for entryPath: String) -> String {
+        let normalizedEntryPath = normalizeWorkspaceEntryPathForUpload(entryPath)
+        if normalizedEntryPath == "/" {
+            return "/"
+        }
+        let pathComponents = normalizedEntryPath
+            .split(separator: "/")
+            .map(String.init)
+        guard pathComponents.count > 1 else {
+            return "/"
+        }
+        return "/" + pathComponents.dropLast().joined(separator: "/")
+    }
+
+    private func normalizeWorkspaceEntryPathForUpload(_ path: String) -> String {
+        let pathWithForwardSlashes = path.replacingOccurrences(of: "\\", with: "/")
+        let pathComponents = pathWithForwardSlashes
+            .split(separator: "/")
+            .map(String.init)
+            .filter { !$0.isEmpty }
+        if pathComponents.isEmpty {
+            return "/"
+        }
+        return "/" + pathComponents.joined(separator: "/")
+    }
+
+    private func workspacePathByAppending(
+        _ directoryPath: String,
+        relativePath: String
+    ) -> String {
+        let normalizedDirectoryPath = normalizeWorkspaceEntryPathForUpload(directoryPath)
+        if normalizedDirectoryPath == "/" {
+            return "/" + relativePath
+        }
+        return normalizedDirectoryPath + "/" + relativePath
+    }
+
     // MARK: - Companion Prompt
 
     private static let companionVoiceResponseSystemPrompt = """
@@ -702,10 +1273,10 @@ final class CompanionManager: ObservableObject {
             )
         }
 
-        backendAgentAuthToken = accessToken
-        backendAgentWorkspaceID = workspaceID
-        UserDefaults.standard.set(accessToken, forKey: Self.backendAgentAuthTokenUserDefaultsKey)
-        UserDefaults.standard.set(workspaceID, forKey: Self.backendAgentWorkspaceIDUserDefaultsKey)
+        persistBackendSession(
+            accessToken: accessToken,
+            workspaceID: workspaceID
+        )
         return BackendAgentSessionContext(accessToken: accessToken, workspaceID: workspaceID)
     }
 
@@ -977,6 +1548,48 @@ final class CompanionManager: ObservableObject {
         if let jsonBody {
             request.httpBody = try JSONSerialization.data(withJSONObject: jsonBody)
         }
+
+        let (responseData, response) = try await backendAgentSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(
+                domain: "CompanionManager",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid HTTP response from backend."]
+            )
+        }
+        guard (200...299).contains(httpResponse.statusCode) else {
+            let errorText = String(data: responseData, encoding: .utf8) ?? "Unknown backend error."
+            throw NSError(
+                domain: "CompanionManager",
+                code: httpResponse.statusCode,
+                userInfo: [NSLocalizedDescriptionKey: "Backend request failed: \(errorText)"]
+            )
+        }
+        return try JSONSerialization.jsonObject(with: responseData, options: [])
+    }
+
+    private func sendBackendMultipartRequest(
+        path: String,
+        method: String,
+        accessToken: String?,
+        contentTypeHeader: String,
+        bodyData: Data
+    ) async throws -> Any {
+        let normalizedPath = path.hasPrefix("/") ? path : "/\(path)"
+        guard let requestURL = URL(string: AppBundleConfiguration.backendBaseURL() + normalizedPath) else {
+            throw NSError(
+                domain: "CompanionManager",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid backend URL for path \(path)."]
+            )
+        }
+        var request = URLRequest(url: requestURL)
+        request.httpMethod = method
+        request.setValue(contentTypeHeader, forHTTPHeaderField: "Content-Type")
+        if let accessToken {
+            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = bodyData
 
         let (responseData, response) = try await backendAgentSession.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {

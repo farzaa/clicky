@@ -53,9 +53,9 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_I
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1026 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
+| `CompanionManager.swift` | ~1600 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, overlay management, and workspace panel state. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, cursor visibility, backend auth session, workspace directory listing, file preview, and uploads. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline plus workspace auth/browse/upload flows. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
-| `CompanionPanelView.swift` | ~761 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, model picker (Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
+| `CompanionPanelView.swift` | ~1050 | SwiftUI panel content for the menu bar dropdown. Includes Voice and Workspace panel modes, with companion status, push-to-talk instructions, model picker, permissions UI, DM feedback button, and quit button in Voice mode, plus workspace sign-in/register, file browser, upload picker, and file preview in Workspace mode. Dark aesthetic using `DS` design system. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
@@ -89,13 +89,13 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_I
 | `backend/app/auth.py` | ~50 | Bearer-token authentication dependency that resolves the current user from Postgres-backed auth sessions. |
 | `backend/app/auth_router.py` | ~145 | Auth routes for register, login, current-user lookup, and logout. Registration now auto-creates a default workspace and root folder. |
 | `backend/app/database.py` | ~45 | Async Postgres engine/session helpers, connectivity verification, and schema bootstrap utilities. |
-| `backend/app/models.py` | ~360 | SQLAlchemy models for users, auth sessions, saved agents, workspaces, memberships, and virtual filesystem entries. |
+| `backend/app/models.py` | ~410 | SQLAlchemy models for users, auth sessions, saved agents, agent sessions, workspaces, memberships, and virtual filesystem entries. |
 | `backend/app/routes.py` | ~110 | Hosted backend routes for `/chat`, `/tts`, `/transcriptions`, and `/health`. |
 | `backend/app/parsing/router.py` | ~21 | Dedicated parsing router that exposes placeholder `/parse/` endpoints for the future PDF-to-markdown pipeline. |
 | `backend/app/parsing/service.py` | ~18 | Empty placeholder parsing service boundary for the team-owned document parsing implementation. |
 | `backend/app/security.py` | ~50 | Password hashing and session-token helpers for backend auth. |
 | `backend/app/workspaces_service.py` | ~55 | Shared helper that creates a workspace, membership row, root directory entry, and default saved Clicky agent. |
-| `backend/app/workspaces_router.py` | ~400 | Workspace CRUD-lite endpoints, including backend launch/stop state transitions plus authenticated file upload and file read APIs backed by `workspace_entries`. |
+| `backend/app/workspaces_router.py` | ~590 | Workspace CRUD-lite endpoints, including backend launch/stop state transitions plus authenticated file upload, directory listing, and file read APIs backed by `workspace_entries`. |
 | `backend/docker-compose.yml` | ~14 | Local Postgres container for backend development. |
 | `worker/src/index.ts` | ~142 | Legacy Cloudflare Worker proxy. The current FastAPI backend replaces it for `/chat` and `/tts`. |
 

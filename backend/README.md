@@ -14,6 +14,7 @@ This service replaces the thin Cloudflare Worker proxy with a hosted FastAPI bac
 - `POST /workspaces/` creates a workspace with a root directory entry
 - `GET /workspaces/` lists the current user's workspaces
 - `POST /workspaces/{workspaceId}/entries/upload` uploads a file into `workspace_entries` and auto-creates missing parent directories
+- `GET /workspaces/{workspaceId}/entries?parent_entry_path=...` lists direct children for a workspace directory path
 - `GET /workspaces/{workspaceId}/entries/read?entry_path=...` reads a stored workspace file and returns text or base64 binary content
 - `POST /workspaces/{workspaceId}/launch` marks a workspace as running
 - `GET /agent/tools` lists backend-implemented workspace tools
@@ -33,11 +34,14 @@ The backend now bootstraps these Postgres tables:
 - `users`
 - `auth_sessions`
 - `agents`
+- `agent_sessions`
 - `workspaces`
 - `workspace_memberships`
 - `workspace_entries`
 
 `agents` stores workspace-scoped saved agent definitions, including a persisted `system_prompt` alongside optional provider, model, description, and arbitrary metadata.
+
+`agent_sessions` stores workspace-scoped conversation/session rows for future persisted chat history and session switching.
 
 `workspace_entries` is the current virtual filesystem table. It supports both directories and files, and it can hold:
 
