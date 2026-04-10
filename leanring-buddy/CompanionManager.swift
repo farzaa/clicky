@@ -519,7 +519,8 @@ final class CompanionManager: ObservableObject {
                     },
                     submitDraftText: { [weak self] finalTranscript in
                         self?.lastTranscript = finalTranscript
-                        print("🗣️ Companion received transcript: \(finalTranscript)")
+                        // Do not log the transcript verbatim — it contains user speech (PII).
+                        print("🗣️ Companion received transcript (\(finalTranscript.count) chars)")
                         ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
                         self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
                     }
@@ -676,9 +677,10 @@ final class CompanionManager: ObservableObject {
                     detectedElementScreenLocation = globalLocation
                     detectedElementDisplayFrame = displayFrame
                     ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
-                    print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
+                    // Do not log coordinates or element labels — they reveal what is on the user's screen.
+                    print("🎯 Element pointing: coordinate resolved")
                 } else {
-                    print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
+                    print("🎯 Element pointing: no coordinate, skipping navigation")
                 }
 
                 // Save this exchange to conversation history (with the point tag
@@ -1017,7 +1019,8 @@ final class CompanionManager: ObservableObject {
                 detectedElementBubbleText = parseResult.spokenText
                 detectedElementScreenLocation = globalLocation
                 detectedElementDisplayFrame = displayFrame
-                print("🎯 Onboarding demo: pointing at \"\(parseResult.elementLabel ?? "element")\" — \"\(parseResult.spokenText)\"")
+                // Do not log element labels or spoken text — they reveal screen content.
+                print("🎯 Onboarding demo: pointing at element")
             } catch {
                 print("⚠️ Onboarding demo error: \(error)")
             }

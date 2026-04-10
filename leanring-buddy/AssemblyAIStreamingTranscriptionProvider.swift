@@ -41,7 +41,9 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
     ) async throws -> any BuddyStreamingTranscriptionSession {
         // Fetch a fresh temporary token from the proxy before each session
         let temporaryToken = try await fetchTemporaryToken()
-        print("🎙️ AssemblyAI: fetched temporary token (\(temporaryToken.prefix(20))...)")
+        // Log success only — never log any part of the token value.
+        // Even a 20-char prefix narrows brute-force space and confirms a valid token was issued.
+        print("🎙️ AssemblyAI: fetched temporary token (OK)")
 
         let session = AssemblyAIStreamingTranscriptionSession(
             apiKey: nil,
