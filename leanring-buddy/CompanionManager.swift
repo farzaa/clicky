@@ -354,7 +354,7 @@ final class CompanionManager: NSObject, ObservableObject, NSSpeechSynthesizerDel
         buddyDictationManager.cancelCurrentDictation()
         companionResponseOverlayManager.hideMarkdownTranscriptOverlay()
         cancelPendingDelegationFlow()
-        delegationLogSidebarManager.hideStreamingLogSidebar()
+        delegationLogSidebarManager.hideAllSessions()
         overlayWindowManager.hideOverlay()
         transientHideTask?.cancel()
 
@@ -790,6 +790,47 @@ final class CompanionManager: NSObject, ObservableObject, NSSpeechSynthesizerDel
     {"intent":"reply|draft|delegate"}
     """
 
+    // System prompt for the semantic delegation branch-name generator.
+    // The goal is a branch name a human developer would be comfortable
+    // seeing in `git branch` and on GitHub — something like
+    // `feature/dark-mode-settings` or `fix/login-button-spacing` — rather
+    // than the mechanical `clicky-main-20260410-142153-9c33bd` smash the
+    // launcher used to produce. The launcher automatically prefixes the
+    // result with `flowee/` and handles disambiguation on collision, so
+    // this prompt should NOT include `flowee/` in its output.
+    private static let delegationBranchNameGenerationSystemPrompt = """
+    you generate a short git branch name body from a developer's spoken request.
+
+    rules:
+    - output format exactly: type/short-kebab-case-description
+    - type must be one of: feature, fix, chore, refactor, docs, test
+    - description is 2 to 5 words, lowercase, hyphen-separated
+    - total length between 8 and 60 characters
+    - never include dates, timestamps, uuids, random suffixes, or author names
+    - never include the word flowee or any namespace prefix
+    - no quotes, no punctuation, no explanations, no leading or trailing whitespace
+    - respond with only the branch name on a single line and nothing else
+
+    examples:
+    request: "fix the spacing issue on the login button"
+    fix/login-button-spacing
+
+    request: "add dark mode support to settings"
+    feature/settings-dark-mode
+
+    request: "remove all the unused imports in the api module"
+    chore/remove-unused-api-imports
+
+    request: "the api keeps timing out, figure out why and patch it"
+    fix/api-timeout-investigation
+
+    request: "refactor the auth flow to be async"
+    refactor/async-auth-flow
+
+    request: "document the delegation launcher architecture"
+    docs/delegation-launcher-architecture
+    """
+
     private static func shouldGenerateMarkdownTranscript(for transcript: String) -> Bool {
         let normalizedTranscript = transcript.lowercased()
         return markdownTranscriptRequestKeywords.contains { normalizedTranscript.contains($0) }
@@ -823,6 +864,55 @@ final class CompanionManager: NSObject, ObservableObject, NSSpeechSynthesizerDel
         } catch {
             print("⚠️ Intent classifier failed: \(error)")
             return .reply
+        }
+    }
+
+    /// Asks the lightweight classifier API to turn the user's spoken
+    /// delegation request into a short, human-readable branch name body
+    /// (e.g. `fix/login-button-spacing`). The result is passed to
+    /// `DelegationAgentLauncher` as a hint — the launcher is responsible
+    /// for adding the `flowee/` namespace prefix, validating the hint,
+    /// and retrying with a numeric suffix on collision. Returns nil on
+    /// any failure so the launcher cleanly falls back to its legacy
+    /// timestamp-based branch name instead of blocking the delegation.
+    private func generateSemanticBranchNameHint(
+        fromTranscript transcript: String
+    ) async -> String? {
+        let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTranscript.isEmpty else { return nil }
+
+        let branchNameGenerationUserPrompt = """
+        developer request:
+        \(trimmedTranscript)
+        """
+
+        do {
+            let (rawBranchNameResponse, _) = try await actionIntentClassifierAPI.analyzeImage(
+                images: [],
+                systemPrompt: Self.delegationBranchNameGenerationSystemPrompt,
+                userPrompt: branchNameGenerationUserPrompt
+            )
+
+            let cleanedBranchNameResponse = rawBranchNameResponse
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            // The model should respond with a single line. If it stuffs
+            // an explanation on later lines, take only the first
+            // non-empty line — the launcher's sanitizer will handle the
+            // rest (character validation, length, collision retry).
+            let firstNonEmptyLine = cleanedBranchNameResponse
+                .split(whereSeparator: { $0.isNewline })
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .first(where: { !$0.isEmpty })
+
+            print("🌿 Branch-name generator raw response: \(cleanedBranchNameResponse)")
+            if let firstNonEmptyLine, !firstNonEmptyLine.isEmpty {
+                return firstNonEmptyLine
+            }
+            return nil
+        } catch {
+            print("⚠️ Branch-name generator failed: \(error)")
+            return nil
         }
     }
 
@@ -1122,7 +1212,10 @@ final class CompanionManager: NSObject, ObservableObject, NSSpeechSynthesizerDel
             isAwaitingDelegationWorkspaceSelection = false
             selectedDelegationWorkspace = nil
             selectedDelegationRuntimeID = nil
-            speakErrorFallback("I don't have any allowed workspaces yet. Add one from the Flowee menu first.")
+            // Delegate mode is fully silent — no voice narration. The user will
+            // see nothing happen and can check the Flowee menu for the empty
+            // workspace inventory.
+            print("🧭 Delegation aborted: no allowed workspaces configured")
             return
         }
 
@@ -1134,7 +1227,9 @@ final class CompanionManager: NSObject, ObservableObject, NSSpeechSynthesizerDel
             isAwaitingDelegationWorkspaceSelection = false
             selectedDelegationWorkspace = nil
             selectedDelegationRuntimeID = nil
-            speakErrorFallback("I couldn't find any supported coding agents on this machine. Install Codex, Claude Code, or OpenCode first.")
+            // Delegate mode is fully silent — no voice narration on the
+            // missing-runtime error path either.
+            print("🧭 Delegation aborted: no supported coding-agent CLIs detected on this machine")
             return
         }
 
@@ -1208,6 +1303,19 @@ final class CompanionManager: NSObject, ObservableObject, NSSpeechSynthesizerDel
         workspace: WorkspaceInventoryStore.WorkspaceRecord,
         runtime: InstalledDelegationAgentRuntime
     ) {
+        // Guard against clobbering an in-flight delegation in the same
+        // workspace. `CodexExecLauncher.createGitBranchContext` uses
+        // `git branch --show-current` as the base branch, so firing a
+        // second delegation into a workspace that is already on a
+        // `flowee/...` branch would cut a new branch *from* that branch
+        // and silently yank the first agent's working tree out from
+        // under it. Refuse to start the second run in that case.
+        if delegationLogSidebarManager.hasActiveSession(forWorkspacePath: workspace.path) {
+            print("🧭 Delegation refused: \(workspace.name) already has an active agent run. Close its sidebar or wait for it to finish before delegating again.")
+            cancelPendingDelegationFlow()
+            return
+        }
+
         let launchPrompt = buildDelegatedAgentPrompt(
             request: request,
             workspace: workspace
@@ -1215,12 +1323,26 @@ final class CompanionManager: NSObject, ObservableObject, NSSpeechSynthesizerDel
 
         Task {
             do {
+                // Ask the lightweight classifier to turn the user's
+                // spoken request into a developer-friendly branch name
+                // (e.g. `feature/dark-mode-settings`) before we cut the
+                // actual git branch. This is best-effort — on failure we
+                // pass nil and the launcher falls back to its legacy
+                // timestamp-based branch name.
+                let semanticBranchNameHint = await generateSemanticBranchNameHint(
+                    fromTranscript: request.transcript
+                )
+                if let semanticBranchNameHint {
+                    print("🌿 Semantic branch-name hint: \(semanticBranchNameHint)")
+                }
+
                 let launchResult = try await delegationAgentLauncher.launch(
                     configuration: DelegationAgentLaunchConfiguration(
                         workspacePath: workspace.path,
                         prompt: launchPrompt,
                         runtime: runtime,
-                        modelIdentifier: nil
+                        modelIdentifier: nil,
+                        suggestedBranchNameHint: semanticBranchNameHint
                     )
                 )
                 try? workspaceInventoryStore.markLastUsedDelegationRuntime(
@@ -1232,16 +1354,21 @@ final class CompanionManager: NSObject, ObservableObject, NSSpeechSynthesizerDel
                 delegationLogSidebarManager.showStreamingLogSidebar(
                     logFileURL: launchResult.logFileURL,
                     workspaceName: workspace.name,
+                    workspacePath: workspace.path,
+                    runtimeID: launchResult.runtimeID,
                     runtimeDisplayName: launchResult.runtimeDisplayName,
                     processIdentifier: launchResult.processIdentifier,
                     baseBranchName: launchResult.baseBranchName,
                     workingBranchName: launchResult.workingBranchName,
                     comparePullRequestURL: launchResult.comparePullRequestURL
                 )
-                speakErrorFallback("\(launchResult.runtimeDisplayName.lowercased()) is starting in \(workspace.name) on a new branch named \(launchResult.workingBranchName). when it finishes, i'll suggest raising a pull request into \(launchResult.baseBranchName).")
+                // Delegate mode is fully silent — no voice narration. The
+                // delegation log sidebar is the only feedback surface while
+                // the coding agent works.
             } catch {
                 print("⚠️ Delegation launch failed: \(error)")
-                speakErrorFallback("I couldn't start \(runtime.displayName) in that workspace. Please check the console and try again.")
+                // Delegate mode is fully silent even on launch failures —
+                // the Xcode console print above is the only surface.
             }
             cancelPendingDelegationFlow()
         }

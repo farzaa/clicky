@@ -14,6 +14,14 @@ struct DelegationAgentLaunchConfiguration {
     let prompt: String
     let runtime: InstalledDelegationAgentRuntime
     let modelIdentifier: String?
+    /// Optional semantic branch-name hint supplied by Flowee's LLM-based
+    /// branch-name generator. When present, the launcher tries to use this
+    /// as the working branch (e.g. `flowee/feature/dark-mode-settings`) so
+    /// the resulting branch reads like a real developer-authored feature
+    /// branch instead of a mechanical timestamp/UUID smash. If the hint is
+    /// nil, unusable, or already taken, the launcher falls back to the
+    /// legacy workspace-slug + timestamp + UUID format.
+    let suggestedBranchNameHint: String?
 }
 
 struct DelegationAgentLaunchResult {
@@ -63,7 +71,10 @@ final class DelegationAgentLauncher {
             throw DelegationAgentLaunchError.runtimeBinaryUnavailable(configuration.runtime.displayName)
         }
 
-        let gitBranchContext = try await createGitBranchContext(forWorkspacePath: configuration.workspacePath)
+        let gitBranchContext = try await createGitBranchContext(
+            forWorkspacePath: configuration.workspacePath,
+            suggestedBranchNameHint: configuration.suggestedBranchNameHint
+        )
         let logFileURL = try makeLogFileURL(
             forWorkspacePath: configuration.workspacePath,
             runtimeID: configuration.runtime.runtimeID,
@@ -80,9 +91,24 @@ final class DelegationAgentLauncher {
         )
         process.environment = makeProcessEnvironment()
 
-        let standardInputPipe = Pipe()
-        process.standardInput = standardInputPipe
-        standardInputPipe.fileHandleForWriting.closeFile()
+        // Redirect stdin to /dev/null explicitly rather than using a
+        // closed pipe. Claude Code waits ~3 seconds for stdin data before
+        // proceeding if it thinks stdin might still produce bytes, even
+        // when the write end of a Pipe is closed — it emits
+        // "Warning: no stdin data received in 3s, proceeding without it"
+        // and only then continues. Handing it `/dev/null` directly makes
+        // stdin report immediate EOF and eliminates that latency.
+        let devNullReadHandle = FileHandle(forReadingAtPath: "/dev/null")
+        if let devNullReadHandle {
+            process.standardInput = devNullReadHandle
+        } else {
+            // Fallback: the old closed-pipe approach. /dev/null being
+            // unreadable should be impossible on macOS, but if it ever
+            // happens we still want delegation to work.
+            let standardInputPipe = Pipe()
+            process.standardInput = standardInputPipe
+            standardInputPipe.fileHandleForWriting.closeFile()
+        }
 
         fileManager.createFile(atPath: logFileURL.path, contents: nil)
         let logFileHandle = try FileHandle(forWritingTo: logFileURL)
@@ -108,11 +134,15 @@ final class DelegationAgentLauncher {
         )
     }
 
-    private func createGitBranchContext(forWorkspacePath workspacePath: String) async throws -> GitBranchContext {
+    private func createGitBranchContext(
+        forWorkspacePath workspacePath: String,
+        suggestedBranchNameHint: String?
+    ) async throws -> GitBranchContext {
         let baseBranchName = try await resolveCurrentGitBranchName(in: workspacePath)
-        let workingBranchName = makeDelegationBranchName(
+        let workingBranchName = try await chooseDelegationBranchName(
             workspacePath: workspacePath,
-            baseBranchName: baseBranchName
+            baseBranchName: baseBranchName,
+            suggestedBranchNameHint: suggestedBranchNameHint
         )
 
         let checkoutResult = try await runGitCommand(
@@ -167,7 +197,43 @@ final class DelegationAgentLauncher {
             return arguments
 
         case .claude:
-            var arguments = ["--print", "--output-format", "text", "--permission-mode", "dontAsk", "--add-dir", configuration.workspacePath]
+            // The Claude Code CLI expects the prompt as a trailing positional
+            // argument when --print is used. We deliberately avoid --add-dir
+            // here because it is declared as a variadic option
+            // (`--add-dir <directories...>`), and the Commander.js parser that
+            // Claude Code uses will greedily swallow the prompt as if it were
+            // another directory — which then fails with
+            // "Input must be provided either through stdin or as a prompt
+            // argument when using --print". The workspace is already the
+            // process' current working directory (set via
+            // `process.currentDirectoryURL` above), and Claude Code with
+            // --print skips the workspace trust dialog, so the cwd is
+            // implicitly trusted without --add-dir.
+            //
+            // We use `bypassPermissions` together with
+            // `--dangerously-skip-permissions` so the delegated agent can
+            // edit files and run shell commands without any interactive
+            // prompts, which is required for a fully autonomous run.
+            //
+            // Critically, we use `--output-format stream-json` (with
+            // `--verbose` and `--include-partial-messages`, which are the
+            // required companions for that format) instead of the default
+            // `text` format. With `text`, Claude Code only emits the final
+            // answer when the process exits — so for a multi-minute run
+            // the sidebar shows the boot banner, then nothing for ages,
+            // then a dump right before the agent finishes. `stream-json`
+            // emits one JSON event per line as they happen (session init,
+            // assistant text deltas, tool uses, tool results, final
+            // result), which `DelegationLogClaudeStreamJSONParser` turns
+            // into human-readable lines in the sidebar for live feedback.
+            var arguments: [String] = [
+                "--print",
+                "--output-format", "stream-json",
+                "--include-partial-messages",
+                "--verbose",
+                "--permission-mode", "bypassPermissions",
+                "--dangerously-skip-permissions"
+            ]
             if let modelIdentifier = configuration.modelIdentifier, !modelIdentifier.isEmpty {
                 arguments.append(contentsOf: ["--model", modelIdentifier])
             }
@@ -294,7 +360,128 @@ final class DelegationAgentLauncher {
         throw DelegationAgentLaunchError.gitCommandFailed("Could not determine a base git branch in \(workspacePath)")
     }
 
-    private func makeDelegationBranchName(workspacePath: String, baseBranchName: String) -> String {
+    /// Chooses the working branch name for a new delegation. When a
+    /// semantic branch-name hint is supplied (generated upstream from the
+    /// user's transcript by an LLM), we try to use it verbatim and only
+    /// append a `-2`, `-3`, ... numeric suffix if that exact name is
+    /// already taken locally. If no hint is usable we fall back to the
+    /// legacy workspace-slug + timestamp + UUID name so delegation still
+    /// succeeds even when the generator fails.
+    private func chooseDelegationBranchName(
+        workspacePath: String,
+        baseBranchName: String,
+        suggestedBranchNameHint: String?
+    ) async throws -> String {
+        if let sanitizedHintBody = sanitizeSuggestedBranchNameHint(suggestedBranchNameHint) {
+            let semanticBaseBranchName = "flowee/\(sanitizedHintBody)"
+
+            let semanticBranchAlreadyExists = try await localGitBranchExists(
+                branchName: semanticBaseBranchName,
+                in: workspacePath
+            )
+            if !semanticBranchAlreadyExists {
+                return semanticBaseBranchName
+            }
+
+            // Semantic name is already taken — try numeric disambiguators
+            // before falling back to the ugly timestamp form.
+            for collisionSuffixIndex in 2...10 {
+                let disambiguatedBranchName = "\(semanticBaseBranchName)-\(collisionSuffixIndex)"
+                let disambiguatedBranchAlreadyExists = try await localGitBranchExists(
+                    branchName: disambiguatedBranchName,
+                    in: workspacePath
+                )
+                if !disambiguatedBranchAlreadyExists {
+                    return disambiguatedBranchName
+                }
+            }
+        }
+
+        return makeTimestampBasedDelegationBranchName(
+            workspacePath: workspacePath,
+            baseBranchName: baseBranchName
+        )
+    }
+
+    /// Cleans an LLM-generated branch name hint into a safe, lowercase,
+    /// kebab-case body suitable for embedding under the `flowee/` namespace.
+    /// Returns nil if the hint is empty, malformed, or too short/long to
+    /// be useful as a branch name — in which case the caller falls back
+    /// to the legacy timestamp-based name.
+    private func sanitizeSuggestedBranchNameHint(_ hint: String?) -> String? {
+        guard let hint = hint?.trimmingCharacters(in: .whitespacesAndNewlines), !hint.isEmpty else {
+            return nil
+        }
+
+        // Take the first non-empty line only — the LLM may have added a
+        // trailing explanation or blank line by mistake.
+        let firstNonEmptyLine = hint
+            .split(whereSeparator: { $0.isNewline })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first(where: { !$0.isEmpty }) ?? hint
+
+        var cleaned = firstNonEmptyLine.lowercased()
+
+        // Strip common wrapping characters the LLM might add
+        cleaned = cleaned.trimmingCharacters(in: CharacterSet(charactersIn: "`'\" \t"))
+
+        // If the LLM accidentally included the `flowee/` prefix, strip it.
+        // We always re-add the prefix ourselves so callers get a consistent
+        // namespace.
+        if cleaned.hasPrefix("flowee/") {
+            cleaned = String(cleaned.dropFirst("flowee/".count))
+        }
+
+        // Allow letters, digits, slash, dash, dot, underscore. Everything
+        // else collapses to a dash so we produce a valid git ref.
+        let allowedCharacters = CharacterSet.lowercaseLetters
+            .union(CharacterSet.decimalDigits)
+            .union(CharacterSet(charactersIn: "/-._"))
+        let sanitizedScalars = cleaned.unicodeScalars.map { scalar -> Character in
+            allowedCharacters.contains(scalar) ? Character(scalar) : "-"
+        }
+        var collapsed = String(sanitizedScalars)
+        while collapsed.contains("--") {
+            collapsed = collapsed.replacingOccurrences(of: "--", with: "-")
+        }
+        collapsed = collapsed.trimmingCharacters(in: CharacterSet(charactersIn: "-/._"))
+
+        // Reject obviously malformed results. 8 chars is enough for e.g.
+        // "fix/bug". 60 keeps the final branch name manageable in the
+        // terminal and in GitHub's compare UI.
+        guard collapsed.count >= 8, collapsed.count <= 60 else {
+            return nil
+        }
+
+        // Must contain at least one letter so we don't end up with a pure
+        // digit/dash branch name.
+        guard collapsed.contains(where: { $0.isLetter }) else {
+            return nil
+        }
+
+        // Git refs can't end on a dot or have a `.lock` suffix. The
+        // trimming above handles trailing dots; the length cap plus the
+        // allowed-character set makes the `.lock` case extremely unlikely
+        // in practice.
+        return collapsed
+    }
+
+    private func localGitBranchExists(branchName: String, in workspacePath: String) async throws -> Bool {
+        let revParseResult = try await runGitCommand(
+            arguments: ["rev-parse", "--verify", "--quiet", "refs/heads/\(branchName)"],
+            in: workspacePath
+        )
+        return revParseResult.exitCode == 0
+    }
+
+    /// Legacy branch naming that concatenates the workspace slug, the
+    /// base branch slug, a timestamp, and a short UUID suffix. Used as a
+    /// deterministic fallback when the semantic branch-name generator
+    /// fails or produces an unusable hint.
+    private func makeTimestampBasedDelegationBranchName(
+        workspacePath: String,
+        baseBranchName: String
+    ) -> String {
         let workspaceSlug = sanitizeBranchComponent(URL(fileURLWithPath: workspacePath).lastPathComponent)
         let baseBranchSlug = sanitizeBranchComponent(baseBranchName)
         let timestampFormatter = DateFormatter()
@@ -329,7 +516,7 @@ final class DelegationAgentLauncher {
         let encodedBaseBranchName = baseBranchName.addingPercentEncoding(withAllowedCharacters: allowedCharacters) ?? baseBranchName
         let encodedWorkingBranchName = workingBranchName.addingPercentEncoding(withAllowedCharacters: allowedCharacters) ?? workingBranchName
 
-        return repositoryWebURL.appendingPathComponent("compare/\(encodedBaseBranchName)...\(encodedWorkingBranchName)?expand=1")
+        return URL(string: "\(repositoryWebURL.absoluteString)/compare/\(encodedBaseBranchName)...\(encodedWorkingBranchName)?expand=1")
     }
 
     private func repositoryWebURL(fromGitRemoteURL remoteOriginURL: String) -> URL? {
