@@ -1,7 +1,7 @@
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Request, Response, status
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi.responses import StreamingResponse
 
 from app.config import get_settings
 
@@ -22,9 +22,15 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@router.post("/chat")
+@router.post("/chat", response_model=None)
 async def proxy_chat(request: Request) -> StreamingResponse | Response:
     settings = get_settings()
+    if not settings.anthropic_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="ANTHROPIC_API_KEY is not configured for /chat.",
+        )
+
     request_body = await request.body()
     http_client = request.app.state.http_client
 
@@ -63,7 +69,7 @@ async def proxy_chat(request: Request) -> StreamingResponse | Response:
     )
 
 
-@router.post("/tts")
+@router.post("/tts", response_model=None)
 async def proxy_tts(request: Request) -> Response:
     settings = get_settings()
     request_body = await request.body()
@@ -92,15 +98,24 @@ async def proxy_tts(request: Request) -> Response:
     )
 
 
-@router.post("/transcribe-token")
-async def create_transcribe_token(request: Request) -> JSONResponse | Response:
+@router.post("/transcriptions", response_model=None)
+async def proxy_openai_transcription(request: Request) -> Response:
     settings = get_settings()
-    http_client = request.app.state.http_client
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="OPENAI_API_KEY is not configured for /transcriptions.",
+        )
 
-    upstream_response = await http_client.get(
-        "https://streaming.assemblyai.com/v3/token",
-        params={"expires_in_seconds": 480},
-        headers={"authorization": settings.assemblyai_api_key},
+    request_body = await request.body()
+    http_client = request.app.state.http_client
+    upstream_response = await http_client.post(
+        "https://api.openai.com/v1/audio/transcriptions",
+        content=request_body,
+        headers={
+            "Authorization": f"Bearer {settings.openai_api_key}",
+            "Content-Type": request.headers.get("content-type", "application/octet-stream"),
+        },
     )
 
     if upstream_response.status_code < 200 or upstream_response.status_code >= 300:
@@ -109,7 +124,8 @@ async def create_transcribe_token(request: Request) -> JSONResponse | Response:
             upstream_status_code=upstream_response.status_code,
         )
 
-    return JSONResponse(
-        content=upstream_response.json(),
-        status_code=status.HTTP_200_OK,
+    return Response(
+        content=upstream_response.content,
+        status_code=upstream_response.status_code,
+        media_type=upstream_response.headers.get("content-type", "application/json"),
     )

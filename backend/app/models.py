@@ -111,6 +111,9 @@ class User(Base, TimestampedModel):
     created_workspace_entries: Mapped[list["WorkspaceEntry"]] = relationship(
         back_populates="created_by_user",
     )
+    created_agents: Mapped[list["Agent"]] = relationship(
+        back_populates="created_by_user",
+    )
 
 
 class Workspace(Base, TimestampedModel):
@@ -162,6 +165,10 @@ class Workspace(Base, TimestampedModel):
         cascade="all, delete-orphan",
     )
     workspace_entries: Mapped[list["WorkspaceEntry"]] = relationship(
+        back_populates="workspace",
+        cascade="all, delete-orphan",
+    )
+    agents: Mapped[list["Agent"]] = relationship(
         back_populates="workspace",
         cascade="all, delete-orphan",
     )
@@ -334,3 +341,61 @@ class AuthSession(Base, TimestampedModel):
     )
 
     user: Mapped["User"] = relationship(back_populates="auth_sessions")
+
+
+class Agent(Base, TimestampedModel):
+    __tablename__ = "agents"
+    __table_args__ = (
+        Index(
+            "ix_agents_workspace_created_at",
+            "workspace_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    display_name: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+    description: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    provider: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    model: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    system_prompt: Mapped[str] = mapped_column(
+        Text,
+        default="",
+        nullable=False,
+    )
+    agent_metadata: Mapped[dict] = mapped_column(
+        JSONB,
+        default=dict,
+        nullable=False,
+    )
+
+    workspace: Mapped["Workspace"] = relationship(back_populates="agents")
+    created_by_user: Mapped["User | None"] = relationship(
+        back_populates="created_agents",
+    )

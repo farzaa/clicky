@@ -1,4 +1,5 @@
 worker/node_modules/
+backend/app/agent/node_modules/
 worker/.dev.vars
 backend/.env
 backend/.venv/

@@ -5,7 +5,7 @@
 
 ## Overview
 
-macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to Claude. Claude responds with text (streamed via SSE) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements Claude references on any connected monitor.
+macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via OpenAI audio transcription (`whisper-1` by default), and sends the transcript + a screenshot of the user's screen to Claude. Claude responds with text (streamed via SSE) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements Claude references on any connected monitor.
 
 All API keys live on a hosted backend — nothing sensitive ships in the app. The app reads its backend base URL from `ClickyBackendBaseURL` in `Info.plist`, so local dev can point at FastAPI while older deployments can still use a compatible proxy.
 
@@ -15,10 +15,12 @@ All API keys live on a hosted backend — nothing sensitive ships in the app. Th
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
 - **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via hosted backend with SSE streaming
-- **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with OpenAI and Apple Speech as fallbacks
+- **Speech-to-Text**: OpenAI audio transcription (`whisper-1` by default) via hosted backend upload proxy, with Apple Speech as the local fallback
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via hosted backend
-- **Backend Storage**: Postgres via async SQLAlchemy for users, workspaces, memberships, and virtual filesystem entries
+- **Backend Storage**: Postgres via async SQLAlchemy for users, workspaces, saved agents, memberships, and virtual filesystem entries
 - **Backend Auth**: Email/password auth with bearer sessions stored in Postgres
+- **Backend Agent Loop**: FastAPI-hosted iterative agent loop with OpenAI Responses and OpenRouter provider adapters, abortable runs, multimodal screenshot message support, backend-owned tools (including `companion.point`), and a `just-bash` powered workspace shell tool
+- **Saved Agents**: Each workspace is seeded with a default Clicky agent row in Postgres that stores a reusable system prompt, provider, and model
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
@@ -33,9 +35,8 @@ The app never calls external APIs directly. All requests go through a backend se
 |-------|----------|---------|
 | `POST /chat` | `api.anthropic.com/v1/messages` | Claude vision + streaming chat |
 | `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
-| `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Fetches a short-lived (480s) AssemblyAI websocket token |
-
-Backend env vars: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `DATABASE_URL`
+| `POST /transcriptions` | `api.openai.com/v1/audio/transcriptions` | Whisper upload transcription |
+Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `DATABASE_URL`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`
 
 ### Key Architecture Decisions
 
@@ -44,8 +45,6 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY
 **Cursor Overlay**: A full-screen transparent `NSPanel` hosts the blue cursor companion. It's non-activating, joins all Spaces, and never steals focus. The cursor position, response text, waveform, and pointing animations all render in this overlay via SwiftUI through `NSHostingView`.
 
 **Global Push-To-Talk Shortcut**: Background push-to-talk uses a listen-only `CGEvent` tap instead of an AppKit global monitor so modifier-based shortcuts like `ctrl + option` are detected more reliably while the app is running in the background.
-
-**Shared URLSession for AssemblyAI**: A single long-lived `URLSession` is shared across all AssemblyAI streaming sessions (owned by the provider, not the session). Creating and invalidating a URLSession per session corrupts the OS connection pool and causes "Socket is not connected" errors after a few rapid reconnections.
 
 **Transient Cursor Mode**: When "Show Clicky" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
 
@@ -61,8 +60,8 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
 | `BuddyDictationManager.swift` | ~866 | Push-to-talk voice pipeline. Handles microphone capture via `AVAudioEngine`, provider-aware permission checks, keyboard/button dictation sessions, transcript finalization, shortcut parsing, contextual keyterms, and live audio-level reporting for waveform feedback. |
-| `BuddyTranscriptionProvider.swift` | ~100 | Protocol surface and provider factory for voice transcription backends. Resolves provider based on `VoiceTranscriptionProvider` in Info.plist — AssemblyAI, OpenAI, or Apple Speech. |
-| `AssemblyAIStreamingTranscriptionProvider.swift` | ~478 | Streaming transcription provider. Fetches temp tokens from the Cloudflare Worker, opens an AssemblyAI v3 websocket, streams PCM16 audio, tracks turn-based transcripts, and delivers finalized text on key-up. Shares a single URLSession across all sessions. |
+| `BuddyTranscriptionProvider.swift` | ~80 | Protocol surface and provider factory for voice transcription backends. Resolves provider based on `VoiceTranscriptionProvider` in Info.plist — OpenAI or Apple Speech. |
+| `OpenAIAudioTranscriptionProvider.swift` | ~319 | Upload-based transcription provider. Buffers push-to-talk audio locally, uploads as WAV to the hosted backend transcription proxy on release, returns the finalized transcript. |
 | `OpenAIAudioTranscriptionProvider.swift` | ~317 | Upload-based transcription provider. Buffers push-to-talk audio locally, uploads as WAV on release, returns finalized transcript. |
 | `AppleSpeechTranscriptionProvider.swift` | ~147 | Local fallback transcription provider backed by Apple's Speech framework. |
 | `BuddyAudioConversionSupport.swift` | ~108 | Audio conversion helpers. Converts live mic buffers to PCM16 mono audio and builds WAV payloads for upload-based providers. |
@@ -75,19 +74,30 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY
 | `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~32 | Runtime configuration reader for keys stored in the app bundle Info.plist, including `ClickyBackendBaseURL`. |
+| `backend/app/agent/contracts.py` | ~70 | Shared agent request/response models, message/tool types, and run status shapes. |
+| `backend/app/agent/defaults.py` | ~10 | Default Clicky agent settings, including the saved system prompt, provider, and model used when seeding new workspaces. |
+| `backend/app/agent/bash_tool.py` | ~400 | Backend workspace bash tool. Serializes a Postgres-backed workspace into a `just-bash` virtual filesystem request, runs the shell, and persists the resulting filesystem snapshot back into `workspace_entries`. |
+| `backend/app/agent/postgres_workspace_filesystem.mjs` | ~160 | Custom `just-bash` filesystem implementation backed by serialized workspace entries instead of disk. Delegates shell filesystem calls to an in-memory virtual tree and exports a snapshot for Postgres persistence. |
+| `backend/app/agent/just_bash_runner.mjs` | ~60 | Small Node runner that executes `just-bash` against the custom Postgres-workspace filesystem and returns structured stdout/stderr/exit code JSON plus the final filesystem snapshot to the Python backend. |
+| `backend/app/agent/router.py` | ~145 | FastAPI routes for running, aborting, and discovering backend agent tools, including `companion.point` and `workspace.run_bash`. |
+| `backend/app/agent/loop/service.py` | ~140 | Core iterative agent loop that calls providers, executes tools, and supports abortable runs. |
+| `backend/app/agent/loop/tool_handler.py` | ~390 | Backend-owned tool execution for `companion.point`, workspace listing/reading/writing, and `just-bash` shell execution inside Postgres-backed virtual filesystems. |
+| `backend/app/agent/loop/abort_registry.py` | ~50 | In-memory run registry that tracks abort requests and attached asyncio tasks. |
+| `backend/app/agent/provider/openai_responses.py` | ~170 | OpenAI Responses API adapter for the backend agent loop, including multimodal screenshot input support. |
+| `backend/app/agent/provider/openrouter_chat_completions.py` | ~170 | OpenRouter Chat Completions adapter for the backend agent loop, including multimodal screenshot input support. |
 | `backend/app/main.py` | ~46 | FastAPI app startup, shared async HTTP client lifecycle, CORS middleware configuration, and router registration. |
 | `backend/app/auth.py` | ~50 | Bearer-token authentication dependency that resolves the current user from Postgres-backed auth sessions. |
 | `backend/app/auth_router.py` | ~145 | Auth routes for register, login, current-user lookup, and logout. Registration now auto-creates a default workspace and root folder. |
 | `backend/app/database.py` | ~45 | Async Postgres engine/session helpers, connectivity verification, and schema bootstrap utilities. |
-| `backend/app/models.py` | ~310 | SQLAlchemy models for users, auth sessions, workspaces, memberships, and virtual filesystem entries. |
-| `backend/app/routes.py` | ~110 | Hosted backend routes for `/chat`, `/tts`, `/transcribe-token`, and `/health`. |
+| `backend/app/models.py` | ~360 | SQLAlchemy models for users, auth sessions, saved agents, workspaces, memberships, and virtual filesystem entries. |
+| `backend/app/routes.py` | ~110 | Hosted backend routes for `/chat`, `/tts`, `/transcriptions`, and `/health`. |
 | `backend/app/parsing/router.py` | ~21 | Dedicated parsing router that exposes placeholder `/parse/` endpoints for the future PDF-to-markdown pipeline. |
 | `backend/app/parsing/service.py` | ~18 | Empty placeholder parsing service boundary for the team-owned document parsing implementation. |
 | `backend/app/security.py` | ~50 | Password hashing and session-token helpers for backend auth. |
-| `backend/app/workspaces_service.py` | ~40 | Shared helper that creates a workspace, membership row, and root directory entry. |
-| `backend/app/workspaces_router.py` | ~180 | Workspace CRUD-lite endpoints, including backend launch/stop state transitions. |
+| `backend/app/workspaces_service.py` | ~55 | Shared helper that creates a workspace, membership row, root directory entry, and default saved Clicky agent. |
+| `backend/app/workspaces_router.py` | ~400 | Workspace CRUD-lite endpoints, including backend launch/stop state transitions plus authenticated file upload and file read APIs backed by `workspace_entries`. |
 | `backend/docker-compose.yml` | ~14 | Local Postgres container for backend development. |
-| `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
+| `worker/src/index.ts` | ~142 | Legacy Cloudflare Worker proxy. The current FastAPI backend replaces it for `/chat` and `/tts`. |
 
 ## Build & Run
 
@@ -99,6 +109,9 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 cp .env.example .env
+cd app/agent
+npm install
+cd ../..
 uvicorn app.main:app --reload
 
 # Open in Xcode
@@ -123,6 +136,9 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 cp .env.example .env
+cd app/agent
+npm install
+cd ../..
 
 # Start local development server
 uvicorn app.main:app --reload

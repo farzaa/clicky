@@ -5,10 +5,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    anthropic_api_key: str = Field(alias="ANTHROPIC_API_KEY")
-    assemblyai_api_key: str = Field(alias="ASSEMBLYAI_API_KEY")
+    anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
     elevenlabs_api_key: str = Field(alias="ELEVENLABS_API_KEY")
     elevenlabs_voice_id: str = Field(alias="ELEVENLABS_VOICE_ID")
+    openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+    openrouter_api_key: str | None = Field(default=None, alias="OPENROUTER_API_KEY")
     database_url: str = Field(alias="DATABASE_URL")
     clicky_allowed_origins: str = Field(default="", alias="CLICKY_ALLOWED_ORIGINS")
     clicky_auto_create_database_schema: bool = Field(

@@ -36,7 +36,7 @@ If you want to do it yourself, here's the deal.
 - macOS 14.2+ (for ScreenCaptureKit)
 - Xcode 15+
 - Python 3.11+ (for the FastAPI backend)
-- API keys for: [Anthropic](https://console.anthropic.com), [AssemblyAI](https://www.assemblyai.com), [ElevenLabs](https://elevenlabs.io)
+- API keys for: [Anthropic](https://console.anthropic.com), [OpenAI](https://platform.openai.com), [ElevenLabs](https://elevenlabs.io)
 
 ### 1. Set up the FastAPI backend
 
@@ -55,10 +55,11 @@ Add your secrets to `backend/.env`:
 
 ```env
 ANTHROPIC_API_KEY=sk-ant-...
-ASSEMBLYAI_API_KEY=...
 ELEVENLABS_API_KEY=...
 ELEVENLABS_VOICE_ID=...
 DATABASE_URL=postgresql+asyncpg://clicky:clicky@127.0.0.1:5432/clicky
+OPENAI_API_KEY=
+OPENROUTER_API_KEY=
 ```
 
 Run it locally:
@@ -104,7 +105,7 @@ The app will appear in your menu bar (not the dock). Click the icon to open the 
 
 If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
 
-**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three provider calls go through a FastAPI backend.
+**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk records audio locally, sends it to OpenAI transcription, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. The model and TTS calls go through a FastAPI backend.
 
 ## Project structure
 
@@ -115,16 +116,17 @@ leanring-buddy/          # Swift source (yes, the typo stays)
   ClaudeAPI.swift           # Claude streaming client
   ElevenLabsTTSClient.swift # Text-to-speech playback
   OverlayWindow.swift       # Blue cursor overlay
-  AssemblyAI*.swift         # Real-time transcription
+  OpenAIAudioTranscriptionProvider.swift # OpenAI voice transcription
   BuddyDictation*.swift     # Push-to-talk pipeline
 backend/                 # FastAPI backend
   app/main.py               # FastAPI app startup and middleware
+  app/agent/                # Provider-backed backend agent loop
   app/auth_router.py        # Register/login/me/logout endpoints
   app/database.py           # Async Postgres engine and session helpers
   app/models.py             # Users, workspaces, memberships, VFS entries
   app/workspaces_service.py # Shared workspace bootstrap helper
   app/workspaces_router.py  # Create/list/get/launch workspace endpoints
-  app/routes.py             # /chat, /tts, /transcribe-token
+  app/routes.py             # /chat, /tts
 worker/                  # Legacy Cloudflare Worker proxy
   src/index.ts              # Older three-route proxy implementation
 CLAUDE.md                # Full architecture doc (agents read this)

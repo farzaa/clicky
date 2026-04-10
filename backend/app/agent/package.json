@@ -1,0 +1,8 @@
+{
+  "name": "clicky-agent-tools",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "just-bash": "^2.14.1"
+  }
+}

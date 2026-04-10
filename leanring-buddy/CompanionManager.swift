@@ -23,6 +23,9 @@ enum CompanionVoiceState {
 
 @MainActor
 final class CompanionManager: ObservableObject {
+    private static let backendAgentAuthTokenUserDefaultsKey = "backendAgentAuthToken"
+    private static let backendAgentWorkspaceIDUserDefaultsKey = "backendAgentWorkspaceID"
+
     @Published private(set) var voiceState: CompanionVoiceState = .idle
     @Published private(set) var lastTranscript: String?
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
@@ -75,10 +78,18 @@ final class CompanionManager: ObservableObject {
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
         return ElevenLabsTTSClient(proxyURL: "\(AppBundleConfiguration.backendBaseURL())/tts")
     }()
+    private let backendAgentSession = URLSession(configuration: .default)
 
-    /// Conversation history so Claude remembers prior exchanges within a session.
-    /// Each entry is the user's transcript and Claude's response.
-    private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
+    /// Conversation history passed to `/agent/runs` across turns.
+    /// Messages include provider response IDs and tool call context.
+    private var backendAgentConversationMessages: [[String: Any]] = []
+    private var backendAgentAuthToken: String? = UserDefaults.standard.string(
+        forKey: backendAgentAuthTokenUserDefaultsKey
+    )
+    private var backendAgentWorkspaceID: String? = UserDefaults.standard.string(
+        forKey: backendAgentWorkspaceIDUserDefaultsKey
+    )
+    private var cachedBackendAgentTools: [[String: Any]]?
 
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
@@ -517,7 +528,7 @@ final class CompanionManager: ObservableObject {
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
                         ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
-                        self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                        self?.sendTranscriptToAgentWithScreenshots(transcript: finalTranscript)
                     }
                 )
             }
@@ -538,48 +549,19 @@ final class CompanionManager: ObservableObject {
     // MARK: - Companion Prompt
 
     private static let companionVoiceResponseSystemPrompt = """
-    you're clicky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
-
-    rules:
-    - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
-    - all lowercase, casual, warm. no emojis.
-    - write for the ear, not the eye. short sentences. no lists, bullet points, markdown, or formatting — just natural speech.
-    - don't use abbreviations or symbols that sound weird read aloud. write "for example" not "e.g.", spell out small numbers.
-    - if the user's question relates to what's on their screen, reference specific things you see.
-    - if the screenshot doesn't seem relevant to their question, just answer the question directly.
-    - you can help with anything — coding, writing, general knowledge, brainstorming.
-    - never say "simply" or "just".
-    - don't read out code verbatim. describe what the code does or what needs to change conversationally.
-    - focus on giving a thorough, useful explanation. don't end with simple yes/no questions like "want me to explain more?" or "should i show you?" — those are dead ends that force the user to just say yes.
-    - instead, when it fits naturally, end by planting a seed — mention something bigger or more ambitious they could try, a related concept that goes deeper, or a next-level technique that builds on what you just explained. make it something worth coming back for, not a question they'd just nod to. it's okay to not end with anything extra if the answer is complete on its own.
-    - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
-
-    element pointing:
-    you have a small blue triangle cursor that can fly to and point at things on screen. use it whenever pointing would genuinely help the user — if they're asking how to do something, looking for a menu, trying to find a button, or need help navigating an app, point at the relevant element. err on the side of pointing rather than not pointing, because it makes your help way more useful and concrete.
-
-    don't point at things when it would be pointless — like if the user asks a general knowledge question, or the conversation has nothing to do with what's on screen, or you'd just be pointing at something obvious they're already looking at. but if there's a specific UI element, menu, button, or area on screen that's relevant to what you're helping with, point at it.
-
-    when you point, append a coordinate tag at the very end of your response, AFTER your spoken text. the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. the origin (0,0) is the top-left corner of the image. x increases rightward, y increases downward.
-
-    format: [POINT:x,y:label] where x,y are integer pixel coordinates in the screenshot's coordinate space, and label is a short 1-3 word description of the element (like "search bar" or "save button"). if the element is on the cursor's screen you can omit the screen number. if the element is on a DIFFERENT screen, append :screenN where N is the screen number from the image label (e.g. :screen2). this is important — without the screen number, the cursor will point at the wrong place.
-
-    if pointing wouldn't help, append [POINT:none].
-
-    examples:
-    - user asks how to color grade in final cut: "you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector]"
-    - user asks what html is: "html stands for hypertext markup language, it's basically the skeleton of every web page. curious how it connects to the css you're looking at? [POINT:none]"
-    - user asks how to commit in xcode: "see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control]"
-    - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
+    you are clicky, a helpful assistant with access to the user's screen.
+    keep responses concise and practical.
+    when visual guidance helps, call `companion.point` with screenshot pixel coordinates.
+    when spoken output helps, call `companion.speak` with natural spoken text.
+    you can also use backend workspace tools for file operations.
     """
 
     // MARK: - AI Response Pipeline
 
-    /// Captures a screenshot, sends it along with the transcript to Claude,
-    /// and plays the response aloud via ElevenLabs TTS. The cursor stays in
-    /// the spinner/processing state until TTS audio begins playing.
-    /// Claude's response may include a [POINT:x,y:label] tag which triggers
-    /// the buddy to fly to that element on screen.
-    private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
+    /// Captures screenshots, sends transcript + images to `/agent/runs`,
+    /// executes `companion.*` tools locally, and lets backend execute
+    /// workspace tools.
+    private func sendTranscriptToAgentWithScreenshots(transcript: String) {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
 
@@ -588,117 +570,65 @@ final class CompanionManager: ObservableObject {
             voiceState = .processing
 
             do {
-                // Capture all connected screens so the AI has full context
                 let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
-
                 guard !Task.isCancelled else { return }
-
-                // Build image labels with the actual screenshot pixel dimensions
-                // so Claude's coordinate space matches the image it sees. We
-                // scale from screenshot pixels to display points ourselves.
-                let labeledImages = screenCaptures.map { capture in
-                    let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
-                    return (data: capture.imageData, label: capture.label + dimensionInfo)
-                }
-
-                // Pass conversation history so Claude remembers prior exchanges
-                let historyForAPI = conversationHistory.map { entry in
-                    (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
-                }
-
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
-                    conversationHistory: historyForAPI,
-                    userPrompt: transcript,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
-                    }
+                let backendAgentSessionContext = try await ensureBackendAgentSessionContext()
+                let backendAgentTools = try await getBackendAgentTools(
+                    accessToken: backendAgentSessionContext.accessToken
+                )
+                var conversationMessages = backendAgentConversationMessages
+                conversationMessages.append(
+                    buildBackendAgentUserMessage(
+                        transcript: transcript,
+                        screenCaptures: screenCaptures
+                    )
                 )
 
-                guard !Task.isCancelled else { return }
-
-                // Parse the [POINT:...] tag from Claude's response
-                let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
-                let spokenText = parseResult.spokenText
-
-                // Handle element pointing if Claude returned coordinates.
-                // Switch to idle BEFORE setting the location so the triangle
-                // becomes visible and can fly to the target. Without this, the
-                // spinner hides the triangle and the flight animation is invisible.
-                let hasPointCoordinate = parseResult.coordinate != nil
-                if hasPointCoordinate {
-                    voiceState = .idle
-                }
-
-                // Pick the screen capture matching Claude's screen number,
-                // falling back to the cursor screen if not specified.
-                let targetScreenCapture: CompanionScreenCapture? = {
-                    if let screenNumber = parseResult.screenNumber,
-                       screenNumber >= 1 && screenNumber <= screenCaptures.count {
-                        return screenCaptures[screenNumber - 1]
-                    }
-                    return screenCaptures.first(where: { $0.isCursorScreen })
-                }()
-
-                if let pointCoordinate = parseResult.coordinate,
-                   let targetScreenCapture {
-                    // Claude's coordinates are in the screenshot's pixel space
-                    // (top-left origin, e.g. 1280x831). Scale to the display's
-                    // point space (e.g. 1512x982), then convert to AppKit global coords.
-                    let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
-                    let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
-                    let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
-                    let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
-                    let displayFrame = targetScreenCapture.displayFrame
-
-                    // Clamp to screenshot coordinate space
-                    let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                    let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-
-                    // Scale from screenshot pixels to display points
-                    let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-                    let displayLocalY = clampedY * (displayHeight / screenshotHeight)
-
-                    // Convert from top-left origin (screenshot) to bottom-left origin (AppKit)
-                    let appKitY = displayHeight - displayLocalY
-
-                    // Convert display-local coords to global screen coords
-                    let globalLocation = CGPoint(
-                        x: displayLocalX + displayFrame.origin.x,
-                        y: appKitY + displayFrame.origin.y
+                var finalOutputText = ""
+                var didSpeakViaTool = false
+                for _ in 0..<8 {
+                    guard !Task.isCancelled else { return }
+                    let runResponsePayload = try await createBackendAgentRun(
+                        accessToken: backendAgentSessionContext.accessToken,
+                        messages: conversationMessages,
+                        tools: backendAgentTools,
+                        workspaceID: backendAgentSessionContext.workspaceID
                     )
+                    guard let responseMessages = runResponsePayload["messages"] as? [[String: Any]] else {
+                        throw NSError(
+                            domain: "CompanionManager",
+                            code: -1,
+                            userInfo: [NSLocalizedDescriptionKey: "Agent response did not include messages."]
+                        )
+                    }
+                    conversationMessages = responseMessages
+                    finalOutputText = runResponsePayload["final_output_text"] as? String ?? ""
+                    let responseStatus = runResponsePayload["status"] as? String ?? "completed"
 
-                    detectedElementScreenLocation = globalLocation
-                    detectedElementDisplayFrame = displayFrame
-                    ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
-                    print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
-                } else {
-                    print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
+                    if responseStatus == "awaiting_client_tools" {
+                        let pendingCompanionToolCalls = findPendingCompanionToolCalls(
+                            messages: conversationMessages
+                        )
+                        if pendingCompanionToolCalls.isEmpty {
+                            break
+                        }
+                        let companionToolOutcome = try await executeCompanionToolCalls(
+                            pendingCompanionToolCalls,
+                            screenCaptures: screenCaptures
+                        )
+                        didSpeakViaTool = didSpeakViaTool || companionToolOutcome.didSpeak
+                        conversationMessages.append(contentsOf: companionToolOutcome.toolMessages)
+                        continue
+                    }
+                    break
                 }
 
-                // Save this exchange to conversation history (with the point tag
-                // stripped so it doesn't confuse future context)
-                conversationHistory.append((
-                    userTranscript: transcript,
-                    assistantResponse: spokenText
-                ))
+                backendAgentConversationMessages = trimBackendAgentConversationMessages(conversationMessages)
+                ClickyAnalytics.trackAIResponseReceived(response: finalOutputText)
 
-                // Keep only the last 10 exchanges to avoid unbounded context growth
-                if conversationHistory.count > 10 {
-                    conversationHistory.removeFirst(conversationHistory.count - 10)
-                }
-
-                print("🧠 Conversation history: \(conversationHistory.count) exchanges")
-
-                ClickyAnalytics.trackAIResponseReceived(response: spokenText)
-
-                // Play the response via TTS. Keep the spinner (processing state)
-                // until the audio actually starts playing, then switch to responding.
-                if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if !didSpeakViaTool && !finalOutputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     do {
-                        try await elevenLabsTTSClient.speakText(spokenText)
-                        // speakText returns after player.play() — audio is now playing
+                        try await elevenLabsTTSClient.speakText(finalOutputText)
                         voiceState = .responding
                     } catch {
                         ClickyAnalytics.trackTTSError(error: error.localizedDescription)
@@ -719,6 +649,352 @@ final class CompanionManager: ObservableObject {
                 scheduleTransientHideIfNeeded()
             }
         }
+    }
+
+    private struct BackendAgentSessionContext {
+        let accessToken: String
+        let workspaceID: String
+    }
+
+    private struct CompanionToolOutcome {
+        let toolMessages: [[String: Any]]
+        let didSpeak: Bool
+    }
+
+    private func ensureBackendAgentSessionContext() async throws -> BackendAgentSessionContext {
+        if let existingAccessToken = backendAgentAuthToken,
+           let existingWorkspaceID = backendAgentWorkspaceID {
+            return BackendAgentSessionContext(
+                accessToken: existingAccessToken,
+                workspaceID: existingWorkspaceID
+            )
+        }
+
+        let generatedEmailAddress = "clicky-macos-\(UUID().uuidString.lowercased())@local.clicky"
+        let generatedPassword = UUID().uuidString + UUID().uuidString
+        let registrationPayload = try await sendBackendJSONRequest(
+            path: "/auth/register",
+            method: "POST",
+            accessToken: nil,
+            jsonBody: [
+                "email_address": generatedEmailAddress,
+                "password": generatedPassword,
+            ]
+        )
+        guard let accessToken = registrationPayload["access_token"] as? String else {
+            throw NSError(
+                domain: "CompanionManager",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Registration did not return access_token."]
+            )
+        }
+        let workspacesPayload = try await sendBackendJSONArrayRequest(
+            path: "/workspaces/",
+            method: "GET",
+            accessToken: accessToken
+        )
+        guard let firstWorkspace = workspacesPayload.first,
+              let workspaceID = firstWorkspace["id"] as? String else {
+            throw NSError(
+                domain: "CompanionManager",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "No workspace returned after registration."]
+            )
+        }
+
+        backendAgentAuthToken = accessToken
+        backendAgentWorkspaceID = workspaceID
+        UserDefaults.standard.set(accessToken, forKey: Self.backendAgentAuthTokenUserDefaultsKey)
+        UserDefaults.standard.set(workspaceID, forKey: Self.backendAgentWorkspaceIDUserDefaultsKey)
+        return BackendAgentSessionContext(accessToken: accessToken, workspaceID: workspaceID)
+    }
+
+    private func getBackendAgentTools(accessToken: String) async throws -> [[String: Any]] {
+        if let cachedBackendAgentTools {
+            return cachedBackendAgentTools
+        }
+        let toolsPayload = try await sendBackendJSONArrayRequest(
+            path: "/agent/tools",
+            method: "GET",
+            accessToken: accessToken
+        )
+        cachedBackendAgentTools = toolsPayload
+        return toolsPayload
+    }
+
+    private func buildBackendAgentUserMessage(
+        transcript: String,
+        screenCaptures: [CompanionScreenCapture]
+    ) -> [String: Any] {
+        let imagePayloads: [[String: Any]] = screenCaptures.map { screenCapture in
+            [
+                "image_base64": screenCapture.imageData.base64EncodedString(),
+                "mime_type": "image/jpeg",
+                "label": screenCapture.label,
+                "pixel_width": screenCapture.screenshotWidthInPixels,
+                "pixel_height": screenCapture.screenshotHeightInPixels,
+                "is_primary_focus": screenCapture.isCursorScreen,
+            ]
+        }
+        return [
+            "role": "user",
+            "content": transcript,
+            "images": imagePayloads,
+        ]
+    }
+
+    private func createBackendAgentRun(
+        accessToken: String,
+        messages: [[String: Any]],
+        tools: [[String: Any]],
+        workspaceID: String
+    ) async throws -> [String: Any] {
+        return try await sendBackendJSONRequest(
+            path: "/agent/runs",
+            method: "POST",
+            accessToken: accessToken,
+            jsonBody: [
+                "provider": "openai_responses",
+                "system_message": Self.companionVoiceResponseSystemPrompt
+                    + "\nworkspace tool context: when calling workspace.* tools, always use workspace_id `\(workspaceID)`.",
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": "auto",
+                "max_iterations": 8,
+            ]
+        )
+    }
+
+    private func findPendingCompanionToolCalls(messages: [[String: Any]]) -> [[String: Any]] {
+        var completedToolCallIDs = Set<String>()
+        for message in messages {
+            guard let messageRole = message["role"] as? String,
+                  messageRole == "tool",
+                  let toolCallID = message["tool_call_id"] as? String else {
+                continue
+            }
+            completedToolCallIDs.insert(toolCallID)
+        }
+
+        var pendingCompanionToolCalls: [[String: Any]] = []
+        for message in messages {
+            guard let messageRole = message["role"] as? String,
+                  messageRole == "assistant",
+                  let assistantToolCalls = message["tool_calls"] as? [[String: Any]] else {
+                continue
+            }
+            for assistantToolCall in assistantToolCalls {
+                guard let toolCallID = assistantToolCall["id"] as? String,
+                      let toolName = assistantToolCall["name"] as? String,
+                      toolName.hasPrefix("companion."),
+                      !completedToolCallIDs.contains(toolCallID) else {
+                    continue
+                }
+                pendingCompanionToolCalls.append(assistantToolCall)
+            }
+        }
+
+        return pendingCompanionToolCalls
+    }
+
+    private func executeCompanionToolCalls(
+        _ companionToolCalls: [[String: Any]],
+        screenCaptures: [CompanionScreenCapture]
+    ) async throws -> CompanionToolOutcome {
+        var toolMessages: [[String: Any]] = []
+        var didSpeak = false
+
+        for companionToolCall in companionToolCalls {
+            guard let toolCallID = companionToolCall["id"] as? String,
+                  let toolName = companionToolCall["name"] as? String else {
+                continue
+            }
+            let argumentsJSON = companionToolCall["arguments_json"] as? String ?? "{}"
+            let argumentsData = argumentsJSON.data(using: .utf8) ?? Data("{}".utf8)
+            let argumentsPayload = (
+                (try? JSONSerialization.jsonObject(with: argumentsData, options: []))
+                as? [String: Any]
+            ) ?? [:]
+
+            var toolOutput: [String: Any] = ["status": "ok"]
+            if toolName == "companion.point" {
+                let pointX = (argumentsPayload["x"] as? NSNumber)?.doubleValue ?? 0
+                let pointY = (argumentsPayload["y"] as? NSNumber)?.doubleValue ?? 0
+                let screenNumber = (argumentsPayload["screen_number"] as? NSNumber)?.intValue ?? 1
+                let pointLabel = (argumentsPayload["label"] as? String) ?? "element"
+                applyPointingTarget(
+                    x: pointX,
+                    y: pointY,
+                    label: pointLabel,
+                    screenNumber: screenNumber,
+                    screenCaptures: screenCaptures
+                )
+                toolOutput = [
+                    "status": "pointed",
+                    "x": Int(pointX),
+                    "y": Int(pointY),
+                    "screen_number": screenNumber,
+                    "label": pointLabel,
+                ]
+            } else if toolName == "companion.speak" {
+                let speechText = (argumentsPayload["text"] as? String) ?? ""
+                if !speechText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    try await elevenLabsTTSClient.speakText(speechText)
+                    voiceState = .responding
+                    didSpeak = true
+                }
+                toolOutput = [
+                    "status": "spoken",
+                    "text": speechText,
+                ]
+            } else {
+                toolOutput = [
+                    "status": "unsupported_client_tool",
+                    "tool_name": toolName,
+                ]
+            }
+
+            let toolOutputData = try JSONSerialization.data(withJSONObject: toolOutput)
+            let toolOutputText = String(data: toolOutputData, encoding: .utf8) ?? "{}"
+            toolMessages.append(
+                [
+                    "role": "tool",
+                    "tool_call_id": toolCallID,
+                    "name": toolName,
+                    "content": toolOutputText,
+                ]
+            )
+        }
+
+        return CompanionToolOutcome(toolMessages: toolMessages, didSpeak: didSpeak)
+    }
+
+    private func applyPointingTarget(
+        x: Double,
+        y: Double,
+        label: String,
+        screenNumber: Int,
+        screenCaptures: [CompanionScreenCapture]
+    ) {
+        guard !screenCaptures.isEmpty else { return }
+        let targetScreenIndex = max(0, min(screenCaptures.count - 1, screenNumber - 1))
+        let targetScreenCapture = screenCaptures[targetScreenIndex]
+        let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
+        let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
+        let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
+        let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
+        let displayFrame = targetScreenCapture.displayFrame
+
+        let clampedX = max(0, min(CGFloat(x), screenshotWidth))
+        let clampedY = max(0, min(CGFloat(y), screenshotHeight))
+        let displayLocalX = clampedX * (displayWidth / screenshotWidth)
+        let displayLocalY = clampedY * (displayHeight / screenshotHeight)
+        let appKitY = displayHeight - displayLocalY
+        let globalLocation = CGPoint(
+            x: displayLocalX + displayFrame.origin.x,
+            y: appKitY + displayFrame.origin.y
+        )
+
+        voiceState = .idle
+        detectedElementScreenLocation = globalLocation
+        detectedElementDisplayFrame = displayFrame
+        detectedElementBubbleText = nil
+        ClickyAnalytics.trackElementPointed(elementLabel: label)
+        print("🎯 Agent point tool: (\(Int(x)), \(Int(y))) → \"\(label)\" on screen \(screenNumber)")
+    }
+
+    private func trimBackendAgentConversationMessages(_ messages: [[String: Any]]) -> [[String: Any]] {
+        let maximumRetainedMessages = 40
+        if messages.count <= maximumRetainedMessages {
+            return messages
+        }
+        return Array(messages.suffix(maximumRetainedMessages))
+    }
+
+    private func sendBackendJSONRequest(
+        path: String,
+        method: String,
+        accessToken: String?,
+        jsonBody: [String: Any]
+    ) async throws -> [String: Any] {
+        let responseObject = try await sendBackendRequest(
+            path: path,
+            method: method,
+            accessToken: accessToken,
+            jsonBody: jsonBody
+        )
+        guard let responsePayload = responseObject as? [String: Any] else {
+            throw NSError(
+                domain: "CompanionManager",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Expected JSON object response for \(path)."]
+            )
+        }
+        return responsePayload
+    }
+
+    private func sendBackendJSONArrayRequest(
+        path: String,
+        method: String,
+        accessToken: String?
+    ) async throws -> [[String: Any]] {
+        let responseObject = try await sendBackendRequest(
+            path: path,
+            method: method,
+            accessToken: accessToken,
+            jsonBody: nil
+        )
+        guard let responsePayload = responseObject as? [[String: Any]] else {
+            throw NSError(
+                domain: "CompanionManager",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Expected JSON array response for \(path)."]
+            )
+        }
+        return responsePayload
+    }
+
+    private func sendBackendRequest(
+        path: String,
+        method: String,
+        accessToken: String?,
+        jsonBody: [String: Any]?
+    ) async throws -> Any {
+        let normalizedPath = path.hasPrefix("/") ? path : "/\(path)"
+        guard let requestURL = URL(string: AppBundleConfiguration.backendBaseURL() + normalizedPath) else {
+            throw NSError(
+                domain: "CompanionManager",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid backend URL for path \(path)."]
+            )
+        }
+        var request = URLRequest(url: requestURL)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let accessToken {
+            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        }
+        if let jsonBody {
+            request.httpBody = try JSONSerialization.data(withJSONObject: jsonBody)
+        }
+
+        let (responseData, response) = try await backendAgentSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(
+                domain: "CompanionManager",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid HTTP response from backend."]
+            )
+        }
+        guard (200...299).contains(httpResponse.statusCode) else {
+            let errorText = String(data: responseData, encoding: .utf8) ?? "Unknown backend error."
+            throw NSError(
+                domain: "CompanionManager",
+                code: httpResponse.statusCode,
+                userInfo: [NSLocalizedDescriptionKey: "Backend request failed: \(errorText)"]
+            )
+        }
+        return try JSONSerialization.jsonObject(with: responseData, options: [])
     }
 
     /// If the cursor is in transient mode (user toggled "Show Clicky" off),

@@ -8,8 +8,10 @@
 	<string>https://raw.githubusercontent.com/julianjear/makesomething-mac-app/main/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>/l3d2rw5ZZFRU3AadP/w2Zf8FHfhA6bKv16BQOV5OSk=</string>
+	<key>OpenAITranscriptionModel</key>
+	<string>whisper-1</string>
 	<key>VoiceTranscriptionProvider</key>
-	<string>assemblyai</string>
+	<string>openai</string>
 	<key>ClickyBackendBaseURL</key>
 	<string>http://127.0.0.1:8000</string>
 	<key>NSMicrophoneUsageDescription</key>

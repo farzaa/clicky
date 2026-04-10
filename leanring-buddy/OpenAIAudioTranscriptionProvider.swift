@@ -17,20 +17,20 @@ struct OpenAIAudioTranscriptionProviderError: LocalizedError {
 }
 
 final class OpenAIAudioTranscriptionProvider: BuddyTranscriptionProvider {
-    private let apiKey = AppBundleConfiguration.stringValue(forKey: "OpenAIAPIKey")
     private let modelName = AppBundleConfiguration.stringValue(forKey: "OpenAITranscriptionModel")
-        ?? "gpt-4o-transcribe"
+        ?? "whisper-1"
+    private let transcriptionProxyURLString = "\(AppBundleConfiguration.backendBaseURL())/transcriptions"
 
     let displayName = "OpenAI"
     let requiresSpeechRecognitionPermission = false
 
     var isConfigured: Bool {
-        apiKey != nil
+        URL(string: transcriptionProxyURLString) != nil
     }
 
     var unavailableExplanation: String? {
         guard !isConfigured else { return nil }
-        return "OpenAI transcription is not configured. Add OpenAIAPIKey to Info.plist."
+        return "OpenAI transcription is not configured. Check ClickyBackendBaseURL in Info.plist."
     }
 
     func startStreamingSession(
@@ -39,14 +39,14 @@ final class OpenAIAudioTranscriptionProvider: BuddyTranscriptionProvider {
         onFinalTranscriptReady: @escaping (String) -> Void,
         onError: @escaping (Error) -> Void
     ) async throws -> any BuddyStreamingTranscriptionSession {
-        guard let apiKey else {
+        guard let transcriptionProxyURL = URL(string: transcriptionProxyURLString) else {
             throw OpenAIAudioTranscriptionProviderError(
                 message: unavailableExplanation ?? "OpenAI transcription is not configured."
             )
         }
 
         return OpenAIAudioTranscriptionSession(
-            apiKey: apiKey,
+            transcriptionProxyURL: transcriptionProxyURL,
             modelName: modelName,
             keyterms: keyterms,
             onTranscriptUpdate: onTranscriptUpdate,
@@ -63,16 +63,16 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
         let text: String
     }
 
-    private static let transcriptionURL = URL(string: "https://api.openai.com/v1/audio/transcriptions")!
     private static let targetSampleRate = 16_000
 
-    private let apiKey: String
+    private let transcriptionProxyURL: URL
     private let modelName: String
     private let keyterms: [String]
     private let onTranscriptUpdate: (String) -> Void
     private let onFinalTranscriptReady: (String) -> Void
     private let onError: (Error) -> Void
 
+    private static let stateQueueSpecificKey = DispatchSpecificKey<Void>()
     private let stateQueue = DispatchQueue(label: "com.learningbuddy.openai.transcription")
     private let audioPCM16Converter = BuddyPCM16AudioConverter(
         targetSampleRate: Double(targetSampleRate)
@@ -86,14 +86,14 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
     private var transcriptionUploadTask: Task<Void, Never>?
 
     init(
-        apiKey: String,
+        transcriptionProxyURL: URL,
         modelName: String,
         keyterms: [String],
         onTranscriptUpdate: @escaping (String) -> Void,
         onFinalTranscriptReady: @escaping (String) -> Void,
         onError: @escaping (Error) -> Void
     ) {
-        self.apiKey = apiKey
+        self.transcriptionProxyURL = transcriptionProxyURL
         self.modelName = modelName
         self.keyterms = keyterms
         self.onTranscriptUpdate = onTranscriptUpdate
@@ -105,6 +105,7 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
         urlSessionConfiguration.timeoutIntervalForResource = 90
         urlSessionConfiguration.waitsForConnectivity = true
         self.urlSession = URLSession(configuration: urlSessionConfiguration)
+        self.stateQueue.setSpecific(key: Self.stateQueueSpecificKey, value: ())
     }
 
     func appendAudioBuffer(_ audioBuffer: AVAudioPCMBuffer) {
@@ -132,9 +133,10 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
     }
 
     func cancel() {
-        stateQueue.async {
+        runStateMutation {
             self.isCancelled = true
             self.bufferedPCM16AudioData.removeAll(keepingCapacity: false)
+            self.transcriptionUploadTask = nil
         }
 
         transcriptionUploadTask?.cancel()
@@ -172,13 +174,16 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
             print("[OpenAI Transcription] ❌ Upload failed (audio size: \(wavAudioData.count) bytes): \(error.localizedDescription)")
             onError(error)
         }
+
+        runStateMutation {
+            self.transcriptionUploadTask = nil
+        }
     }
 
     private func requestTranscription(for wavAudioData: Data) async throws -> String {
         let multipartBoundary = "Boundary-\(UUID().uuidString)"
-        var request = URLRequest(url: Self.transcriptionURL)
+        var request = URLRequest(url: transcriptionProxyURL)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(multipartBoundary)", forHTTPHeaderField: "Content-Type")
 
         let requestBodyData = makeMultipartRequestBody(
@@ -198,7 +203,7 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
         guard (200...299).contains(httpResponse.statusCode) else {
             let responseText = String(data: responseData, encoding: .utf8) ?? "Unknown error"
             throw OpenAIAudioTranscriptionProviderError(
-                message: "OpenAI transcription failed: \(responseText)"
+                message: "OpenAI transcription failed through backend: \(responseText)"
             )
         }
 
@@ -279,6 +284,15 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
         guard !hasDeliveredFinalTranscript else { return }
         hasDeliveredFinalTranscript = true
         onFinalTranscriptReady(transcriptText)
+    }
+
+    private func runStateMutation(_ mutation: () -> Void) {
+        if DispatchQueue.getSpecific(key: Self.stateQueueSpecificKey) != nil {
+            mutation()
+            return
+        }
+
+        stateQueue.sync(execute: mutation)
     }
 
     deinit {

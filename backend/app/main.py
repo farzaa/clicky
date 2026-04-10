@@ -4,6 +4,8 @@ import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.agent.loop.abort_registry import AgentAbortRegistry
+from app.agent.router import agent_router
 from app.auth_router import auth_router
 from app.config import get_settings
 from app.database import (
@@ -20,6 +22,7 @@ from app.workspaces_router import workspaces_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    app.state.agent_abort_registry = AgentAbortRegistry()
     app.state.http_client = httpx.AsyncClient(
         timeout=httpx.Timeout(connect=15.0, read=300.0, write=120.0, pool=120.0),
         follow_redirects=False,
@@ -66,4 +69,5 @@ if allowed_origins:
 app.include_router(router)
 app.include_router(auth_router)
 app.include_router(workspaces_router)
+app.include_router(agent_router)
 app.include_router(parse_router)
