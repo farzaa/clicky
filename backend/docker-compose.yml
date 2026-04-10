@@ -1,16 +1,16 @@
 services:
   postgres:
     image: postgres:16
-    container_name: clicky-postgres
+    container_name: deb-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: clicky
-      POSTGRES_USER: clicky
-      POSTGRES_PASSWORD: clicky
+      POSTGRES_DB: deb
+      POSTGRES_USER: deb
+      POSTGRES_PASSWORD: deb
     ports:
       - "5432:5432"
     volumes:
-      - clicky-postgres-data:/var/lib/postgresql/data
+      - deb-postgres-data:/var/lib/postgresql/data
 
 volumes:
-  clicky-postgres-data:
+  deb-postgres-data:

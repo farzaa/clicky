@@ -1,5 +1,5 @@
 /**
- * Clicky Proxy Worker
+ * Deb Proxy Worker
  *
  * Proxies requests to Claude and ElevenLabs APIs so the app never
  * ships with raw API keys. Keys are stored as Cloudflare secrets.

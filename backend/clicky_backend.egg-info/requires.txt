@@ -1,0 +1,7 @@
+fastapi<1.0.0,>=0.115.0
+httpx<0.29.0,>=0.28.0
+pydantic-settings<3.0.0,>=2.6.0
+email-validator<3.0.0,>=2.2.0
+sqlalchemy<3.0.0,>=2.0.36
+asyncpg<1.0.0,>=0.30.0
+uvicorn[standard]<0.33.0,>=0.32.0

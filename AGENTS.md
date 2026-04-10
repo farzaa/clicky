@@ -1,4 +1,4 @@
-# Clicky - Agent Instructions
+# Deb - Agent Instructions
 
 <!-- This is the single source of truth for all AI coding agents. CLAUDE.md is a symlink to this file. -->
 <!-- AGENTS.md spec: https://github.com/agentsmd/agents.md — supported by Claude Code, Cursor, Copilot, Gemini CLI, and others. -->
@@ -7,7 +7,7 @@
 
 macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via OpenAI audio transcription (`whisper-1` by default), and sends the transcript + a screenshot of the user's screen to Claude. Claude responds with text (streamed via SSE) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements Claude references on any connected monitor.
 
-All API keys live on a hosted backend — nothing sensitive ships in the app. The app reads its backend base URL from `ClickyBackendBaseURL` in `Info.plist`, so local dev can point at FastAPI while older deployments can still use a compatible proxy.
+All API keys live on a hosted backend — nothing sensitive ships in the app. The app reads its backend base URL from `DebBackendBaseURL` in `Info.plist`, so local dev can point at FastAPI while older deployments can still use a compatible proxy.
 
 ## Architecture
 
@@ -20,12 +20,12 @@ All API keys live on a hosted backend — nothing sensitive ships in the app. Th
 - **Backend Storage**: Postgres via async SQLAlchemy for users, workspaces, saved agents, memberships, and virtual filesystem entries
 - **Backend Auth**: Email/password auth with bearer sessions stored in Postgres
 - **Backend Agent Loop**: FastAPI-hosted iterative agent loop with OpenAI Responses and OpenRouter provider adapters, abortable runs, multimodal screenshot message support, backend-owned tools (including `companion.point`), and a `just-bash` powered workspace shell tool
-- **Saved Agents**: Each workspace is seeded with a default Clicky agent row in Postgres that stores a reusable system prompt, provider, and model
+- **Saved Agents**: Each workspace is seeded with a default Deb agent row in Postgres that stores a reusable system prompt, provider, and model
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
-- **Analytics**: PostHog via `ClickyAnalytics.swift`
+- **Analytics**: PostHog via `DebAnalytics.swift`
 
 ### Hosted Backend
 
@@ -46,7 +46,7 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_I
 
 **Global Push-To-Talk Shortcut**: Background push-to-talk uses a listen-only `CGEvent` tap instead of an AppKit global monitor so modifier-based shortcuts like `ctrl + option` are detected more reliably while the app is running in the background.
 
-**Transient Cursor Mode**: When "Show Clicky" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
+**Transient Cursor Mode**: When "Show Deb" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
 
 ## Key Files
 
@@ -71,11 +71,11 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_I
 | `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
-| `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
+| `DebAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
-| `AppBundleConfiguration.swift` | ~32 | Runtime configuration reader for keys stored in the app bundle Info.plist, including `ClickyBackendBaseURL`. |
+| `AppBundleConfiguration.swift` | ~32 | Runtime configuration reader for keys stored in the app bundle Info.plist, including `DebBackendBaseURL`. |
 | `backend/app/agent/contracts.py` | ~70 | Shared agent request/response models, message/tool types, and run status shapes. |
-| `backend/app/agent/defaults.py` | ~10 | Default Clicky agent settings, including the saved system prompt, provider, and model used when seeding new workspaces. |
+| `backend/app/agent/defaults.py` | ~10 | Default Deb agent settings, including the saved system prompt, provider, and model used when seeding new workspaces. |
 | `backend/app/agent/bash_tool.py` | ~400 | Backend workspace bash tool. Serializes a Postgres-backed workspace into a `just-bash` virtual filesystem request, runs the shell, and persists the resulting filesystem snapshot back into `workspace_entries`. |
 | `backend/app/agent/postgres_workspace_filesystem.mjs` | ~160 | Custom `just-bash` filesystem implementation backed by serialized workspace entries instead of disk. Delegates shell filesystem calls to an in-memory virtual tree and exports a snapshot for Postgres persistence. |
 | `backend/app/agent/just_bash_runner.mjs` | ~60 | Small Node runner that executes `just-bash` against the custom Postgres-workspace filesystem and returns structured stdout/stderr/exit code JSON plus the final filesystem snapshot to the Python backend. |
@@ -94,7 +94,7 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_I
 | `backend/app/parsing/router.py` | ~21 | Dedicated parsing router that exposes placeholder `/parse/` endpoints for the future PDF-to-markdown pipeline. |
 | `backend/app/parsing/service.py` | ~18 | Empty placeholder parsing service boundary for the team-owned document parsing implementation. |
 | `backend/app/security.py` | ~50 | Password hashing and session-token helpers for backend auth. |
-| `backend/app/workspaces_service.py` | ~55 | Shared helper that creates a workspace, membership row, root directory entry, and default saved Clicky agent. |
+| `backend/app/workspaces_service.py` | ~55 | Shared helper that creates a workspace, membership row, root directory entry, and default saved Deb agent. |
 | `backend/app/workspaces_router.py` | ~590 | Workspace CRUD-lite endpoints, including backend launch/stop state transitions plus authenticated file upload, directory listing, and file read APIs backed by `workspace_entries`. |
 | `backend/docker-compose.yml` | ~14 | Local Postgres container for backend development. |
 | `worker/src/index.ts` | ~142 | Legacy Cloudflare Worker proxy. The current FastAPI backend replaces it for `/chat` and `/tts`. |
@@ -117,7 +117,7 @@ uvicorn app.main:app --reload
 # Open in Xcode
 open leanring-buddy.xcodeproj
 
-# Point `ClickyBackendBaseURL` in Info.plist at your backend URL
+# Point `DebBackendBaseURL` in Info.plist at your backend URL
 
 # Select the leanring-buddy scheme, set signing team, Cmd+R to build and run
 

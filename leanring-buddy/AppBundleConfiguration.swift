@@ -27,6 +27,6 @@ enum AppBundleConfiguration {
     }
 
     static func backendBaseURL() -> String {
-        stringValue(forKey: "ClickyBackendBaseURL") ?? "http://127.0.0.1:8000"
+        stringValue(forKey: "DebBackendBaseURL") ?? "http://127.0.0.1:8000"
     }
 }

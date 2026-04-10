@@ -1,13 +1,13 @@
-# Hi, this is Clicky.
+# Hi, this is Deb.
 It's an AI teacher that lives as a buddy next to your cursor. It can see your screen, talk to you, and even point at stuff. Kinda like having a real teacher next to you.
 
-Download it [here](https://www.clicky.so/) for free.
+Download it free from the project build.
 
-Here's the [original tweet](https://x.com/FarzaTV/status/2041314633978659092) that kinda blew up for a demo for more context.
+Here's the [original tweet](https://x.com/FarzaTV/status/2041314633978659092) that kicked off the demo for more context.
 
-![Clicky — an ai buddy that lives on your mac](clicky-demo.gif)
+![Deb — an ai buddy that lives on your mac](deb-demo.gif)
 
-This is the open-source version of Clicky for those that want to hack on it, build their own features, or just see how it works under the hood.
+This is the open-source version of Deb for those that want to hack on it, build their own features, or just see how it works under the hood.
 
 ## Get started with Claude Code
 
@@ -18,9 +18,9 @@ Once you get Claude running, paste this:
 ```
 Hi Claude.
 
-Clone https://github.com/farzaa/clicky.git into my current directory.
+Clone this repository into my current directory.
 
-Then read the CLAUDE.md. I want to get Clicky running locally on my Mac.
+Then read the CLAUDE.md. I want to get Deb running locally on my Mac.
 
 Help me set up everything — the FastAPI backend with my own API keys, the backend URL, and getting it building in Xcode. Walk me through it.
 ```
@@ -57,7 +57,7 @@ Add your secrets to `backend/.env`:
 ANTHROPIC_API_KEY=sk-ant-...
 ELEVENLABS_API_KEY=...
 ELEVENLABS_VOICE_ID=...
-DATABASE_URL=postgresql+asyncpg://clicky:clicky@127.0.0.1:5432/clicky
+DATABASE_URL=postgresql+asyncpg://deb:deb@127.0.0.1:5432/deb
 OPENAI_API_KEY=
 OPENROUTER_API_KEY=
 ```
@@ -72,12 +72,12 @@ This starts the API on `http://127.0.0.1:8000`.
 
 ### 2. Point the app at the backend
 
-Set `ClickyBackendBaseURL` in `leanring-buddy/Info.plist` to your local or hosted FastAPI base URL.
+Set `DebBackendBaseURL` in `leanring-buddy/Info.plist` to your local or hosted FastAPI base URL.
 
 For local development, the default value is already:
 
 ```xml
-<key>ClickyBackendBaseURL</key>
+<key>DebBackendBaseURL</key>
 <string>http://127.0.0.1:8000</string>
 ```
 

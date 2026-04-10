@@ -1,4 +1,4 @@
-# Clicky FastAPI Backend
+# Deb FastAPI Backend
 
 This service replaces the thin Cloudflare Worker proxy with a hosted FastAPI backend.
 
@@ -69,7 +69,7 @@ The backend now includes a standalone `app/agent/` package with:
 
 `workspace.run_bash` now uses a custom `just-bash` filesystem backed by serialized `workspace_entries` data rather than a temp directory on disk. The Python backend loads the workspace from Postgres, the Node runner executes the shell against that virtual filesystem, and the final filesystem snapshot is persisted back into `workspace_entries` after the command finishes.
 
-Each new workspace also gets a default saved `agents` row for Clicky with a short system prompt, default provider `openai_responses`, and default model `gpt-5.4-mini`.
+Each new workspace also gets a default saved `agents` row for Deb with a short system prompt, default provider `openai_responses`, and default model `gpt-5.4-mini`.
 
 `/agent/runs` now accepts multimodal screenshot input in user messages via `messages[].images[]` (`image_base64`, `mime_type`, `label`, `pixel_width`, `pixel_height`, `is_primary_focus`).
 
@@ -97,7 +97,7 @@ uvicorn app.main:app --reload
 
 The API will start on `http://127.0.0.1:8000`.
 
-Then set `ClickyBackendBaseURL` in `leanring-buddy/Info.plist` to the local or hosted FastAPI base URL.
+Then set `DebBackendBaseURL` in `leanring-buddy/Info.plist` to the local or hosted FastAPI base URL.
 
 If you already started an older local Postgres volume before the auth/workspace schema existed, reset it before booting this version:
 

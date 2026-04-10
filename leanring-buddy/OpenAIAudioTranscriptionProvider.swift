@@ -30,7 +30,7 @@ final class OpenAIAudioTranscriptionProvider: BuddyTranscriptionProvider {
 
     var unavailableExplanation: String? {
         guard !isConfigured else { return nil }
-        return "OpenAI transcription is not configured. Check ClickyBackendBaseURL in Info.plist."
+        return "OpenAI transcription is not configured. Check DebBackendBaseURL in Info.plist."
     }
 
     func startStreamingSession(

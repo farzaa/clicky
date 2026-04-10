@@ -12,13 +12,13 @@
 	<string>whisper-1</string>
 	<key>VoiceTranscriptionProvider</key>
 	<string>openai</string>
-	<key>ClickyBackendBaseURL</key>
+	<key>DebBackendBaseURL</key>
 	<string>http://127.0.0.1:8000</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Clicky uses your microphone so you can talk to it</string>
+	<string>Deb uses your microphone so you can talk to it</string>
 	<key>NSScreenCaptureUsageDescription</key>
-	<string>Clicky needs screen recording access to see your screen and help you.</string>
+	<string>Deb needs screen recording access to see your screen and help you.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Clicky uses speech recognition to transcribe your voice when you talk to it</string>
+	<string>Deb uses speech recognition to transcribe your voice when you talk to it</string>
 </dict>
 </plist>

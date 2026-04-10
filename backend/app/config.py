@@ -11,12 +11,12 @@ class Settings(BaseSettings):
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openrouter_api_key: str | None = Field(default=None, alias="OPENROUTER_API_KEY")
     database_url: str = Field(alias="DATABASE_URL")
-    clicky_allowed_origins: str = Field(default="", alias="CLICKY_ALLOWED_ORIGINS")
-    clicky_auto_create_database_schema: bool = Field(
+    deb_allowed_origins: str = Field(default="", alias="DEB_ALLOWED_ORIGINS")
+    deb_auto_create_database_schema: bool = Field(
         default=True,
-        alias="CLICKY_AUTO_CREATE_DATABASE_SCHEMA",
+        alias="DEB_AUTO_CREATE_DATABASE_SCHEMA",
     )
-    clicky_database_echo: bool = Field(default=False, alias="CLICKY_DATABASE_ECHO")
+    deb_database_echo: bool = Field(default=False, alias="DEB_DATABASE_ECHO")
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -29,13 +29,13 @@ async def lifespan(app: FastAPI):
     )
     app.state.database_engine = create_database_engine(
         settings.database_url,
-        echo_sql_statements=settings.clicky_database_echo,
+        echo_sql_statements=settings.deb_database_echo,
     )
     app.state.database_session_factory = create_database_session_factory(
         app.state.database_engine,
     )
     await verify_database_connection(app.state.database_engine)
-    if settings.clicky_auto_create_database_schema:
+    if settings.deb_auto_create_database_schema:
         await initialize_database_schema(app.state.database_engine)
     try:
         yield
@@ -47,12 +47,12 @@ async def lifespan(app: FastAPI):
 settings = get_settings()
 allowed_origins = [
     origin.strip()
-    for origin in settings.clicky_allowed_origins.split(",")
+    for origin in settings.deb_allowed_origins.split(",")
     if origin.strip()
 ]
 
 app = FastAPI(
-    title="Clicky Backend",
+    title="Deb Backend",
     version="0.1.0",
     lifespan=lifespan,
 )

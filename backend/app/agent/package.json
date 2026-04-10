@@ -1,5 +1,5 @@
 {
-  "name": "clicky-agent-tools",
+  "name": "deb-agent-tools",
   "private": true,
   "type": "module",
   "dependencies": {
