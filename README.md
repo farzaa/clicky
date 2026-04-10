@@ -7,8 +7,6 @@ Download it [here](https://www.clicky.so/) for free.
 
 Here's the [original tweet](https://x.com/FarzaTV/status/2041314633978659092) that kinda blew up for a demo for more context.
 
-![Flowee — a flow-state sidekick that lives on your mac](clicky-demo.gif)
-
 This is the open-source version of Flowee for people who want to hack on it, extend it, wire in new agent workflows, or just understand how a cursor-native sidekick can work on macOS.
 
 Big thanks to [@farzatv](https://x.com/farzatv) for building Clicky and open-sourcing the foundation this version grows from.
