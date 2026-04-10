@@ -17,8 +17,16 @@ enum PracticePromptBuilder {
     - safe and reversible
     - low risk and low cost
     - realistically evaluable from screenshots alone
+    - meaningfully multi-step when the screen supports it
 
     do not propose anything destructive, billing-impacting, security-sensitive, or irreversible. if the visible screen is not a good candidate for a safe screenshot-evaluable challenge, decline cleanly.
+
+    challenge difficulty rules:
+    - prefer challenges that take roughly 2 to 4 user actions
+    - do not propose trivial one-click challenges unless the screen truly offers nothing better
+    - prefer navigation, setup, or configuration flows over isolated clicks
+    - prefer a visible end state the user can reach without needing to submit, purchase, deploy, or finalize something risky
+    - if the only available tasks are trivial, destructive, or not screenshot-evaluable, decline instead of forcing a weak challenge
 
     respond using exactly this format:
     CHALLENGE_AVAILABLE: YES or NO
@@ -31,6 +39,8 @@ enum PracticePromptBuilder {
     rules:
     - if challenge_available is NO, leave the challenge fields empty and fill unsuitable_reason
     - if challenge_available is YES, fill all challenge fields and leave unsuitable_reason empty
+    - make the goal describe a short multi-step outcome, not a single click
+    - make the success criteria describe the final visible screen state that proves the challenge is done
     - keep every field concise and plain text
     - do not include markdown, bullet points, code fences, or any extra keys
     """
@@ -89,7 +99,7 @@ enum PracticePromptBuilder {
 
     static func makeChallengeSuggestionUserPrompt() -> String {
         """
-        Look at the current cursor screen and decide whether there is one good practice challenge to suggest right now.
+        Look at the current cursor screen and decide whether there is one good practice challenge to suggest right now. Prefer a short multi-step challenge over a trivial click.
         """
     }
 
