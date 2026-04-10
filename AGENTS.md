@@ -5,7 +5,7 @@
 
 ## Overview
 
-macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to Claude. Claude responds with text (streamed via SSE) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements Claude references on any connected monitor.
+macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via ElevenLabs Scribe v2 Realtime streaming, and sends the transcript + a screenshot of the user's screen to Claude. Claude responds with text (streamed via SSE) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements Claude references on any connected monitor.
 
 All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in the app.
 
@@ -15,7 +15,7 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
 - **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via Cloudflare Worker proxy with SSE streaming
-- **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with OpenAI and Apple Speech as fallbacks
+- **Speech-to-Text**: ElevenLabs Scribe v2 real-time streaming via websocket, with OpenAI and Apple Speech as fallbacks
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
@@ -31,9 +31,9 @@ The app never calls external APIs directly. All requests go through a Cloudflare
 |-------|----------|---------|
 | `POST /chat` | `api.anthropic.com/v1/messages` | Claude vision + streaming chat |
 | `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
-| `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Fetches a short-lived (480s) AssemblyAI websocket token |
+| `POST /transcribe-token` | `api.elevenlabs.io/v1/single-use-token/realtime_scribe` | Fetches a short-lived (15min) ElevenLabs Scribe single-use token |
 
-Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`
+Worker secrets: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`
 Worker vars: `ELEVENLABS_VOICE_ID`
 
 ### Key Architecture Decisions
@@ -44,7 +44,7 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 
 **Global Push-To-Talk Shortcut**: Background push-to-talk uses a listen-only `CGEvent` tap instead of an AppKit global monitor so modifier-based shortcuts like `ctrl + option` are detected more reliably while the app is running in the background.
 
-**Shared URLSession for AssemblyAI**: A single long-lived `URLSession` is shared across all AssemblyAI streaming sessions (owned by the provider, not the session). Creating and invalidating a URLSession per session corrupts the OS connection pool and causes "Socket is not connected" errors after a few rapid reconnections.
+**Shared URLSession for ElevenLabs Scribe**: A single long-lived `URLSession` is shared across all ElevenLabs Scribe streaming sessions (owned by the provider, not the session). Creating and invalidating a URLSession per session corrupts the OS connection pool and causes "Socket is not connected" errors after a few rapid reconnections.
 
 **Transient Cursor Mode**: When "Show Clicky" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
 
@@ -60,8 +60,8 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
 | `BuddyDictationManager.swift` | ~866 | Push-to-talk voice pipeline. Handles microphone capture via `AVAudioEngine`, provider-aware permission checks, keyboard/button dictation sessions, transcript finalization, shortcut parsing, contextual keyterms, and live audio-level reporting for waveform feedback. |
-| `BuddyTranscriptionProvider.swift` | ~100 | Protocol surface and provider factory for voice transcription backends. Resolves provider based on `VoiceTranscriptionProvider` in Info.plist — AssemblyAI, OpenAI, or Apple Speech. |
-| `AssemblyAIStreamingTranscriptionProvider.swift` | ~478 | Streaming transcription provider. Fetches temp tokens from the Cloudflare Worker, opens an AssemblyAI v3 websocket, streams PCM16 audio, tracks turn-based transcripts, and delivers finalized text on key-up. Shares a single URLSession across all sessions. |
+| `BuddyTranscriptionProvider.swift` | ~75 | Protocol surface and provider factory for voice transcription backends. Resolves provider based on `VoiceTranscriptionProvider` in Info.plist — ElevenLabs Scribe, OpenAI, or Apple Speech. |
+| `ElevenLabsScribeTranscriptionProvider.swift` | ~310 | Streaming transcription provider backed by ElevenLabs Scribe v2 Realtime. Fetches single-use tokens from the Cloudflare Worker, opens a WebSocket, streams base64-encoded PCM16 audio as JSON chunks, and delivers finalized text on commit. Shares a single URLSession across all sessions. |
 | `OpenAIAudioTranscriptionProvider.swift` | ~317 | Upload-based transcription provider. Buffers push-to-talk audio locally, uploads as WAV on release, returns finalized transcript. |
 | `AppleSpeechTranscriptionProvider.swift` | ~147 | Local fallback transcription provider backed by Apple's Speech framework. |
 | `BuddyAudioConversionSupport.swift` | ~108 | Audio conversion helpers. Converts live mic buffers to PCM16 mono audio and builds WAV payloads for upload-based providers. |
@@ -74,7 +74,7 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
-| `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
+| `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs TTS), `/transcribe-token` (ElevenLabs Scribe single-use token). |
 
 ## Build & Run
 
@@ -98,7 +98,6 @@ npm install
 
 # Add secrets
 npx wrangler secret put ANTHROPIC_API_KEY
-npx wrangler secret put ASSEMBLYAI_API_KEY
 npx wrangler secret put ELEVENLABS_API_KEY
 
 # Deploy

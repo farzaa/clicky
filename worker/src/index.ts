@@ -13,7 +13,6 @@ interface Env {
   ANTHROPIC_API_KEY: string;
   ELEVENLABS_API_KEY: string;
   ELEVENLABS_VOICE_ID: string;
-  ASSEMBLYAI_API_KEY: string;
 }
 
 export default {
@@ -81,18 +80,19 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
 
 async function handleTranscribeToken(env: Env): Promise<Response> {
   const response = await fetch(
-    "https://streaming.assemblyai.com/v3/token?expires_in_seconds=480",
+    "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe",
     {
-      method: "GET",
+      method: "POST",
       headers: {
-        authorization: env.ASSEMBLYAI_API_KEY,
+        "xi-api-key": env.ELEVENLABS_API_KEY,
+        "content-type": "application/json",
       },
     }
   );
 
   if (!response.ok) {
     const errorBody = await response.text();
-    console.error(`[/transcribe-token] AssemblyAI token error ${response.status}: ${errorBody}`);
+    console.error(`[/transcribe-token] ElevenLabs Scribe token error ${response.status}: ${errorBody}`);
     return new Response(errorBody, {
       status: response.status,
       headers: { "content-type": "application/json" },
