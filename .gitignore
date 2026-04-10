@@ -1,5 +1,8 @@
 worker/node_modules/
 worker/.dev.vars
+backend/.env
+backend/.venv/
+__pycache__/
 .DS_Store
 *.xcuserstate
 build/

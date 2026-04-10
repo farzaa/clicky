@@ -7,25 +7,25 @@
 
 macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to Claude. Claude responds with text (streamed via SSE) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements Claude references on any connected monitor.
 
-All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in the app.
+All API keys live on a hosted backend — nothing sensitive ships in the app. The app reads its backend base URL from `ClickyBackendBaseURL` in `Info.plist`, so local dev can point at FastAPI while older deployments can still use a compatible proxy.
 
 ## Architecture
 
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via Cloudflare Worker proxy with SSE streaming
+- **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via hosted backend with SSE streaming
 - **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with OpenAI and Apple Speech as fallbacks
-- **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy
+- **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via hosted backend
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
 - **Analytics**: PostHog via `ClickyAnalytics.swift`
 
-### API Proxy (Cloudflare Worker)
+### Hosted Backend
 
-The app never calls external APIs directly. All requests go through a Cloudflare Worker (`worker/src/index.ts`) that holds the real API keys as secrets.
+The app never calls external APIs directly. All requests go through a backend service that holds the real API keys as secrets. The new default backend is FastAPI (`backend/app/main.py`), and it preserves the same three-route contract that the legacy Cloudflare Worker (`worker/src/index.ts`) used.
 
 | Route | Upstream | Purpose |
 |-------|----------|---------|
@@ -33,8 +33,7 @@ The app never calls external APIs directly. All requests go through a Cloudflare
 | `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
 | `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Fetches a short-lived (480s) AssemblyAI websocket token |
 
-Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`
-Worker vars: `ELEVENLABS_VOICE_ID`
+Backend env vars: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`
 
 ### Key Architecture Decisions
 
@@ -73,14 +72,28 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
 | `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
-| `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
+| `AppBundleConfiguration.swift` | ~32 | Runtime configuration reader for keys stored in the app bundle Info.plist, including `ClickyBackendBaseURL`. |
+| `backend/app/main.py` | ~46 | FastAPI app startup, shared async HTTP client lifecycle, CORS middleware configuration, and router registration. |
+| `backend/app/routes.py` | ~110 | Hosted backend routes for `/chat`, `/tts`, `/transcribe-token`, and `/health`. |
+| `backend/app/parsing/router.py` | ~21 | Dedicated parsing router that exposes placeholder `/parse/` endpoints for the future PDF-to-markdown pipeline. |
+| `backend/app/parsing/service.py` | ~18 | Empty placeholder parsing service boundary for the team-owned document parsing implementation. |
 | `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
 
 ## Build & Run
 
 ```bash
+# Start the backend if you're developing locally
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+cp .env.example .env
+uvicorn app.main:app --reload
+
 # Open in Xcode
 open leanring-buddy.xcodeproj
+
+# Point `ClickyBackendBaseURL` in Info.plist at your backend URL
 
 # Select the leanring-buddy scheme, set signing team, Cmd+R to build and run
 
@@ -90,22 +103,17 @@ open leanring-buddy.xcodeproj
 
 **Do NOT run `xcodebuild` from the terminal** — it invalidates TCC (Transparency, Consent, and Control) permissions and the app will need to re-request screen recording, accessibility, etc.
 
-## Cloudflare Worker
+## FastAPI Backend
 
 ```bash
-cd worker
-npm install
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+cp .env.example .env
 
-# Add secrets
-npx wrangler secret put ANTHROPIC_API_KEY
-npx wrangler secret put ASSEMBLYAI_API_KEY
-npx wrangler secret put ELEVENLABS_API_KEY
-
-# Deploy
-npx wrangler deploy
-
-# Local dev (create worker/.dev.vars with your keys)
-npx wrangler dev
+# Start local development server
+uvicorn app.main:app --reload
 ```
 
 ## Code Style & Conventions

@@ -25,4 +25,8 @@ enum AppBundleConfiguration {
         let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmedValue.isEmpty ? nil : trimmedValue
     }
+
+    static func backendBaseURL() -> String {
+        stringValue(forKey: "ClickyBackendBaseURL") ?? "http://127.0.0.1:8000"
+    }
 }
