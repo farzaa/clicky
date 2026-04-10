@@ -1,0 +1,112 @@
+<div id="settings-panel" class="settings-panel hidden">
+  <div class="settings-header">
+    <span class="settings-title">Settings</span>
+    <button id="settings-close" class="settings-close">&times;</button>
+  </div>
+
+  <div class="settings-body">
+    <!-- Connection -->
+    <div class="settings-section">
+      <div class="section-label">Connection</div>
+      <div class="field">
+        <label for="setting-sewa-url">Sewa URL</label>
+        <input type="text" id="setting-sewa-url" placeholder="wss://sewa-prod.1-800-goobsquire.lol" />
+      </div>
+      <div class="field">
+        <label for="setting-authentik-url">Authentik URL</label>
+        <input type="text" id="setting-authentik-url" placeholder="https://auth.1-800-goobsquire.lol" />
+      </div>
+      <div class="field-row">
+        <div>
+          <div class="field-label">Authentication</div>
+          <div id="auth-status" class="auth-status">Not authenticated</div>
+        </div>
+        <button id="btn-reauth" class="btn-secondary">Re-authenticate</button>
+      </div>
+    </div>
+
+    <div class="settings-divider"></div>
+
+    <!-- Voice -->
+    <div class="settings-section">
+      <div class="section-label">Voice</div>
+      <div class="field">
+        <label>Push-to-Talk Hotkey</label>
+        <span id="hotkey-display" class="hotkey-btn">Ctrl + Space</span>
+        <div class="field-hint">Currently fixed in the app runtime.</div>
+      </div>
+      <div class="field">
+        <label for="setting-audio-input">Input Device (Microphone)</label>
+        <select id="setting-audio-input"></select>
+      </div>
+      <div class="field">
+        <label for="setting-audio-output">Output Device (Speaker)</label>
+        <select id="setting-audio-output"></select>
+      </div>
+    </div>
+
+    <div class="settings-divider"></div>
+
+    <!-- Screen Capture -->
+    <div class="settings-section">
+      <div class="section-label">Screen Capture</div>
+      <div class="field">
+        <label for="setting-screenshot-quality">Screenshot Quality</label>
+        <div class="slider-row">
+          <input type="range" id="setting-screenshot-quality" min="50" max="95" step="5" />
+          <span id="quality-value" class="slider-value">0.80</span>
+        </div>
+        <div class="field-hint">JPEG quality: 0.50 (fast) — 0.95 (sharp)</div>
+      </div>
+      <div class="field-row">
+        <div>
+          <div class="field-label">Auto-capture with voice</div>
+          <div class="field-hint">Take screenshot when push-to-talk activates</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="setting-auto-capture" checked />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="settings-divider"></div>
+
+    <!-- Pointer Overlay -->
+    <div class="settings-section">
+      <div class="section-label">Pointer Overlay</div>
+      <div class="field">
+        <label for="setting-dismiss-timeout">Auto-dismiss Timeout</label>
+        <div class="slider-row">
+          <input type="range" id="setting-dismiss-timeout" min="1" max="15" step="1" />
+          <span id="dismiss-value" class="slider-value">5s</span>
+        </div>
+      </div>
+      <div class="field">
+        <label>Animation Speed</label>
+        <div class="speed-buttons">
+          <button class="speed-btn" data-speed="slow">Slow</button>
+          <button class="speed-btn active" data-speed="normal">Normal</button>
+          <button class="speed-btn" data-speed="fast">Fast</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-divider"></div>
+
+    <!-- System -->
+    <div class="settings-section">
+      <div class="section-label">System</div>
+      <div class="field-row">
+        <div>
+          <div class="field-label">Launch on login</div>
+          <div class="field-hint">Start Sewa Companion automatically</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="setting-autostart" />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    </div>
+  </div>
+</div>

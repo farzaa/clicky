@@ -1,42 +1,143 @@
+/* Reset */
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
 
+/* Base */
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   background: #0a0a0f;
   color: #e0e0e8;
   height: 100vh;
   overflow: hidden;
-}
-
-#app {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  position: relative;
 }
 
-#status-bar {
+/* ---------------------------------------------------------------------------
+   Status bar
+--------------------------------------------------------------------------- */
+
+.status-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
+  justify-content: space-between;
+  padding: 8px 12px;
   background: #12121a;
   border-bottom: 1px solid #1a1a2e;
   font-size: 13px;
+  flex-shrink: 0;
 }
 
+.status-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Status dot */
 .status-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
+  flex-shrink: 0;
 }
 
-.status-dot.connected { background: #22c55e; }
-.status-dot.disconnected { background: #6b7280; }
-.status-dot.connecting { background: #eab308; }
+.status-dot.connected {
+  background: #4ade80;
+}
+
+.status-dot.disconnected {
+  background: #888;
+}
+
+.status-dot.connecting {
+  background: #facc15;
+  animation: blink 1.2s ease-in-out infinite;
+}
+
+.status-dot.reconnecting {
+  background: #facc15;
+  animation: blink 1.2s ease-in-out infinite;
+}
+
+.status-dot.authenticating {
+  background: #facc15;
+  animation: blink 1.2s ease-in-out infinite;
+}
+
+.status-dot.listening {
+  background: #f87171;
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.status-dot.processing {
+  background: #60a5fa;
+  animation: blink 0.8s ease-in-out infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.4); opacity: 0.7; }
+}
+
+/* Gear button */
+.gear-btn {
+  background: none;
+  border: none;
+  color: #666;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 4px;
+  line-height: 1;
+  border-radius: 4px;
+  transition: color 0.15s;
+}
+
+.gear-btn:hover {
+  color: #e0e0e8;
+  background: #1a1a2e;
+}
+
+/* Voice indicator */
+.voice-indicator {
+  font-size: 11px;
+  color: #f87171;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  white-space: nowrap;
+}
+
+.voice-indicator.hidden {
+  display: none;
+}
+
+/* ---------------------------------------------------------------------------
+   Chat view
+--------------------------------------------------------------------------- */
+
+#chat-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 
 #messages {
   flex: 1;
@@ -47,6 +148,25 @@ body {
   gap: 8px;
 }
 
+/* Custom scrollbar */
+#messages::-webkit-scrollbar {
+  width: 4px;
+}
+
+#messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#messages::-webkit-scrollbar-thumb {
+  background: #2a2a3e;
+  border-radius: 2px;
+}
+
+#messages::-webkit-scrollbar-thumb:hover {
+  background: #3a3a4e;
+}
+
+/* Message bubbles */
 .message {
   padding: 8px 12px;
   border-radius: 8px;
@@ -71,12 +191,14 @@ body {
   margin-top: 4px;
 }
 
+/* Chat form */
 #chat-form {
   display: flex;
   padding: 12px;
   gap: 8px;
   background: #12121a;
   border-top: 1px solid #1a1a2e;
+  flex-shrink: 0;
 }
 
 #chat-input {
@@ -87,14 +209,19 @@ body {
   background: #0a0a0f;
   color: #e0e0e8;
   font-size: 14px;
+  font-family: inherit;
   outline: none;
+}
+
+#chat-input::placeholder {
+  color: #444;
 }
 
 #chat-input:focus {
   border-color: #3b82f6;
 }
 
-#chat-form button {
+#chat-form button[type="submit"] {
   padding: 8px 16px;
   background: #3b82f6;
   color: white;
@@ -102,8 +229,27 @@ body {
   border-radius: 6px;
   cursor: pointer;
   font-size: 14px;
+  font-family: inherit;
+  transition: background 0.15s;
 }
 
-#chat-form button:hover {
+#chat-form button[type="submit"]:hover {
   background: #2563eb;
+}
+
+/* ---------------------------------------------------------------------------
+   Settings container — anchors the absolute-positioned settings panel
+--------------------------------------------------------------------------- */
+
+#settings-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+
+#settings-container > * {
+  pointer-events: auto;
 }

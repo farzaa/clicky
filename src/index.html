@@ -5,22 +5,30 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Sewa Companion</title>
   <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="settings.css" />
 </head>
 <body>
-  <div id="app">
-    <div id="status-bar">
-      <span class="status-dot disconnected"></span>
-      <span id="status-text">Disconnected</span>
+  <div class="status-bar">
+    <div class="status-left">
+      <span class="status-dot connecting"></span>
+      <span id="status-text">Connecting</span>
     </div>
+    <div class="status-right">
+      <span id="voice-indicator" class="voice-indicator hidden"></span>
+      <button id="settings-toggle" class="gear-btn" title="Settings">&#9881;</button>
+    </div>
+  </div>
 
+  <div id="chat-view">
     <div id="messages"></div>
-
     <form id="chat-form">
       <input type="text" id="chat-input" placeholder="Message Sewa..." autocomplete="off" />
       <button type="submit">Send</button>
     </form>
   </div>
 
-  <script src="main.js"></script>
+  <div id="settings-container"></div>
+
+  <script type="module" src="main.js"></script>
 </body>
 </html>

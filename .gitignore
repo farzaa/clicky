@@ -6,3 +6,6 @@ build/
 releases/
 .claude/
 coding-plans/
+
+src-tauri/target/
+src-tauri/gen/

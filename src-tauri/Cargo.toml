@@ -13,6 +13,13 @@ tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 url = "2"
 keyring = "3"
+ashpd = { version = "0.10", features = ["tokio"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+tiny_http = "0.12"
+base64 = "0.22"
+urlencoding = "2.1"
+open = "5"
+dirs = "6"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
