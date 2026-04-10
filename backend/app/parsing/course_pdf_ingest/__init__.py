@@ -1,0 +1,2 @@
+"""Course PDF ingestion package."""
+

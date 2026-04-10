@@ -4,8 +4,11 @@ version = "0.1.0"
 description = "FastAPI backend for Clicky"
 requires-python = ">=3.11"
 dependencies = [
+    "docling[rapidocr]>=2.58.0",
     "fastapi>=0.115.0,<1.0.0",
     "httpx>=0.28.0,<0.29.0",
+    "pypdfium2>=4.30.0",
+    "pypdf>=5.4.0",
     "pydantic-settings>=2.6.0,<3.0.0",
     "email-validator>=2.2.0,<3.0.0",
     "python-multipart>=0.0.20,<0.1.0",

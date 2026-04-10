@@ -29,14 +29,16 @@ All API keys live on a hosted backend — nothing sensitive ships in the app. Th
 
 ### Hosted Backend
 
-The app never calls external APIs directly. All requests go through a backend service that holds the real API keys as secrets. The new default backend is FastAPI (`backend/app/main.py`), and it preserves the same three-route contract that the legacy Cloudflare Worker (`worker/src/index.ts`) used.
+The app never calls external APIs directly. All requests go through a backend service that holds the real API keys as secrets. The new default backend is FastAPI (`backend/app/main.py`), and it preserves the chat/tts/transcribe contract from the legacy Cloudflare Worker (`worker/src/index.ts`) while adding dedicated document parsing routes.
 
 | Route | Upstream | Purpose |
 |-------|----------|---------|
 | `POST /chat` | `api.anthropic.com/v1/messages` | Claude vision + streaming chat |
 | `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
 | `POST /transcriptions` | `api.openai.com/v1/audio/transcriptions` | Whisper upload transcription |
-Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `DATABASE_URL`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`
+| `POST /parse` | Docling + OCR providers | Topic-aware PDF parsing with TOC/header routing, OCR fallback, and markdown artifact output |
+
+Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `DATABASE_URL`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `MISTRAL_API_KEY` (optional, required for handwritten-mode parsing), `MISTRAL_OCR_MODEL` (optional override)
 
 ### Key Architecture Decisions
 
@@ -91,8 +93,17 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_I
 | `backend/app/database.py` | ~45 | Async Postgres engine/session helpers, connectivity verification, and schema bootstrap utilities. |
 | `backend/app/models.py` | ~360 | SQLAlchemy models for users, auth sessions, saved agents, workspaces, memberships, and virtual filesystem entries. |
 | `backend/app/routes.py` | ~110 | Hosted backend routes for `/chat`, `/tts`, `/transcriptions`, and `/health`. |
-| `backend/app/parsing/router.py` | ~21 | Dedicated parsing router that exposes placeholder `/parse/` endpoints for the future PDF-to-markdown pipeline. |
-| `backend/app/parsing/service.py` | ~18 | Empty placeholder parsing service boundary for the team-owned document parsing implementation. |
+| `backend/app/parsing/router.py` | ~13 | FastAPI parsing router for `/parse` with active document-topic parsing endpoint. |
+| `backend/app/parsing/contracts.py` | ~109 | Parse request/response contracts including topic, source kind, OCR/backend controls, and topic page markdown outputs. |
+| `backend/app/parsing/service.py` | ~166 | Parsing service orchestration. Resolves local/remote PDF inputs, builds parse config, runs topic parsing pipeline, and returns structured response metadata. |
+| `backend/app/parsing/course_pdf_ingest/pipeline.py` | ~680 | Core parsing workflow for file/folder/topic modes, topic cache checks, TOC/header/OCR topic location, handwritten-mode routing, and topic markdown emission. |
+| `backend/app/parsing/course_pdf_ingest/topic_locator.py` | ~356 | Topic locator using PDF outline, printed TOC parsing, and page-header chunking with fuzzy matching and local page validation. |
+| `backend/app/parsing/course_pdf_ingest/ocr_fallback.py` | ~1208 | OCR fallback and provider orchestration (RapidOCR, GLM-OCR, OLMOCR, Mistral OCR), page rendering, quality scoring, and OCR markdown generation. |
+| `backend/app/parsing/course_pdf_ingest/docling_backend.py` | ~101 | Docling backend strategy selection and pipeline options wiring. |
+| `backend/app/parsing/course_pdf_ingest/normalize.py` | ~712 | Docling output normalization into document/pages/sections/blocks JSON plus page and section markdown content. |
+| `backend/app/parsing/course_pdf_ingest/writer.py` | ~193 | Artifact writer for normalized outputs, page/section markdown, figure asset references, and OCR-enriched exports. |
+| `backend/app/parsing/course_pdf_ingest/config.py` | ~111 | Parse profiles and backend/OCR config model. |
+| `backend/app/parsing/course_pdf_ingest/utils.py` | ~77 | Shared hashing, slug/naming, JSON serialization, and output directory helpers. |
 | `backend/app/security.py` | ~50 | Password hashing and session-token helpers for backend auth. |
 | `backend/app/workspaces_service.py` | ~55 | Shared helper that creates a workspace, membership row, root directory entry, and default saved Clicky agent. |
 | `backend/app/workspaces_router.py` | ~400 | Workspace CRUD-lite endpoints, including backend launch/stop state transitions plus authenticated file upload and file read APIs backed by `workspace_entries`. |
