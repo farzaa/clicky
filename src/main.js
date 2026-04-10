@@ -6,10 +6,13 @@ import {
   configure as configureVoice,
   startListening,
   stopListening,
+  startListeningLocal,
+  stopListeningLocal,
   handleVoiceEvent,
   handleSocketDisconnect,
   joinVoiceChannel,
   stopTts,
+  playTtsAudio,
 } from "./voice.js";
 import { init as initSettings, toggleSettings, updateAuthStatus } from "./settings.js";
 
@@ -256,6 +259,8 @@ async function connect() {
         addMessage(payload);
       } else if (eventName === "pointer") {
         handlePointerEvent(payload);
+      } else if (eventName === "tts_audio") {
+        playTtsAudio(payload.data);
       }
       return;
     }
@@ -390,6 +395,24 @@ function sendMessage(content) {
   socket.send(JSON.stringify(msg));
 }
 
+function sendVoiceMessage(text) {
+  if (!text) return;
+
+  if (!socket || socket.readyState !== WebSocket.OPEN || !chatJoinRef) {
+    if (messageQueue.length < MAX_QUEUED) {
+      messageQueue.push(text);
+    }
+    return;
+  }
+
+  const msg = [chatJoinRef, nextRef(), "companion:chat", "new_message", {
+    content: text,
+    role: "user",
+    source: "voice",
+  }];
+  socket.send(JSON.stringify(msg));
+}
+
 function flushMessageQueue() {
   while (messageQueue.length > 0) {
     const content = messageQueue.shift();
@@ -404,17 +427,26 @@ function flushMessageQueue() {
 async function onHotkeyDown() {
   if (isMuted || !socket || socket.readyState !== WebSocket.OPEN) return;
 
-  // Auto-capture screenshot if enabled
   const autoCapture = localStorage.getItem("auto_capture") !== "false";
   if (autoCapture) {
     captureAndUploadScreenshot();
   }
 
-  startListening(socket, nextRef);
+  const sttMode = localStorage.getItem("stt_mode") || "local";
+  if (sttMode === "local") {
+    startListeningLocal();
+  } else {
+    startListening(socket, nextRef);
+  }
 }
 
 function onHotkeyUp() {
-  stopListening(socket, nextRef);
+  const sttMode = localStorage.getItem("stt_mode") || "local";
+  if (sttMode === "local") {
+    stopListeningLocal();
+  } else {
+    stopListening(socket, nextRef);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -478,6 +510,9 @@ async function init() {
       if (isFinal) {
         addMessage({ role: "user", content: text, source: "voice" });
       }
+    },
+    onFinalTranscript: (text) => {
+      sendVoiceMessage(text);
     },
     onResponse: (text) => {
       addMessage({ role: "assistant", content: text, source: "voice" });
