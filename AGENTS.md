@@ -36,7 +36,8 @@ The app never calls external APIs directly. All requests go through a backend se
 | `POST /chat` | `api.anthropic.com/v1/messages` | Claude vision + streaming chat |
 | `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
 | `POST /transcriptions` | `api.openai.com/v1/audio/transcriptions` | Whisper upload transcription |
-Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `DATABASE_URL`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`
+| `POST /parse` | Docling + OCR providers | Topic-aware PDF parsing with TOC/header/OCR fallback and page-window markdown outputs |
+Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `DATABASE_URL`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `MISTRAL_API_KEY` (optional, required for handwritten-mode parsing), `MISTRAL_OCR_MODEL` (optional override)
 
 ### Key Architecture Decisions
 
@@ -55,7 +56,7 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_I
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
 | `CompanionManager.swift` | ~1600 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, overlay management, and workspace panel state. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, cursor visibility, backend auth session, workspace directory listing, file preview, and uploads. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline plus workspace auth/browse/upload flows. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
-| `CompanionPanelView.swift` | ~1050 | SwiftUI panel content for the menu bar dropdown. Includes Voice and Workspace panel modes, with companion status, push-to-talk instructions, model picker, permissions UI, DM feedback button, and quit button in Voice mode, plus workspace sign-in/register, file browser, upload picker, and file preview in Workspace mode. Dark aesthetic using `DS` design system. |
+| `CompanionPanelView.swift` | ~1010 | SwiftUI panel content for the menu bar dropdown. Includes Voice and Workspace panel modes, with companion status, push-to-talk instructions, permissions UI, DM feedback button, and quit button in Voice mode, plus workspace sign-in/register, file browser, upload picker, and file preview in Workspace mode. Dark aesthetic using `DS` design system. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
@@ -91,8 +92,17 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_I
 | `backend/app/database.py` | ~45 | Async Postgres engine/session helpers, connectivity verification, and schema bootstrap utilities. |
 | `backend/app/models.py` | ~410 | SQLAlchemy models for users, auth sessions, saved agents, agent sessions, workspaces, memberships, and virtual filesystem entries. |
 | `backend/app/routes.py` | ~110 | Hosted backend routes for `/chat`, `/tts`, `/transcriptions`, and `/health`. |
-| `backend/app/parsing/router.py` | ~21 | Dedicated parsing router that exposes placeholder `/parse/` endpoints for the future PDF-to-markdown pipeline. |
-| `backend/app/parsing/service.py` | ~18 | Empty placeholder parsing service boundary for the team-owned document parsing implementation. |
+| `backend/app/parsing/router.py` | ~18 | FastAPI parsing router for `/parse` with active document-topic parsing endpoint. |
+| `backend/app/parsing/contracts.py` | ~120 | Parse request/response contracts including topic, source kind, OCR/backend controls, and topic page markdown outputs. |
+| `backend/app/parsing/service.py` | ~180 | Parsing service orchestration. Resolves local/remote PDF inputs, builds parse config, runs topic parsing pipeline, and returns structured response metadata. |
+| `backend/app/parsing/course_pdf_ingest/pipeline.py` | ~680 | Core parsing workflow for file/folder/topic modes, topic cache checks, TOC/header/OCR topic location, handwritten-mode routing, and topic markdown emission. |
+| `backend/app/parsing/course_pdf_ingest/topic_locator.py` | ~360 | Topic locator using PDF outline, printed TOC parsing, and page-header chunking with fuzzy matching and local page validation. |
+| `backend/app/parsing/course_pdf_ingest/ocr_fallback.py` | ~1200 | OCR fallback and provider orchestration (RapidOCR, GLM-OCR, OLMOCR, Mistral OCR), page rendering, quality scoring, and OCR markdown generation. |
+| `backend/app/parsing/course_pdf_ingest/docling_backend.py` | ~110 | Docling backend strategy selection and pipeline options wiring. |
+| `backend/app/parsing/course_pdf_ingest/normalize.py` | ~720 | Docling output normalization into document/pages/sections/blocks JSON plus page and section markdown content. |
+| `backend/app/parsing/course_pdf_ingest/writer.py` | ~200 | Artifact writer for normalized outputs, page/section markdown, figure asset references, and OCR-enriched exports. |
+| `backend/app/parsing/course_pdf_ingest/config.py` | ~115 | Parse profiles and backend/OCR config model. |
+| `backend/app/parsing/course_pdf_ingest/utils.py` | ~80 | Shared hashing, slug/naming, JSON serialization, and output directory helpers. |
 | `backend/app/security.py` | ~50 | Password hashing and session-token helpers for backend auth. |
 | `backend/app/workspaces_service.py` | ~55 | Shared helper that creates a workspace, membership row, root directory entry, and default saved Deb agent. |
 | `backend/app/workspaces_router.py` | ~590 | Workspace CRUD-lite endpoints, including backend launch/stop state transitions plus authenticated file upload, directory listing, and file read APIs backed by `workspace_entries`. |

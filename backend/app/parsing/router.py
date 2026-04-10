@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
 from app.parsing.contracts import ParseDocumentRequest, ParseDocumentResponse
-from app.parsing.service import parse_document_to_markdown_placeholder
+from app.parsing.service import parse_document_to_markdown
 
 parse_router = APIRouter(prefix="/parse", tags=["parsing"])
 
@@ -9,15 +9,11 @@ parse_router = APIRouter(prefix="/parse", tags=["parsing"])
 @parse_router.get("/")
 async def parsing_root() -> dict[str, str]:
     return {
-        "status": "placeholder",
-        "message": "Parsing routes are scaffolded. Implement the parsing pipeline in app/parsing/service.py.",
+        "status": "ready",
+        "message": "Parsing routes are active. POST /parse with source_document_path/source_document_url and topic.",
     }
 
 
-@parse_router.post(
-    "/",
-    response_model=ParseDocumentResponse,
-    responses={501: {"model": ParseDocumentResponse}},
-)
+@parse_router.post("/", response_model=ParseDocumentResponse)
 async def parse_document(parse_document_request: ParseDocumentRequest):
-    return await parse_document_to_markdown_placeholder(parse_document_request)
+    return await parse_document_to_markdown(parse_document_request)
