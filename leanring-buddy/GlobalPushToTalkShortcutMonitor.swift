@@ -23,6 +23,12 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// waiting for the async dictation state pipeline to catch up.
     @Published private(set) var isShortcutCurrentlyPressed = false
 
+    /// True while the user is typing regular keys (non-PTT).
+    /// Used by BlueCursorView to hide the cursor overlay during typing,
+    /// mirroring macOS NSCursor.setHiddenUntilMouseMoves(true) behavior.
+    /// Reset to false when the mouse moves (detected in BlueCursorView's 16ms timer).
+    @Published private(set) var isUserTyping = false
+
     deinit {
         stop()
     }
@@ -85,6 +91,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
     func stop() {
         isShortcutCurrentlyPressed = false
+        isUserTyping = false
 
         if let globalEventTapRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), globalEventTapRunLoopSource, .commonModes)
@@ -125,6 +132,15 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         case .released:
             isShortcutCurrentlyPressed = false
             shortcutTransitionPublisher.send(.released)
+        }
+
+        // When a regular (non-PTT) key is pressed, signal that the user is typing
+        // so the cursor overlay hides — mirroring NSCursor.setHiddenUntilMouseMoves.
+        // The PTT shortcut (ctrl+option) uses .flagsChanged not .keyDown, so it
+        // never reaches this branch. We also guard against PTT-combo keydowns via
+        // shortcutTransition == .none to be safe.
+        if eventType == .keyDown && shortcutTransition == .none {
+            isUserTyping = true
         }
 
         return Unmanaged.passUnretained(event)
