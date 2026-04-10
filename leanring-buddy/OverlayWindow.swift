@@ -52,19 +52,27 @@ class OverlayWindow: NSWindow {
     }
 }
 
-// Cursor-like triangle shape (equilateral)
+// Arrow-like cursor shape: triangle head plus rectangular stem.
 struct Triangle: Shape {
     func path(in rect: CGRect) -> Path {
         var path = Path()
-        let size = min(rect.width, rect.height)
-        let height = size * sqrt(3.0) / 2.0
+        let width = rect.width
+        let height = rect.height
 
-        // Top vertex
-        path.move(to: CGPoint(x: rect.midX, y: rect.midY - height / 1.5))
-        // Bottom left vertex
-        path.addLine(to: CGPoint(x: rect.midX - size / 2, y: rect.midY + height / 3))
-        // Bottom right vertex
-        path.addLine(to: CGPoint(x: rect.midX + size / 2, y: rect.midY + height / 3))
+        let tip = CGPoint(x: rect.midX, y: rect.minY + height * 0.04)
+        let leftBase = CGPoint(x: rect.minX + width * 0.14, y: rect.minY + height * 0.62)
+        let rightBase = CGPoint(x: rect.maxX - width * 0.14, y: rect.minY + height * 0.62)
+        let stemHalfWidth = width * 0.14
+        let stemTopY = rect.minY + height * 0.62
+        let stemBottomY = rect.maxY - height * 0.06
+
+        path.move(to: tip)
+        path.addLine(to: leftBase)
+        path.addLine(to: CGPoint(x: rect.midX - stemHalfWidth, y: stemTopY))
+        path.addLine(to: CGPoint(x: rect.midX - stemHalfWidth, y: stemBottomY))
+        path.addLine(to: CGPoint(x: rect.midX + stemHalfWidth, y: stemBottomY))
+        path.addLine(to: CGPoint(x: rect.midX + stemHalfWidth, y: stemTopY))
+        path.addLine(to: rightBase)
         path.closeSubpath()
         return path
     }
@@ -755,18 +763,21 @@ private struct BlueCursorSpinnerView: View {
             .stroke(
                 AngularGradient(
                     colors: [
-                        DS.Colors.overlayCursorBlue.opacity(0.0),
+                        DS.Colors.overlayCursorBlue.opacity(0.08),
+                        DS.Colors.overlayCursorBlue.opacity(0.62),
                         DS.Colors.overlayCursorBlue
                     ],
-                    center: .center
+                    center: .center,
+                    startAngle: .degrees(0),
+                    endAngle: .degrees(320)
                 ),
-                style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
+                style: StrokeStyle(lineWidth: 3.2, lineCap: .round)
             )
-            .frame(width: 14, height: 14)
+            .frame(width: 18, height: 18)
             .rotationEffect(.degrees(isSpinning ? 360 : 0))
             .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.6), radius: 6, x: 0, y: 0)
             .onAppear {
-                withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) {
+                withAnimation(.linear(duration: 0.55).repeatForever(autoreverses: false)) {
                     isSpinning = true
                 }
             }
