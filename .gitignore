@@ -1,7 +1,12 @@
 worker/node_modules/
 worker/.dev.vars
+worker/.dev.vars.*
+!worker/.dev.vars.example
+.env
+.env.*
 .DS_Store
 *.xcuserstate
+xcuserdata/
 build/
 releases/
 .claude/

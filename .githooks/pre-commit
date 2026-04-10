@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+#
+# Clicky pre-commit hook: blocks commits that contain strings matching known
+# credential formats (Anthropic, OpenAI, AWS, Slack, GitHub, JWT).
+#
+# Install once per clone:
+#   git config core.hooksPath .githooks
+#
+# The hook scans ONLY newly added lines in the staged diff, so existing text
+# in git history is not re-scanned. Patterns are tight enough that obvious
+# placeholder text like "sk-ant-..." in .dev.vars.example does NOT match.
+#
+# If you hit a false positive, revise the offending text so the placeholder
+# cannot possibly be confused with a real secret. Do NOT bypass this hook
+# with --no-verify unless you are certain no real credential is in the diff.
+
+set -euo pipefail
+
+# Each entry is "label|regex". Regexes are ERE (grep -E) and intentionally
+# require enough trailing entropy that dotted placeholders will not match.
+FORBIDDEN_SECRET_PATTERNS=(
+  "Anthropic API key|sk-ant-api[0-9]+-[A-Za-z0-9_-]{30,}"
+  "OpenAI project key|sk-proj-[A-Za-z0-9_-]{40,}"
+  "OpenAI legacy key|sk-[A-Za-z0-9]{48,}"
+  "AWS access key ID|AKIA[0-9A-Z]{16}"
+  "Slack token|xox[baprs]-[A-Za-z0-9-]{10,}-[A-Za-z0-9-]{10,}"
+  "GitHub personal token|ghp_[A-Za-z0-9]{36,}"
+  "GitHub other token|gh[ousr]_[A-Za-z0-9]{36,}"
+  "JWT|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
+  "Google API key|AIza[0-9A-Za-z_-]{35}"
+  "Stripe live key|sk_live_[0-9a-zA-Z]{24,}"
+  "ElevenLabs key|xi-api-[A-Za-z0-9]{32,}"
+  "AssemblyAI key|[a-f0-9]{32}"
+)
+
+# AssemblyAI keys are 32 hex chars which is overly broad and would catch
+# git SHAs, content hashes, and other noise. Only check AssemblyAI if the
+# line also mentions assemblyai or the env var name.
+CONTEXT_REQUIRED_PATTERNS=(
+  "AssemblyAI key"
+)
+
+staged_diff="$(git diff --cached --no-color --unified=0 -- ':!*.lock' ':!package-lock.json' 2>/dev/null || true)"
+
+if [ -z "$staged_diff" ]; then
+  exit 0
+fi
+
+# Only consider newly added lines in the diff (lines starting with a single +).
+added_lines="$(printf '%s\n' "$staged_diff" | grep -E '^\+[^+]' || true)"
+
+if [ -z "$added_lines" ]; then
+  exit 0
+fi
+
+violations_found=0
+
+for entry in "${FORBIDDEN_SECRET_PATTERNS[@]}"; do
+  label="${entry%%|*}"
+  regex="${entry#*|}"
+
+  matching_lines="$(printf '%s\n' "$added_lines" | grep -E "$regex" || true)"
+  if [ -z "$matching_lines" ]; then
+    continue
+  fi
+
+  needs_context=0
+  for context_label in "${CONTEXT_REQUIRED_PATTERNS[@]}"; do
+    if [ "$label" = "$context_label" ]; then
+      needs_context=1
+      break
+    fi
+  done
+
+  if [ "$needs_context" -eq 1 ]; then
+    matching_lines="$(printf '%s\n' "$matching_lines" | grep -iE 'assemblyai|ASSEMBLYAI' || true)"
+    if [ -z "$matching_lines" ]; then
+      continue
+    fi
+  fi
+
+  if [ "$violations_found" -eq 0 ]; then
+    echo ""
+    echo "pre-commit: refusing to commit — possible secret in staged changes."
+    echo ""
+  fi
+  violations_found=$((violations_found + 1))
+
+  echo "  [$label]"
+  printf '%s\n' "$matching_lines" | sed 's/^/    /' | head -5
+  echo ""
+done
+
+if [ "$violations_found" -gt 0 ]; then
+  echo "If this is a false positive, revise the placeholder so it cannot be"
+  echo "mistaken for a real credential. Do NOT use --no-verify unless you are"
+  echo "absolutely certain the diff contains no real secrets."
+  echo ""
+  exit 1
+fi
+
+exit 0

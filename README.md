@@ -174,4 +174,14 @@ CLAUDE.md                # Full architecture doc (agents read this)
 
 PRs welcome. If you're using Claude Code, it already knows the codebase. Tell it what part of the flow-state sidekick you want to change and point it at `CLAUDE.md`.
 
+### Install the secret-scanning pre-commit hook
+
+Before your first commit to this repo, run this once:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+That activates `.githooks/pre-commit`, which blocks commits containing strings that look like real Anthropic, OpenAI, AWS, Slack, GitHub, or ElevenLabs credentials. Placeholder text like `sk-ant-...` in `worker/.dev.vars.example` is intentionally ignored. If you hit a false positive, revise the placeholder so it cannot be mistaken for a real key — do not bypass the hook with `--no-verify` unless you are certain the diff contains no real secret.
+
 Got feedback? DM me on X [@farzatv](https://x.com/farzatv).

@@ -176,6 +176,13 @@ IMPORTANT: Follow these naming rules strictly. Clarity is the top priority.
 - Commit messages: imperative mood, concise, explain the "why" not the "what"
 - Do not force-push to main
 
+### Secret hygiene
+
+- **Real API keys must never enter the repo.** Every external API call is routed through the Cloudflare Worker proxy (`worker/src/index.ts`) and the real keys live only in Wrangler secrets (and, for local Worker dev, in `worker/.dev.vars`, which is gitignored).
+- Never add an Anthropic / OpenAI / ElevenLabs / AssemblyAI key to `Info.plist`, `project.pbxproj`, a Swift constant, or any other tracked file. A previous hardcoded key in `project.pbxproj` had to be rotated — do not repeat that mistake.
+- A pre-commit hook at `.githooks/pre-commit` scans staged diffs for strings that match real credential formats and refuses to commit them. Contributors activate it once per clone with `git config core.hooksPath .githooks`. Do NOT bypass it with `--no-verify`.
+- Per-user Xcode state (`xcuserdata/`) is gitignored. Do not re-add it.
+
 ## Self-Update Instructions
 
 <!-- AI agents: follow these instructions to keep this file accurate. -->
