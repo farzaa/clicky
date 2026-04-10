@@ -29,7 +29,7 @@ All API keys live on a hosted backend — nothing sensitive ships in the app. Th
 
 ### Hosted Backend
 
-The app never calls external APIs directly. All requests go through a backend service that holds the real API keys as secrets. The new default backend is FastAPI (`backend/app/main.py`), and it preserves the same three-route contract that the legacy Cloudflare Worker (`worker/src/index.ts`) used.
+The app never calls external APIs directly. All requests go through a backend service that holds the real API keys as secrets. The new default backend is FastAPI (`backend/app/main.py`), and it preserves the chat/tts/transcribe contract from the legacy Cloudflare Worker (`worker/src/index.ts`) while adding dedicated document parsing routes.
 
 | Route | Upstream | Purpose |
 |-------|----------|---------|
