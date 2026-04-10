@@ -43,6 +43,19 @@
         <label for="setting-audio-output">Output Device (Speaker)</label>
         <select id="setting-audio-output"></select>
       </div>
+      <div class="settings-divider-light"></div>
+      <div class="field">
+        <label>Speech-to-Text</label>
+        <div class="stt-mode-buttons">
+          <button class="stt-mode-btn active" data-mode="local">Local</button>
+          <button class="stt-mode-btn" data-mode="server">Server</button>
+        </div>
+      </div>
+      <div class="field" id="stt-local-url-field">
+        <label for="setting-stt-local-url">Local STT Server</label>
+        <input type="text" id="setting-stt-local-url" placeholder="ws://localhost:9200" />
+        <div class="field-hint">WebSocket URL of the local STT server</div>
+      </div>
     </div>
 
     <div class="settings-divider"></div>

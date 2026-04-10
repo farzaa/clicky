@@ -9,6 +9,8 @@ const DEFAULTS = {
   animation_speed: "normal",
   audio_input: "",
   audio_output: "",
+  stt_mode: "local",
+  stt_local_url: "ws://localhost:9200",
 };
 
 let reauthenticateCallback = null;
@@ -55,6 +57,15 @@ function loadSettings() {
   document.querySelectorAll(".speed-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.speed === savedSpeed);
   });
+
+  // STT mode buttons
+  const savedSttMode = getSetting("stt_mode");
+  document.querySelectorAll(".stt-mode-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.mode === savedSttMode);
+  });
+  const sttLocalUrl = document.getElementById("setting-stt-local-url");
+  if (sttLocalUrl) sttLocalUrl.value = getSetting("stt_local_url");
+  updateSttUrlVisibility(savedSttMode);
 }
 
 // ---------------------------------------------------------------------------
@@ -113,6 +124,11 @@ function updateQualityDisplay(value) {
 function updateDismissDisplay(value) {
   const span = document.getElementById("dismiss-value");
   if (span) span.textContent = `${value}s`;
+}
+
+function updateSttUrlVisibility(mode) {
+  const field = document.getElementById("stt-local-url-field");
+  if (field) field.style.display = mode === "local" ? "" : "none";
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +219,20 @@ function bindEvents() {
 
   document.getElementById("setting-audio-output")?.addEventListener("change", (e) => {
     setSetting("audio_output", e.target.value);
+  });
+
+  // STT mode toggle buttons
+  document.querySelectorAll(".stt-mode-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".stt-mode-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      setSetting("stt_mode", btn.dataset.mode);
+      updateSttUrlVisibility(btn.dataset.mode);
+    });
+  });
+
+  document.getElementById("setting-stt-local-url")?.addEventListener("change", (e) => {
+    setSetting("stt_local_url", e.target.value.trim());
   });
 }
 
