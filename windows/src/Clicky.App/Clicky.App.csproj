@@ -9,6 +9,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="1.1.0" />
+    <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Clicky.Companion\Clicky.Companion.csproj" />
     <ProjectReference Include="..\Clicky.Audio\Clicky.Audio.csproj" />
     <ProjectReference Include="..\Clicky.Capture\Clicky.Capture.csproj" />

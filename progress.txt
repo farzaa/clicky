@@ -25,4 +25,13 @@ Reset: Fri Apr 10 21:20 CEST 2026 (full Windows-port restart)
 - `Clicky.Tests` uses xUnit with a placeholder test asserting true
 - **Note:** Build verification requires .NET 8 SDK (not available in this WSL2 environment)
 
+### US-002 — Tray-only host with no main window (2026-04-10)
+- Added `Hardcodet.NotifyIcon.Wpf` (v1.1.0) and `System.Drawing.Common` (v8.0.0) NuGet packages to Clicky.App
+- Created hidden `MainWindow.xaml` with `ShowInTaskbar=False`, `WindowStyle=None`, `Visibility=Hidden`
+- Created `TrayIconManager.cs`: uses `TaskbarIcon` with a procedurally-drawn blue triangle icon, tooltip "Clicky", right-click context menu (Open / Quit), and `TrayIconClicked` event on left-click
+- Created `AutoStartRegistration.cs`: registers app in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` on first launch (mirrors SMAppService.mainApp.register)
+- Wired everything in `App.xaml.cs` `OnStartup` — creates hidden MainWindow, initializes tray icon, registers auto-start; `OnExit` disposes tray icon
+- `App.xaml` has `ShutdownMode=OnExplicitShutdown` and no `StartupUri` (window created programmatically)
+- **Note:** Build verification requires .NET 8 SDK (not available in this WSL2 environment)
+
 ---
