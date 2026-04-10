@@ -1,0 +1,28 @@
+# Ralph Progress Log — Clicky for Windows
+Started: Fri Apr 10 21:17:53 CEST 2026
+Reset: Fri Apr 10 21:20 CEST 2026 (full Windows-port restart)
+
+## Codebase Patterns
+- Repo is a multi-platform monorepo: `mac/` holds the Swift/Xcode reference implementation, `windows/` holds the new C#/.NET 8 port, `worker/` is the shared Cloudflare Worker proxy used by both.
+- The Mac code in `mac/leanring-buddy/` is the source of truth for behavior. When in doubt about how a feature should work, read the matching Swift file before writing C#. The mapping for each story is documented in `prd.json` (each acceptance criterion names the Swift file it mirrors).
+- The Cloudflare Worker (`worker/src/index.ts`) is shared and must NOT be modified by Windows stories. Both clients hit the same `/chat`, `/tts`, and `/transcribe-token` endpoints.
+- Windows target stack: C# 12 / .NET 8 / WPF / NAudio / Windows.Graphics.Capture / WinSparkle. See `windows/README.md` for the rationale on each library choice.
+- All Windows stories live under `windows/`. Do not edit `mac/` from a Windows story.
+- Per-monitor DPI: every WPF window in this app must opt into PerMonitorV2 via `app.manifest`. Do not rely on System DPI — the overlay coordinate math will break on mixed-DPI setups.
+- The push-to-talk hook must be listen-only (CallNextHookEx) — it must never swallow keys, the same way the Mac CGEventTap uses `.listenOnly`.
+- AssemblyAI: reuse a single long-lived `HttpClient` / `ClientWebSocket` factory across sessions. The Mac code has a hard-won note that per-session sockets corrupt the connection pool — do not regress this on Windows.
+- Image media_type: when sending screenshots to Claude, sniff PNG vs JPEG by magic bytes. Anthropic rejects mismatched declared types.
+- Worker URL is configurable: read it from `appsettings.json` rather than hardcoding, so users can point at their own deployment without recompiling.
+- Branch: all Windows-port work happens on `ralph/windows-port`, branched from main.
+
+## Completed Stories
+
+### US-001 — Scaffold Clicky.sln and project layout (2026-04-10)
+- Created `windows/Clicky.sln` referencing all 9 projects (8 src + 1 test)
+- Created .csproj files for: Clicky.App, Clicky.Companion, Clicky.Audio, Clicky.Capture, Clicky.Hotkey, Clicky.Overlay, Clicky.Api, Clicky.Pointing
+- All projects target `net8.0-windows`; App/Companion/Overlay use `<UseWPF>true</UseWPF>`
+- `Clicky.App` has `App.xaml` with `ShutdownMode=OnExplicitShutdown`
+- `Clicky.Tests` uses xUnit with a placeholder test asserting true
+- **Note:** Build verification requires .NET 8 SDK (not available in this WSL2 environment)
+
+---

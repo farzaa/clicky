@@ -1,0 +1,290 @@
+{
+  "project": "Clicky for Windows",
+  "branchName": "ralph/windows-port",
+  "description": "Port the macOS Clicky companion (menu-bar AI buddy that sees the screen, talks via TTS, and flies the cursor to UI elements) to Windows. Target stack: C# 12 / .NET 8 / WPF, NAudio for audio, Windows.Graphics.Capture for screenshots, low-level keyboard hook for the global push-to-talk shortcut. The Cloudflare Worker in ../worker is shared and not modified. The Mac reference implementation in ../mac is the source of truth for behavior. All Windows code lands under windows/.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Scaffold Clicky.sln and project layout",
+      "description": "As a developer, I need a buildable .NET 8 solution with the project layout described in windows/README.md so future stories have a place to land.",
+      "acceptanceCriteria": [
+        "windows/Clicky.sln exists and references all planned src/* projects (Clicky.App, Clicky.Companion, Clicky.Audio, Clicky.Capture, Clicky.Hotkey, Clicky.Overlay, Clicky.Api, Clicky.Pointing)",
+        "Each project targets net8.0-windows and uses <UseWPF>true</UseWPF> where it owns UI",
+        "Clicky.App contains an empty WPF App.xaml with ShutdownMode=OnExplicitShutdown",
+        "windows/tests/Clicky.Tests project added with xUnit and a placeholder test that asserts true",
+        "dotnet build windows/Clicky.sln succeeds with zero warnings",
+        "Commit all changes with message: feat: US-001 - Scaffold Clicky.sln and project layout"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Scaffolded on 2026-04-10. Build verification requires .NET 8 SDK (not available in WSL2 dev environment)."
+    },
+    {
+      "id": "US-002",
+      "title": "Tray-only host with no main window",
+      "description": "As a user, I want Clicky to live in the system tray with no taskbar entry, mirroring the Mac menu bar app behavior driven by leanring_buddyApp.swift + MenuBarPanelManager.swift.",
+      "acceptanceCriteria": [
+        "Clicky.App boots into a hidden host window (ShowInTaskbar=false, WindowStyle=None, Visibility=Hidden)",
+        "H.NotifyIcon (or Hardcodet.NotifyIcon.Wpf) shows a tray icon with tooltip 'Clicky'",
+        "Right-click tray menu has Open / Quit entries; Quit calls Application.Current.Shutdown",
+        "Left-click tray icon raises an event the Companion layer can subscribe to",
+        "App registers itself in HKCU\\...\\Run on first launch (mirrors SMAppService.mainApp.register in leanring_buddyApp.swift)",
+        "dotnet build succeeds and manual smoke test shows the tray icon",
+        "Commit all changes with message: feat: US-002 - Tray-only host with no main window"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Settings/control panel WPF window",
+      "description": "As a user, I want a popup control panel (mirroring CompanionPanelView.swift) so I can see permission status, current voice state, and a push-to-talk shortcut indicator.",
+      "acceptanceCriteria": [
+        "Clicking the tray icon toggles a borderless popup window anchored near the tray",
+        "Window shows: app version, voice state (Idle/Listening/Processing/Responding), permission rows for Microphone and Screen Capture, and the configured push-to-talk chord",
+        "Window auto-hides when it loses focus (Deactivated event)",
+        "MVVM: bindings driven by a CompanionViewModel placeholder in Clicky.Companion that exposes the same observable surface as Mac's @Published voiceState/permissions",
+        "dotnet build clean",
+        "Commit all changes with message: feat: US-003 - Settings/control panel WPF window"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Microphone permission + WASAPI capture",
+      "description": "As a user, I need Clicky to record my microphone in the format AssemblyAI expects, mirroring BuddyDictationManager.swift's AVAudioEngine pipeline.",
+      "acceptanceCriteria": [
+        "Clicky.Audio exposes a MicrophoneCapture class using NAudio.Wasapi.WasapiCapture on the default capture device",
+        "Captured frames are resampled (NAudio MediaFoundationResampler or custom) to 16 kHz mono PCM16 little-endian",
+        "An async IAsyncEnumerable<ReadOnlyMemory<byte>> exposes 50 ms PCM frames suitable for the AssemblyAI websocket",
+        "Calls Package.Current.RequestAccessAsync (or falls back to a one-shot WasapiCapture probe) and surfaces a HasMicrophonePermission bool on CompanionViewModel",
+        "Unit test in Clicky.Tests verifies the resampler converts a known 48 kHz buffer to the right number of 16 kHz samples",
+        "Commit all changes with message: feat: US-004 - Microphone permission + WASAPI capture"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Low-level keyboard hook for push-to-talk",
+      "description": "As a user, I need a system-wide push-to-talk shortcut that fires while Clicky is in the background, mirroring GlobalPushToTalkShortcutMonitor.swift.",
+      "acceptanceCriteria": [
+        "Clicky.Hotkey installs a WH_KEYBOARD_LL hook via SetWindowsHookEx and pumps it on the WPF dispatcher thread",
+        "Default chord is Ctrl+Alt (the Win equivalent of macOS ctrl+option) and is configurable via an enum mirroring BuddyPushToTalkShortcut.ShortcutOption",
+        "Hook publishes Pressed/Released transitions via an IObservable<ShortcutTransition> or System.Threading.Channels.Channel",
+        "Hook is non-blocking and listen-only — never swallows the keys (returns CallNextHookEx)",
+        "Hook is uninstalled cleanly on app shutdown; no leaked Win32 handles",
+        "Manual smoke test: press Ctrl+Alt with another window focused → CompanionViewModel.IsShortcutPressed flips true on press and false on release",
+        "Commit all changes with message: feat: US-005 - Low-level keyboard hook for push-to-talk"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Multi-monitor screen capture via Windows.Graphics.Capture",
+      "description": "As a user, I need Clicky to capture every connected display as JPEG bytes labeled with which screen the cursor is on, mirroring CompanionScreenCaptureUtility.swift.",
+      "acceptanceCriteria": [
+        "Clicky.Capture exposes ScreenCapture.CaptureAllScreensAsJpegAsync() that returns a list of CapturedScreen { ImageBytes, Label, IsCursorScreen, DisplayBounds, ScreenshotPixelWidth, ScreenshotPixelHeight }",
+        "Uses Windows.Graphics.Capture.GraphicsCaptureItem.CreateFromMonitor for each HMONITOR enumerated via EnumDisplayMonitors",
+        "Cursor screen is sorted first; label format matches Mac: 'screen N of M — cursor is on this screen (primary focus)' / '… — secondary screen' / 'user's screen (cursor is here)' for the single-display case",
+        "Images are resized so the longer edge is 1280 px (matches the Mac maxDimension) and JPEG-encoded at quality ~80",
+        "Clicky's own overlay/tray windows are excluded from the capture (use GraphicsCaptureSession.IsBorderRequired = false and filter by HWND when WGC's exclusion API is unavailable)",
+        "dotnet build clean; manual smoke test dumps JPEGs to %TEMP%\\clicky-capture\\*.jpg and the cursor-screen ordering is correct",
+        "Commit all changes with message: feat: US-006 - Multi-monitor screen capture via Windows.Graphics.Capture"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Claude streaming chat client (SSE)",
+      "description": "As a user, I want Clicky to stream Claude's response token-by-token through the existing Cloudflare Worker, mirroring ClaudeAPI.swift.",
+      "acceptanceCriteria": [
+        "Clicky.Api exposes ClaudeClient(string proxyUrl, string model = \"claude-sonnet-4-6\") with a SendAsync(IReadOnlyList<Message> history, IReadOnlyList<CapturedScreen> screens, string userText, CancellationToken ct) method that returns IAsyncEnumerable<string> token deltas",
+        "POSTs to {proxyUrl}/chat with the same JSON shape Mac sends (multi-image content blocks, system prompt, conversation history)",
+        "Parses Anthropic SSE event stream (event: content_block_delta with text_delta) and yields incremental text",
+        "Auto-detects image media_type by sniffing PNG vs JPEG magic bytes (matches detectImageMediaType in ClaudeAPI.swift)",
+        "Warms TLS with a HEAD request on construction to avoid the cold-handshake latency on the first real call (mirrors warmUpTLSConnectionIfNeeded)",
+        "Unit test feeds a canned SSE response stream and asserts the deltas come out in order",
+        "Commit all changes with message: feat: US-007 - Claude streaming chat client (SSE)"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "AssemblyAI streaming transcription via WebSocket",
+      "description": "As a user, I want my speech transcribed in real time while I hold the push-to-talk key, mirroring AssemblyAIStreamingTranscriptionProvider.swift.",
+      "acceptanceCriteria": [
+        "Clicky.Api exposes AssemblyAiStreamingTranscriber with StartSessionAsync(IReadOnlyList<string> keyterms, ...) returning a session object that exposes PartialTranscriptUpdated and FinalTranscriptReady events",
+        "Fetches a short-lived token by POSTing to {proxyUrl}/transcribe-token (token is single-use, never cache)",
+        "Opens a ClientWebSocket to streaming.assemblyai.com/v3/ws with the token; sends 16 kHz PCM16 frames from MicrophoneCapture; receives JSON messages and dispatches partial vs final",
+        "Reuses a single long-lived HttpClient/ClientWebSocket factory across sessions (Mac's note: per-session URLSession corrupts the connection pool)",
+        "Surfaces errors via an OnError callback; never throws on the audio writer task",
+        "Manual smoke test: hold push-to-talk, speak a sentence, see partials in the panel and a final transcript on release",
+        "Commit all changes with message: feat: US-008 - AssemblyAI streaming transcription via WebSocket"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "ElevenLabs TTS playback via NAudio",
+      "description": "As a user, I want Clicky to speak Claude's response back to me, mirroring ElevenLabsTTSClient.swift.",
+      "acceptanceCriteria": [
+        "Clicky.Api exposes ElevenLabsTtsClient(string proxyUrl) with SpeakAsync(string text, CancellationToken ct)",
+        "POSTs to {proxyUrl}/tts with body { text, model_id: 'eleven_flash_v2_5', voice_settings: { stability: 0.5, similarity_boost: 0.75 } }",
+        "Decodes the MP3 response with NAudio Mp3FileReader and plays it through WaveOutEvent (or WasapiOut)",
+        "StopPlayback() immediately halts current audio so a new utterance can interrupt",
+        "IsPlaying property reflects current playback state",
+        "Manual smoke test: SpeakAsync(\"hello from clicky\") plays clearly through default output device",
+        "Commit all changes with message: feat: US-009 - ElevenLabs TTS playback via NAudio"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "CompanionManager state machine",
+      "description": "As a developer, I need a single class that orchestrates push-to-talk → capture → transcribe → Claude → TTS, mirroring CompanionManager.swift.",
+      "acceptanceCriteria": [
+        "Clicky.Companion.CompanionManager subscribes to the hotkey hook from US-005",
+        "On Pressed: starts MicrophoneCapture and an AssemblyAI session; sets VoiceState=Listening",
+        "On Released: stops capture, awaits final transcript, calls ScreenCapture.CaptureAllScreensAsJpegAsync, sends to ClaudeClient, sets VoiceState=Processing",
+        "Streams Claude tokens into a buffer; when streaming finishes, hands the full text to ElevenLabsTtsClient.SpeakAsync and sets VoiceState=Responding; returns to Idle when playback ends",
+        "Holds a ConversationHistory list of (userTranscript, assistantResponse) pairs sent on every turn",
+        "Cancels any in-flight Claude/TTS task when the user presses the hotkey again (mirrors currentResponseTask cancellation in Mac)",
+        "Bound to CompanionViewModel so the panel UI from US-003 reflects state in real time",
+        "Commit all changes with message: feat: US-010 - CompanionManager state machine"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Transparent click-through overlay window per monitor",
+      "description": "As a user, I want a fullscreen, click-through, always-on-top transparent overlay on every monitor where the cursor buddy can render, mirroring OverlayWindow.swift.",
+      "acceptanceCriteria": [
+        "Clicky.Overlay exposes OverlayWindowManager that creates one borderless WPF Window per Screen.AllScreens entry",
+        "Each window has AllowsTransparency=true, WindowStyle=None, Background=Transparent, Topmost=true, ShowInTaskbar=false, IsHitTestVisible=false",
+        "Sets WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE via SetWindowLong so clicks pass through and the overlay never steals focus",
+        "Bounds match the screen's WorkingArea in DIPs (per-monitor DPI aware via app.manifest dpiAwareness=PerMonitorV2)",
+        "Reacts to display add/remove (SystemEvents.DisplaySettingsChanged) by re-creating overlays",
+        "Overlays are excluded from the screenshot pipeline in US-006 by HWND",
+        "Commit all changes with message: feat: US-011 - Transparent click-through overlay window per monitor"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "title": "Animated blue cursor that flies to a target point",
+      "description": "As a user, I want to see a glowing blue cursor fly from the system cursor to a target point and point at it, mirroring the BlueCursorView animation in OverlayWindow.swift.",
+      "acceptanceCriteria": [
+        "Clicky.Overlay.BlueCursorControl renders a blue glowing triangle cursor on the overlay window",
+        "FlyTo(Point screenPoint, Rect displayBounds, string bubbleText) animates the cursor from the current OS cursor position (GetCursorPos) to screenPoint with a spring/ease curve over ~600 ms",
+        "Picks the right monitor's overlay window based on which displayBounds contains the point",
+        "Renders a speech-bubble label next to the cursor with the provided bubbleText",
+        "After the animation, the cursor lingers ~3 s then fades out (mirrors transientHideTask in CompanionManager)",
+        "Smoke test: calling FlyTo with a hardcoded coordinate visibly animates the blue cursor",
+        "Commit all changes with message: feat: US-012 - Animated blue cursor that flies to a target point"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-013",
+      "title": "[POINT:x,y:label:screenN] tag parser + dispatch",
+      "description": "As a developer, I need to parse Claude's pointing tags from the streamed response and feed them to BlueCursorControl, mirroring the Mac flow in CompanionManager.swift / ElementLocationDetector.swift.",
+      "acceptanceCriteria": [
+        "Clicky.Pointing.PointTagParser parses [POINT:x,y:label:screenN] and [POINT:x,y:label] tags out of streamed text and yields PointDirective records",
+        "Coordinates are interpreted in the pixel space of the screenshot for the named screen and converted to global desktop DIPs using each CapturedScreen's DisplayBounds + ScreenshotPixelWidth/Height",
+        "Stripped text (with all tags removed) is what gets passed to ElevenLabsTtsClient.SpeakAsync",
+        "When a PointDirective fires, CompanionManager calls OverlayWindowManager.BlueCursor.FlyTo with the converted screen point + label",
+        "Unit tests cover: single screen, multi-screen, missing label, malformed tag (ignored), and the coordinate-conversion math",
+        "End-to-end manual test: ask 'where is the close button?' on a focused window and the cursor flies to it",
+        "Commit all changes with message: feat: US-013 - [POINT:x,y:label:screenN] tag parser + dispatch"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-014",
+      "title": "Permissions onboarding flow",
+      "description": "As a first-time user, I want Clicky to walk me through granting Microphone and Screen Capture access on first launch, mirroring the Mac permissions UI.",
+      "acceptanceCriteria": [
+        "On first launch (no HKCU\\Software\\Clicky\\onboarded value), the panel from US-003 opens automatically",
+        "Panel shows step cards for Microphone (prompts via WASAPI access) and Screen Capture (prompts via WGC permission picker)",
+        "Each step shows current granted/denied status and a 'Grant' button that triggers the OS prompt",
+        "On all-granted, sets HKCU\\Software\\Clicky\\onboarded=1 and dismisses the onboarding view",
+        "On subsequent launches, if any permission is missing the panel auto-opens (mirrors CompanionAppDelegate.applicationDidFinishLaunching's allPermissionsGranted check)",
+        "Commit all changes with message: feat: US-014 - Permissions onboarding flow"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-015",
+      "title": "Wire CompanionManager into App startup",
+      "description": "As a developer, I need the full pipeline to come up on app launch so manual smoke testing works end-to-end, mirroring leanring_buddyApp.swift's launch sequence.",
+      "acceptanceCriteria": [
+        "Clicky.App App.OnStartup constructs CompanionManager, OverlayWindowManager, and the tray host in the right order",
+        "CompanionManager.Start() installs the keyboard hook and is wired to the tray + panel",
+        "App.OnExit cleanly stops the hook, cancels any pending Claude/TTS task, and disposes capture sessions",
+        "Worker base URL is read from appsettings.json (default: https://your-worker-name.your-subdomain.workers.dev) so users can point at their own deployment without recompiling",
+        "Manual end-to-end smoke test: launch app → hold Ctrl+Alt → say 'point at the start menu' → cursor flies to the Start button while Claude's voice plays back",
+        "Commit all changes with message: feat: US-015 - Wire CompanionManager into App startup"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-016",
+      "title": "PostHog analytics + WinSparkle auto-update",
+      "description": "As a maintainer, I want the same telemetry and update story as the Mac app, mirroring ClickyAnalytics.swift and the Sparkle integration.",
+      "acceptanceCriteria": [
+        "Clicky.Companion.ClickyAnalytics wraps the PostHog .NET SDK with Configure() and TrackAppOpened() entry points called from App.OnStartup",
+        "Analytics respects a HKCU\\Software\\Clicky\\analyticsOptOut flag",
+        "WinSparkle is initialized at startup pointing at ../mac/appcast.xml's Windows-equivalent feed URL (placeholder is fine; comment notes the maintainer must replace it)",
+        "Update check runs once per launch in the background; failures are logged but never block startup",
+        "dotnet build clean; manual smoke test confirms a PostHog 'app_opened' event reaches the dashboard with a stub key",
+        "Commit all changes with message: feat: US-016 - PostHog analytics + WinSparkle auto-update"
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-017",
+      "title": "Installer / publish pipeline",
+      "description": "As a user, I need a single .exe (or .msi) I can double-click to install Clicky on Windows 10/11.",
+      "acceptanceCriteria": [
+        "windows/scripts/release.ps1 invokes dotnet publish -c Release -r win-x64 --self-contained false /p:PublishSingleFile=true",
+        "Output is wrapped in an MSIX or Inno Setup installer that registers the Run-key entry, places a Start Menu shortcut, and uninstalls cleanly",
+        "Installer includes the app.manifest with dpiAwareness=PerMonitorV2 and requestedExecutionLevel asInvoker",
+        "README in windows/ documents the build + release commands",
+        "Smoke test: install on a clean Win11 VM, launch from Start Menu, complete onboarding, run one push-to-talk turn end-to-end",
+        "Commit all changes with message: feat: US-017 - Installer / publish pipeline"
+      ],
+      "priority": 17,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

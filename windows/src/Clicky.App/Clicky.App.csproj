@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Clicky.Companion\Clicky.Companion.csproj" />
+    <ProjectReference Include="..\Clicky.Audio\Clicky.Audio.csproj" />
+    <ProjectReference Include="..\Clicky.Capture\Clicky.Capture.csproj" />
+    <ProjectReference Include="..\Clicky.Hotkey\Clicky.Hotkey.csproj" />
+    <ProjectReference Include="..\Clicky.Overlay\Clicky.Overlay.csproj" />
+    <ProjectReference Include="..\Clicky.Api\Clicky.Api.csproj" />
+    <ProjectReference Include="..\Clicky.Pointing\Clicky.Pointing.csproj" />
+  </ItemGroup>
+
+</Project>
