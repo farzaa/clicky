@@ -44,7 +44,13 @@ final class DelegationLogSidebarViewModel: ObservableObject {
     @Published var isProcessComplete: Bool = false
     @Published var comparePullRequestURL: URL?
     @Published var isMinimized: Bool = false
-    @Published var worktreeDirectoryPath: String = ""
+    /// True while the session is sitting in a per-workspace delegation
+    /// queue, waiting for a previous delegation in the same workspace
+    /// to finish before it can begin. The panel renders a distinct
+    /// "queued" presentation during this state and the log tail /
+    /// process monitoring timers stay dormant until the session is
+    /// promoted to running.
+    @Published var isQueuedWaitingForPickup: Bool = false
     /// Count of commits the delegated agent made on the working branch
     /// ahead of the base branch, populated after the process exits. Used
     /// to warn the user when an agent finishes without committing
@@ -444,12 +450,11 @@ final class DelegationLogClaudeStreamJSONParser {
 private final class DelegationLogSidebarSession {
     let sessionID = UUID()
     let workspacePath: String
+    /// Stable identifier for the workspace this session belongs to.
+    /// Used by the queue manager to look up the right per-workspace
+    /// queue when this session completes.
+    let workspaceID: UUID
     let runtimeID: DelegationAgentRuntimeID
-    /// Absolute path of the isolated git worktree this delegation is
-    /// running inside. Used to run the post-exit `git log` that counts
-    /// commits ahead of the base branch, so the sidebar can warn about
-    /// empty pull requests.
-    let worktreeDirectoryURL: URL
     let viewModel = DelegationLogSidebarViewModel()
 
     var sidebarPanel: NSPanel?
@@ -458,6 +463,12 @@ private final class DelegationLogSidebarSession {
     var monitoredLogFileURL: URL?
     var currentReadOffset: UInt64 = 0
     var monitoredProcessIdentifier: Int32?
+
+    /// Invoked once when the delegated process is observed to have
+    /// exited (after the commit-count check has run). The queue
+    /// manager uses this hook to promote the next queued delegation
+    /// for the same workspace.
+    var onProcessCompleteCallback: (() -> Void)?
 
     /// Stateful parser for Claude Code's `--output-format stream-json`
     /// frames. Only populated when `runtimeID == .claude`; Codex and
@@ -471,12 +482,12 @@ private final class DelegationLogSidebarSession {
 
     init(
         workspacePath: String,
-        runtimeID: DelegationAgentRuntimeID,
-        worktreeDirectoryURL: URL
+        workspaceID: UUID,
+        runtimeID: DelegationAgentRuntimeID
     ) {
         self.workspacePath = workspacePath
+        self.workspaceID = workspaceID
         self.runtimeID = runtimeID
-        self.worktreeDirectoryURL = worktreeDirectoryURL
         if runtimeID == .claude {
             self.claudeStreamJSONParser = DelegationLogClaudeStreamJSONParser()
         }
@@ -485,10 +496,13 @@ private final class DelegationLogSidebarSession {
 
 // MARK: - Coordinator / manager
 
-/// Coordinates zero or more concurrent delegation log sidebar sessions.
-/// Each call to `showStreamingLogSidebar` creates a new independent
-/// session with its own panel and monitoring timers, so firing a second
-/// delegation never clobbers the first.
+/// Coordinates zero or more concurrent delegation log sidebar sessions
+/// across workspaces. Sessions start their lives in the `queued` state
+/// via `createQueuedSession` and are later transitioned to running via
+/// `promoteQueuedSessionToRunning` once the per-workspace queue in
+/// `CompanionManager` lets them pick up. Each session has its own
+/// independent panel and monitoring timers, stacked along the right
+/// edge of the cursor's screen.
 @MainActor
 final class DelegationLogSidebarManager {
     private var activeSessions: [UUID: DelegationLogSidebarSession] = [:]
@@ -496,60 +510,42 @@ final class DelegationLogSidebarManager {
     private static let rightEdgeInset: CGFloat = 18
     private static let verticalStackSpacing: CGFloat = 14
 
-    /// Returns true if there is an active (not yet closed) delegation
-    /// session for the given workspace path. Used by the caller to block
-    /// a second delegation from corrupting a workspace that is already
-    /// running a coding agent.
-    func hasActiveSession(forWorkspacePath workspacePath: String) -> Bool {
-        return activeSessions.values.contains { session in
-            session.workspacePath == workspacePath && !session.viewModel.isProcessComplete
-        }
-    }
-
-    /// Creates a new independent sidebar session for a freshly launched
-    /// delegation and returns its session identifier.
+    /// Creates a new sidebar session in the **queued** state and
+    /// returns its identifier. The session has no log tail, no
+    /// process watcher, and no working branch yet — those are
+    /// populated later via `promoteQueuedSessionToRunning` when the
+    /// per-workspace queue allows this delegation to start. Pass
+    /// `initialQueuePositionText` as the user-visible description
+    /// (e.g. "next up", "position 2") so the panel can show it.
     @discardableResult
-    func showStreamingLogSidebar(
-        logFileURL: URL,
+    func createQueuedSession(
         workspaceName: String,
         workspacePath: String,
+        workspaceID: UUID,
         runtimeID: DelegationAgentRuntimeID,
         runtimeDisplayName: String,
-        processIdentifier: Int32,
-        baseBranchName: String,
-        workingBranchName: String,
-        comparePullRequestURL: URL?,
-        worktreeDirectoryURL: URL
+        userTranscriptPreview: String,
+        initialQueuePositionText: String
     ) -> UUID {
         let session = DelegationLogSidebarSession(
             workspacePath: workspacePath,
-            runtimeID: runtimeID,
-            worktreeDirectoryURL: worktreeDirectoryURL
+            workspaceID: workspaceID,
+            runtimeID: runtimeID
         )
-        session.monitoredLogFileURL = logFileURL
-        session.monitoredProcessIdentifier = processIdentifier
-        session.currentReadOffset = 0
 
         session.viewModel.workspaceName = workspaceName
         session.viewModel.runtimeDisplayName = runtimeDisplayName
-        session.viewModel.logFilePath = logFileURL.path
-        session.viewModel.baseBranchName = baseBranchName
-        session.viewModel.workingBranchName = workingBranchName
-        session.viewModel.comparePullRequestURL = comparePullRequestURL
+        session.viewModel.isQueuedWaitingForPickup = true
         session.viewModel.isProcessComplete = false
         session.viewModel.isMinimized = false
-        session.viewModel.worktreeDirectoryPath = worktreeDirectoryURL.path
         session.viewModel.commitsAheadOfBaseCount = -1
-        session.viewModel.visibleLogLines = [
-            "flowee delegation boot sequence engaged",
-            "workspace: \(workspaceName)",
-            "agent: \(runtimeDisplayName)",
-            "log file: \(logFileURL.lastPathComponent)",
-            "branch: \(baseBranchName) -> \(workingBranchName)",
-            "worktree: \(worktreeDirectoryURL.path)",
-            ""
-        ]
-        session.viewModel.statusText = "Streaming live \(runtimeDisplayName) output"
+        session.viewModel.statusText = initialQueuePositionText
+        session.viewModel.visibleLogLines = buildQueuedSessionLogLines(
+            workspaceName: workspaceName,
+            runtimeDisplayName: runtimeDisplayName,
+            userTranscriptPreview: userTranscriptPreview,
+            initialQueuePositionText: initialQueuePositionText
+        )
 
         activeSessions[session.sessionID] = session
 
@@ -558,10 +554,135 @@ final class DelegationLogSidebarManager {
         session.sidebarPanel?.alphaValue = 1
         session.sidebarPanel?.orderFrontRegardless()
 
-        startPollingLogFile(for: session)
-        startMonitoringProcessLifecycle(for: session)
+        // Deliberately do NOT start log polling or process monitoring
+        // — the session has no log file or PID yet. Both timers are
+        // started when the session is promoted to running.
 
         return session.sessionID
+    }
+
+    /// Transitions a queued sidebar session into the running state
+    /// once its turn in the per-workspace queue arrives. Populates
+    /// the log file URL, PID, branch metadata, and PR URL, then kicks
+    /// off log tailing and process-lifecycle monitoring. Also wires
+    /// up the callback the queue manager uses to advance the queue
+    /// when this delegation eventually exits.
+    func promoteQueuedSessionToRunning(
+        sessionID: UUID,
+        logFileURL: URL,
+        processIdentifier: Int32,
+        baseBranchName: String,
+        workingBranchName: String,
+        comparePullRequestURL: URL?,
+        onProcessCompleteCallback: @escaping () -> Void
+    ) {
+        guard let session = activeSessions[sessionID] else { return }
+
+        session.monitoredLogFileURL = logFileURL
+        session.monitoredProcessIdentifier = processIdentifier
+        session.currentReadOffset = 0
+        session.onProcessCompleteCallback = onProcessCompleteCallback
+
+        session.viewModel.isQueuedWaitingForPickup = false
+        session.viewModel.logFilePath = logFileURL.path
+        session.viewModel.baseBranchName = baseBranchName
+        session.viewModel.workingBranchName = workingBranchName
+        session.viewModel.comparePullRequestURL = comparePullRequestURL
+        session.viewModel.isProcessComplete = false
+        session.viewModel.statusText = "Streaming live \(session.viewModel.runtimeDisplayName) output"
+
+        // Append the boot banner on top of whatever queued preamble
+        // was already in the log lines, so the user can see the
+        // transition from "waiting" to "picked up, agent running".
+        let bootBannerLines = [
+            "",
+            "✓ picked up from queue — starting agent",
+            "flowee delegation boot sequence engaged",
+            "workspace: \(session.viewModel.workspaceName)",
+            "agent: \(session.viewModel.runtimeDisplayName)",
+            "log file: \(logFileURL.lastPathComponent)",
+            "branch: \(baseBranchName) -> \(workingBranchName)",
+            ""
+        ]
+        for bannerLine in bootBannerLines {
+            session.viewModel.visibleLogLines.append(bannerLine)
+        }
+        session.viewModel.latestLogActivityAt = Date()
+
+        startPollingLogFile(for: session)
+        startMonitoringProcessLifecycle(for: session)
+    }
+
+    /// Updates the user-visible queue-position string for a queued
+    /// session — called by the queue manager when other delegations
+    /// ahead of this one complete and this one moves up the line.
+    func updateQueuePositionText(sessionID: UUID, newQueuePositionText: String) {
+        guard let session = activeSessions[sessionID],
+              session.viewModel.isQueuedWaitingForPickup else { return }
+        session.viewModel.statusText = newQueuePositionText
+
+        let updatedQueueLine = "queue: \(newQueuePositionText)"
+        // Replace any existing `queue: ...` line in the visible lines
+        // so the panel shows the current position without piling up
+        // stale ones.
+        if let existingIndex = session.viewModel.visibleLogLines.firstIndex(where: { $0.hasPrefix("queue: ") }) {
+            session.viewModel.visibleLogLines[existingIndex] = updatedQueueLine
+        } else {
+            session.viewModel.visibleLogLines.append(updatedQueueLine)
+        }
+        session.viewModel.latestLogActivityAt = Date()
+    }
+
+    /// Marks a session as failed — used when the delegation launcher
+    /// throws before the session ever transitions to running (e.g.
+    /// `git checkout -b` fails because the user has uncommitted
+    /// changes that would conflict with main).
+    func markQueuedSessionAsFailed(sessionID: UUID, errorMessage: String) {
+        guard let session = activeSessions[sessionID] else { return }
+        session.viewModel.isQueuedWaitingForPickup = false
+        session.viewModel.isProcessComplete = true
+        session.viewModel.statusText = "Launch failed"
+        session.viewModel.visibleLogLines.append("")
+        session.viewModel.visibleLogLines.append("⚠ delegation launch failed:")
+        session.viewModel.visibleLogLines.append("   \(errorMessage)")
+        session.viewModel.latestLogActivityAt = Date()
+        stopPollingLogFile(for: session)
+        stopMonitoringProcessLifecycle(for: session)
+    }
+
+    /// Returns true if there is currently a session in this workspace
+    /// that is actually running an agent process (not queued, not
+    /// complete). Used by the queue manager to decide whether a new
+    /// delegation should start immediately or be enqueued.
+    func hasRunningSession(forWorkspaceID workspaceID: UUID) -> Bool {
+        return activeSessions.values.contains { session in
+            session.workspaceID == workspaceID
+                && !session.viewModel.isQueuedWaitingForPickup
+                && !session.viewModel.isProcessComplete
+        }
+    }
+
+    private func buildQueuedSessionLogLines(
+        workspaceName: String,
+        runtimeDisplayName: String,
+        userTranscriptPreview: String,
+        initialQueuePositionText: String
+    ) -> [String] {
+        var lines: [String] = [
+            "⏳ flowee delegation queued",
+            "workspace: \(workspaceName)",
+            "agent: \(runtimeDisplayName)",
+            "queue: \(initialQueuePositionText)",
+            ""
+        ]
+        let trimmedTranscriptPreview = userTranscriptPreview.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedTranscriptPreview.isEmpty {
+            lines.append("your request:")
+            lines.append(trimmedTranscriptPreview)
+            lines.append("")
+        }
+        lines.append("waiting for previous delegation in this workspace to finish...")
+        return lines
     }
 
     /// Closes and tears down a single session, leaving any other running
@@ -817,15 +938,18 @@ final class DelegationLogSidebarManager {
         // so we can warn the user immediately if the run produced zero
         // commits (which would make any pull request empty). Run this
         // as a detached Task so the main actor doesn't block on git.
+        // After the commit check runs, fire the queue-advance
+        // callback so the next delegation queued behind this one in
+        // the same workspace can be promoted from queued to running.
         let capturedSessionID = session.sessionID
-        let capturedWorktreePath = session.worktreeDirectoryURL.path
+        let capturedWorkspacePath = session.workspacePath
         let capturedBaseBranchName = session.viewModel.baseBranchName
         let capturedWorkingBranchName = session.viewModel.workingBranchName
         Task.detached { [weak self] in
             let commitsAheadCount = countCommitsAhead(
                 baseBranchName: capturedBaseBranchName,
                 workingBranchName: capturedWorkingBranchName,
-                worktreeDirectoryPath: capturedWorktreePath
+                workspaceDirectoryPath: capturedWorkspacePath
             )
             await MainActor.run { [weak self] in
                 guard let self,
@@ -838,7 +962,7 @@ final class DelegationLogSidebarManager {
                         """
 
                         flowee detected that the delegated agent finished.
-                        ⚠ WARNING: the agent exited without committing any changes on \(capturedWorkingBranchName). any pull request will be empty. check the worktree at \(capturedWorktreePath) for uncommitted work, or re-run the delegation.
+                        ⚠ WARNING: the agent exited without committing any changes on \(capturedWorkingBranchName). any pull request will be empty. check \(capturedWorkspacePath) for uncommitted work, or re-run the delegation.
                         """,
                         to: sessionStillActive
                     )
@@ -855,6 +979,14 @@ final class DelegationLogSidebarManager {
                         to: sessionStillActive
                     )
                 }
+
+                // Fire the queue-advance callback so whatever
+                // delegation is queued behind this one (if any) can
+                // be promoted from queued to running. The callback
+                // is fired exactly once per session.
+                let callback = sessionStillActive.onProcessCompleteCallback
+                sessionStillActive.onProcessCompleteCallback = nil
+                callback?()
             }
         }
 
@@ -862,16 +994,16 @@ final class DelegationLogSidebarManager {
     }
 }
 
-/// Runs `git log --oneline <base>..<working>` in the given worktree and
-/// returns the number of commits the working branch is ahead of the
-/// base branch. Returns 0 on any failure so the caller surfaces a
-/// conservative "no commits" warning rather than pretending everything
-/// is fine. This lives at file scope so the detached Task in
+/// Runs `git rev-list --count <base>..<working>` in the user's
+/// workspace and returns the number of commits the working branch is
+/// ahead of the base branch. Returns 0 on any failure so the caller
+/// surfaces a conservative "no commits" warning rather than pretending
+/// everything is fine. This lives at file scope so the detached Task in
 /// `pollProcessLifecycle` can call it off the main actor.
 private func countCommitsAhead(
     baseBranchName: String,
     workingBranchName: String,
-    worktreeDirectoryPath: String
+    workspaceDirectoryPath: String
 ) -> Int {
     let gitBinaryCandidatePaths = [
         "/usr/bin/git",
@@ -886,7 +1018,7 @@ private func countCommitsAhead(
 
     let gitProcess = Process()
     gitProcess.executableURL = URL(fileURLWithPath: gitBinaryPath)
-    gitProcess.currentDirectoryURL = URL(fileURLWithPath: worktreeDirectoryPath, isDirectory: true)
+    gitProcess.currentDirectoryURL = URL(fileURLWithPath: workspaceDirectoryPath, isDirectory: true)
     gitProcess.arguments = [
         "rev-list",
         "--count",
@@ -971,7 +1103,15 @@ private struct DelegationLogSidebarView: View {
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(DS.Colors.brandGradientStart.opacity(0.40), lineWidth: 1)
+                // Dim the border while the session is still sitting
+                // in the per-workspace queue so queued panels look
+                // visually distinct from live ones.
+                .stroke(
+                    DS.Colors.brandGradientStart.opacity(
+                        viewModel.isQueuedWaitingForPickup ? 0.18 : 0.40
+                    ),
+                    lineWidth: 1
+                )
         )
         .shadow(color: Color.black.opacity(0.45), radius: 18, x: 0, y: 12)
         .shadow(color: DS.Colors.brandGradientEnd.opacity(0.14), radius: 16, x: 0, y: 0)
@@ -1016,6 +1156,9 @@ private struct DelegationLogSidebarView: View {
     }
 
     private var minimizedStatusLine: String {
+        if viewModel.isQueuedWaitingForPickup {
+            return "queued · \(viewModel.runtimeDisplayName.lowercased())"
+        }
         if viewModel.isProcessComplete {
             return "complete · \(viewModel.runtimeDisplayName.lowercased())"
         }
