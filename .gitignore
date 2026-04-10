@@ -4,6 +4,7 @@ worker/.dev.vars
 backend/.env
 backend/.venv/
 __pycache__/
+*.egg-info/
 .DS_Store
 *.xcuserstate
 build/
