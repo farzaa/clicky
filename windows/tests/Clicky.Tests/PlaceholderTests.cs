@@ -1,3 +1,5 @@
+using Xunit;
+
 namespace Clicky.Tests;
 
 public class PlaceholderTests

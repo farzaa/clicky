@@ -6,3 +6,15 @@ build/
 releases/
 .claude/
 coding-plans/
+
+# .NET build artifacts
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+.vs/
+
+# Ralph runtime state
+.last-branch
+prompt.md
+progress.txt.bak
