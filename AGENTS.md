@@ -17,7 +17,7 @@ All API keys live on a hosted backend — nothing sensitive ships in the app. Th
 - **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via hosted backend with SSE streaming
 - **Speech-to-Text**: OpenAI audio transcription (`whisper-1` by default) via hosted backend upload proxy, with Apple Speech as the local fallback
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via hosted backend
-- **Backend Storage**: Postgres via async SQLAlchemy for users, workspaces, saved agents, memberships, and virtual filesystem entries
+- **Backend Storage**: Postgres via async SQLAlchemy for users, workspaces, saved agents, memberships, virtual filesystem entries, and workspace ingestion jobs
 - **Backend Auth**: Email/password auth with bearer sessions stored in Postgres
 - **Backend Agent Loop**: FastAPI-hosted iterative agent loop with OpenAI Responses and OpenRouter provider adapters, abortable runs, multimodal screenshot message support, backend-owned tools (including `companion.point`), and a `just-bash` powered workspace shell tool
 - **Saved Agents**: Each workspace is seeded with a default Deb agent row in Postgres that stores a reusable system prompt, provider, and model
@@ -90,7 +90,7 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_I
 | `backend/app/auth.py` | ~50 | Bearer-token authentication dependency that resolves the current user from Postgres-backed auth sessions. |
 | `backend/app/auth_router.py` | ~145 | Auth routes for register, login, current-user lookup, and logout. Registration now auto-creates a default workspace and root folder. |
 | `backend/app/database.py` | ~45 | Async Postgres engine/session helpers, connectivity verification, and schema bootstrap utilities. |
-| `backend/app/models.py` | ~410 | SQLAlchemy models for users, auth sessions, saved agents, agent sessions, workspaces, memberships, and virtual filesystem entries. |
+| `backend/app/models.py` | ~500 | SQLAlchemy models for users, auth sessions, saved agents, agent sessions, workspaces, memberships, virtual filesystem entries, and workspace ingestion jobs. |
 | `backend/app/routes.py` | ~110 | Hosted backend routes for `/chat`, `/tts`, `/transcriptions`, and `/health`. |
 | `backend/app/parsing/router.py` | ~18 | FastAPI parsing router for `/parse` with active document-topic parsing endpoint. |
 | `backend/app/parsing/contracts.py` | ~120 | Parse request/response contracts including topic, source kind, OCR/backend controls, and topic page markdown outputs. |
@@ -105,7 +105,8 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_I
 | `backend/app/parsing/course_pdf_ingest/utils.py` | ~80 | Shared hashing, slug/naming, JSON serialization, and output directory helpers. |
 | `backend/app/security.py` | ~50 | Password hashing and session-token helpers for backend auth. |
 | `backend/app/workspaces_service.py` | ~55 | Shared helper that creates a workspace, membership row, root directory entry, and default saved Deb agent. |
-| `backend/app/workspaces_router.py` | ~590 | Workspace CRUD-lite endpoints, including backend launch/stop state transitions plus authenticated file upload, directory listing, and file read APIs backed by `workspace_entries`. |
+| `backend/app/workspaces_router.py` | ~710 | Workspace CRUD-lite endpoints, including backend launch/stop state transitions, authenticated file upload/list/read APIs backed by `workspace_entries`, automatic PDF ingestion job enqueueing, and ingestion status endpoints for UI polling. |
+| `backend/app/workspace_ingestion_service.py` | ~650 | Background ingestion pipeline for uploaded workspace PDFs. Runs full-document parser, writes bundle artifacts (`manifest.json`, `toc.json`, `page_index.jsonl`, page/section markdown, normalized JSON) into `workspace_entries`, and updates Postgres job status lifecycle (`queued` → `running` → `completed/failed`). |
 | `backend/docker-compose.yml` | ~14 | Local Postgres container for backend development. |
 | `worker/src/index.ts` | ~142 | Legacy Cloudflare Worker proxy. The current FastAPI backend replaces it for `/chat` and `/tts`. |
 

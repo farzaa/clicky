@@ -60,6 +60,13 @@ class WorkspaceLaunchState(str, enum.Enum):
     running = "running"
 
 
+class WorkspaceIngestionJobStatus(str, enum.Enum):
+    queued = "queued"
+    running = "running"
+    completed = "completed"
+    failed = "failed"
+
+
 class User(Base, TimestampedModel):
     __tablename__ = "users"
 
@@ -115,6 +122,9 @@ class User(Base, TimestampedModel):
         back_populates="created_by_user",
     )
     created_agent_sessions: Mapped[list["AgentSession"]] = relationship(
+        back_populates="created_by_user",
+    )
+    created_workspace_ingestion_jobs: Mapped[list["WorkspaceIngestionJob"]] = relationship(
         back_populates="created_by_user",
     )
 
@@ -176,6 +186,10 @@ class Workspace(Base, TimestampedModel):
         cascade="all, delete-orphan",
     )
     agent_sessions: Mapped[list["AgentSession"]] = relationship(
+        back_populates="workspace",
+        cascade="all, delete-orphan",
+    )
+    ingestion_jobs: Mapped[list["WorkspaceIngestionJob"]] = relationship(
         back_populates="workspace",
         cascade="all, delete-orphan",
     )
@@ -316,6 +330,87 @@ class WorkspaceEntry(Base, TimestampedModel):
     )
     created_by_user: Mapped["User | None"] = relationship(
         back_populates="created_workspace_entries",
+    )
+    ingestion_jobs: Mapped[list["WorkspaceIngestionJob"]] = relationship(
+        back_populates="source_workspace_entry",
+    )
+
+
+class WorkspaceIngestionJob(Base, TimestampedModel):
+    __tablename__ = "workspace_ingestion_jobs"
+    __table_args__ = (
+        Index(
+            "ix_workspace_ingestion_jobs_workspace_created_at",
+            "workspace_id",
+            "created_at",
+        ),
+        Index(
+            "ix_workspace_ingestion_jobs_workspace_source_path",
+            "workspace_id",
+            "source_entry_path",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_entry_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspace_entries.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_entry_path: Mapped[str] = mapped_column(
+        String(4096),
+        nullable=False,
+    )
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    status: Mapped[WorkspaceIngestionJobStatus] = mapped_column(
+        Enum(
+            WorkspaceIngestionJobStatus,
+            name="workspace_ingestion_job_status",
+        ),
+        default=WorkspaceIngestionJobStatus.queued,
+        nullable=False,
+    )
+    status_message: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    output_bundle_path: Mapped[str | None] = mapped_column(
+        String(4096),
+        nullable=True,
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    job_metadata: Mapped[dict] = mapped_column(
+        JSONB,
+        default=dict,
+        nullable=False,
+    )
+
+    workspace: Mapped["Workspace"] = relationship(back_populates="ingestion_jobs")
+    source_workspace_entry: Mapped["WorkspaceEntry"] = relationship(
+        back_populates="ingestion_jobs",
+    )
+    created_by_user: Mapped["User | None"] = relationship(
+        back_populates="created_workspace_ingestion_jobs",
     )
 
 

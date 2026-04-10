@@ -1,31 +1,9 @@
 # Hi, this is Deb.
 It's an AI teacher that lives as a buddy next to your cursor. It can see your screen, talk to you, and even point at stuff. Kinda like having a real teacher next to you.
 
-Download it free from the project build.
-
-Here's the [original tweet](https://x.com/FarzaTV/status/2041314633978659092) that kicked off the demo for more context.
-
 ![Deb — an ai buddy that lives on your mac](deb-demo.gif)
 
 This is the open-source version of Deb for those that want to hack on it, build their own features, or just see how it works under the hood.
-
-## Get started with Claude Code
-
-The fastest way to get this running is with [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
-
-Once you get Claude running, paste this:
-
-```
-Hi Claude.
-
-Clone this repository into my current directory.
-
-Then read the CLAUDE.md. I want to get Deb running locally on my Mac.
-
-Help me set up everything — the FastAPI backend with my own API keys, the backend URL, and getting it building in Xcode. Walk me through it.
-```
-
-That's it. It'll clone the repo, read the docs, and walk you through the whole setup. Once you're running you can just keep talking to it — build features, fix bugs, whatever. Go crazy.
 
 ## Manual setup
 

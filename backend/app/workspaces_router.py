@@ -4,9 +4,9 @@ import mimetypes
 from datetime import UTC, datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, select
+from sqlalchemy import and_, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
@@ -16,10 +16,16 @@ from app.models import (
     WorkspaceContentType,
     WorkspaceEntry,
     WorkspaceEntryType,
+    WorkspaceIngestionJob,
+    WorkspaceIngestionJobStatus,
     Workspace,
     WorkspaceLaunchState,
     WorkspaceMembership,
     WorkspaceMembershipRole,
+)
+from app.workspace_ingestion_service import (
+    build_ingestion_bundle_directory_path,
+    schedule_workspace_ingestion_job,
 )
 from app.workspaces_service import create_workspace_for_user
 
@@ -68,6 +74,27 @@ class WorkspaceEntriesListResponse(BaseModel):
     entries: list[WorkspaceEntryResponse]
 
 
+class WorkspaceIngestionJobResponse(BaseModel):
+    id: str
+    workspace_id: str
+    source_entry_id: str
+    source_entry_path: str
+    status: str
+    status_message: str | None = None
+    output_bundle_path: str | None = None
+    created_by_user_id: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    job_metadata: dict
+
+
+class WorkspaceIngestionJobsListResponse(BaseModel):
+    workspace_id: str
+    ingestion_jobs: list[WorkspaceIngestionJobResponse]
+
+
 def build_workspace_response(
     workspace: Workspace,
     membership_role: WorkspaceMembershipRole,
@@ -113,6 +140,30 @@ def build_workspace_file_read_response(
         binary_content_base64=base64.b64encode(workspace_entry.binary_content).decode("ascii")
         if workspace_entry.binary_content is not None
         else None,
+    )
+
+
+def build_workspace_ingestion_job_response(
+    workspace_ingestion_job: WorkspaceIngestionJob,
+) -> WorkspaceIngestionJobResponse:
+    return WorkspaceIngestionJobResponse(
+        id=str(workspace_ingestion_job.id),
+        workspace_id=str(workspace_ingestion_job.workspace_id),
+        source_entry_id=str(workspace_ingestion_job.source_entry_id),
+        source_entry_path=workspace_ingestion_job.source_entry_path,
+        status=workspace_ingestion_job.status.value,
+        status_message=workspace_ingestion_job.status_message,
+        output_bundle_path=workspace_ingestion_job.output_bundle_path,
+        created_by_user_id=(
+            str(workspace_ingestion_job.created_by_user_id)
+            if workspace_ingestion_job.created_by_user_id
+            else None
+        ),
+        started_at=workspace_ingestion_job.started_at,
+        completed_at=workspace_ingestion_job.completed_at,
+        created_at=workspace_ingestion_job.created_at,
+        updated_at=workspace_ingestion_job.updated_at,
+        job_metadata=workspace_ingestion_job.job_metadata,
     )
 
 
@@ -410,6 +461,7 @@ async def stop_workspace(
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_workspace_file(
+    request: Request,
     workspace_id: UUID,
     entry_path: str = Form(...),
     file: UploadFile = File(...),
@@ -461,6 +513,7 @@ async def upload_workspace_file(
     )
     entry_name = normalized_entry_path.rsplit("/", 1)[-1]
     content_sha256 = hashlib.sha256(file_bytes).hexdigest()
+    workspace_ingestion_job: WorkspaceIngestionJob | None = None
 
     if existing_workspace_entry is None:
         existing_workspace_entry = WorkspaceEntry(
@@ -491,8 +544,47 @@ async def upload_workspace_file(
         existing_workspace_entry.binary_content = binary_content
         existing_workspace_entry.entry_metadata = existing_workspace_entry.entry_metadata or {}
 
+    if inferred_content_type == WorkspaceContentType.pdf:
+        await database_session.flush()
+        workspace_ingestion_job = WorkspaceIngestionJob(
+            workspace_id=workspace_id,
+            source_entry_id=existing_workspace_entry.id,
+            source_entry_path=normalized_entry_path,
+            created_by_user_id=current_user.id,
+            status=WorkspaceIngestionJobStatus.queued,
+            status_message="Queued after PDF upload.",
+            output_bundle_path=None,
+            job_metadata={
+                "trigger": "upload",
+                "source_entry_path": normalized_entry_path,
+            },
+        )
+        database_session.add(workspace_ingestion_job)
+        await database_session.flush()
+
+        existing_entry_metadata = existing_workspace_entry.entry_metadata
+        if not isinstance(existing_entry_metadata, dict):
+            existing_entry_metadata = {}
+        existing_entry_metadata["ingestion"] = {
+            "job_id": str(workspace_ingestion_job.id),
+            "status": WorkspaceIngestionJobStatus.queued.value,
+            "source_entry_path": normalized_entry_path,
+            "bundle_directory_path": build_ingestion_bundle_directory_path(
+                normalized_entry_path
+            ),
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        existing_workspace_entry.entry_metadata = existing_entry_metadata
+    elif isinstance(existing_workspace_entry.entry_metadata, dict):
+        existing_workspace_entry.entry_metadata.pop("ingestion", None)
+
     await database_session.commit()
     await database_session.refresh(existing_workspace_entry)
+    if workspace_ingestion_job is not None:
+        schedule_workspace_ingestion_job(
+            database_session_factory=request.app.state.database_session_factory,
+            ingestion_job_id=workspace_ingestion_job.id,
+        )
 
     return build_workspace_entry_response(existing_workspace_entry)
 
@@ -586,3 +678,75 @@ async def list_workspace_entries(
             for workspace_entry in child_workspace_entries
         ],
     )
+
+
+@workspaces_router.get(
+    "/{workspace_id}/ingestion-jobs",
+    response_model=WorkspaceIngestionJobsListResponse,
+)
+async def list_workspace_ingestion_jobs(
+    workspace_id: UUID,
+    source_entry_path: str | None = Query(default=None),
+    limit: int = Query(default=30, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    database_session: AsyncSession = Depends(get_database_session),
+) -> WorkspaceIngestionJobsListResponse:
+    _ = await get_accessible_workspace_membership(
+        workspace_id,
+        current_user,
+        database_session,
+    )
+    workspace_ingestion_jobs_query = select(WorkspaceIngestionJob).where(
+        WorkspaceIngestionJob.workspace_id == workspace_id
+    )
+    if source_entry_path is not None:
+        workspace_ingestion_jobs_query = workspace_ingestion_jobs_query.where(
+            WorkspaceIngestionJob.source_entry_path
+            == normalize_workspace_entry_path(source_entry_path)
+        )
+    workspace_ingestion_jobs_query = workspace_ingestion_jobs_query.order_by(
+        desc(WorkspaceIngestionJob.created_at)
+    ).limit(limit)
+
+    workspace_ingestion_jobs = list(
+        (await database_session.execute(workspace_ingestion_jobs_query)).scalars().all()
+    )
+    return WorkspaceIngestionJobsListResponse(
+        workspace_id=str(workspace_id),
+        ingestion_jobs=[
+            build_workspace_ingestion_job_response(workspace_ingestion_job)
+            for workspace_ingestion_job in workspace_ingestion_jobs
+        ],
+    )
+
+
+@workspaces_router.get(
+    "/{workspace_id}/ingestion-jobs/{ingestion_job_id}",
+    response_model=WorkspaceIngestionJobResponse,
+)
+async def get_workspace_ingestion_job(
+    workspace_id: UUID,
+    ingestion_job_id: UUID,
+    current_user: User = Depends(get_current_user),
+    database_session: AsyncSession = Depends(get_database_session),
+) -> WorkspaceIngestionJobResponse:
+    _ = await get_accessible_workspace_membership(
+        workspace_id,
+        current_user,
+        database_session,
+    )
+    workspace_ingestion_job_query = select(WorkspaceIngestionJob).where(
+        and_(
+            WorkspaceIngestionJob.workspace_id == workspace_id,
+            WorkspaceIngestionJob.id == ingestion_job_id,
+        )
+    )
+    workspace_ingestion_job = (
+        await database_session.execute(workspace_ingestion_job_query)
+    ).scalar_one_or_none()
+    if workspace_ingestion_job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ingestion job not found.",
+        )
+    return build_workspace_ingestion_job_response(workspace_ingestion_job)
