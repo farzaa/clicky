@@ -17,6 +17,8 @@ All API keys live on a hosted backend — nothing sensitive ships in the app. Th
 - **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via hosted backend with SSE streaming
 - **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with OpenAI and Apple Speech as fallbacks
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via hosted backend
+- **Backend Storage**: Postgres via async SQLAlchemy for users, workspaces, memberships, and virtual filesystem entries
+- **Backend Auth**: Email/password auth with bearer sessions stored in Postgres
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
@@ -33,7 +35,7 @@ The app never calls external APIs directly. All requests go through a backend se
 | `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
 | `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Fetches a short-lived (480s) AssemblyAI websocket token |
 
-Backend env vars: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`
+Backend env vars: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `DATABASE_URL`
 
 ### Key Architecture Decisions
 
@@ -74,9 +76,17 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~32 | Runtime configuration reader for keys stored in the app bundle Info.plist, including `ClickyBackendBaseURL`. |
 | `backend/app/main.py` | ~46 | FastAPI app startup, shared async HTTP client lifecycle, CORS middleware configuration, and router registration. |
+| `backend/app/auth.py` | ~50 | Bearer-token authentication dependency that resolves the current user from Postgres-backed auth sessions. |
+| `backend/app/auth_router.py` | ~145 | Auth routes for register, login, current-user lookup, and logout. Registration now auto-creates a default workspace and root folder. |
+| `backend/app/database.py` | ~45 | Async Postgres engine/session helpers, connectivity verification, and schema bootstrap utilities. |
+| `backend/app/models.py` | ~310 | SQLAlchemy models for users, auth sessions, workspaces, memberships, and virtual filesystem entries. |
 | `backend/app/routes.py` | ~110 | Hosted backend routes for `/chat`, `/tts`, `/transcribe-token`, and `/health`. |
 | `backend/app/parsing/router.py` | ~21 | Dedicated parsing router that exposes placeholder `/parse/` endpoints for the future PDF-to-markdown pipeline. |
 | `backend/app/parsing/service.py` | ~18 | Empty placeholder parsing service boundary for the team-owned document parsing implementation. |
+| `backend/app/security.py` | ~50 | Password hashing and session-token helpers for backend auth. |
+| `backend/app/workspaces_service.py` | ~40 | Shared helper that creates a workspace, membership row, and root directory entry. |
+| `backend/app/workspaces_router.py` | ~180 | Workspace CRUD-lite endpoints, including backend launch/stop state transitions. |
+| `backend/docker-compose.yml` | ~14 | Local Postgres container for backend development. |
 | `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
 
 ## Build & Run
@@ -84,6 +94,7 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY
 ```bash
 # Start the backend if you're developing locally
 cd backend
+docker compose up -d postgres
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
@@ -107,6 +118,7 @@ open leanring-buddy.xcodeproj
 
 ```bash
 cd backend
+docker compose up -d postgres
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .

@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: clicky-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: clicky
+      POSTGRES_USER: clicky
+      POSTGRES_PASSWORD: clicky
+    ports:
+      - "5432:5432"
+    volumes:
+      - clicky-postgres-data:/var/lib/postgresql/data
+
+volumes:
+  clicky-postgres-data:

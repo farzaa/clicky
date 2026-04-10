@@ -7,6 +7,9 @@ dependencies = [
     "fastapi>=0.115.0,<1.0.0",
     "httpx>=0.28.0,<0.29.0",
     "pydantic-settings>=2.6.0,<3.0.0",
+    "email-validator>=2.2.0,<3.0.0",
+    "sqlalchemy>=2.0.36,<3.0.0",
+    "asyncpg>=0.30.0,<1.0.0",
     "uvicorn[standard]>=0.32.0,<0.33.0",
 ]
 

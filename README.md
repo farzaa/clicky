@@ -40,10 +40,11 @@ If you want to do it yourself, here's the deal.
 
 ### 1. Set up the FastAPI backend
 
-The backend is a thin API service that holds your keys and proxies model, TTS, and AssemblyAI token requests. The macOS app talks to the backend, and the backend talks to the providers.
+The backend is a thin API service that holds your keys, proxies model/TTS/token requests, and now boots with a Postgres-backed storage layer for users, auth sessions, workspaces, and virtual filesystem entries. The macOS app talks to the backend, and the backend talks to the providers.
 
 ```bash
 cd backend
+docker compose up -d postgres
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
@@ -57,6 +58,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 ASSEMBLYAI_API_KEY=...
 ELEVENLABS_API_KEY=...
 ELEVENLABS_VOICE_ID=...
+DATABASE_URL=postgresql+asyncpg://clicky:clicky@127.0.0.1:5432/clicky
 ```
 
 Run it locally:
@@ -117,6 +119,11 @@ leanring-buddy/          # Swift source (yes, the typo stays)
   BuddyDictation*.swift     # Push-to-talk pipeline
 backend/                 # FastAPI backend
   app/main.py               # FastAPI app startup and middleware
+  app/auth_router.py        # Register/login/me/logout endpoints
+  app/database.py           # Async Postgres engine and session helpers
+  app/models.py             # Users, workspaces, memberships, VFS entries
+  app/workspaces_service.py # Shared workspace bootstrap helper
+  app/workspaces_router.py  # Create/list/get/launch workspace endpoints
   app/routes.py             # /chat, /tts, /transcribe-token
 worker/                  # Legacy Cloudflare Worker proxy
   src/index.ts              # Older three-route proxy implementation

@@ -9,7 +9,13 @@ class Settings(BaseSettings):
     assemblyai_api_key: str = Field(alias="ASSEMBLYAI_API_KEY")
     elevenlabs_api_key: str = Field(alias="ELEVENLABS_API_KEY")
     elevenlabs_voice_id: str = Field(alias="ELEVENLABS_VOICE_ID")
+    database_url: str = Field(alias="DATABASE_URL")
     clicky_allowed_origins: str = Field(default="", alias="CLICKY_ALLOWED_ORIGINS")
+    clicky_auto_create_database_schema: bool = Field(
+        default=True,
+        alias="CLICKY_AUTO_CREATE_DATABASE_SCHEMA",
+    )
+    clicky_database_echo: bool = Field(default=False, alias="CLICKY_DATABASE_ECHO")
 
     model_config = SettingsConfigDict(
         env_file=".env",
