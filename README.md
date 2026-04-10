@@ -33,10 +33,12 @@ The companion is a thin client. All AI dispatch, command routing, STT/TTS proxyi
 ## Development
 
 ```bash
-nix-shell          # NixOS: loads all dependencies
+nix develop        # NixOS: loads all dependencies (flake-based)
 npm run dev        # Start in dev mode (hot reload)
 npm run build      # Release build
 ```
+
+Legacy `nix-shell` also works via `shell.nix`.
 
 ### Configuration
 
