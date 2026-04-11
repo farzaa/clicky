@@ -1,10 +1,11 @@
 import json
+import posixpath
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.bash_tool import execute_workspace_bash_tool
@@ -53,6 +54,7 @@ async def execute_tool_call(
         "workspace.read_entry": _read_workspace_entry,
         "workspace.write_entry": _write_workspace_entry,
         "workspace.run_bash": _run_workspace_bash,
+        "workspace.search_toc": _search_workspace_toc,
     }
     tool_handler = tool_handlers.get(tool_call.name)
 
@@ -292,6 +294,110 @@ async def _run_workspace_bash(
     )
 
 
+async def _search_workspace_toc(
+    arguments: dict[str, Any],
+    tool_execution_context: ToolExecutionContext,
+) -> str:
+    workspace = await _get_accessible_workspace(
+        workspace_id_text=arguments.get("workspace_id"),
+        tool_execution_context=tool_execution_context,
+    )
+    query_text = arguments.get("query")
+    if not isinstance(query_text, str) or not query_text.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="`query` must be a non-empty string.",
+        )
+
+    max_results_value = arguments.get("max_results", 8)
+    if not isinstance(max_results_value, int) or max_results_value < 1 or max_results_value > 20:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="`max_results` must be an integer between 1 and 20.",
+        )
+
+    ingestion_artifacts_query = select(WorkspaceEntry).where(
+        and_(
+            WorkspaceEntry.workspace_id == workspace.id,
+            WorkspaceEntry.entry_type == WorkspaceEntryType.file,
+            or_(
+                WorkspaceEntry.entry_path.like("%__ingested/toc.json"),
+                WorkspaceEntry.entry_path.like("%__ingested/manifest.json"),
+            ),
+        )
+    )
+    ingestion_artifacts = list(
+        (
+            await tool_execution_context.database_session.execute(ingestion_artifacts_query)
+        ).scalars().all()
+    )
+
+    bundle_manifests_by_directory_path: dict[str, dict[str, Any]] = {}
+    bundle_toc_payloads_by_directory_path: dict[str, list[dict[str, Any]]] = {}
+
+    for ingestion_artifact in ingestion_artifacts:
+        if ingestion_artifact.text_content is None:
+            continue
+        try:
+            artifact_payload = json.loads(ingestion_artifact.text_content)
+        except json.JSONDecodeError:
+            continue
+
+        bundle_directory_path = ingestion_artifact.entry_path.rsplit("/", 1)[0]
+        if ingestion_artifact.entry_path.endswith("/manifest.json"):
+            if isinstance(artifact_payload, dict):
+                bundle_manifests_by_directory_path[bundle_directory_path] = artifact_payload
+            continue
+        if ingestion_artifact.entry_path.endswith("/toc.json") and isinstance(artifact_payload, list):
+            bundle_toc_payloads_by_directory_path[bundle_directory_path] = artifact_payload
+
+    query_tokens = _tokenize_workspace_search_text(query_text)
+    normalized_query_text = _normalize_workspace_search_text(query_text)
+
+    matched_toc_entries: list[dict[str, Any]] = []
+    searched_documents: list[dict[str, Any]] = []
+    for bundle_directory_path in sorted(bundle_toc_payloads_by_directory_path.keys()):
+        manifest_payload = bundle_manifests_by_directory_path.get(bundle_directory_path, {})
+        source_payload = manifest_payload.get("source", {})
+        searched_documents.append(
+            {
+                "bundle_directory_path": bundle_directory_path,
+                "source_entry_path": source_payload.get("entry_path"),
+                "source_entry_name": source_payload.get("entry_name"),
+                "toc_entry_path": f"{bundle_directory_path}/toc.json",
+            }
+        )
+
+        toc_nodes = bundle_toc_payloads_by_directory_path[bundle_directory_path]
+        matched_toc_entries.extend(
+            _collect_workspace_toc_matches(
+                toc_nodes=toc_nodes,
+                bundle_directory_path=bundle_directory_path,
+                source_payload=source_payload,
+                normalized_query_text=normalized_query_text,
+                query_tokens=query_tokens,
+            )
+        )
+
+    matched_toc_entries.sort(
+        key=lambda matched_toc_entry: (
+            -matched_toc_entry["score"],
+            matched_toc_entry["page_start"] if matched_toc_entry["page_start"] is not None else 10**9,
+            matched_toc_entry["title"].lower(),
+        )
+    )
+
+    return json.dumps(
+        {
+            "workspace_id": str(workspace.id),
+            "query": query_text,
+            "searched_document_count": len(searched_documents),
+            "results": matched_toc_entries[:max_results_value],
+            "searched_documents": searched_documents,
+        }
+    )
+
+
 async def _get_accessible_workspace(
     *,
     workspace_id_text: str | None,
@@ -366,5 +472,150 @@ def _normalize_entry_path(entry_path_value: Any) -> str:
             detail="A non-empty path string is required.",
         )
 
-    normalized_entry_path = "/" + entry_path_value.strip().strip("/")
-    return "/" if normalized_entry_path == "/" else normalized_entry_path
+    raw_entry_path = entry_path_value.strip().replace("\\", "/")
+    if raw_entry_path in {".", "./"}:
+        return "/"
+
+    absolute_entry_path = raw_entry_path if raw_entry_path.startswith("/") else f"/{raw_entry_path}"
+    normalized_entry_path = posixpath.normpath(absolute_entry_path)
+    return "/" if normalized_entry_path in {".", "/"} else normalized_entry_path
+
+
+def _collect_workspace_toc_matches(
+    *,
+    toc_nodes: list[dict[str, Any]],
+    bundle_directory_path: str,
+    source_payload: dict[str, Any],
+    normalized_query_text: str,
+    query_tokens: list[str],
+) -> list[dict[str, Any]]:
+    matched_toc_entries: list[dict[str, Any]] = []
+    for toc_node in toc_nodes:
+        matched_toc_entries.extend(
+            _collect_workspace_toc_matches_from_node(
+                toc_node=toc_node,
+                bundle_directory_path=bundle_directory_path,
+                source_payload=source_payload,
+                normalized_query_text=normalized_query_text,
+                query_tokens=query_tokens,
+            )
+        )
+    return matched_toc_entries
+
+
+def _collect_workspace_toc_matches_from_node(
+    *,
+    toc_node: dict[str, Any],
+    bundle_directory_path: str,
+    source_payload: dict[str, Any],
+    normalized_query_text: str,
+    query_tokens: list[str],
+) -> list[dict[str, Any]]:
+    matched_toc_entries: list[dict[str, Any]] = []
+
+    title = str(toc_node.get("title") or "")
+    heading_path = [
+        str(heading_path_part)
+        for heading_path_part in toc_node.get("heading_path", [])
+        if isinstance(heading_path_part, str)
+    ]
+    match_score = _score_workspace_toc_match(
+        title=title,
+        heading_path=heading_path,
+        normalized_query_text=normalized_query_text,
+        query_tokens=query_tokens,
+    )
+    if match_score > 0:
+        matched_toc_entries.append(
+            {
+                "score": match_score,
+                "title": title,
+                "heading_path": heading_path,
+                "section_id": toc_node.get("section_id"),
+                "heading_level": toc_node.get("heading_level"),
+                "page_start": toc_node.get("page_start"),
+                "page_end": toc_node.get("page_end"),
+                "bundle_directory_path": bundle_directory_path,
+                "toc_entry_path": f"{bundle_directory_path}/toc.json",
+                "source_entry_path": source_payload.get("entry_path"),
+                "source_entry_name": source_payload.get("entry_name"),
+            }
+        )
+
+    child_toc_nodes = toc_node.get("children", [])
+    if isinstance(child_toc_nodes, list):
+        for child_toc_node in child_toc_nodes:
+            if not isinstance(child_toc_node, dict):
+                continue
+            matched_toc_entries.extend(
+                _collect_workspace_toc_matches_from_node(
+                    toc_node=child_toc_node,
+                    bundle_directory_path=bundle_directory_path,
+                    source_payload=source_payload,
+                    normalized_query_text=normalized_query_text,
+                    query_tokens=query_tokens,
+                )
+            )
+
+    return matched_toc_entries
+
+
+def _score_workspace_toc_match(
+    *,
+    title: str,
+    heading_path: list[str],
+    normalized_query_text: str,
+    query_tokens: list[str],
+) -> int:
+    if not normalized_query_text:
+        return 0
+
+    normalized_title = _normalize_workspace_search_text(title)
+    normalized_heading_path = _normalize_workspace_search_text(" ".join(heading_path))
+    normalized_combined_text = _normalize_workspace_search_text(
+        " ".join([title, *heading_path])
+    )
+    if not normalized_combined_text:
+        return 0
+
+    score = 0
+    if normalized_query_text == normalized_title:
+        score += 120
+    elif normalized_query_text == normalized_heading_path:
+        score += 110
+    elif normalized_query_text in normalized_title:
+        score += 90
+    elif normalized_query_text in normalized_heading_path:
+        score += 80
+    elif normalized_query_text in normalized_combined_text:
+        score += 70
+
+    if not query_tokens:
+        return score
+
+    combined_tokens = set(_tokenize_workspace_search_text(normalized_combined_text))
+    title_tokens = set(_tokenize_workspace_search_text(normalized_title))
+    matched_query_token_count = sum(1 for query_token in query_tokens if query_token in combined_tokens)
+    if matched_query_token_count == 0 and score == 0:
+        return 0
+
+    score += matched_query_token_count * 12
+    if all(query_token in combined_tokens for query_token in query_tokens):
+        score += 24
+    if all(query_token in title_tokens for query_token in query_tokens):
+        score += 12
+
+    return score
+
+
+def _normalize_workspace_search_text(value: str) -> str:
+    normalized_characters = [
+        character.lower() if character.isalnum() else " "
+        for character in value
+    ]
+    return " ".join("".join(normalized_characters).split())
+
+
+def _tokenize_workspace_search_text(value: str) -> list[str]:
+    normalized_value = _normalize_workspace_search_text(value)
+    return normalized_value.split() if normalized_value else []

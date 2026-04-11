@@ -17,38 +17,38 @@ from app.models import User
 agent_router = APIRouter(prefix="/agent", tags=["agent"])
 
 
+def build_workspace_toc_search_tool_definition() -> AgentToolDefinition:
+    return AgentToolDefinition(
+        name="workspace.search_toc",
+        description=(
+            "Search TOC entries from ingested workspace document bundles. "
+            "Use this when the user asks for a topic, chapter, lecture, or other "
+            "document section and the workspace contains `__ingested/toc.json` artifacts. "
+            "This tool only searches headings/TOC labels and does not verify page body text."
+        ),
+        input_json_schema={
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string"},
+                "query": {"type": "string"},
+                "max_results": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 20,
+                },
+            },
+            "required": ["workspace_id", "query"],
+            "additionalProperties": False,
+        },
+    )
+
+
 @agent_router.get("/tools", response_model=list[AgentToolDefinition])
 async def list_backend_agent_tools(
     current_user: User = Depends(get_current_user),
 ) -> list[AgentToolDefinition]:
     _ = current_user
     return [
-        AgentToolDefinition(
-            name="workspace.list_entries",
-            description="List entries under a directory in a workspace virtual filesystem.",
-            input_json_schema={
-                "type": "object",
-                "properties": {
-                    "workspace_id": {"type": "string"},
-                    "parent_entry_path": {"type": "string"},
-                },
-                "required": ["workspace_id"],
-                "additionalProperties": False,
-            },
-        ),
-        AgentToolDefinition(
-            name="workspace.read_entry",
-            description="Read a text file entry from a workspace virtual filesystem.",
-            input_json_schema={
-                "type": "object",
-                "properties": {
-                    "workspace_id": {"type": "string"},
-                    "entry_path": {"type": "string"},
-                },
-                "required": ["workspace_id", "entry_path"],
-                "additionalProperties": False,
-            },
-        ),
         AgentToolDefinition(
             name="companion.point",
             description=(
@@ -88,28 +88,8 @@ async def list_backend_agent_tools(
                 "additionalProperties": False,
             },
         ),
-        AgentToolDefinition(
-            name="workspace.write_entry",
-            description="Create or update a text file entry in a workspace virtual filesystem.",
-            input_json_schema={
-                "type": "object",
-                "properties": {
-                    "workspace_id": {"type": "string"},
-                    "entry_path": {"type": "string"},
-                    "parent_entry_path": {"type": "string"},
-                    "text_content": {"type": "string"},
-                    "content_type": {
-                        "type": "string",
-                        "enum": ["markdown", "text", "pdf", "image", "other"],
-                    },
-                    "mime_type": {"type": "string"},
-                    "entry_metadata": {"type": "object"},
-                },
-                "required": ["workspace_id", "entry_path", "text_content"],
-                "additionalProperties": False,
-            },
-        ),
         build_workspace_bash_tool_definition(),
+        build_workspace_toc_search_tool_definition(),
     ]
 
 

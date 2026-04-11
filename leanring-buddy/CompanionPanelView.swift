@@ -792,6 +792,14 @@ struct CompanionPanelView: View {
                 .foregroundColor(DS.Colors.textTertiary)
                 .pointerCursor()
 
+                Button("New Session") {
+                    companionManager.startNewWorkspaceAgentSession()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textTertiary)
+                .pointerCursor()
+
                 Button("Logout") {
                     Task { await companionManager.logoutWorkspaceUser() }
                 }

@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+import logging
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
@@ -6,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from app.config import get_settings
 
 router = APIRouter()
+proxy_logger = logging.getLogger("clicky.proxy")
 
 
 def _proxy_error_response(upstream_body: bytes, upstream_status_code: int) -> Response:
@@ -86,6 +88,11 @@ async def proxy_tts(request: Request) -> Response:
     )
 
     if upstream_response.status_code < 200 or upstream_response.status_code >= 300:
+        proxy_logger.warning(
+            "TTS upstream request failed with status %s: %s",
+            upstream_response.status_code,
+            upstream_response.text[:1000],
+        )
         return _proxy_error_response(
             upstream_body=upstream_response.content,
             upstream_status_code=upstream_response.status_code,

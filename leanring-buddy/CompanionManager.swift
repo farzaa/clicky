@@ -702,6 +702,14 @@ final class CompanionManager: ObservableObject {
         clearWorkspacePanelSessionState()
     }
 
+    func startNewWorkspaceAgentSession() {
+        // Reset backend conversation memory so the next `/agent/runs` call
+        // starts from a clean context while keeping auth/workspace selection.
+        backendAgentConversationMessages = []
+        workspaceErrorMessage = nil
+        workspaceStatusMessage = "Started a new session."
+    }
+
     func openWorkspaceParentDirectory() {
         let parentDirectoryPath = parentWorkspaceEntryPath(for: workspaceCurrentDirectoryPath)
         Task {
@@ -1124,7 +1132,17 @@ final class CompanionManager: ObservableObject {
     keep responses concise and practical.
     when visual guidance helps, call `companion.point` with screenshot pixel coordinates.
     when spoken output helps, call `companion.speak` with natural spoken text.
-    you can also use backend workspace tools for file operations.
+    for workspace file operations, use only `workspace.run_bash` and `workspace.search_toc`.
+    default to working_directory `/` unless the user explicitly names a subfolder.
+    use `workspace.run_bash` only for cheap read-only commands: `pwd`, `ls`, `find`, `cat`, `grep`, and `rg`.
+    keep `workspace.run_bash` commands simple. avoid python, heredocs, pipes, subshells, long scripts, and write operations unless the user explicitly asks for a file change.
+    important: `workspace.search_toc` only returns TOC heading matches; it is not page-text verification.
+    if the user asks for a definition, formula, proof, or any exact statement, do this workflow:
+    1) call `workspace.search_toc` to get candidate bundles and page_start/page_end.
+    2) read actual content with `workspace.run_bash` + `cat` from absolute page paths like `/...__ingested/pages/page-0017.md`.
+    3) if needed, read nearby pages (`page_start-1`, `page_start`, `page_start+1`) before answering.
+    do not claim a page says something unless you actually read that page content with `cat`.
+    do not use `cd`; pass absolute paths directly to `ls`, `find`, `cat`, `grep`, and `rg`.
     """
 
     // MARK: - AI Response Pipeline
@@ -1282,15 +1300,33 @@ final class CompanionManager: ObservableObject {
 
     private func getBackendAgentTools(accessToken: String) async throws -> [[String: Any]] {
         if let cachedBackendAgentTools {
-            return cachedBackendAgentTools
+            return filterAllowedBackendAgentTools(cachedBackendAgentTools)
         }
         let toolsPayload = try await sendBackendJSONArrayRequest(
             path: "/agent/tools",
             method: "GET",
             accessToken: accessToken
         )
-        cachedBackendAgentTools = toolsPayload
-        return toolsPayload
+        let filteredBackendAgentTools = filterAllowedBackendAgentTools(toolsPayload)
+        cachedBackendAgentTools = filteredBackendAgentTools
+        return filteredBackendAgentTools
+    }
+
+    private func filterAllowedBackendAgentTools(
+        _ toolsPayload: [[String: Any]]
+    ) -> [[String: Any]] {
+        let allowedToolNames: Set<String> = [
+            "companion.point",
+            "companion.speak",
+            "workspace.run_bash",
+            "workspace.search_toc",
+        ]
+        return toolsPayload.filter { toolPayload in
+            guard let toolName = toolPayload["name"] as? String else {
+                return false
+            }
+            return allowedToolNames.contains(toolName)
+        }
     }
 
     private func buildBackendAgentUserMessage(
@@ -1327,7 +1363,7 @@ final class CompanionManager: ObservableObject {
             jsonBody: [
                 "provider": "openai_responses",
                 "system_message": Self.companionVoiceResponseSystemPrompt
-                    + "\nworkspace tool context: when calling workspace.* tools, always use workspace_id `\(workspaceID)`.",
+                    + "\nworkspace tool context: use `workspace.search_toc` to narrow to section/page candidates, then use `workspace.run_bash` + `cat /...__ingested/pages/page-XXXX.md` to verify real page text before answering. always pass workspace_id `\(workspaceID)`.",
                 "messages": messages,
                 "tools": tools,
                 "tool_choice": "auto",

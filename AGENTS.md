@@ -19,7 +19,7 @@ All API keys live on a hosted backend — nothing sensitive ships in the app. Th
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via hosted backend
 - **Backend Storage**: Postgres via async SQLAlchemy for users, workspaces, saved agents, memberships, virtual filesystem entries, and workspace ingestion jobs
 - **Backend Auth**: Email/password auth with bearer sessions stored in Postgres
-- **Backend Agent Loop**: FastAPI-hosted iterative agent loop with OpenAI Responses and OpenRouter provider adapters, abortable runs, multimodal screenshot message support, backend-owned tools (including `companion.point`), and a `just-bash` powered workspace shell tool
+- **Backend Agent Loop**: FastAPI-hosted iterative agent loop with OpenAI Responses and OpenRouter provider adapters, abortable runs, multimodal screenshot message support, backend-owned tools (including `companion.point`), a read-only Postgres-backed workspace shell surface (`pwd`/`ls`/`find`/`cat`/`grep`/`rg`), and dedicated semantic lookup tools (for example TOC search)
 - **Saved Agents**: Each workspace is seeded with a default Deb agent row in Postgres that stores a reusable system prompt, provider, and model
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
@@ -77,12 +77,13 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_I
 | `AppBundleConfiguration.swift` | ~32 | Runtime configuration reader for keys stored in the app bundle Info.plist, including `DebBackendBaseURL`. |
 | `backend/app/agent/contracts.py` | ~70 | Shared agent request/response models, message/tool types, and run status shapes. |
 | `backend/app/agent/defaults.py` | ~10 | Default Deb agent settings, including the saved system prompt, provider, and model used when seeding new workspaces. |
-| `backend/app/agent/bash_tool.py` | ~400 | Backend workspace bash tool. Serializes a Postgres-backed workspace into a `just-bash` virtual filesystem request, runs the shell, and persists the resulting filesystem snapshot back into `workspace_entries`. |
+| `backend/app/agent/bash_tool.py` | ~1240 | Backend workspace shell entrypoint. Validates workspace access and delegates to the read-only Postgres shell executor; write attempts return EROFS and no workspace mutation occurs. |
+| `backend/app/agent/postgres_readonly_shell.py` | ~980 | Read-only PostgresFs command executor. Intercepts `pwd`, `ls`, `find`, `cat`, `grep`, and `rg`, performs SQL-backed coarse filtering for grep-like search, and reconstructs chunked files lazily on access. |
 | `backend/app/agent/postgres_workspace_filesystem.mjs` | ~160 | Custom `just-bash` filesystem implementation backed by serialized workspace entries instead of disk. Delegates shell filesystem calls to an in-memory virtual tree and exports a snapshot for Postgres persistence. |
 | `backend/app/agent/just_bash_runner.mjs` | ~60 | Small Node runner that executes `just-bash` against the custom Postgres-workspace filesystem and returns structured stdout/stderr/exit code JSON plus the final filesystem snapshot to the Python backend. |
-| `backend/app/agent/router.py` | ~145 | FastAPI routes for running, aborting, and discovering backend agent tools, including `companion.point` and `workspace.run_bash`. |
+| `backend/app/agent/router.py` | ~125 | FastAPI routes for running, aborting, and discovering backend agent tools, including `companion.point`, `workspace.run_bash`, and `workspace.search_toc`. |
 | `backend/app/agent/loop/service.py` | ~140 | Core iterative agent loop that calls providers, executes tools, and supports abortable runs. |
-| `backend/app/agent/loop/tool_handler.py` | ~390 | Backend-owned tool execution for `companion.point`, workspace listing/reading/writing, and `just-bash` shell execution inside Postgres-backed virtual filesystems. |
+| `backend/app/agent/loop/tool_handler.py` | ~620 | Backend-owned tool execution for `companion.point`, `workspace.run_bash`, and `workspace.search_toc`, including TOC artifact scanning for ingested document bundles. |
 | `backend/app/agent/loop/abort_registry.py` | ~50 | In-memory run registry that tracks abort requests and attached asyncio tasks. |
 | `backend/app/agent/provider/openai_responses.py` | ~170 | OpenAI Responses API adapter for the backend agent loop, including multimodal screenshot input support. |
 | `backend/app/agent/provider/openrouter_chat_completions.py` | ~170 | OpenRouter Chat Completions adapter for the backend agent loop, including multimodal screenshot input support. |

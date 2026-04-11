@@ -17,6 +17,14 @@ class Settings(BaseSettings):
         alias="DEB_AUTO_CREATE_DATABASE_SCHEMA",
     )
     deb_database_echo: bool = Field(default=False, alias="DEB_DATABASE_ECHO")
+    deb_agent_event_logging_enabled: bool = Field(
+        default=False,
+        alias="DEB_AGENT_EVENT_LOGGING_ENABLED",
+    )
+    deb_agent_event_log_max_chars: int = Field(
+        default=2000,
+        alias="DEB_AGENT_EVENT_LOG_MAX_CHARS",
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
