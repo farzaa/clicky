@@ -18,7 +18,7 @@ struct LoginView: View {
                 CursorMarkView(size: 28)
 
                 VStack(spacing: 4) {
-                    Text(isSignUp ? "Create an account" : "Welcome to Debil")
+                    Text(isSignUp ? "Create an account" : "Welcome to Deb")
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(DS.foreground)
                         .multilineTextAlignment(.center)

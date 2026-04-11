@@ -44,7 +44,7 @@ struct DashboardView: View {
     private var headerBar: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(frontendStore.currentUser?.displayName ?? "Debil")
+                Text(frontendStore.currentUser?.displayName ?? "Deb")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(DS.foreground)
                 Text(frontendStore.currentUser?.emailAddress ?? "")

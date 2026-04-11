@@ -15,7 +15,7 @@ struct DebilMacApp: App {
                 .frame(minWidth: 380, idealWidth: 420, maxWidth: 520, minHeight: 440, idealHeight: 520, maxHeight: 780)
         } label: {
             Image(systemName: "cursorarrow")
-                .accessibilityLabel("Debil")
+                .accessibilityLabel("Deb")
         }
         .menuBarExtraStyle(.window)
     }

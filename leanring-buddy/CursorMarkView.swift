@@ -1,27 +1,29 @@
 import SwiftUI
 
-/// Lucide `MousePointer2` equivalent — cursor buddy mark (glyph only).
+/// Deb brand mark (glyph only).
 struct CursorMarkView: View {
     var size: CGFloat = 24
 
     var body: some View {
-        Image(systemName: "cursorarrow")
-            .font(.system(size: size * 0.85, weight: .medium))
+        Image("deb-logo")
+            .renderingMode(.template)
+            .resizable()
+            .scaledToFit()
+            .frame(width: size, height: size)
             .foregroundStyle(DS.foreground)
-            .symbolRenderingMode(.monochrome)
     }
 }
 
-// MARK: - Chip + cursor (shared by in-app chrome and screen buddy)
+// MARK: - Chip + logo (shared by in-app chrome and screen buddy)
 
 enum DebBuddyMarkPalette {
-    /// Same silhouette as `DebilBrandButton`: neutral chip + light arrow.
+    /// Same silhouette as `DebilBrandButton`: neutral chip + logo.
     case inApp
-    /// Full-screen buddy: green chip + glow (`DS.Colors.overlayCursorBlue`).
+    /// Full-screen buddy: floating logo + glow (`DS.Colors.overlayCursorBlue`).
     case screenOverlay
 }
 
-/// Rounded chip + SF Symbol `cursorarrow` — the canonical Deb “buddy” mark.
+/// Deb buddy mark shared across in-app and overlay contexts.
 struct DebBuddyMarkView: View {
     var palette: DebBuddyMarkPalette
     var rotationDegrees: Double = -35
@@ -31,22 +33,17 @@ struct DebBuddyMarkView: View {
     var chipSide: CGFloat = 34
     var iconMaxSize: CGFloat = 22
 
-    private var iconSize: CGFloat {
+    private var inAppIconSize: CGFloat {
         min(iconMaxSize, chipSide * 0.65)
+    }
+
+    private var overlayIconSize: CGFloat {
+        max(iconMaxSize, chipSide)
     }
 
     /// Matches `DebilBrandButton` (8pt radius at 34pt chip).
     private var cornerRadius: CGFloat {
         chipSide * (8.0 / 34.0)
-    }
-
-    private var chipFill: Color {
-        switch palette {
-        case .inApp:
-            return DS.accent.opacity(0.5)
-        case .screenOverlay:
-            return DS.Colors.overlayCursorBlue.opacity(0.5)
-        }
     }
 
     private var iconColor: Color {
@@ -58,15 +55,31 @@ struct DebBuddyMarkView: View {
         }
     }
 
+    private var usesInAppChip: Bool {
+        switch palette {
+        case .inApp:
+            return true
+        case .screenOverlay:
+            return false
+        }
+    }
+
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(chipFill)
-                .frame(width: chipSide, height: chipSide)
-            Image(systemName: "cursorarrow")
-                .font(.system(size: iconSize * 0.85, weight: .medium))
+            if usesInAppChip {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(DS.accent.opacity(0.5))
+                    .frame(width: chipSide, height: chipSide)
+            }
+            Image("deb-logo")
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .frame(
+                    width: usesInAppChip ? inAppIconSize : overlayIconSize,
+                    height: usesInAppChip ? inAppIconSize : overlayIconSize
+                )
                 .foregroundStyle(iconColor)
-                .symbolRenderingMode(.monochrome)
         }
         .rotationEffect(.degrees(rotationDegrees))
         .scaleEffect(scale)

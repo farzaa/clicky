@@ -563,8 +563,11 @@ struct CompanionPanelView: View {
     private var showDebCursorToggleRow: some View {
         HStack {
             HStack(spacing: 8) {
-                Image(systemName: "cursorarrow")
-                    .font(.system(size: 12, weight: .medium))
+                Image("deb-logo")
+                    .renderingMode(.template)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 12, height: 12)
                     .foregroundColor(DS.Colors.textTertiary)
                     .frame(width: 16)
 

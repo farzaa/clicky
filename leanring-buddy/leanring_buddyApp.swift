@@ -20,8 +20,12 @@ struct leanring_buddyApp: App {
                     maxHeight: 820
                 )
         } label: {
-            Image(systemName: "cursorarrow")
-                .accessibilityLabel("Debil")
+            Image("deb-logo")
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 16, height: 16)
+                .accessibilityLabel("Deb")
         }
         .menuBarExtraStyle(.window)
     }

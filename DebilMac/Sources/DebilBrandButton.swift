@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Tappable cursor + “Debil” — use for back / home / sign-out instead of a separate trailing control.
+/// Tappable cursor + “Deb” — use for back / home / sign-out instead of a separate trailing control.
 struct DebilBrandButton: View {
     var action: () -> Void
     /// Sized to sit inside the 34pt accent chip (same family as section icons on My Courses / New course).
@@ -18,7 +18,7 @@ struct DebilBrandButton: View {
                         .frame(width: 34, height: 34)
                     CursorMarkView(size: min(markSize, 22))
                 }
-                Text("Debil")
+                Text("Deb")
                     .font(.system(size: titleSize, weight: .semibold))
                     .foregroundStyle(DS.foreground)
             }

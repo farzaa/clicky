@@ -23,7 +23,7 @@ struct LoginView: View {
                 )
 
                 VStack(spacing: 4) {
-                    Text(isSignUpMode ? "Create an account" : "Welcome to Debil")
+                    Text(isSignUpMode ? "Create an account" : "Welcome to Deb")
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(DS.foreground)
                         .multilineTextAlignment(.center)

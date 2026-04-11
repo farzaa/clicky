@@ -36,7 +36,7 @@ struct DashboardView: View {
         .background(DS.background)
         .overlay(alignment: .topLeading) {
             Button(action: onSignOut) {
-                Text("Debil")
+                Text("Deb")
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(DS.mutedForeground.opacity(0.4))
                     .padding(.leading, 8)

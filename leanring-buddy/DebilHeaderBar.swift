@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Thin top bar: tappable Debil only (VPN-style — no extra chrome on the right).
+/// Thin top bar: tappable Deb only (VPN-style — no extra chrome on the right).
 struct DebilHeaderBar: View {
     var onBrandTap: () -> Void
     var brandAccessibilityLabel: String = "Back"
