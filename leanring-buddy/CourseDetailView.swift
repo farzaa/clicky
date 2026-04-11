@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 struct CourseDetailView: View {
-    @EnvironmentObject private var frontendStore: DebilFrontendStore
+    @Environment(DebilFrontendStore.self) private var frontendStore
 
     let courseId: String
     var onBack: () -> Void

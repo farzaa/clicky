@@ -7,7 +7,7 @@ enum DebilRoute: Hashable {
 }
 
 struct DebilRootView: View {
-    @EnvironmentObject private var frontendStore: DebilFrontendStore
+    @Environment(DebilFrontendStore.self) private var frontendStore
     @State private var route: DebilRoute = .dashboard
 
     var body: some View {

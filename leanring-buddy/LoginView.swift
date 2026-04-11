@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct LoginView: View {
-    @EnvironmentObject private var frontendStore: DebilFrontendStore
+    @Environment(DebilFrontendStore.self) private var frontendStore
 
     @State private var isSignUpMode = false
     @State private var shouldRevealPassword = false
@@ -13,7 +13,14 @@ struct LoginView: View {
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 10) {
-                CursorMarkView(size: 28)
+                DebBuddyMarkView(
+                    palette: .inApp,
+                    rotationDegrees: 0,
+                    scale: 1,
+                    glowRadiusExtension: 0,
+                    chipSide: 40,
+                    iconMaxSize: 26
+                )
 
                 VStack(spacing: 4) {
                     Text(isSignUpMode ? "Create an account" : "Welcome to Debil")

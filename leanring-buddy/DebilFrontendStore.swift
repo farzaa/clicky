@@ -1,25 +1,27 @@
 import Foundation
+import Observation
 import UniformTypeIdentifiers
 
 @MainActor
-final class DebilFrontendStore: ObservableObject {
-    @Published private(set) var currentUser: DebilAuthenticatedUser?
-    @Published private(set) var workspaces: [DebilWorkspace] = []
-    @Published private(set) var selectedWorkspaceID: String?
-    @Published private(set) var currentDirectoryPath: String = "/"
-    @Published private(set) var currentEntries: [DebilWorkspaceEntry] = []
-    @Published private(set) var selectedFilePath: String?
-    @Published private(set) var selectedFilePreviewText: String?
-    @Published private(set) var selectedFileHasBinaryContent = false
+@Observable
+final class DebilFrontendStore {
+    private(set) var currentUser: DebilAuthenticatedUser?
+    private(set) var workspaces: [DebilWorkspace] = []
+    private(set) var selectedWorkspaceID: String?
+    private(set) var currentDirectoryPath: String = "/"
+    private(set) var currentEntries: [DebilWorkspaceEntry] = []
+    private(set) var selectedFilePath: String?
+    private(set) var selectedFilePreviewText: String?
+    private(set) var selectedFileHasBinaryContent = false
 
-    @Published private(set) var isAuthenticating = false
-    @Published private(set) var isLoadingWorkspaces = false
-    @Published private(set) var isLoadingEntries = false
-    @Published private(set) var isUploadingFiles = false
+    private(set) var isAuthenticating = false
+    private(set) var isLoadingWorkspaces = false
+    private(set) var isLoadingEntries = false
+    private(set) var isUploadingFiles = false
 
-    @Published var authErrorMessage: String?
-    @Published var workspaceErrorMessage: String?
-    @Published var statusMessage: String?
+    var authErrorMessage: String?
+    var workspaceErrorMessage: String?
+    var statusMessage: String?
 
     private let backendClient: DebilBackendClient
     private var authToken: String? {

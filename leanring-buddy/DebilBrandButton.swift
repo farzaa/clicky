@@ -12,12 +12,14 @@ struct DebilBrandButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 8) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(DS.accent.opacity(0.5))
-                        .frame(width: 34, height: 34)
-                    CursorMarkView(size: min(markSize, 22))
-                }
+                DebBuddyMarkView(
+                    palette: .inApp,
+                    rotationDegrees: 0,
+                    scale: 1,
+                    glowRadiusExtension: 0,
+                    chipSide: 34,
+                    iconMaxSize: min(markSize, 22)
+                )
                 Text("Debil")
                     .font(.system(size: titleSize, weight: .semibold))
                     .foregroundStyle(DS.foreground)

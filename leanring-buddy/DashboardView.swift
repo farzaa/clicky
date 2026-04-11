@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct DashboardView: View {
-    @EnvironmentObject private var frontendStore: DebilFrontendStore
+    @Environment(DebilFrontendStore.self) private var frontendStore
 
     var onSignOut: () -> Void
     var onExisting: () -> Void

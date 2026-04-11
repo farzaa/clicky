@@ -7,6 +7,7 @@
 //  interaction states are defined here as the single source of truth.
 //
 
+import Combine
 import SwiftUI
 import AppKit
 
@@ -136,11 +137,10 @@ enum DS {
         /// Inline code text color — slightly brighter blue for monospace code snippets.
         static let codeText = Color(hex: "#9DC2FF")           // Radix Blue 11 variant
 
-        // ── Overlay Cursor ───────────────────────────────────────────
+        // ── Overlay buddy (screen) ───────────────────────────────────
 
-        /// The blue cursor/bubble color used in OverlayWindow.
-        /// Kept distinct from the accent since it serves a different purpose
-        /// (screen overlay vs in-app UI).
+        /// Green fill/glow for the desktop buddy — same hue as the in-app chip treatment,
+        /// tuned brighter for visibility on arbitrary wallpapers (see `DebBuddyMarkView`).
         static let overlayCursorBlue = Color(hex: "#2DD66E")
 
         // ── Floating Button Gradient ─────────────────────────────────

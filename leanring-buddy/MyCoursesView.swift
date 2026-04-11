@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct MyCoursesView: View {
-    @EnvironmentObject private var frontendStore: DebilFrontendStore
+    @Environment(DebilFrontendStore.self) private var frontendStore
 
     var onBack: () -> Void
     var onCourseDetail: (String) -> Void

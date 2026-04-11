@@ -3,12 +3,12 @@ import SwiftUI
 @main
 struct leanring_buddyApp: App {
     @NSApplicationDelegateAdaptor(MenuBarAppDelegate.self) private var appDelegate
-    @StateObject private var frontendStore = DebilFrontendStore()
+    @State private var frontendStore = DebilFrontendStore()
 
     var body: some Scene {
         MenuBarExtra {
             DebilRootView()
-                .environmentObject(frontendStore)
+                .environment(frontendStore)
                 .background(DS.background)
                 .preferredColorScheme(.dark)
                 .frame(
