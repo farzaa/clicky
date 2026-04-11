@@ -23,21 +23,27 @@ This service replaces the thin Cloudflare Worker proxy with a hosted FastAPI bac
 - `GET /parse/` exposes a placeholder parsing module entrypoint
 - `POST /parse/` is a reserved PDF-to-markdown placeholder endpoint for the future ingestion pipeline
 - `GET /health` returns a basic health response
-- Connects to Postgres on startup and auto-creates the current schema
+- Connects to Postgres on startup and can optionally auto-create schema for local prototyping (`DEB_AUTO_CREATE_DATABASE_SCHEMA=true`)
+- Uses Alembic migrations for explicit schema versioning (`alembic upgrade head`)
 
 The route contract matches the existing Swift app so you can swap the backend without changing the request payload shapes.
 
 ## Current schema
 
-The backend now bootstraps these Postgres tables:
+The backend schema (managed by Alembic) includes:
 
 - `users`
 - `auth_sessions`
 - `agents`
 - `agent_sessions`
+- `agent_session_messages`
+- `courses`
+- `learner_topic_masteries`
+- `learner_observations`
 - `workspaces`
 - `workspace_memberships`
 - `workspace_entries`
+- `workspace_ingestion_jobs`
 
 `agents` stores workspace-scoped saved agent definitions, including a persisted `system_prompt` alongside optional provider, model, description, and arbitrary metadata.
 
@@ -92,6 +98,7 @@ cd app/agent
 npm install
 cd ../..
 cp .env.example .env
+alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
@@ -104,6 +111,12 @@ If you already started an older local Postgres volume before the auth/workspace 
 ```bash
 docker compose down -v
 docker compose up -d postgres
+```
+
+If your local database already has tables created by the old `create_all` path and no Alembic history row yet, run this one-time baseline command:
+
+```bash
+alembic stamp head
 ```
 
 ## Next backend steps

@@ -1,4 +1,5 @@
 import fnmatch
+import json
 import posixpath
 import re
 import shlex
@@ -9,7 +10,14 @@ from uuid import UUID
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import WorkspaceContentType, WorkspaceEntry, WorkspaceEntryType
+from app.models import (
+    Course,
+    LearnerObservation,
+    LearnerTopicMastery,
+    WorkspaceContentType,
+    WorkspaceEntry,
+    WorkspaceEntryType,
+)
 
 READ_ONLY_ALLOWED_COMMAND_NAMES = {"pwd", "ls", "find", "cat", "grep", "rg"}
 READ_ONLY_WRITE_COMMAND_NAMES = {
@@ -38,11 +46,22 @@ class ReadOnlyShellExecutionResult:
 
 
 @dataclass
+class VirtualWorkspaceEntry:
+    entry_path: str
+    entry_name: str
+    entry_type: WorkspaceEntryType
+    parent_entry_path: str
+    size_bytes: int | None = None
+    text_content: str | None = None
+
+
+@dataclass
 class ReadOnlyShellRuntimeContext:
     workspace_id: UUID
     database_session: AsyncSession
     working_directory: str
     cached_text_content_by_path: dict[str, str]
+    virtual_entries_by_path: dict[str, VirtualWorkspaceEntry]
 
 
 async def execute_workspace_read_only_shell_script(
@@ -61,6 +80,11 @@ async def execute_workspace_read_only_shell_script(
         database_session=database_session,
         working_directory=working_directory,
         cached_text_content_by_path={},
+        virtual_entries_by_path={},
+    )
+    runtime_context.virtual_entries_by_path = await _build_virtual_learner_entries_by_path(
+        workspace_id=workspace_id,
+        database_session=database_session,
     )
 
     if any(token in stripped_script for token in ["\n", ";", "||", "<<", "`", "$("]):
@@ -311,10 +335,9 @@ async def _execute_read_only_ls(
         working_directory=runtime_context.working_directory,
         path_argument=target_path_argument or ".",
     )
-    target_workspace_entry = await _get_workspace_entry_by_path(
-        workspace_id=runtime_context.workspace_id,
+    target_workspace_entry = await _get_shell_entry_by_path(
         entry_path=target_workspace_path,
-        database_session=runtime_context.database_session,
+        runtime_context=runtime_context,
     )
     if target_workspace_entry is None:
         return ReadOnlyShellExecutionResult(
@@ -334,10 +357,9 @@ async def _execute_read_only_ls(
             exit_code=0,
         )
 
-    child_workspace_entries = await _get_workspace_entry_children(
-        workspace_id=runtime_context.workspace_id,
-        parent_entry_id=target_workspace_entry.id,
-        database_session=runtime_context.database_session,
+    child_workspace_entries = await _get_shell_entry_children(
+        parent_entry=target_workspace_entry,
+        runtime_context=runtime_context,
     )
     visible_workspace_entries = [
         workspace_entry
@@ -365,7 +387,7 @@ async def _execute_read_only_ls(
                 stdout_lines.append(entry_name)
 
     stdout_lines.extend(
-        _format_ls_entry(workspace_entry=workspace_entry, use_long_format=use_long_format)
+            _format_ls_entry(workspace_entry=workspace_entry, use_long_format=use_long_format)
         for workspace_entry in visible_workspace_entries
     )
     return ReadOnlyShellExecutionResult(
@@ -416,10 +438,9 @@ async def _execute_read_only_find(
         working_directory=runtime_context.working_directory,
         path_argument=search_root_argument,
     )
-    search_root_entry = await _get_workspace_entry_by_path(
-        workspace_id=runtime_context.workspace_id,
+    search_root_entry = await _get_shell_entry_by_path(
         entry_path=search_root_path,
-        database_session=runtime_context.database_session,
+        runtime_context=runtime_context,
     )
     if search_root_entry is None:
         return ReadOnlyShellExecutionResult(
@@ -429,10 +450,9 @@ async def _execute_read_only_find(
         )
 
     root_depth = _workspace_path_depth(search_root_path)
-    candidate_workspace_entries = await _list_workspace_entries_under_root(
-        workspace_id=runtime_context.workspace_id,
+    candidate_workspace_entries = await _list_shell_entries_under_root(
         root_workspace_path=search_root_path,
-        database_session=runtime_context.database_session,
+        runtime_context=runtime_context,
     )
 
     matched_workspace_paths: list[str] = []
@@ -471,10 +491,9 @@ async def _execute_read_only_cat(
         working_directory=runtime_context.working_directory,
         path_argument=target_path_argument,
     )
-    target_workspace_entry = await _get_workspace_entry_by_path(
-        workspace_id=runtime_context.workspace_id,
+    target_workspace_entry = await _get_shell_entry_by_path(
         entry_path=target_workspace_path,
-        database_session=runtime_context.database_session,
+        runtime_context=runtime_context,
     )
     if target_workspace_entry is None:
         return ReadOnlyShellExecutionResult(
@@ -489,7 +508,7 @@ async def _execute_read_only_cat(
             exit_code=1,
         )
 
-    text_content = await _load_workspace_file_text_content_for_read(
+    text_content = await _load_shell_file_text_content_for_read(
         workspace_entry=target_workspace_entry,
         runtime_context=runtime_context,
     )
@@ -591,10 +610,9 @@ async def _execute_read_only_grep_like_command(
         working_directory=runtime_context.working_directory,
         path_argument=search_root_argument,
     )
-    search_root_entry = await _get_workspace_entry_by_path(
-        workspace_id=runtime_context.workspace_id,
+    search_root_entry = await _get_shell_entry_by_path(
         entry_path=search_root_path,
-        database_session=runtime_context.database_session,
+        runtime_context=runtime_context,
     )
     if search_root_entry is None:
         return ReadOnlyShellExecutionResult(
@@ -606,7 +624,7 @@ async def _execute_read_only_grep_like_command(
             exit_code=2,
         )
 
-    searchable_workspace_entries: list[WorkspaceEntry]
+    searchable_workspace_entries: list[WorkspaceEntry | VirtualWorkspaceEntry]
     if search_root_entry.entry_type == WorkspaceEntryType.file:
         searchable_workspace_entries = [search_root_entry]
     else:
@@ -616,13 +634,12 @@ async def _execute_read_only_grep_like_command(
                 stderr=f"{command_tokens[0]}: {search_root_argument}: Is a directory\n",
                 exit_code=2,
             )
-        searchable_workspace_entries = await _list_candidate_workspace_text_files_for_grep(
-            workspace_id=runtime_context.workspace_id,
+        searchable_workspace_entries = await _list_candidate_shell_text_files_for_grep(
             root_workspace_path=search_root_path,
             raw_pattern=raw_pattern,
             should_ignore_case=should_ignore_case,
             force_fixed_string_mode=force_fixed_string_mode,
-            database_session=runtime_context.database_session,
+            runtime_context=runtime_context,
         )
 
     should_prefix_with_path = (
@@ -631,7 +648,7 @@ async def _execute_read_only_grep_like_command(
     )
     matched_output_lines: list[str] = []
     for searchable_workspace_entry in searchable_workspace_entries:
-        text_content = await _load_workspace_file_text_content_for_read(
+        text_content = await _load_shell_file_text_content_for_read(
             workspace_entry=searchable_workspace_entry,
             runtime_context=runtime_context,
         )
@@ -688,7 +705,20 @@ def _build_grep_output_lines_for_file(
     return matched_output_lines
 
 
-async def _load_workspace_file_text_content_for_read(
+async def _load_shell_file_text_content_for_read(
+    *,
+    workspace_entry: WorkspaceEntry | VirtualWorkspaceEntry,
+    runtime_context: ReadOnlyShellRuntimeContext,
+) -> str | None:
+    if isinstance(workspace_entry, VirtualWorkspaceEntry):
+        return workspace_entry.text_content
+    return await _load_real_workspace_file_text_content_for_read(
+        workspace_entry=workspace_entry,
+        runtime_context=runtime_context,
+    )
+
+
+async def _load_real_workspace_file_text_content_for_read(
     *,
     workspace_entry: WorkspaceEntry,
     runtime_context: ReadOnlyShellRuntimeContext,
@@ -814,7 +844,43 @@ def _extract_chunk_index_from_metadata(entry_metadata: Any) -> int:
     return 10**9
 
 
-async def _list_candidate_workspace_text_files_for_grep(
+async def _list_candidate_shell_text_files_for_grep(
+    *,
+    root_workspace_path: str,
+    raw_pattern: str,
+    should_ignore_case: bool,
+    force_fixed_string_mode: bool,
+    runtime_context: ReadOnlyShellRuntimeContext,
+) -> list[WorkspaceEntry | VirtualWorkspaceEntry]:
+    real_workspace_entries = await _list_candidate_real_workspace_text_files_for_grep(
+        workspace_id=runtime_context.workspace_id,
+        root_workspace_path=root_workspace_path,
+        raw_pattern=raw_pattern,
+        should_ignore_case=should_ignore_case,
+        force_fixed_string_mode=force_fixed_string_mode,
+        database_session=runtime_context.database_session,
+    )
+    virtual_workspace_entries = [
+        virtual_workspace_entry
+        for virtual_workspace_entry in runtime_context.virtual_entries_by_path.values()
+        if virtual_workspace_entry.entry_type == WorkspaceEntryType.file
+        and (
+            virtual_workspace_entry.entry_path == root_workspace_path
+            or virtual_workspace_entry.entry_path.startswith(
+                root_workspace_path.rstrip("/") + "/"
+            )
+            or root_workspace_path == "/"
+        )
+    ]
+    combined_workspace_entries: list[WorkspaceEntry | VirtualWorkspaceEntry] = [
+        *real_workspace_entries,
+        *virtual_workspace_entries,
+    ]
+    combined_workspace_entries.sort(key=lambda workspace_entry: workspace_entry.entry_path)
+    return combined_workspace_entries
+
+
+async def _list_candidate_real_workspace_text_files_for_grep(
     *,
     workspace_id: UUID,
     root_workspace_path: str,
@@ -880,6 +946,64 @@ def _derive_coarse_filter_literal_from_pattern(
 
     regex_meta_characters = set(r".^$*+?{}[]\|()")
     return raw_pattern if not any(character in regex_meta_characters for character in raw_pattern) else None
+
+
+async def _get_shell_entry_by_path(
+    *,
+    entry_path: str,
+    runtime_context: ReadOnlyShellRuntimeContext,
+) -> WorkspaceEntry | VirtualWorkspaceEntry | None:
+    virtual_workspace_entry = runtime_context.virtual_entries_by_path.get(entry_path)
+    if virtual_workspace_entry is not None:
+        return virtual_workspace_entry
+    return await _get_workspace_entry_by_path(
+        workspace_id=runtime_context.workspace_id,
+        entry_path=entry_path,
+        database_session=runtime_context.database_session,
+    )
+
+
+async def _get_shell_entry_children(
+    *,
+    parent_entry: WorkspaceEntry | VirtualWorkspaceEntry,
+    runtime_context: ReadOnlyShellRuntimeContext,
+) -> list[WorkspaceEntry | VirtualWorkspaceEntry]:
+    virtual_children = [
+        virtual_workspace_entry
+        for virtual_workspace_entry in runtime_context.virtual_entries_by_path.values()
+        if virtual_workspace_entry.parent_entry_path == parent_entry.entry_path
+    ]
+    if isinstance(parent_entry, VirtualWorkspaceEntry):
+        return virtual_children
+
+    real_children = await _get_workspace_entry_children(
+        workspace_id=runtime_context.workspace_id,
+        parent_entry_id=parent_entry.id,
+        database_session=runtime_context.database_session,
+    )
+    return [*real_children, *virtual_children]
+
+
+async def _list_shell_entries_under_root(
+    *,
+    root_workspace_path: str,
+    runtime_context: ReadOnlyShellRuntimeContext,
+) -> list[WorkspaceEntry | VirtualWorkspaceEntry]:
+    real_entries = await _list_workspace_entries_under_root(
+        workspace_id=runtime_context.workspace_id,
+        root_workspace_path=root_workspace_path,
+        database_session=runtime_context.database_session,
+    )
+    virtual_entries = [
+        virtual_workspace_entry
+        for virtual_workspace_entry in runtime_context.virtual_entries_by_path.values()
+        if root_workspace_path == "/"
+        or virtual_workspace_entry.entry_path == root_workspace_path
+        or virtual_workspace_entry.entry_path.startswith(root_workspace_path.rstrip("/") + "/")
+    ]
+    combined_entries: list[WorkspaceEntry | VirtualWorkspaceEntry] = [*real_entries, *virtual_entries]
+    combined_entries.sort(key=lambda workspace_entry: workspace_entry.entry_path)
+    return combined_entries
 
 
 async def _get_workspace_entry_by_path(
@@ -963,13 +1087,330 @@ def _workspace_path_depth(entry_path: str) -> int:
     return len([entry_path_part for entry_path_part in entry_path.split("/") if entry_path_part])
 
 
-def _format_ls_entry(*, workspace_entry: WorkspaceEntry, use_long_format: bool) -> str:
+def _format_ls_entry(
+    *,
+    workspace_entry: WorkspaceEntry | VirtualWorkspaceEntry,
+    use_long_format: bool,
+) -> str:
     if not use_long_format:
         return workspace_entry.entry_name
 
     entry_prefix = "d" if workspace_entry.entry_type == WorkspaceEntryType.directory else "-"
     entry_size = workspace_entry.size_bytes or 0
     return f"{entry_prefix} {entry_size:>8} {workspace_entry.entry_name}"
+
+
+async def _build_virtual_learner_entries_by_path(
+    *,
+    workspace_id: UUID,
+    database_session: AsyncSession,
+) -> dict[str, VirtualWorkspaceEntry]:
+    workspace_entry_paths = list(
+        (
+            await database_session.execute(
+                select(WorkspaceEntry.entry_path).where(
+                    WorkspaceEntry.workspace_id == workspace_id
+                )
+            )
+        ).scalars().all()
+    )
+    real_workspace_entry_paths = {
+        _normalize_workspace_path(workspace_entry_path)
+        for workspace_entry_path in workspace_entry_paths
+    }
+
+    courses = list(
+        (
+            await database_session.execute(
+                select(Course).where(Course.workspace_id == workspace_id)
+            )
+        ).scalars().all()
+    )
+    if not courses:
+        return {}
+
+    learner_topic_masteries = list(
+        (
+            await database_session.execute(
+                select(LearnerTopicMastery)
+                .where(LearnerTopicMastery.workspace_id == workspace_id)
+                .order_by(
+                    LearnerTopicMastery.course_id.asc(),
+                    LearnerTopicMastery.topic_key.asc(),
+                )
+            )
+        ).scalars().all()
+    )
+    learner_observations = list(
+        (
+            await database_session.execute(
+                select(LearnerObservation)
+                .where(LearnerObservation.workspace_id == workspace_id)
+                .order_by(LearnerObservation.created_at.desc())
+                .limit(500)
+            )
+        ).scalars().all()
+    )
+
+    learner_topic_masteries_by_course_id: dict[UUID, list[LearnerTopicMastery]] = {}
+    for learner_topic_mastery in learner_topic_masteries:
+        learner_topic_masteries_by_course_id.setdefault(
+            learner_topic_mastery.course_id, []
+        ).append(learner_topic_mastery)
+
+    learner_observations_by_course_id: dict[UUID, list[LearnerObservation]] = {}
+    for learner_observation in learner_observations:
+        learner_observations_by_course_id.setdefault(
+            learner_observation.course_id, []
+        ).append(learner_observation)
+
+    virtual_entries_by_path: dict[str, VirtualWorkspaceEntry] = {}
+    for course in courses:
+        course_root_entry_path = _normalize_workspace_path(course.root_entry_path)
+        learner_root_directory_path = _join_workspace_paths(
+            course_root_entry_path,
+            "__learner__",
+        )
+        topics_directory_path = _join_workspace_paths(learner_root_directory_path, "topics")
+        observations_directory_path = _join_workspace_paths(
+            learner_root_directory_path,
+            "observations",
+        )
+
+        _add_virtual_directory_entry(
+            virtual_entries_by_path=virtual_entries_by_path,
+            real_workspace_entry_paths=real_workspace_entry_paths,
+            entry_path=learner_root_directory_path,
+            parent_entry_path=course_root_entry_path,
+        )
+        _add_virtual_directory_entry(
+            virtual_entries_by_path=virtual_entries_by_path,
+            real_workspace_entry_paths=real_workspace_entry_paths,
+            entry_path=topics_directory_path,
+            parent_entry_path=learner_root_directory_path,
+        )
+        _add_virtual_directory_entry(
+            virtual_entries_by_path=virtual_entries_by_path,
+            real_workspace_entry_paths=real_workspace_entry_paths,
+            entry_path=observations_directory_path,
+            parent_entry_path=learner_root_directory_path,
+        )
+
+        course_topic_masteries = learner_topic_masteries_by_course_id.get(course.id, [])
+        course_observations = learner_observations_by_course_id.get(course.id, [])
+
+        _add_virtual_file_entry(
+            virtual_entries_by_path=virtual_entries_by_path,
+            real_workspace_entry_paths=real_workspace_entry_paths,
+            entry_path=_join_workspace_paths(learner_root_directory_path, "profile.md"),
+            parent_entry_path=learner_root_directory_path,
+            text_content=_render_virtual_course_profile_markdown(
+                course=course,
+                course_topic_masteries=course_topic_masteries,
+            ),
+        )
+        _add_virtual_file_entry(
+            virtual_entries_by_path=virtual_entries_by_path,
+            real_workspace_entry_paths=real_workspace_entry_paths,
+            entry_path=_join_workspace_paths(learner_root_directory_path, "rubric.md"),
+            parent_entry_path=learner_root_directory_path,
+            text_content=_render_virtual_rubric_markdown(),
+        )
+        _add_virtual_file_entry(
+            virtual_entries_by_path=virtual_entries_by_path,
+            real_workspace_entry_paths=real_workspace_entry_paths,
+            entry_path=_join_workspace_paths(observations_directory_path, "recent.md"),
+            parent_entry_path=observations_directory_path,
+            text_content=_render_virtual_recent_observations_markdown(
+                course=course,
+                course_observations=course_observations,
+            ),
+        )
+        for learner_topic_mastery in course_topic_masteries:
+            _add_virtual_file_entry(
+                virtual_entries_by_path=virtual_entries_by_path,
+                real_workspace_entry_paths=real_workspace_entry_paths,
+                entry_path=_join_workspace_paths(
+                    topics_directory_path,
+                    f"{_safe_virtual_file_segment(learner_topic_mastery.topic_key)}.md",
+                ),
+                parent_entry_path=topics_directory_path,
+                text_content=_render_virtual_topic_mastery_markdown(
+                    learner_topic_mastery=learner_topic_mastery,
+                ),
+            )
+
+    return virtual_entries_by_path
+
+
+def _add_virtual_directory_entry(
+    *,
+    virtual_entries_by_path: dict[str, VirtualWorkspaceEntry],
+    real_workspace_entry_paths: set[str],
+    entry_path: str,
+    parent_entry_path: str,
+) -> None:
+    normalized_entry_path = _normalize_workspace_path(entry_path)
+    if normalized_entry_path in real_workspace_entry_paths:
+        return
+    virtual_entries_by_path[normalized_entry_path] = VirtualWorkspaceEntry(
+        entry_path=normalized_entry_path,
+        entry_name=posixpath.basename(normalized_entry_path.rstrip("/")) or "/",
+        entry_type=WorkspaceEntryType.directory,
+        parent_entry_path=_normalize_workspace_path(parent_entry_path),
+        size_bytes=0,
+        text_content=None,
+    )
+
+
+def _add_virtual_file_entry(
+    *,
+    virtual_entries_by_path: dict[str, VirtualWorkspaceEntry],
+    real_workspace_entry_paths: set[str],
+    entry_path: str,
+    parent_entry_path: str,
+    text_content: str,
+) -> None:
+    normalized_entry_path = _normalize_workspace_path(entry_path)
+    if normalized_entry_path in real_workspace_entry_paths:
+        return
+    final_text_content = text_content if text_content.endswith("\n") else text_content + "\n"
+    virtual_entries_by_path[normalized_entry_path] = VirtualWorkspaceEntry(
+        entry_path=normalized_entry_path,
+        entry_name=posixpath.basename(normalized_entry_path),
+        entry_type=WorkspaceEntryType.file,
+        parent_entry_path=_normalize_workspace_path(parent_entry_path),
+        size_bytes=len(final_text_content.encode("utf-8")),
+        text_content=final_text_content,
+    )
+
+
+def _render_virtual_course_profile_markdown(
+    *,
+    course: Course,
+    course_topic_masteries: list[LearnerTopicMastery],
+) -> str:
+    if course_topic_masteries:
+        average_mastery_score = sum(
+            learner_topic_mastery.mastery_score
+            for learner_topic_mastery in course_topic_masteries
+        ) / max(len(course_topic_masteries), 1)
+    else:
+        average_mastery_score = 0.0
+
+    lines = [
+        f"# Learner Profile - {course.display_name}",
+        "",
+        f"- course_root_entry_path: `{course.root_entry_path}`",
+        f"- tracked_topics: `{len(course_topic_masteries)}`",
+        f"- average_mastery_score: `{average_mastery_score:.2f}`",
+        f"- last_activity_at: `{course.last_activity_at.isoformat() if course.last_activity_at else 'unknown'}`",
+        "",
+        "Use this profile as quick context, then read topic files for details.",
+    ]
+    return "\n".join(lines)
+
+
+def _render_virtual_rubric_markdown() -> str:
+    return "\n".join(
+        [
+            "# Mastery Rubric",
+            "",
+            "- 0: No evidence of understanding.",
+            "- 1: Recognizes terms only.",
+            "- 2: Partial procedural understanding.",
+            "- 3: Correct explanation or application in standard cases.",
+            "- 4: Can transfer understanding to connected or harder cases.",
+            "",
+            "Update scores only when there is clear evidence.",
+        ]
+    )
+
+
+def _render_virtual_topic_mastery_markdown(
+    *,
+    learner_topic_mastery: LearnerTopicMastery,
+) -> str:
+    prerequisite_topic_keys = learner_topic_mastery.prerequisite_topic_keys or []
+    lines = [
+        f"# {learner_topic_mastery.topic_title or learner_topic_mastery.topic_key}",
+        "",
+        f"- topic_key: `{learner_topic_mastery.topic_key}`",
+        f"- mastery_score: `{learner_topic_mastery.mastery_score}`",
+        f"- confidence_score: `{learner_topic_mastery.confidence_score}`",
+        f"- times_assessed: `{learner_topic_mastery.times_assessed}`",
+        f"- last_assessed_at: `{learner_topic_mastery.last_assessed_at.isoformat() if learner_topic_mastery.last_assessed_at else 'unknown'}`",
+    ]
+    if prerequisite_topic_keys:
+        lines.append(f"- prerequisite_topic_keys: `{json.dumps(prerequisite_topic_keys)}`")
+    if learner_topic_mastery.strength_notes:
+        lines.extend(["", "## Strength Notes", "", learner_topic_mastery.strength_notes])
+    if learner_topic_mastery.gap_notes:
+        lines.extend(["", "## Gap Notes", "", learner_topic_mastery.gap_notes])
+    if learner_topic_mastery.explanation_strategy:
+        lines.extend(
+            [
+                "",
+                "## Explanation Strategy",
+                "",
+                learner_topic_mastery.explanation_strategy,
+            ]
+        )
+    if learner_topic_mastery.evidence_summary:
+        lines.extend(["", "## Evidence Summary", "", learner_topic_mastery.evidence_summary])
+    return "\n".join(lines)
+
+
+def _render_virtual_recent_observations_markdown(
+    *,
+    course: Course,
+    course_observations: list[LearnerObservation],
+) -> str:
+    lines = [
+        f"# Recent Observations - {course.display_name}",
+        "",
+    ]
+    if not course_observations:
+        lines.append("_No observations yet._")
+        return "\n".join(lines)
+
+    for learner_observation in course_observations[:50]:
+        lines.extend(
+            [
+                f"## {learner_observation.created_at.isoformat()} - {learner_observation.topic_key}",
+                "",
+                learner_observation.observation_text,
+                "",
+            ]
+        )
+        if learner_observation.evidence_excerpt:
+            lines.extend(
+                [
+                    "Evidence excerpt:",
+                    learner_observation.evidence_excerpt,
+                    "",
+                ]
+            )
+        if learner_observation.assessed_mastery_score is not None:
+            lines.append(f"- assessed_mastery_score: `{learner_observation.assessed_mastery_score}`")
+        if learner_observation.assessed_confidence_score is not None:
+            lines.append(
+                f"- assessed_confidence_score: `{learner_observation.assessed_confidence_score}`"
+            )
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _safe_virtual_file_segment(raw_value: str) -> str:
+    normalized_value = re.sub(r"[^a-z0-9._-]+", "-", raw_value.lower()).strip("-")
+    return normalized_value or "topic"
+
+
+def _join_workspace_paths(base_workspace_path: str, child_name: str) -> str:
+    normalized_base_workspace_path = _normalize_workspace_path(base_workspace_path)
+    if normalized_base_workspace_path == "/":
+        return _normalize_workspace_path(f"/{child_name}")
+    return _normalize_workspace_path(f"{normalized_base_workspace_path}/{child_name}")
 
 
 def _build_ero_fs_result(*, command_name: str) -> ReadOnlyShellExecutionResult:

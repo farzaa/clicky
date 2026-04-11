@@ -1,5 +1,7 @@
 import json
 import posixpath
+import re
+from datetime import UTC, datetime
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -11,6 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent.bash_tool import execute_workspace_bash_tool
 from app.agent.contracts import AgentToolCall, AgentToolDefinition, AgentToolResult
 from app.models import (
+    AgentSession,
+    AgentSessionMessage,
+    Course,
+    LearnerObservation,
+    LearnerTopicMastery,
     User,
     Workspace,
     WorkspaceContentType,
@@ -55,6 +62,7 @@ async def execute_tool_call(
         "workspace.write_entry": _write_workspace_entry,
         "workspace.run_bash": _run_workspace_bash,
         "workspace.search_toc": _search_workspace_toc,
+        "learner.record_topic_update": _record_learner_topic_update,
     }
     tool_handler = tool_handlers.get(tool_call.name)
 
@@ -398,6 +406,220 @@ async def _search_workspace_toc(
     )
 
 
+async def _record_learner_topic_update(
+    arguments: dict[str, Any],
+    tool_execution_context: ToolExecutionContext,
+) -> str:
+    workspace = await _get_accessible_workspace(
+        workspace_id_text=arguments.get("workspace_id"),
+        tool_execution_context=tool_execution_context,
+    )
+
+    course_root_entry_path = _normalize_entry_path(arguments.get("course_root_entry_path"))
+    course_root_workspace_entry = await _get_workspace_entry_by_path(
+        workspace_id=workspace.id,
+        entry_path=course_root_entry_path,
+        tool_execution_context=tool_execution_context,
+    )
+    if course_root_workspace_entry.entry_type != WorkspaceEntryType.directory:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="`course_root_entry_path` must point to a directory.",
+        )
+
+    topic_key = _normalize_topic_key(arguments.get("topic_key"))
+    topic_title = _optional_clean_string(arguments.get("topic_title"))
+    mastery_score = _validate_integer_range(
+        value=arguments.get("mastery_score"),
+        field_name="mastery_score",
+        minimum=0,
+        maximum=4,
+    )
+    confidence_score = _validate_integer_range(
+        value=arguments.get("confidence_score", 50),
+        field_name="confidence_score",
+        minimum=0,
+        maximum=100,
+    )
+    strength_notes = _optional_clean_string(arguments.get("strength_notes"))
+    gap_notes = _optional_clean_string(arguments.get("gap_notes"))
+    explanation_strategy = _optional_clean_string(arguments.get("explanation_strategy"))
+    evidence_summary = _optional_clean_string(arguments.get("evidence_summary"))
+
+    prerequisite_topic_keys = arguments.get("prerequisite_topic_keys") or []
+    if not isinstance(prerequisite_topic_keys, list):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="`prerequisite_topic_keys` must be an array of strings.",
+        )
+    normalized_prerequisite_topic_keys = [
+        _normalize_topic_key(prerequisite_topic_key)
+        for prerequisite_topic_key in prerequisite_topic_keys
+    ]
+
+    should_append_observation = arguments.get("should_append_observation", True)
+    if not isinstance(should_append_observation, bool):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="`should_append_observation` must be a boolean.",
+        )
+
+    observation_text = _optional_clean_string(arguments.get("observation_text"))
+    evidence_excerpt = _optional_clean_string(arguments.get("evidence_excerpt"))
+    topic_update_metadata = arguments.get("metadata") or {}
+    if not isinstance(topic_update_metadata, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="`metadata` must be an object.",
+        )
+
+    now = datetime.now(UTC)
+    course_display_name = _optional_clean_string(arguments.get("course_display_name"))
+    if not course_display_name:
+        course_display_name = (
+            course_root_workspace_entry.entry_name
+            if course_root_workspace_entry.entry_path != "/"
+            else "Workspace Course"
+        )
+
+    existing_course_query = select(Course).where(
+        and_(
+            Course.workspace_id == workspace.id,
+            Course.root_entry_path == course_root_entry_path,
+        )
+    )
+    course = (
+        await tool_execution_context.database_session.execute(existing_course_query)
+    ).scalar_one_or_none()
+    if course is None:
+        course = Course(
+            workspace_id=workspace.id,
+            created_by_user_id=tool_execution_context.current_user.id,
+            display_name=course_display_name,
+            root_entry_path=course_root_entry_path,
+            last_activity_at=now,
+            course_metadata={},
+        )
+        tool_execution_context.database_session.add(course)
+        await tool_execution_context.database_session.flush()
+    else:
+        course.display_name = course_display_name
+        course.last_activity_at = now
+
+    existing_topic_mastery_query = select(LearnerTopicMastery).where(
+        and_(
+            LearnerTopicMastery.course_id == course.id,
+            LearnerTopicMastery.topic_key == topic_key,
+        )
+    )
+    topic_mastery = (
+        await tool_execution_context.database_session.execute(existing_topic_mastery_query)
+    ).scalar_one_or_none()
+    if topic_mastery is None:
+        topic_mastery = LearnerTopicMastery(
+            workspace_id=workspace.id,
+            course_id=course.id,
+            created_by_user_id=tool_execution_context.current_user.id,
+            updated_by_user_id=tool_execution_context.current_user.id,
+            topic_key=topic_key,
+            topic_title=topic_title or topic_key,
+            mastery_score=mastery_score,
+            confidence_score=confidence_score,
+            strength_notes=strength_notes,
+            gap_notes=gap_notes,
+            explanation_strategy=explanation_strategy,
+            prerequisite_topic_keys=normalized_prerequisite_topic_keys,
+            evidence_summary=evidence_summary,
+            times_assessed=1,
+            last_assessed_at=now,
+            mastery_metadata=topic_update_metadata,
+        )
+        tool_execution_context.database_session.add(topic_mastery)
+    else:
+        topic_mastery.updated_by_user_id = tool_execution_context.current_user.id
+        topic_mastery.topic_title = topic_title or topic_mastery.topic_title or topic_key
+        topic_mastery.mastery_score = mastery_score
+        topic_mastery.confidence_score = confidence_score
+        topic_mastery.strength_notes = strength_notes
+        topic_mastery.gap_notes = gap_notes
+        topic_mastery.explanation_strategy = explanation_strategy
+        topic_mastery.prerequisite_topic_keys = normalized_prerequisite_topic_keys
+        topic_mastery.evidence_summary = evidence_summary
+        topic_mastery.times_assessed = int(topic_mastery.times_assessed) + 1
+        topic_mastery.last_assessed_at = now
+        topic_mastery.mastery_metadata = topic_update_metadata
+
+    await tool_execution_context.database_session.flush()
+
+    agent_session_id = await _validate_optional_agent_session_id(
+        value=arguments.get("agent_session_id"),
+        workspace=workspace,
+        tool_execution_context=tool_execution_context,
+    )
+    agent_session_message_id = await _validate_optional_agent_session_message_id(
+        value=arguments.get("agent_session_message_id"),
+        workspace=workspace,
+        tool_execution_context=tool_execution_context,
+    )
+
+    learner_observation: LearnerObservation | None = None
+    if should_append_observation:
+        final_observation_text = observation_text or _build_default_observation_text(
+            topic_key=topic_key,
+            mastery_score=mastery_score,
+            confidence_score=confidence_score,
+            strength_notes=strength_notes,
+            gap_notes=gap_notes,
+        )
+        learner_observation = LearnerObservation(
+            workspace_id=workspace.id,
+            course_id=course.id,
+            topic_mastery_id=topic_mastery.id,
+            created_by_user_id=tool_execution_context.current_user.id,
+            agent_session_id=agent_session_id,
+            agent_session_message_id=agent_session_message_id,
+            topic_key=topic_key,
+            observation_text=final_observation_text,
+            evidence_excerpt=evidence_excerpt,
+            assessed_mastery_score=mastery_score,
+            assessed_confidence_score=confidence_score,
+            observation_metadata=topic_update_metadata,
+        )
+        tool_execution_context.database_session.add(learner_observation)
+
+    await tool_execution_context.database_session.commit()
+
+    return json.dumps(
+        {
+            "workspace_id": str(workspace.id),
+            "course_id": str(course.id),
+            "course_display_name": course.display_name,
+            "course_root_entry_path": course.root_entry_path,
+            "topic_mastery": {
+                "id": str(topic_mastery.id),
+                "topic_key": topic_mastery.topic_key,
+                "topic_title": topic_mastery.topic_title,
+                "mastery_score": topic_mastery.mastery_score,
+                "confidence_score": topic_mastery.confidence_score,
+                "times_assessed": topic_mastery.times_assessed,
+                "last_assessed_at": (
+                    topic_mastery.last_assessed_at.isoformat()
+                    if topic_mastery.last_assessed_at
+                    else None
+                ),
+            },
+            "observation_id": str(learner_observation.id) if learner_observation else None,
+            "scoring_rubric": {
+                "0": "No evidence of understanding",
+                "1": "Recognizes terms only",
+                "2": "Partial procedural understanding",
+                "3": "Can explain/apply correctly in standard cases",
+                "4": "Can transfer understanding to connected or harder cases",
+            },
+        }
+    )
+
+
 async def _get_accessible_workspace(
     *,
     workspace_id_text: str | None,
@@ -479,6 +701,148 @@ def _normalize_entry_path(entry_path_value: Any) -> str:
     absolute_entry_path = raw_entry_path if raw_entry_path.startswith("/") else f"/{raw_entry_path}"
     normalized_entry_path = posixpath.normpath(absolute_entry_path)
     return "/" if normalized_entry_path in {".", "/"} else normalized_entry_path
+
+
+def _normalize_topic_key(topic_key_value: Any) -> str:
+    if not isinstance(topic_key_value, str) or not topic_key_value.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="`topic_key` must be a non-empty string.",
+        )
+    normalized_topic_key = re.sub(r"[^a-z0-9]+", "-", topic_key_value.lower()).strip("-")
+    if not normalized_topic_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="`topic_key` must contain letters or digits.",
+        )
+    return normalized_topic_key
+
+
+def _optional_clean_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Expected a string value.",
+        )
+    cleaned_value = value.strip()
+    return cleaned_value if cleaned_value else None
+
+
+def _validate_integer_range(
+    *,
+    value: Any,
+    field_name: str,
+    minimum: int,
+    maximum: int,
+) -> int:
+    if not isinstance(value, int):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"`{field_name}` must be an integer between {minimum} and {maximum}.",
+        )
+    if value < minimum or value > maximum:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"`{field_name}` must be an integer between {minimum} and {maximum}.",
+        )
+    return value
+
+
+def _build_default_observation_text(
+    *,
+    topic_key: str,
+    mastery_score: int,
+    confidence_score: int,
+    strength_notes: str | None,
+    gap_notes: str | None,
+) -> str:
+    summary_parts = [
+        f"Topic `{topic_key}` assessed at mastery {mastery_score}/4",
+        f"with confidence {confidence_score}/100.",
+    ]
+    if strength_notes:
+        summary_parts.append(f"Strength: {strength_notes}")
+    if gap_notes:
+        summary_parts.append(f"Gap: {gap_notes}")
+    return " ".join(summary_parts)
+
+
+async def _validate_optional_agent_session_id(
+    *,
+    value: Any,
+    workspace: Workspace,
+    tool_execution_context: ToolExecutionContext,
+) -> UUID | None:
+    if value in {None, ""}:
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="`agent_session_id` must be a UUID string.",
+        )
+    try:
+        agent_session_id = UUID(value)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid agent_session_id `{value}`.",
+        ) from error
+
+    agent_session_query = select(AgentSession.id).where(
+        and_(
+            AgentSession.id == agent_session_id,
+            AgentSession.workspace_id == workspace.id,
+        )
+    )
+    existing_agent_session_id = (
+        await tool_execution_context.database_session.execute(agent_session_query)
+    ).scalar_one_or_none()
+    if existing_agent_session_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="agent_session_id not found in this workspace.",
+        )
+    return agent_session_id
+
+
+async def _validate_optional_agent_session_message_id(
+    *,
+    value: Any,
+    workspace: Workspace,
+    tool_execution_context: ToolExecutionContext,
+) -> UUID | None:
+    if value in {None, ""}:
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="`agent_session_message_id` must be a UUID string.",
+        )
+    try:
+        agent_session_message_id = UUID(value)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid agent_session_message_id `{value}`.",
+        ) from error
+
+    agent_session_message_query = select(AgentSessionMessage.id).where(
+        and_(
+            AgentSessionMessage.id == agent_session_message_id,
+            AgentSessionMessage.workspace_id == workspace.id,
+        )
+    )
+    existing_agent_session_message_id = (
+        await tool_execution_context.database_session.execute(agent_session_message_query)
+    ).scalar_one_or_none()
+    if existing_agent_session_message_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="agent_session_message_id not found in this workspace.",
+        )
+    return agent_session_message_id
 
 
 def _collect_workspace_toc_matches(

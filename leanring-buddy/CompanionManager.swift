@@ -1156,6 +1156,11 @@ final class CompanionManager: ObservableObject {
     3) if needed, read nearby pages (`page_start-1`, `page_start`, `page_start+1`) before answering.
     do not claim a page says something unless you actually read that page content with `cat`.
     do not use `cd`; pass absolute paths directly to `ls`, `find`, `cat`, `grep`, and `rg`.
+    learner memory:
+    - each course folder may include a synthetic read-only `__learner__` directory with profile/topic notes.
+    - use `workspace.run_bash` with `cat`/`rg` to read `__learner__` before teaching new topics.
+    - when you have strong evidence from the student's answer, call `learner.record_topic_update`.
+    - update mastery_score only with evidence, and keep scores stable unless there is clear new signal.
     """
 
     // MARK: - AI Response Pipeline
@@ -1243,7 +1248,6 @@ final class CompanionManager: ObservableObject {
                     } catch {
                         DebAnalytics.trackTTSError(error: error.localizedDescription)
                         print("⚠️ ElevenLabs TTS error: \(error)")
-                        speakCreditsErrorFallback()
                     }
                 }
             } catch is CancellationError {
@@ -1251,7 +1255,6 @@ final class CompanionManager: ObservableObject {
             } catch {
                 DebAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
-                speakCreditsErrorFallback()
             }
 
             if !Task.isCancelled {
@@ -1341,6 +1344,7 @@ final class CompanionManager: ObservableObject {
             "companion.speak",
             "workspace.run_bash",
             "workspace.search_toc",
+            "learner.record_topic_update",
         ]
         return toolsPayload.filter { toolPayload in
             guard let toolName = toolPayload["name"] as? String else {
@@ -1381,7 +1385,7 @@ final class CompanionManager: ObservableObject {
             "provider": "openai_responses",
             "workspace_id": workspaceID,
             "system_message": Self.companionVoiceResponseSystemPrompt
-                + "\nworkspace tool context: use `workspace.search_toc` to narrow to section/page candidates, then use `workspace.run_bash` + `cat /...__ingested/pages/page-XXXX.md` to verify real page text before answering. always pass workspace_id `\(workspaceID)`.",
+                + "\nworkspace tool context: use `workspace.search_toc` to narrow to section/page candidates, then use `workspace.run_bash` + `cat /...__ingested/pages/page-XXXX.md` to verify real page text before answering. always pass workspace_id `\(workspaceID)`. for learner updates, use `learner.record_topic_update` with `course_root_entry_path` set to the course directory path.",
             "messages": messages,
             "tools": tools,
             "tool_choice": "auto",
@@ -1701,16 +1705,6 @@ final class CompanionManager: ObservableObject {
             overlayWindowManager.fadeOutAndHideOverlay()
             isOverlayVisible = false
         }
-    }
-
-    /// Speaks a hardcoded error message using macOS system TTS when API
-    /// credits run out. Uses NSSpeechSynthesizer so it works even when
-    /// ElevenLabs is down.
-    private func speakCreditsErrorFallback() {
-        let utterance = "I'm all out of credits. Please DM Farza and tell him to bring Deb back to life."
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
-        voiceState = .responding
     }
 
     // MARK: - Point Tag Parsing

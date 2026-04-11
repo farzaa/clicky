@@ -120,6 +120,52 @@ def build_workspace_toc_search_tool_definition() -> AgentToolDefinition:
     )
 
 
+def build_learner_record_topic_update_tool_definition() -> AgentToolDefinition:
+    return AgentToolDefinition(
+        name="learner.record_topic_update",
+        description=(
+            "Upsert learner mastery for one topic and optionally append a learner observation. "
+            "Use this after you gather evidence from the student's answers. "
+            "Scoring rubric for `mastery_score`: "
+            "0=no evidence, 1=term recognition only, 2=partial procedure, "
+            "3=correct standard application, 4=transfer to harder/connected cases."
+        ),
+        input_json_schema={
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string"},
+                "course_root_entry_path": {"type": "string"},
+                "course_display_name": {"type": "string"},
+                "topic_key": {"type": "string"},
+                "topic_title": {"type": "string"},
+                "mastery_score": {"type": "integer", "minimum": 0, "maximum": 4},
+                "confidence_score": {"type": "integer", "minimum": 0, "maximum": 100},
+                "strength_notes": {"type": "string"},
+                "gap_notes": {"type": "string"},
+                "explanation_strategy": {"type": "string"},
+                "prerequisite_topic_keys": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "evidence_summary": {"type": "string"},
+                "observation_text": {"type": "string"},
+                "evidence_excerpt": {"type": "string"},
+                "should_append_observation": {"type": "boolean"},
+                "agent_session_id": {"type": "string"},
+                "agent_session_message_id": {"type": "string"},
+                "metadata": {"type": "object"},
+            },
+            "required": [
+                "workspace_id",
+                "course_root_entry_path",
+                "topic_key",
+                "mastery_score",
+            ],
+            "additionalProperties": False,
+        },
+    )
+
+
 @agent_router.get("/tools", response_model=list[AgentToolDefinition])
 async def list_backend_agent_tools(
     current_user: User = Depends(get_current_user),
@@ -167,6 +213,7 @@ async def list_backend_agent_tools(
         ),
         build_workspace_bash_tool_definition(),
         build_workspace_toc_search_tool_definition(),
+        build_learner_record_topic_update_tool_definition(),
     ]
 
 

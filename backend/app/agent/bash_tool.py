@@ -68,7 +68,8 @@ def build_workspace_bash_tool_definition() -> AgentToolDefinition:
         description=(
             "Run a read-only shell script against a Postgres-backed workspace "
             "filesystem. Supports only cheap inspection commands: `pwd`, `ls`, "
-            "`find`, `cat`, `grep`, and `rg`. Write operations return EROFS."
+            "`find`, `cat`, `grep`, and `rg`. Write operations return EROFS. "
+            "Course directories may expose synthetic read-only `__learner__` notes."
         ),
         input_json_schema={
             "type": "object",

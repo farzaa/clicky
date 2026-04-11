@@ -118,6 +118,20 @@ class User(Base, TimestampedModel):
     created_workspace_entries: Mapped[list["WorkspaceEntry"]] = relationship(
         back_populates="created_by_user",
     )
+    created_courses: Mapped[list["Course"]] = relationship(
+        back_populates="created_by_user",
+    )
+    created_learner_topic_masteries: Mapped[list["LearnerTopicMastery"]] = relationship(
+        back_populates="created_by_user",
+        foreign_keys="LearnerTopicMastery.created_by_user_id",
+    )
+    updated_learner_topic_masteries: Mapped[list["LearnerTopicMastery"]] = relationship(
+        back_populates="updated_by_user",
+        foreign_keys="LearnerTopicMastery.updated_by_user_id",
+    )
+    created_learner_observations: Mapped[list["LearnerObservation"]] = relationship(
+        back_populates="created_by_user",
+    )
     created_agents: Mapped[list["Agent"]] = relationship(
         back_populates="created_by_user",
     )
@@ -184,6 +198,18 @@ class Workspace(Base, TimestampedModel):
         back_populates="workspace",
         cascade="all, delete-orphan",
     )
+    courses: Mapped[list["Course"]] = relationship(
+        back_populates="workspace",
+        cascade="all, delete-orphan",
+    )
+    learner_topic_masteries: Mapped[list["LearnerTopicMastery"]] = relationship(
+        back_populates="workspace",
+        cascade="all, delete-orphan",
+    )
+    learner_observations: Mapped[list["LearnerObservation"]] = relationship(
+        back_populates="workspace",
+        cascade="all, delete-orphan",
+    )
     agents: Mapped[list["Agent"]] = relationship(
         back_populates="workspace",
         cascade="all, delete-orphan",
@@ -199,6 +225,272 @@ class Workspace(Base, TimestampedModel):
     ingestion_jobs: Mapped[list["WorkspaceIngestionJob"]] = relationship(
         back_populates="workspace",
         cascade="all, delete-orphan",
+    )
+
+
+class Course(Base, TimestampedModel):
+    __tablename__ = "courses"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "root_entry_path",
+            name="uq_courses_workspace_root_entry_path",
+        ),
+        Index(
+            "ix_courses_workspace_updated_at",
+            "workspace_id",
+            "updated_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    display_name: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+    root_entry_path: Mapped[str] = mapped_column(
+        String(4096),
+        nullable=False,
+    )
+    last_activity_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    course_metadata: Mapped[dict] = mapped_column(
+        JSONB,
+        default=dict,
+        nullable=False,
+    )
+
+    workspace: Mapped["Workspace"] = relationship(back_populates="courses")
+    created_by_user: Mapped["User | None"] = relationship(
+        back_populates="created_courses",
+    )
+    learner_topic_masteries: Mapped[list["LearnerTopicMastery"]] = relationship(
+        back_populates="course",
+        cascade="all, delete-orphan",
+    )
+    learner_observations: Mapped[list["LearnerObservation"]] = relationship(
+        back_populates="course",
+        cascade="all, delete-orphan",
+    )
+
+
+class LearnerTopicMastery(Base, TimestampedModel):
+    __tablename__ = "learner_topic_masteries"
+    __table_args__ = (
+        UniqueConstraint(
+            "course_id",
+            "topic_key",
+            name="uq_learner_topic_masteries_course_topic_key",
+        ),
+        Index(
+            "ix_learner_topic_masteries_workspace_course",
+            "workspace_id",
+            "course_id",
+        ),
+        Index(
+            "ix_learner_topic_masteries_course_updated_at",
+            "course_id",
+            "updated_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    course_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("courses.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    updated_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    topic_key: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+    topic_title: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    mastery_score: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+    confidence_score: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+    strength_notes: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    gap_notes: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    explanation_strategy: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    prerequisite_topic_keys: Mapped[list] = mapped_column(
+        JSONB,
+        default=list,
+        nullable=False,
+    )
+    evidence_summary: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    times_assessed: Mapped[int] = mapped_column(
+        BigInteger,
+        default=1,
+        nullable=False,
+    )
+    last_assessed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    mastery_metadata: Mapped[dict] = mapped_column(
+        JSONB,
+        default=dict,
+        nullable=False,
+    )
+
+    workspace: Mapped["Workspace"] = relationship(back_populates="learner_topic_masteries")
+    course: Mapped["Course"] = relationship(back_populates="learner_topic_masteries")
+    created_by_user: Mapped["User | None"] = relationship(
+        back_populates="created_learner_topic_masteries",
+        foreign_keys=[created_by_user_id],
+    )
+    updated_by_user: Mapped["User | None"] = relationship(
+        back_populates="updated_learner_topic_masteries",
+        foreign_keys=[updated_by_user_id],
+    )
+    learner_observations: Mapped[list["LearnerObservation"]] = relationship(
+        back_populates="topic_mastery",
+    )
+
+
+class LearnerObservation(Base, TimestampedModel):
+    __tablename__ = "learner_observations"
+    __table_args__ = (
+        Index(
+            "ix_learner_observations_workspace_created_at",
+            "workspace_id",
+            "created_at",
+        ),
+        Index(
+            "ix_learner_observations_course_created_at",
+            "course_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    course_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("courses.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    topic_mastery_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("learner_topic_masteries.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    agent_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    agent_session_message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_session_messages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    topic_key: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+    observation_text: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+    evidence_excerpt: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    assessed_mastery_score: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+    assessed_confidence_score: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+    observation_metadata: Mapped[dict] = mapped_column(
+        JSONB,
+        default=dict,
+        nullable=False,
+    )
+
+    workspace: Mapped["Workspace"] = relationship(back_populates="learner_observations")
+    course: Mapped["Course"] = relationship(back_populates="learner_observations")
+    topic_mastery: Mapped["LearnerTopicMastery | None"] = relationship(
+        back_populates="learner_observations",
+    )
+    created_by_user: Mapped["User | None"] = relationship(
+        back_populates="created_learner_observations",
+    )
+    agent_session: Mapped["AgentSession | None"] = relationship(
+        back_populates="learner_observations",
+    )
+    agent_session_message: Mapped["AgentSessionMessage | None"] = relationship(
+        back_populates="learner_observations",
     )
 
 
@@ -567,6 +859,9 @@ class AgentSession(Base, TimestampedModel):
         back_populates="agent_session",
         cascade="all, delete-orphan",
     )
+    learner_observations: Mapped[list["LearnerObservation"]] = relationship(
+        back_populates="agent_session",
+    )
 
 
 class AgentSessionMessage(Base, TimestampedModel):
@@ -662,4 +957,7 @@ class AgentSessionMessage(Base, TimestampedModel):
     agent_session: Mapped["AgentSession"] = relationship(back_populates="messages")
     created_by_user: Mapped["User | None"] = relationship(
         back_populates="created_agent_session_messages",
+    )
+    learner_observations: Mapped[list["LearnerObservation"]] = relationship(
+        back_populates="agent_session_message",
     )
