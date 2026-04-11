@@ -1,89 +1,28 @@
-//
-//  leanring_buddyApp.swift
-//  leanring-buddy
-//
-//  Menu bar-only companion app. No dock icon, no main window — just an
-//  always-available status item in the macOS menu bar. Clicking the icon
-//  opens a floating panel with companion voice controls.
-//
-
-import ServiceManagement
 import SwiftUI
-import Sparkle
 
 @main
 struct leanring_buddyApp: App {
-    @NSApplicationDelegateAdaptor(CompanionAppDelegate.self) var appDelegate
+    @NSApplicationDelegateAdaptor(MenuBarAppDelegate.self) private var appDelegate
+    @StateObject private var frontendStore = DebilFrontendStore()
 
     var body: some Scene {
-        // The app lives entirely in the menu bar panel managed by the AppDelegate.
-        // This empty Settings scene satisfies SwiftUI's requirement for at least
-        // one scene but is never shown (LSUIElement=true removes the app menu).
-        Settings {
-            EmptyView()
+        MenuBarExtra {
+            DebilRootView()
+                .environmentObject(frontendStore)
+                .background(DS.background)
+                .preferredColorScheme(.dark)
+                .frame(
+                    minWidth: 380,
+                    idealWidth: 420,
+                    maxWidth: 540,
+                    minHeight: 460,
+                    idealHeight: 560,
+                    maxHeight: 820
+                )
+        } label: {
+            Image(systemName: "cursorarrow")
+                .accessibilityLabel("Debil")
         }
-    }
-}
-
-/// Manages the companion lifecycle: creates the menu bar panel and starts
-/// the companion voice pipeline on launch.
-@MainActor
-final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
-    private var menuBarPanelManager: MenuBarPanelManager?
-    private let companionManager = CompanionManager()
-    private var sparkleUpdaterController: SPUStandardUpdaterController?
-
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        print("🎯 Deb: Starting...")
-        print("🎯 Deb: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
-
-        UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
-
-        DebAnalytics.configure()
-        DebAnalytics.trackAppOpened()
-
-        menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
-        companionManager.start()
-        // Auto-open the panel if the user still needs to do something:
-        // either they haven't onboarded yet, or permissions were revoked.
-        if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
-            menuBarPanelManager?.showPanelOnLaunch()
-        }
-        registerAsLoginItemIfNeeded()
-        // startSparkleUpdater()
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        companionManager.stop()
-    }
-
-    /// Registers the app as a login item so it launches automatically on
-    /// startup. Uses SMAppService which shows the app in System Settings >
-    /// General > Login Items, letting the user toggle it off if they want.
-    private func registerAsLoginItemIfNeeded() {
-        let loginItemService = SMAppService.mainApp
-        if loginItemService.status != .enabled {
-            do {
-                try loginItemService.register()
-                print("🎯 Deb: Registered as login item")
-            } catch {
-                print("⚠️ Deb: Failed to register as login item: \(error)")
-            }
-        }
-    }
-
-    private func startSparkleUpdater() {
-        let updaterController = SPUStandardUpdaterController(
-            startingUpdater: false,
-            updaterDelegate: nil,
-            userDriverDelegate: nil
-        )
-        self.sparkleUpdaterController = updaterController
-
-        do {
-            try updaterController.updater.start()
-        } catch {
-            print("⚠️ Deb: Sparkle updater failed to start: \(error)")
-        }
+        .menuBarExtraStyle(.window)
     }
 }

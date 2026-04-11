@@ -6,6 +6,7 @@ from app.parsing.service import parse_document_to_markdown
 parse_router = APIRouter(prefix="/parse", tags=["parsing"])
 
 
+@parse_router.get("")
 @parse_router.get("/")
 async def parsing_root() -> dict[str, str]:
     return {
@@ -14,6 +15,7 @@ async def parsing_root() -> dict[str, str]:
     }
 
 
+@parse_router.post("", response_model=ParseDocumentResponse)
 @parse_router.post("/", response_model=ParseDocumentResponse)
 async def parse_document(parse_document_request: ParseDocumentRequest):
     return await parse_document_to_markdown(parse_document_request)

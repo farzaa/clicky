@@ -1,0 +1,9 @@
+faster-whisper
+mss
+sounddevice
+numpy
+scipy
+Pillow
+pyautogui
+python-dotenv
+av
