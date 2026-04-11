@@ -74,6 +74,7 @@ struct WorkspacePanelEntry: Identifiable {
 final class CompanionManager: ObservableObject {
     private static let backendAgentAuthTokenUserDefaultsKey = "backendAgentAuthToken"
     private static let backendAgentWorkspaceIDUserDefaultsKey = "backendAgentWorkspaceID"
+    private static let backendAgentSessionIDUserDefaultsKey = "backendAgentSessionID"
 
     @Published private(set) var voiceState: CompanionVoiceState = .idle
     @Published private(set) var lastTranscript: String?
@@ -149,6 +150,9 @@ final class CompanionManager: ObservableObject {
     )
     private var backendAgentWorkspaceID: String? = UserDefaults.standard.string(
         forKey: backendAgentWorkspaceIDUserDefaultsKey
+    )
+    private var backendAgentSessionID: String? = UserDefaults.standard.string(
+        forKey: backendAgentSessionIDUserDefaultsKey
     )
     private var cachedBackendAgentTools: [[String: Any]]?
 
@@ -706,6 +710,8 @@ final class CompanionManager: ObservableObject {
         // Reset backend conversation memory so the next `/agent/runs` call
         // starts from a clean context while keeping auth/workspace selection.
         backendAgentConversationMessages = []
+        backendAgentSessionID = nil
+        UserDefaults.standard.removeObject(forKey: Self.backendAgentSessionIDUserDefaultsKey)
         workspaceErrorMessage = nil
         workspaceStatusMessage = "Started a new session."
     }
@@ -1057,6 +1063,11 @@ final class CompanionManager: ObservableObject {
         accessToken: String,
         workspaceID: String
     ) {
+        if backendAgentWorkspaceID != workspaceID {
+            backendAgentSessionID = nil
+            backendAgentConversationMessages = []
+            UserDefaults.standard.removeObject(forKey: Self.backendAgentSessionIDUserDefaultsKey)
+        }
         backendAgentAuthToken = accessToken
         backendAgentWorkspaceID = workspaceID
         UserDefaults.standard.set(accessToken, forKey: Self.backendAgentAuthTokenUserDefaultsKey)
@@ -1066,9 +1077,11 @@ final class CompanionManager: ObservableObject {
     private func clearBackendSession() {
         backendAgentAuthToken = nil
         backendAgentWorkspaceID = nil
+        backendAgentSessionID = nil
         cachedBackendAgentTools = nil
         UserDefaults.standard.removeObject(forKey: Self.backendAgentAuthTokenUserDefaultsKey)
         UserDefaults.standard.removeObject(forKey: Self.backendAgentWorkspaceIDUserDefaultsKey)
+        UserDefaults.standard.removeObject(forKey: Self.backendAgentSessionIDUserDefaultsKey)
     }
 
     private func clearWorkspacePanelSessionState() {
@@ -1191,6 +1204,14 @@ final class CompanionManager: ObservableObject {
                         )
                     }
                     conversationMessages = responseMessages
+                    if let responseAgentSessionID = runResponsePayload["agent_session_id"] as? String,
+                       !responseAgentSessionID.isEmpty {
+                        backendAgentSessionID = responseAgentSessionID
+                        UserDefaults.standard.set(
+                            responseAgentSessionID,
+                            forKey: Self.backendAgentSessionIDUserDefaultsKey
+                        )
+                    }
                     finalOutputText = runResponsePayload["final_output_text"] as? String ?? ""
                     let responseStatus = runResponsePayload["status"] as? String ?? "completed"
 
@@ -1356,19 +1377,25 @@ final class CompanionManager: ObservableObject {
         tools: [[String: Any]],
         workspaceID: String
     ) async throws -> [String: Any] {
+        var runRequestPayload: [String: Any] = [
+            "provider": "openai_responses",
+            "workspace_id": workspaceID,
+            "system_message": Self.companionVoiceResponseSystemPrompt
+                + "\nworkspace tool context: use `workspace.search_toc` to narrow to section/page candidates, then use `workspace.run_bash` + `cat /...__ingested/pages/page-XXXX.md` to verify real page text before answering. always pass workspace_id `\(workspaceID)`.",
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+            "max_iterations": 8,
+        ]
+        if let backendAgentSessionID, !backendAgentSessionID.isEmpty {
+            runRequestPayload["agent_session_id"] = backendAgentSessionID
+        }
+
         return try await sendBackendJSONRequest(
             path: "/agent/runs",
             method: "POST",
             accessToken: accessToken,
-            jsonBody: [
-                "provider": "openai_responses",
-                "system_message": Self.companionVoiceResponseSystemPrompt
-                    + "\nworkspace tool context: use `workspace.search_toc` to narrow to section/page candidates, then use `workspace.run_bash` + `cat /...__ingested/pages/page-XXXX.md` to verify real page text before answering. always pass workspace_id `\(workspaceID)`.",
-                "messages": messages,
-                "tools": tools,
-                "tool_choice": "auto",
-                "max_iterations": 8,
-            ]
+            jsonBody: runRequestPayload
         )
     }
 

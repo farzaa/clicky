@@ -17,7 +17,7 @@ All API keys live on a hosted backend — nothing sensitive ships in the app. Th
 - **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via hosted backend with SSE streaming
 - **Speech-to-Text**: OpenAI audio transcription (`whisper-1` by default) via hosted backend upload proxy, with Apple Speech as the local fallback
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via hosted backend
-- **Backend Storage**: Postgres via async SQLAlchemy for users, workspaces, saved agents, memberships, virtual filesystem entries, and workspace ingestion jobs
+- **Backend Storage**: Postgres via async SQLAlchemy for users, workspaces, saved agents, agent sessions, persisted agent session messages, memberships, virtual filesystem entries, and workspace ingestion jobs
 - **Backend Auth**: Email/password auth with bearer sessions stored in Postgres
 - **Backend Agent Loop**: FastAPI-hosted iterative agent loop with OpenAI Responses and OpenRouter provider adapters, abortable runs, multimodal screenshot message support, backend-owned tools (including `companion.point`), a read-only Postgres-backed workspace shell surface (`pwd`/`ls`/`find`/`cat`/`grep`/`rg`), and dedicated semantic lookup tools (for example TOC search)
 - **Saved Agents**: Each workspace is seeded with a default Deb agent row in Postgres that stores a reusable system prompt, provider, and model
@@ -54,7 +54,7 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_I
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1600 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, overlay management, and workspace panel state. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, cursor visibility, backend auth session, workspace directory listing, file preview, and uploads. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline plus workspace auth/browse/upload flows. |
+| `CompanionManager.swift` | ~1970 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, overlay management, and workspace panel state. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, cursor visibility, backend auth/session IDs, workspace directory listing, file preview, and uploads. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline plus workspace auth/browse/upload flows. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
 | `CompanionPanelView.swift` | ~1010 | SwiftUI panel content for the menu bar dropdown. Includes Voice and Workspace panel modes, with companion status, push-to-talk instructions, permissions UI, DM feedback button, and quit button in Voice mode, plus workspace sign-in/register, file browser, upload picker, and file preview in Workspace mode. Dark aesthetic using `DS` design system. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
@@ -75,14 +75,14 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_I
 | `DebAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~32 | Runtime configuration reader for keys stored in the app bundle Info.plist, including `DebBackendBaseURL`. |
-| `backend/app/agent/contracts.py` | ~70 | Shared agent request/response models, message/tool types, and run status shapes. |
+| `backend/app/agent/contracts.py` | ~140 | Shared agent request/response models, including run/message/tool schemas plus persisted session/message history responses. |
 | `backend/app/agent/defaults.py` | ~10 | Default Deb agent settings, including the saved system prompt, provider, and model used when seeding new workspaces. |
 | `backend/app/agent/bash_tool.py` | ~1240 | Backend workspace shell entrypoint. Validates workspace access and delegates to the read-only Postgres shell executor; write attempts return EROFS and no workspace mutation occurs. |
 | `backend/app/agent/postgres_readonly_shell.py` | ~980 | Read-only PostgresFs command executor. Intercepts `pwd`, `ls`, `find`, `cat`, `grep`, and `rg`, performs SQL-backed coarse filtering for grep-like search, and reconstructs chunked files lazily on access. |
 | `backend/app/agent/postgres_workspace_filesystem.mjs` | ~160 | Custom `just-bash` filesystem implementation backed by serialized workspace entries instead of disk. Delegates shell filesystem calls to an in-memory virtual tree and exports a snapshot for Postgres persistence. |
 | `backend/app/agent/just_bash_runner.mjs` | ~60 | Small Node runner that executes `just-bash` against the custom Postgres-workspace filesystem and returns structured stdout/stderr/exit code JSON plus the final filesystem snapshot to the Python backend. |
-| `backend/app/agent/router.py` | ~125 | FastAPI routes for running, aborting, and discovering backend agent tools, including `companion.point`, `workspace.run_bash`, and `workspace.search_toc`. |
-| `backend/app/agent/loop/service.py` | ~140 | Core iterative agent loop that calls providers, executes tools, and supports abortable runs. |
+| `backend/app/agent/router.py` | ~294 | FastAPI routes for running/aborting agent loops, listing backend tools, and fetching workspace agent sessions and persisted session message history. |
+| `backend/app/agent/loop/service.py` | ~667 | Core iterative agent loop that calls providers, executes tools, supports abortable runs, and persists session/message history into Postgres (`agent_sessions` + `agent_session_messages`). |
 | `backend/app/agent/loop/tool_handler.py` | ~620 | Backend-owned tool execution for `companion.point`, `workspace.run_bash`, and `workspace.search_toc`, including TOC artifact scanning for ingested document bundles. |
 | `backend/app/agent/loop/abort_registry.py` | ~50 | In-memory run registry that tracks abort requests and attached asyncio tasks. |
 | `backend/app/agent/provider/openai_responses.py` | ~170 | OpenAI Responses API adapter for the backend agent loop, including multimodal screenshot input support. |
@@ -91,7 +91,7 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_I
 | `backend/app/auth.py` | ~50 | Bearer-token authentication dependency that resolves the current user from Postgres-backed auth sessions. |
 | `backend/app/auth_router.py` | ~145 | Auth routes for register, login, current-user lookup, and logout. Registration now auto-creates a default workspace and root folder. |
 | `backend/app/database.py` | ~45 | Async Postgres engine/session helpers, connectivity verification, and schema bootstrap utilities. |
-| `backend/app/models.py` | ~500 | SQLAlchemy models for users, auth sessions, saved agents, agent sessions, workspaces, memberships, virtual filesystem entries, and workspace ingestion jobs. |
+| `backend/app/models.py` | ~665 | SQLAlchemy models for users, auth sessions, saved agents, agent sessions, agent session messages, workspaces, memberships, virtual filesystem entries, and workspace ingestion jobs. |
 | `backend/app/routes.py` | ~110 | Hosted backend routes for `/chat`, `/tts`, `/transcriptions`, and `/health`. |
 | `backend/app/parsing/router.py` | ~18 | FastAPI parsing router for `/parse` with active document-topic parsing endpoint. |
 | `backend/app/parsing/contracts.py` | ~120 | Parse request/response contracts including topic, source kind, OCR/backend controls, and topic page markdown outputs. |

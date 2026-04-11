@@ -1,9 +1,13 @@
 import asyncio
 import json
 import logging
-from uuid import uuid4
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
 from fastapi import HTTPException, Request, status
+from sqlalchemy import and_, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.contracts import (
     AgentLoopRequest,
@@ -21,14 +25,21 @@ from app.agent.provider import (
     OpenRouterChatCompletionsProvider,
 )
 from app.config import get_settings
-from app.models import User
-from sqlalchemy.ext.asyncio import AsyncSession
+from app.models import AgentSession, AgentSessionMessage, User, Workspace, WorkspaceMembership
 
 agent_loop_logger = logging.getLogger("clicky.agent.loop")
 
 
 class AgentLoopAbortError(asyncio.CancelledError):
     pass
+
+
+@dataclass
+class AgentSessionPersistenceContext:
+    workspace_id: UUID
+    agent_session: AgentSession
+    next_sequence_index: int
+    last_persisted_message_signature: tuple[str | None, str | None, str | None, str] | None
 
 
 def _is_client_side_companion_tool(tool_name: str) -> bool:
@@ -130,6 +141,224 @@ def _emit_agent_event_log(
     agent_loop_logger.info("agent_event %s", json.dumps(payload_for_logging, ensure_ascii=False))
 
 
+async def _resolve_accessible_workspace_id(
+    *,
+    workspace_id_text: str,
+    current_user: User,
+    database_session: AsyncSession,
+) -> UUID:
+    try:
+        workspace_id = UUID(workspace_id_text)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid workspace_id `{workspace_id_text}`.",
+        ) from error
+
+    accessible_workspace_query = (
+        select(Workspace.id)
+        .join(WorkspaceMembership, WorkspaceMembership.workspace_id == Workspace.id)
+        .where(
+            and_(
+                Workspace.id == workspace_id,
+                WorkspaceMembership.user_id == current_user.id,
+            )
+        )
+    )
+    accessible_workspace_id = (
+        await database_session.execute(accessible_workspace_query)
+    ).scalar_one_or_none()
+    if accessible_workspace_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace not found or not accessible.",
+        )
+    return workspace_id
+
+
+async def _resolve_or_create_agent_session_persistence_context(
+    *,
+    agent_loop_request: AgentLoopRequest,
+    current_user: User,
+    resolved_model_name: str,
+    database_session: AsyncSession,
+) -> AgentSessionPersistenceContext | None:
+    if not agent_loop_request.workspace_id:
+        return None
+
+    workspace_id = await _resolve_accessible_workspace_id(
+        workspace_id_text=agent_loop_request.workspace_id,
+        current_user=current_user,
+        database_session=database_session,
+    )
+
+    if agent_loop_request.agent_session_id:
+        try:
+            agent_session_id = UUID(agent_loop_request.agent_session_id)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid agent_session_id `{agent_loop_request.agent_session_id}`.",
+            ) from error
+
+        existing_agent_session_query = select(AgentSession).where(
+            and_(
+                AgentSession.id == agent_session_id,
+                AgentSession.workspace_id == workspace_id,
+            )
+        )
+        agent_session = (
+            await database_session.execute(existing_agent_session_query)
+        ).scalar_one_or_none()
+        if agent_session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent session not found in this workspace.",
+            )
+    else:
+        agent_session = AgentSession(
+            workspace_id=workspace_id,
+            created_by_user_id=current_user.id,
+            display_name="New session",
+            session_metadata={
+                "created_from": "agent_runs_api",
+                "provider": agent_loop_request.provider,
+                "model": resolved_model_name,
+            },
+        )
+        database_session.add(agent_session)
+        await database_session.flush()
+
+    persisted_message_count_query = select(func.count(AgentSessionMessage.id)).where(
+        AgentSessionMessage.agent_session_id == agent_session.id
+    )
+    persisted_message_count = int(
+        (await database_session.execute(persisted_message_count_query)).scalar_one()
+    )
+    last_persisted_message = (
+        await database_session.execute(
+            select(AgentSessionMessage)
+            .where(AgentSessionMessage.agent_session_id == agent_session.id)
+            .order_by(AgentSessionMessage.sequence_index.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    last_persisted_message_signature = (
+        None
+        if last_persisted_message is None
+        else (
+            last_persisted_message.role,
+            last_persisted_message.name,
+            last_persisted_message.tool_call_id,
+            last_persisted_message.content,
+        )
+    )
+    return AgentSessionPersistenceContext(
+        workspace_id=workspace_id,
+        agent_session=agent_session,
+        next_sequence_index=persisted_message_count,
+        last_persisted_message_signature=last_persisted_message_signature,
+    )
+
+
+def _serialize_agent_message_images_payload(agent_message: AgentMessage) -> list[dict]:
+    return [
+        {
+            "label": input_image.label,
+            "mime_type": input_image.mime_type,
+            "pixel_width": input_image.pixel_width,
+            "pixel_height": input_image.pixel_height,
+            "is_primary_focus": input_image.is_primary_focus,
+        }
+        for input_image in agent_message.images
+    ]
+
+
+def _serialize_agent_message_tool_calls_payload(agent_message: AgentMessage) -> list[dict]:
+    return [
+        {
+            "id": tool_call.id,
+            "name": tool_call.name,
+            "arguments_json": tool_call.arguments_json,
+        }
+        for tool_call in agent_message.tool_calls
+    ]
+
+
+def _build_agent_message_signature(
+    agent_message: AgentMessage,
+) -> tuple[str | None, str | None, str | None, str]:
+    return (
+        agent_message.role,
+        agent_message.name,
+        agent_message.tool_call_id,
+        agent_message.content or "",
+    )
+
+
+def _determine_starting_message_index_for_incoming_persist(
+    *,
+    messages: list[AgentMessage],
+    last_persisted_message_signature: tuple[str | None, str | None, str | None, str] | None,
+) -> int:
+    if not messages:
+        return 0
+    if last_persisted_message_signature is None:
+        return 0
+
+    for message_index in range(len(messages) - 1, -1, -1):
+        if _build_agent_message_signature(messages[message_index]) == last_persisted_message_signature:
+            return message_index + 1
+
+    # If the previous tail is missing from the request (for example because the
+    # client trimmed history), persist at least the new user turn.
+    if messages[-1].role == "user":
+        return len(messages) - 1
+    return len(messages)
+
+
+async def _persist_agent_session_messages_from_index(
+    *,
+    run_id: str,
+    starting_message_index: int,
+    messages: list[AgentMessage],
+    current_user: User,
+    database_session: AsyncSession,
+    agent_session_persistence_context: AgentSessionPersistenceContext,
+) -> None:
+    if starting_message_index >= len(messages):
+        return
+
+    sequence_index = agent_session_persistence_context.next_sequence_index
+    for message_index in range(starting_message_index, len(messages)):
+        agent_message = messages[message_index]
+        database_session.add(
+            AgentSessionMessage(
+                workspace_id=agent_session_persistence_context.workspace_id,
+                agent_session_id=agent_session_persistence_context.agent_session.id,
+                created_by_user_id=current_user.id,
+                run_id=run_id,
+                sequence_index=sequence_index,
+                role=agent_message.role,
+                name=agent_message.name,
+                tool_call_id=agent_message.tool_call_id,
+                provider_response_id=agent_message.provider_response_id,
+                content=agent_message.content or "",
+                images_payload=_serialize_agent_message_images_payload(agent_message),
+                tool_calls_payload=_serialize_agent_message_tool_calls_payload(agent_message),
+                message_metadata={},
+            )
+        )
+        agent_session_persistence_context.last_persisted_message_signature = (
+            _build_agent_message_signature(agent_message)
+        )
+        sequence_index += 1
+
+    agent_session_persistence_context.next_sequence_index = sequence_index
+    agent_session_persistence_context.agent_session.last_message_at = datetime.now(UTC)
+    await database_session.commit()
+
+
 async def run_agent_loop(
     *,
     fastapi_request: Request,
@@ -164,6 +393,14 @@ async def run_agent_loop(
     }
     provider_registry = build_agent_provider_registry()
     provider = provider_registry.get(agent_loop_request.provider)
+    agent_session_persistence_context = (
+        await _resolve_or_create_agent_session_persistence_context(
+            agent_loop_request=agent_loop_request,
+            current_user=current_user,
+            resolved_model_name=resolved_model_name,
+            database_session=database_session,
+        )
+    )
 
     if provider is None:
         await abort_registry.unregister_run(run_id)
@@ -172,7 +409,25 @@ async def run_agent_loop(
             detail=f"Unsupported provider `{agent_loop_request.provider}`.",
         )
 
+    persisted_in_memory_message_count = 0
     try:
+        if agent_session_persistence_context is not None:
+            starting_message_index = _determine_starting_message_index_for_incoming_persist(
+                messages=messages,
+                last_persisted_message_signature=(
+                    agent_session_persistence_context.last_persisted_message_signature
+                ),
+            )
+            await _persist_agent_session_messages_from_index(
+                run_id=run_id,
+                starting_message_index=starting_message_index,
+                messages=messages,
+                current_user=current_user,
+                database_session=database_session,
+                agent_session_persistence_context=agent_session_persistence_context,
+            )
+        persisted_in_memory_message_count = len(messages)
+
         if should_log_agent_events:
             _emit_agent_event_log(
                 event_name="run_started",
@@ -184,6 +439,10 @@ async def run_agent_loop(
                     "temperature": agent_loop_request.temperature,
                     "max_output_tokens": agent_loop_request.max_output_tokens,
                     "max_iterations": agent_loop_request.max_iterations,
+                    "workspace_id": agent_loop_request.workspace_id,
+                    "agent_session_id": str(agent_session_persistence_context.agent_session.id)
+                    if agent_session_persistence_context is not None
+                    else None,
                     "system_message_preview": _truncate_for_log(
                         resolved_agent_loop_request.system_message,
                         max_logged_characters,
@@ -224,6 +483,16 @@ async def run_agent_loop(
                     update={"tool_calls": assistant_turn.tool_calls}
                 )
             )
+            if agent_session_persistence_context is not None:
+                await _persist_agent_session_messages_from_index(
+                    run_id=run_id,
+                    starting_message_index=persisted_in_memory_message_count,
+                    messages=messages,
+                    current_user=current_user,
+                    database_session=database_session,
+                    agent_session_persistence_context=agent_session_persistence_context,
+                )
+                persisted_in_memory_message_count = len(messages)
             all_tool_calls.extend(assistant_turn.tool_calls)
 
             if should_log_agent_events:
@@ -244,6 +513,9 @@ async def run_agent_loop(
             if not assistant_turn.tool_calls:
                 completed_response = AgentLoopResponse(
                     run_id=run_id,
+                    agent_session_id=str(agent_session_persistence_context.agent_session.id)
+                    if agent_session_persistence_context is not None
+                    else None,
                     status="completed",
                     provider=agent_loop_request.provider,
                     model=resolved_model_name,
@@ -316,6 +588,16 @@ async def run_agent_loop(
                         content=tool_result.output_text,
                     ),
                 )
+                if agent_session_persistence_context is not None:
+                    await _persist_agent_session_messages_from_index(
+                        run_id=run_id,
+                        starting_message_index=persisted_in_memory_message_count,
+                        messages=messages,
+                        current_user=current_user,
+                        database_session=database_session,
+                        agent_session_persistence_context=agent_session_persistence_context,
+                    )
+                    persisted_in_memory_message_count = len(messages)
                 if should_log_agent_events:
                     _emit_agent_event_log(
                         event_name="backend_tool_call_finished",
@@ -332,6 +614,9 @@ async def run_agent_loop(
             if companion_tool_calls:
                 awaiting_client_tools_response = AgentLoopResponse(
                     run_id=run_id,
+                    agent_session_id=str(agent_session_persistence_context.agent_session.id)
+                    if agent_session_persistence_context is not None
+                    else None,
                     status="awaiting_client_tools",
                     provider=agent_loop_request.provider,
                     model=resolved_model_name,
@@ -365,6 +650,9 @@ async def run_agent_loop(
         final_output_text = messages[-1].content if messages else ""
         max_iterations_response = AgentLoopResponse(
             run_id=run_id,
+            agent_session_id=str(agent_session_persistence_context.agent_session.id)
+            if agent_session_persistence_context is not None
+            else None,
             status="max_iterations_exceeded",
             provider=agent_loop_request.provider,
             model=resolved_model_name,
@@ -392,6 +680,9 @@ async def run_agent_loop(
         if await abort_registry.is_abort_requested(run_id):
             aborted_response = AgentLoopResponse(
                 run_id=run_id,
+                agent_session_id=str(agent_session_persistence_context.agent_session.id)
+                if agent_session_persistence_context is not None
+                else None,
                 status="aborted",
                 provider=agent_loop_request.provider,
                 model=resolved_model_name,

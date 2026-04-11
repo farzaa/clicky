@@ -124,6 +124,9 @@ class User(Base, TimestampedModel):
     created_agent_sessions: Mapped[list["AgentSession"]] = relationship(
         back_populates="created_by_user",
     )
+    created_agent_session_messages: Mapped[list["AgentSessionMessage"]] = relationship(
+        back_populates="created_by_user",
+    )
     created_workspace_ingestion_jobs: Mapped[list["WorkspaceIngestionJob"]] = relationship(
         back_populates="created_by_user",
     )
@@ -186,6 +189,10 @@ class Workspace(Base, TimestampedModel):
         cascade="all, delete-orphan",
     )
     agent_sessions: Mapped[list["AgentSession"]] = relationship(
+        back_populates="workspace",
+        cascade="all, delete-orphan",
+    )
+    agent_session_messages: Mapped[list["AgentSessionMessage"]] = relationship(
         back_populates="workspace",
         cascade="all, delete-orphan",
     )
@@ -555,4 +562,104 @@ class AgentSession(Base, TimestampedModel):
     agent: Mapped["Agent | None"] = relationship(back_populates="agent_sessions")
     created_by_user: Mapped["User | None"] = relationship(
         back_populates="created_agent_sessions",
+    )
+    messages: Mapped[list["AgentSessionMessage"]] = relationship(
+        back_populates="agent_session",
+        cascade="all, delete-orphan",
+    )
+
+
+class AgentSessionMessage(Base, TimestampedModel):
+    __tablename__ = "agent_session_messages"
+    __table_args__ = (
+        UniqueConstraint(
+            "agent_session_id",
+            "sequence_index",
+            name="uq_agent_session_messages_sequence",
+        ),
+        Index(
+            "ix_agent_session_messages_session_sequence",
+            "agent_session_id",
+            "sequence_index",
+        ),
+        Index(
+            "ix_agent_session_messages_workspace_created_at",
+            "workspace_id",
+            "created_at",
+        ),
+        Index(
+            "ix_agent_session_messages_run_id",
+            "run_id",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    agent_session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    run_id: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
+    sequence_index: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+    )
+    name: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    tool_call_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    provider_response_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    content: Mapped[str] = mapped_column(
+        Text,
+        default="",
+        nullable=False,
+    )
+    images_payload: Mapped[list] = mapped_column(
+        JSONB,
+        default=list,
+        nullable=False,
+    )
+    tool_calls_payload: Mapped[list] = mapped_column(
+        JSONB,
+        default=list,
+        nullable=False,
+    )
+    message_metadata: Mapped[dict] = mapped_column(
+        JSONB,
+        default=dict,
+        nullable=False,
+    )
+
+    workspace: Mapped["Workspace"] = relationship(back_populates="agent_session_messages")
+    agent_session: Mapped["AgentSession"] = relationship(back_populates="messages")
+    created_by_user: Mapped["User | None"] = relationship(
+        back_populates="created_agent_session_messages",
     )

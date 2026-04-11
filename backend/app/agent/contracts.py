@@ -55,6 +55,8 @@ class AgentToolResult(BaseModel):
 
 class AgentLoopRequest(BaseModel):
     run_id: str | None = None
+    workspace_id: str | None = None
+    agent_session_id: str | None = None
     provider: AgentProviderName
     model: str | None = None
     system_message: str | None = None
@@ -73,6 +75,7 @@ class AgentAssistantTurn(BaseModel):
 
 class AgentLoopResponse(BaseModel):
     run_id: str
+    agent_session_id: str | None = None
     status: AgentRunStatus
     provider: AgentProviderName
     model: str
@@ -81,6 +84,49 @@ class AgentLoopResponse(BaseModel):
     messages: list[AgentMessage]
     tool_calls: list[AgentToolCall]
     tool_results: list[AgentToolResult]
+
+
+class AgentSessionResponse(BaseModel):
+    id: str
+    workspace_id: str
+    agent_id: str | None = None
+    created_by_user_id: str | None = None
+    display_name: str
+    last_message_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    session_metadata: dict
+
+
+class AgentSessionsListResponse(BaseModel):
+    workspace_id: str
+    sessions: list[AgentSessionResponse]
+
+
+class AgentSessionMessageResponse(BaseModel):
+    id: str
+    workspace_id: str
+    agent_session_id: str
+    created_by_user_id: str | None = None
+    run_id: str | None = None
+    sequence_index: int
+    role: AgentMessageRole
+    name: str | None = None
+    tool_call_id: str | None = None
+    provider_response_id: str | None = None
+    content: str
+    images_payload: list
+    tool_calls_payload: list
+    message_metadata: dict
+    created_at: datetime
+    updated_at: datetime
+
+
+class AgentSessionMessagesListResponse(BaseModel):
+    workspace_id: str
+    agent_session_id: str
+    messages: list[AgentSessionMessageResponse]
+    total_count: int
 
 
 class AbortAgentRunResponse(BaseModel):
