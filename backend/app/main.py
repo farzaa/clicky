@@ -16,6 +16,7 @@ from app.database import (
 )
 from app.parsing.router import parse_router
 from app.routes import router
+from app.webui_router import webui_router
 from app.workspaces_router import workspaces_router
 
 
@@ -71,3 +72,4 @@ app.include_router(auth_router)
 app.include_router(workspaces_router)
 app.include_router(agent_router)
 app.include_router(parse_router)
+app.include_router(webui_router)

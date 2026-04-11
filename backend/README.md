@@ -22,6 +22,10 @@ This service replaces the thin Cloudflare Worker proxy with a hosted FastAPI bac
 - `POST /agent/runs/{runId}/abort` requests cancellation of an in-flight agent run
 - `GET /parse/` exposes a placeholder parsing module entrypoint
 - `POST /parse/` is a reserved PDF-to-markdown placeholder endpoint for the future ingestion pipeline
+- `GET /web/login` and `POST /web/login` provide a tiny server-rendered web login
+- `POST /web/register` creates a user + default workspace from the web UI
+- `GET /web/app` shows workspace VFS entries plus `courses`, `learner_topic_masteries`, and `learner_observations`
+- `POST /web/upload` uploads a file into the selected workspace from the web UI
 - `GET /health` returns a basic health response
 - Connects to Postgres on startup and can optionally auto-create schema for local prototyping (`DEB_AUTO_CREATE_DATABASE_SCHEMA=true`)
 - Uses Alembic migrations for explicit schema versioning (`alembic upgrade head`)

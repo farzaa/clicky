@@ -19,6 +19,7 @@ All API keys live on a hosted backend — nothing sensitive ships in the app. Th
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via hosted backend
 - **Backend Storage**: Postgres via async SQLAlchemy for users, workspaces, courses, learner topic mastery/observations, saved agents, agent sessions, persisted agent session messages, memberships, virtual filesystem entries, and workspace ingestion jobs
 - **Backend Auth**: Email/password auth with bearer sessions stored in Postgres
+- **Backend Web UI**: Minimal server-rendered FastAPI UI (`/web/*`) with cookie-backed login/register/logout, workspace VFS listing/upload, and lessons table visibility
 - **Backend Agent Loop**: FastAPI-hosted iterative agent loop with OpenAI Responses and OpenRouter provider adapters, abortable runs, multimodal screenshot message support, backend-owned tools (including `companion.point`), a read-only Postgres-backed workspace shell surface (`pwd`/`ls`/`find`/`cat`/`grep`/`rg`) with synthetic learner-memory folders, and dedicated semantic lookup/update tools (TOC search + learner topic updates)
 - **Saved Agents**: Each workspace is seeded with a default Deb agent row in Postgres that stores a reusable system prompt, provider, and model
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
@@ -91,6 +92,7 @@ Backend env vars: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_I
 | `backend/migrations/env.py` | ~64 | Alembic environment wiring that loads app settings and SQLAlchemy metadata (`Base.metadata`) for autogeneration and upgrades. |
 | `backend/migrations/versions/973820dae025_initial_schema.py` | ~280 | Initial Alembic migration creating all current backend tables, enums, constraints, and indexes. |
 | `backend/app/main.py` | ~46 | FastAPI app startup, shared async HTTP client lifecycle, CORS middleware configuration, and router registration. |
+| `backend/app/webui_router.py` | ~360 | Tiny server-rendered web UI routes (`/web/login`, `/web/register`, `/web/app`, `/web/upload`) with cookie sessions and direct Postgres-backed workspace/lesson dashboard rendering. |
 | `backend/app/auth.py` | ~50 | Bearer-token authentication dependency that resolves the current user from Postgres-backed auth sessions. |
 | `backend/app/auth_router.py` | ~145 | Auth routes for register, login, current-user lookup, and logout. Registration now auto-creates a default workspace and root folder. |
 | `backend/app/database.py` | ~45 | Async Postgres engine/session helpers, connectivity verification, and schema bootstrap utilities. |

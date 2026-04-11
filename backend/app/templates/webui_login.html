@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Deb Web UI Login</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0f14;
+      --panel: #121826;
+      --panel-2: #0f1522;
+      --line: #26324a;
+      --text: #e8eefc;
+      --muted: #9fb0cf;
+      --accent: #46d387;
+      --accent-2: #2fb56f;
+      --danger: #ff7d7d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: radial-gradient(circle at top right, #182237, var(--bg) 55%);
+      color: var(--text);
+      display: grid;
+      place-items: center;
+      padding: 20px;
+    }
+    .shell {
+      width: min(980px, 100%);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), transparent), var(--panel);
+      box-shadow: 0 24px 60px rgba(0,0,0,0.35);
+      overflow: hidden;
+    }
+    .header {
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+    }
+    .title { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: 0.2px; }
+    .subtitle { margin: 0; color: var(--muted); font-size: 13px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0;
+    }
+    .card {
+      padding: 20px;
+      border-right: 1px solid var(--line);
+      background: var(--panel-2);
+    }
+    .card:last-child { border-right: 0; }
+    .card h2 { margin: 0 0 8px; font-size: 16px; }
+    .card p { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+    .error {
+      margin: 0 0 14px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid color-mix(in srgb, var(--danger) 50%, #000 50%);
+      background: color-mix(in srgb, var(--danger) 15%, transparent);
+      color: #ffdede;
+      font-size: 13px;
+    }
+    form { display: grid; gap: 10px; }
+    label { font-size: 12px; color: var(--muted); }
+    input {
+      width: 100%;
+      margin-top: 6px;
+      background: #0b111d;
+      border: 1px solid var(--line);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 10px 12px;
+      outline: none;
+    }
+    input:focus { border-color: color-mix(in srgb, var(--accent) 50%, var(--line) 50%); }
+    button {
+      margin-top: 2px;
+      border: 1px solid color-mix(in srgb, var(--accent) 65%, var(--line) 35%);
+      background: linear-gradient(180deg, var(--accent), var(--accent-2));
+      color: #041108;
+      font-weight: 700;
+      border-radius: 10px;
+      padding: 10px 12px;
+      cursor: pointer;
+    }
+    .hint {
+      margin: 0;
+      border-top: 1px solid var(--line);
+      padding: 14px 20px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    @media (max-width: 840px) {
+      .grid { grid-template-columns: 1fr; }
+      .card { border-right: 0; border-bottom: 1px solid var(--line); }
+      .card:last-child { border-bottom: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="header">
+      <h1 class="title">Deb Web UI</h1>
+      <p class="subtitle">Minimal auth + workspace + lessons dashboard</p>
+    </header>
+    <div class="grid">
+      <section class="card">
+        <h2>Sign in</h2>
+        <p>Use your existing Deb backend account.</p>
+        {% if error_message %}
+          <p class="error">{{ error_message }}</p>
+        {% endif %}
+        <form method="post" action="/web/login">
+          <label>
+            Email
+            <input type="email" name="email_address" required />
+          </label>
+          <label>
+            Password
+            <input type="password" name="password" minlength="8" required />
+          </label>
+          <button type="submit">Sign in</button>
+        </form>
+      </section>
+      <section class="card">
+        <h2>Register</h2>
+        <p>Create a user and bootstrap one workspace.</p>
+        <form method="post" action="/web/register">
+          <label>
+            Display name
+            <input type="text" name="display_name" maxlength="255" />
+          </label>
+          <label>
+            Email
+            <input type="email" name="email_address" required />
+          </label>
+          <label>
+            Password
+            <input type="password" name="password" minlength="8" required />
+          </label>
+          <button type="submit">Create account</button>
+        </form>
+      </section>
+    </div>
+    <p class="hint">
+      This page sets an HTTP-only session cookie backed by the existing <code>auth_sessions</code> table.
+    </p>
+  </div>
+</body>
+</html>
