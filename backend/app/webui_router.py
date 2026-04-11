@@ -106,11 +106,11 @@ def _clear_web_session_cookie(response: RedirectResponse) -> None:
 
 @webui_router.get("/web", include_in_schema=False)
 async def web_home() -> RedirectResponse:
-    return RedirectResponse(url="/web/app", status_code=302)
+    return RedirectResponse(url="/", status_code=302)
 
 
-@webui_router.get("/web/login", response_class=HTMLResponse, include_in_schema=False)
-async def web_login_page(
+@webui_router.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def web_project_home(
     request: Request,
     database_session: AsyncSession = Depends(get_database_session),
 ) -> HTMLResponse | RedirectResponse:
@@ -125,6 +125,18 @@ async def web_login_page(
             "error_message": None,
         },
     )
+
+
+@webui_router.get("/web/login", response_class=HTMLResponse, include_in_schema=False)
+async def web_login_page(
+    request: Request,
+    database_session: AsyncSession = Depends(get_database_session),
+) -> HTMLResponse | RedirectResponse:
+    current_user = await _resolve_web_session_user(request, database_session)
+    if current_user is not None:
+        return RedirectResponse(url="/web/app", status_code=302)
+
+    return RedirectResponse(url="/", status_code=302)
 
 
 @webui_router.post("/web/login", response_class=HTMLResponse, include_in_schema=False)
@@ -243,9 +255,44 @@ async def web_logout(
             await database_session.delete(auth_session)
             await database_session.commit()
 
-    response = RedirectResponse(url="/web/login", status_code=302)
+    response = RedirectResponse(url="/", status_code=302)
     _clear_web_session_cookie(response)
     return response
+
+
+@webui_router.post("/web/workspaces", include_in_schema=False)
+async def web_create_workspace(
+    request: Request,
+    display_name: str = Form(...),
+    description: str = Form(default=""),
+    database_session: AsyncSession = Depends(get_database_session),
+) -> RedirectResponse:
+    current_user = await _resolve_web_session_user(request, database_session)
+    if current_user is None:
+        response = RedirectResponse(url="/", status_code=302)
+        _clear_web_session_cookie(response)
+        return response
+
+    cleaned_display_name = display_name.strip()
+    if not cleaned_display_name:
+        return RedirectResponse(url="/web/app?error=workspace_name_required", status_code=302)
+    if len(cleaned_display_name) > 255:
+        return RedirectResponse(url="/web/app?error=workspace_name_too_long", status_code=302)
+
+    workspace = await create_workspace_for_user(
+        database_session,
+        user=current_user,
+        display_name=cleaned_display_name,
+        description=description.strip() or None,
+        workspace_metadata={"created_from_web_ui": True},
+    )
+    await database_session.commit()
+    await database_session.refresh(workspace)
+
+    return RedirectResponse(
+        url=f"/web/app?workspace_id={workspace.id}",
+        status_code=302,
+    )
 
 
 @webui_router.post("/web/upload", include_in_schema=False)
@@ -258,7 +305,7 @@ async def web_upload_workspace_file(
 ) -> RedirectResponse:
     current_user = await _resolve_web_session_user(request, database_session)
     if current_user is None:
-        response = RedirectResponse(url="/web/login", status_code=302)
+        response = RedirectResponse(url="/", status_code=302)
         _clear_web_session_cookie(response)
         return response
 
@@ -299,7 +346,7 @@ async def web_dashboard(
 ) -> HTMLResponse | RedirectResponse:
     current_user = await _resolve_web_session_user(request, database_session)
     if current_user is None:
-        response = RedirectResponse(url="/web/login", status_code=302)
+        response = RedirectResponse(url="/", status_code=302)
         _clear_web_session_cookie(response)
         return response
 
@@ -388,5 +435,16 @@ async def web_dashboard(
             "learner_topic_masteries": learner_topic_masteries,
             "learner_observations": learner_observations,
             "error_message": error.replace("_", " ") if error else None,
+            "workspace_count": len(workspace_rows),
+            "file_count": sum(
+                1
+                for workspace_entry in workspace_entries
+                if workspace_entry.entry_type.value == "file"
+            ),
+            "directory_count": sum(
+                1
+                for workspace_entry in workspace_entries
+                if workspace_entry.entry_type.value == "directory"
+            ),
         },
     )

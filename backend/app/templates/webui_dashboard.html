@@ -3,329 +3,485 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Deb Web UI</title>
+  <title>Deb Workspaces</title>
   <style>
     :root {
       color-scheme: dark;
-      --bg: #0b0f14;
-      --panel: #121826;
-      --panel-2: #0f1522;
-      --line: #26324a;
-      --text: #e8eefc;
-      --muted: #9fb0cf;
-      --accent: #46d387;
-      --accent-2: #2fb56f;
-      --danger: #ff7d7d;
+      --bg: #080a09;
+      --surface: #101612;
+      --surface-strong: #17201a;
+      --line: #2a362d;
+      --text: #eff6ee;
+      --muted: #a9b8aa;
+      --accent: #39d47b;
+      --accent-soft: #193d28;
+      --danger: #ff8a8a;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      background: radial-gradient(circle at top right, #182237, var(--bg) 55%);
+      background:
+        linear-gradient(90deg, rgba(57, 212, 123, 0.08) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(57, 212, 123, 0.05) 1px, transparent 1px),
+        var(--bg);
+      background-size: 56px 56px, 56px 56px, auto;
       color: var(--text);
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      font-family: "Aptos", "Segoe UI", sans-serif;
     }
     .shell {
-      width: min(1280px, 100%);
-      margin: 18px auto;
-      padding: 0 14px;
+      width: min(1440px, 100%);
+      margin: 0 auto;
+      padding: clamp(16px, 3vw, 38px);
     }
-    .top {
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      background: linear-gradient(180deg, rgba(255,255,255,0.02), transparent), var(--panel);
-      padding: 14px 16px;
+    .topbar {
+      min-height: 78px;
       display: flex;
-      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 26px;
+      padding-bottom: 18px;
+    }
+    .brand {
+      display: flex;
       align-items: center;
       gap: 12px;
-      justify-content: space-between;
+      min-width: 0;
     }
-    .brand h1 { margin: 0; font-size: 20px; }
-    .brand p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
-    .actions { display: flex; align-items: center; gap: 8px; }
-    .actions form { margin: 0; }
-    select, input[type="text"], input[type="file"], button {
-      border-radius: 9px;
-      border: 1px solid var(--line);
-      background: #0b111d;
-      color: var(--text);
-      padding: 8px 10px;
+    .brand img {
+      width: 38px;
+      height: 38px;
+      object-fit: contain;
+      filter: drop-shadow(0 0 16px rgba(57, 212, 123, 0.32));
+      flex: none;
+    }
+    .brand h1 {
+      margin: 0;
+      font-size: clamp(24px, 4vw, 54px);
+      line-height: 0.96;
+      letter-spacing: 0;
+    }
+    .brand p {
+      margin: 5px 0 0;
+      color: var(--muted);
       font-size: 13px;
-    }
-    button {
-      cursor: pointer;
-      border-color: color-mix(in srgb, var(--accent) 60%, var(--line) 40%);
-      background: linear-gradient(180deg, var(--accent), var(--accent-2));
-      color: #041108;
-      font-weight: 700;
+      overflow-wrap: anywhere;
     }
     .logout {
-      border-color: color-mix(in srgb, var(--danger) 50%, var(--line) 50%);
-      background: color-mix(in srgb, var(--danger) 20%, #0b111d 80%);
+      min-height: 40px;
+      padding: 9px 14px;
+      border: 1px solid color-mix(in srgb, var(--danger) 55%, var(--line) 45%);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--danger) 16%, transparent);
       color: #ffdede;
+      font: inherit;
+      cursor: pointer;
     }
-    .error {
-      margin-top: 12px;
-      border: 1px solid color-mix(in srgb, var(--danger) 50%, #000 50%);
-      background: color-mix(in srgb, var(--danger) 15%, transparent);
-      color: #ffdede;
-      border-radius: 10px;
-      padding: 10px 12px;
-      font-size: 13px;
-    }
-    .cards {
-      margin-top: 14px;
+    .summary {
       display: grid;
-      grid-template-columns: 1fr;
-      gap: 12px;
-    }
-    .card {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 1px;
       border: 1px solid var(--line);
-      border-radius: 14px;
-      background: var(--panel-2);
+      background: var(--line);
+      margin-bottom: 18px;
+    }
+    .metric {
+      min-height: 108px;
+      padding: 18px;
+      background: rgba(16, 22, 18, 0.92);
+    }
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 12px;
+    }
+    .metric strong {
+      display: block;
+      font-size: clamp(28px, 5vw, 58px);
+      line-height: 0.9;
+      letter-spacing: 0;
+    }
+    .workspace-layout {
+      display: grid;
+      grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+    .side,
+    .main-panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(16, 22, 18, 0.92);
       overflow: hidden;
     }
-    .card-header {
+    .section-head {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      gap: 8px;
-      padding: 12px 14px;
+      gap: 12px;
+      padding: 14px 16px;
       border-bottom: 1px solid var(--line);
     }
-    .card h2 {
+    .section-head h2 {
       margin: 0;
-      font-size: 15px;
-      letter-spacing: 0.2px;
+      font-size: 16px;
+      letter-spacing: 0;
     }
     .count {
       color: var(--muted);
       font-size: 12px;
+      white-space: nowrap;
     }
-    .card-body {
-      padding: 10px 14px 14px;
-      overflow: auto;
+    .section-body { padding: 14px 16px; }
+    .workspace-list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 8px;
+    }
+    .workspace-link {
+      display: block;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: inherit;
+      text-decoration: none;
+      background: #0b0f0c;
+      transition: border-color 150ms ease, transform 150ms ease, background 150ms ease;
+    }
+    .workspace-link:hover,
+    .workspace-link.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      transform: translateY(-1px);
+    }
+    .workspace-link strong { display: block; }
+    .workspace-link span {
+      display: block;
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    form.stack { display: grid; gap: 10px; margin-top: 14px; }
+    label {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    input,
+    textarea,
+    button {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #090d0a;
+      color: var(--text);
+      font: inherit;
+      padding: 10px 11px;
+    }
+    input,
+    textarea { margin-top: 6px; outline: none; }
+    textarea { min-height: 74px; resize: vertical; }
+    input:focus,
+    textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(57, 212, 123, 0.12);
+    }
+    button {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #031107;
+      font-weight: 800;
+      cursor: pointer;
+      transition: transform 150ms ease, filter 150ms ease;
+    }
+    button:hover { transform: translateY(-1px); filter: brightness(1.08); }
+    .error {
+      margin: 0 0 16px;
+      padding: 11px 12px;
+      border-radius: 8px;
+      border: 1px solid color-mix(in srgb, var(--danger) 60%, #000 40%);
+      background: color-mix(in srgb, var(--danger) 14%, transparent);
+      color: #ffdede;
+      font-size: 13px;
     }
     .upload {
       display: grid;
-      grid-template-columns: 1fr 1.5fr 1.3fr auto;
-      gap: 8px;
-      align-items: center;
-      margin-bottom: 10px;
+      grid-template-columns: minmax(180px, 0.9fr) minmax(240px, 1fr) auto;
+      gap: 10px;
+      align-items: end;
+      margin-bottom: 14px;
     }
+    .table-wrap { overflow: auto; }
     table {
       width: 100%;
+      min-width: 760px;
       border-collapse: collapse;
       font-size: 12px;
-      min-width: 760px;
     }
-    th, td {
+    th,
+    td {
+      padding: 10px 8px;
       border-bottom: 1px solid var(--line);
       text-align: left;
-      padding: 8px 6px;
       vertical-align: top;
     }
-    th { color: var(--muted); font-weight: 600; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    th {
+      color: var(--muted);
+      font-weight: 700;
+      background: #0b100d;
+      position: sticky;
+      top: 0;
+    }
+    .mono {
+      font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+      overflow-wrap: anywhere;
+    }
     .empty {
+      margin: 0;
       color: var(--muted);
       font-size: 13px;
-      margin: 8px 0 0;
+      line-height: 1.5;
     }
-    @media (max-width: 980px) {
+    .data-section + .data-section {
+      border-top: 1px solid var(--line);
+    }
+    @media (max-width: 1060px) {
+      .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .workspace-layout { grid-template-columns: 1fr; }
       .upload { grid-template-columns: 1fr; }
-      table { min-width: 640px; }
+    }
+    @media (max-width: 640px) {
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .summary { grid-template-columns: 1fr; }
+      .shell { padding: 14px; }
+      table { min-width: 620px; }
     }
   </style>
 </head>
 <body>
   <main class="shell">
-    <section class="top">
+    <header class="topbar">
       <div class="brand">
-        <h1>Deb Web UI</h1>
-        <p>{{ current_user.display_name or current_user.email_address }} · {{ current_user.email_address }}</p>
+        <img src="/web/static/deb-logo.png" alt="Deb logo" />
+        <div>
+          <h1>Workspace</h1>
+          <p>{{ current_user.display_name or current_user.email_address }} - {{ current_user.email_address }}</p>
+        </div>
       </div>
-      <div class="actions">
-        <form method="get" action="/web/app">
-          <select name="workspace_id" onchange="this.form.submit()">
-            {% for workspace, membership_role in workspace_rows %}
-              <option value="{{ workspace.id }}" {% if selected_workspace_id == (workspace.id|string) %}selected{% endif %}>
-                {{ workspace.display_name }} ({{ membership_role.value }})
-              </option>
-            {% endfor %}
-          </select>
-        </form>
-        <form method="post" action="/web/logout">
-          <button class="logout" type="submit">Logout</button>
-        </form>
-      </div>
-    </section>
+      <form method="post" action="/web/logout">
+        <button class="logout" type="submit">Logout</button>
+      </form>
+    </header>
 
     {% if error_message %}
       <p class="error">{{ error_message }}</p>
     {% endif %}
 
-    <section class="cards">
-      <article class="card">
-        <header class="card-header">
-          <h2>VFS Files</h2>
-          <span class="count">{{ workspace_entries|length }} entries</span>
-        </header>
-        <div class="card-body">
-          {% if selected_workspace_id %}
-            <form class="upload" method="post" action="/web/upload" enctype="multipart/form-data">
-              <input type="hidden" name="workspace_id" value="{{ selected_workspace_id }}" />
-              <input type="text" name="entry_path" placeholder="/notes/week1.md" required />
-              <input type="file" name="file" required />
-              <span class="count">Creates missing parent directories automatically.</span>
-              <button type="submit">Upload</button>
-            </form>
-          {% endif %}
-
-          {% if workspace_entries %}
-            <table>
-              <thead>
-                <tr>
-                  <th>Path</th>
-                  <th>Type</th>
-                  <th>Content Type</th>
-                  <th>Size</th>
-                  <th>Updated</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for workspace_entry in workspace_entries %}
-                  <tr>
-                    <td class="mono">{{ workspace_entry.entry_path }}</td>
-                    <td>{{ workspace_entry.entry_type.value }}</td>
-                    <td>{{ workspace_entry.content_type.value if workspace_entry.content_type else "-" }}</td>
-                    <td>{{ workspace_entry.size_bytes if workspace_entry.size_bytes is not none else "-" }}</td>
-                    <td>{{ workspace_entry.updated_at }}</td>
-                  </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          {% else %}
-            <p class="empty">No entries found for this workspace.</p>
-          {% endif %}
-        </div>
-      </article>
-
-      <article class="card">
-        <header class="card-header">
-          <h2>Courses</h2>
-          <span class="count">{{ courses|length }} rows</span>
-        </header>
-        <div class="card-body">
-          {% if courses %}
-            <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Display Name</th>
-                  <th>Root Path</th>
-                  <th>Last Activity</th>
-                  <th>Updated</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for course in courses %}
-                  <tr>
-                    <td class="mono">{{ course.id }}</td>
-                    <td>{{ course.display_name }}</td>
-                    <td class="mono">{{ course.root_entry_path }}</td>
-                    <td>{{ course.last_activity_at or "-" }}</td>
-                    <td>{{ course.updated_at }}</td>
-                  </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          {% else %}
-            <p class="empty">No course rows in this workspace yet.</p>
-          {% endif %}
-        </div>
-      </article>
-
-      <article class="card">
-        <header class="card-header">
-          <h2>Learner Topic Masteries</h2>
-          <span class="count">{{ learner_topic_masteries|length }} rows</span>
-        </header>
-        <div class="card-body">
-          {% if learner_topic_masteries %}
-            <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Course ID</th>
-                  <th>Topic Key</th>
-                  <th>Mastery</th>
-                  <th>Confidence</th>
-                  <th>Assessed</th>
-                  <th>Updated</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for learner_topic_mastery in learner_topic_masteries %}
-                  <tr>
-                    <td class="mono">{{ learner_topic_mastery.id }}</td>
-                    <td class="mono">{{ learner_topic_mastery.course_id }}</td>
-                    <td>{{ learner_topic_mastery.topic_key }}</td>
-                    <td>{{ learner_topic_mastery.mastery_score }}</td>
-                    <td>{{ learner_topic_mastery.confidence_score }}</td>
-                    <td>{{ learner_topic_mastery.last_assessed_at or "-" }}</td>
-                    <td>{{ learner_topic_mastery.updated_at }}</td>
-                  </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          {% else %}
-            <p class="empty">No learner_topic_masteries rows in this workspace.</p>
-          {% endif %}
-        </div>
-      </article>
-
-      <article class="card">
-        <header class="card-header">
-          <h2>Learner Observations</h2>
-          <span class="count">{{ learner_observations|length }} rows (latest 200)</span>
-        </header>
-        <div class="card-body">
-          {% if learner_observations %}
-            <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Course ID</th>
-                  <th>Topic Key</th>
-                  <th>Mastery/Confidence</th>
-                  <th>Observation</th>
-                  <th>Created</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for learner_observation in learner_observations %}
-                  <tr>
-                    <td class="mono">{{ learner_observation.id }}</td>
-                    <td class="mono">{{ learner_observation.course_id }}</td>
-                    <td>{{ learner_observation.topic_key }}</td>
-                    <td>
-                      {{ learner_observation.assessed_mastery_score if learner_observation.assessed_mastery_score is not none else "-" }}
-                      /
-                      {{ learner_observation.assessed_confidence_score if learner_observation.assessed_confidence_score is not none else "-" }}
-                    </td>
-                    <td>{{ learner_observation.observation_text }}</td>
-                    <td>{{ learner_observation.created_at }}</td>
-                  </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          {% else %}
-            <p class="empty">No learner_observations rows in this workspace.</p>
-          {% endif %}
-        </div>
-      </article>
+    <section class="summary" aria-label="Workspace summary">
+      <div class="metric"><span>Workspaces</span><strong>{{ workspace_count }}</strong></div>
+      <div class="metric"><span>Files</span><strong>{{ file_count }}</strong></div>
+      <div class="metric"><span>Courses</span><strong>{{ courses|length }}</strong></div>
+      <div class="metric"><span>Observations</span><strong>{{ learner_observations|length }}</strong></div>
     </section>
+
+    <div class="workspace-layout">
+      <aside class="side">
+        <header class="section-head">
+          <h2>All workspaces</h2>
+          <span class="count">{{ workspace_rows|length }}</span>
+        </header>
+        <div class="section-body">
+          {% if workspace_rows %}
+            <ul class="workspace-list">
+              {% for workspace, membership_role in workspace_rows %}
+                <li>
+                  <a class="workspace-link {% if selected_workspace_id == (workspace.id|string) %}active{% endif %}" href="/web/app?workspace_id={{ workspace.id }}">
+                    <strong>{{ workspace.display_name }}</strong>
+                    <span>{{ membership_role.value }} - {{ workspace.launch_state.value }}</span>
+                  </a>
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="empty">No workspaces yet.</p>
+          {% endif %}
+
+          <form class="stack" method="post" action="/web/workspaces">
+            <label>
+              New workspace
+              <input type="text" name="display_name" placeholder="Calculus notes" maxlength="255" required />
+            </label>
+            <label>
+              Description
+              <textarea name="description" placeholder="Optional context"></textarea>
+            </label>
+            <button type="submit">Create workspace</button>
+          </form>
+        </div>
+      </aside>
+
+      <section class="main-panel">
+        <article class="data-section">
+          <header class="section-head">
+            <h2>VFS files</h2>
+            <span class="count">{{ workspace_entries|length }} entries</span>
+          </header>
+          <div class="section-body">
+            {% if selected_workspace_id %}
+              <form class="upload" method="post" action="/web/upload" enctype="multipart/form-data">
+                <input type="hidden" name="workspace_id" value="{{ selected_workspace_id }}" />
+                <label>
+                  VFS path
+                  <input type="text" name="entry_path" placeholder="/notes/week1.md" required />
+                </label>
+                <label>
+                  File
+                  <input type="file" name="file" required />
+                </label>
+                <button type="submit">Upload</button>
+              </form>
+            {% endif %}
+
+            {% if workspace_entries %}
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Path</th>
+                      <th>Type</th>
+                      <th>Content</th>
+                      <th>Size</th>
+                      <th>Updated</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for workspace_entry in workspace_entries %}
+                      <tr>
+                        <td class="mono">{{ workspace_entry.entry_path }}</td>
+                        <td>{{ workspace_entry.entry_type.value }}</td>
+                        <td>{{ workspace_entry.content_type.value if workspace_entry.content_type else "-" }}</td>
+                        <td>{{ workspace_entry.size_bytes if workspace_entry.size_bytes is not none else "-" }}</td>
+                        <td>{{ workspace_entry.updated_at }}</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            {% else %}
+              <p class="empty">No entries found for this workspace.</p>
+            {% endif %}
+          </div>
+        </article>
+
+        <article class="data-section">
+          <header class="section-head">
+            <h2>Courses</h2>
+            <span class="count">{{ courses|length }} rows</span>
+          </header>
+          <div class="section-body table-wrap">
+            {% if courses %}
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Root path</th>
+                    <th>Last activity</th>
+                    <th>Updated</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for course in courses %}
+                    <tr>
+                      <td>{{ course.display_name }}</td>
+                      <td class="mono">{{ course.root_entry_path }}</td>
+                      <td>{{ course.last_activity_at or "-" }}</td>
+                      <td>{{ course.updated_at }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            {% else %}
+              <p class="empty">No course rows in this workspace yet.</p>
+            {% endif %}
+          </div>
+        </article>
+
+        <article class="data-section">
+          <header class="section-head">
+            <h2>Learner topic mastery</h2>
+            <span class="count">{{ learner_topic_masteries|length }} rows</span>
+          </header>
+          <div class="section-body table-wrap">
+            {% if learner_topic_masteries %}
+              <table>
+                <thead>
+                  <tr>
+                    <th>Topic</th>
+                    <th>Mastery</th>
+                    <th>Confidence</th>
+                    <th>Assessed</th>
+                    <th>Notes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for learner_topic_mastery in learner_topic_masteries %}
+                    <tr>
+                      <td>{{ learner_topic_mastery.topic_title or learner_topic_mastery.topic_key }}</td>
+                      <td>{{ learner_topic_mastery.mastery_score }}/4</td>
+                      <td>{{ learner_topic_mastery.confidence_score }}/100</td>
+                      <td>{{ learner_topic_mastery.last_assessed_at or "-" }}</td>
+                      <td>{{ learner_topic_mastery.gap_notes or learner_topic_mastery.strength_notes or "-" }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            {% else %}
+              <p class="empty">No learner topic mastery rows in this workspace.</p>
+            {% endif %}
+          </div>
+        </article>
+
+        <article class="data-section">
+          <header class="section-head">
+            <h2>Learner observations</h2>
+            <span class="count">{{ learner_observations|length }} latest rows</span>
+          </header>
+          <div class="section-body table-wrap">
+            {% if learner_observations %}
+              <table>
+                <thead>
+                  <tr>
+                    <th>Topic</th>
+                    <th>Score</th>
+                    <th>Observation</th>
+                    <th>Created</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for learner_observation in learner_observations %}
+                    <tr>
+                      <td>{{ learner_observation.topic_key }}</td>
+                      <td>
+                        {{ learner_observation.assessed_mastery_score if learner_observation.assessed_mastery_score is not none else "-" }}
+                        /
+                        {{ learner_observation.assessed_confidence_score if learner_observation.assessed_confidence_score is not none else "-" }}
+                      </td>
+                      <td>{{ learner_observation.observation_text }}</td>
+                      <td>{{ learner_observation.created_at }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            {% else %}
+              <p class="empty">No learner observations in this workspace.</p>
+            {% endif %}
+          </div>
+        </article>
+      </section>
+    </div>
   </main>
 </body>
 </html>

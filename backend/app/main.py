@@ -1,8 +1,10 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.agent.loop.abort_registry import AgentAbortRegistry
 from app.agent.router import agent_router
@@ -56,6 +58,11 @@ app = FastAPI(
     title="Deb Backend",
     version="0.1.0",
     lifespan=lifespan,
+)
+app.mount(
+    "/web/static",
+    StaticFiles(directory=str(Path(__file__).resolve().parent / "static")),
+    name="webui_static",
 )
 
 if allowed_origins:
