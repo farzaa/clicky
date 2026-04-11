@@ -13,7 +13,13 @@ interface Env {
   ANTHROPIC_API_KEY: string;
   ELEVENLABS_API_KEY: string;
   ELEVENLABS_VOICE_ID: string;
+  ELEVENLABS_CHINESE_VOICE_ID?: string;
   ASSEMBLYAI_API_KEY: string;
+}
+
+interface TextToSpeechRequestBody {
+  language_code?: string;
+  [key: string]: unknown;
 }
 
 export default {
@@ -107,8 +113,21 @@ async function handleTranscribeToken(env: Env): Promise<Response> {
 }
 
 async function handleTTS(request: Request, env: Env): Promise<Response> {
-  const body = await request.text();
-  const voiceId = env.ELEVENLABS_VOICE_ID;
+  let requestBody: TextToSpeechRequestBody;
+
+  try {
+    requestBody = await request.json() as TextToSpeechRequestBody;
+  } catch {
+    return new Response(
+      JSON.stringify({ error: "Invalid JSON body." }),
+      { status: 400, headers: { "content-type": "application/json" } }
+    );
+  }
+
+  const voiceId = resolveVoiceIdForLanguage(
+    requestBody.language_code,
+    env
+  );
 
   const response = await fetch(
     `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
@@ -119,7 +138,7 @@ async function handleTTS(request: Request, env: Env): Promise<Response> {
         "content-type": "application/json",
         accept: "audio/mpeg",
       },
-      body,
+      body: JSON.stringify(requestBody),
     }
   );
 
@@ -138,4 +157,20 @@ async function handleTTS(request: Request, env: Env): Promise<Response> {
       "content-type": response.headers.get("content-type") || "audio/mpeg",
     },
   });
+}
+
+function resolveVoiceIdForLanguage(
+  languageCode: string | undefined,
+  env: Env
+): string {
+  const normalizedLanguageCode = languageCode?.trim().toLowerCase();
+
+  if (
+    normalizedLanguageCode?.startsWith("zh") &&
+    env.ELEVENLABS_CHINESE_VOICE_ID?.trim()
+  ) {
+    return env.ELEVENLABS_CHINESE_VOICE_ID.trim();
+  }
+
+  return env.ELEVENLABS_VOICE_ID;
 }

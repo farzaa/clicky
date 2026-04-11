@@ -19,7 +19,7 @@ struct AssemblyAIStreamingTranscriptionProviderError: LocalizedError {
 final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider {
     /// URL for the Cloudflare Worker endpoint that returns a short-lived
     /// AssemblyAI streaming token. The real API key never leaves the server.
-    private static let tokenProxyURL = "https://your-worker-name.your-subdomain.workers.dev/transcribe-token"
+    private static let tokenProxyURL = "https://clicky-proxy.clicky-mark.workers.dev/transcribe-token"
 
     let displayName = "AssemblyAI"
     let requiresSpeechRecognitionPermission = false
@@ -86,6 +86,53 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
 }
 
 private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStreamingTranscriptionSession {
+    private enum StreamingSpeechModelConfiguration {
+        case universalRealtimePro
+        case whisperRealtime
+
+        init(languageCode: String?) {
+            let normalizedLanguageCode = languageCode?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+
+            if let normalizedLanguageCode,
+               !normalizedLanguageCode.isEmpty,
+               normalizedLanguageCode != "en" {
+                self = .whisperRealtime
+                return
+            }
+
+            self = .universalRealtimePro
+        }
+
+        var modelIdentifier: String {
+            switch self {
+            case .universalRealtimePro:
+                return "u3-rt-pro"
+            case .whisperRealtime:
+                return "whisper-rt"
+            }
+        }
+
+        var supportsExplicitLanguageCode: Bool {
+            switch self {
+            case .universalRealtimePro:
+                return true
+            case .whisperRealtime:
+                return false
+            }
+        }
+
+        var shouldEnableLanguageDetection: Bool {
+            switch self {
+            case .universalRealtimePro:
+                return false
+            case .whisperRealtime:
+                return true
+            }
+        }
+    }
+
     private struct MessageEnvelope: Decodable {
         let type: String
     }
@@ -450,14 +497,26 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
             )
         }
 
+        let streamingSpeechModelConfiguration = StreamingSpeechModelConfiguration(
+            languageCode: languageCode
+        )
+
         var queryItems = [
             URLQueryItem(name: "sample_rate", value: "16000"),
             URLQueryItem(name: "encoding", value: "pcm_s16le"),
             URLQueryItem(name: "format_turns", value: "true"),
-            URLQueryItem(name: "speech_model", value: "u3-rt-pro")
+            URLQueryItem(
+                name: "speech_model",
+                value: streamingSpeechModelConfiguration.modelIdentifier
+            )
         ]
 
-        if let languageCode {
+        if streamingSpeechModelConfiguration.shouldEnableLanguageDetection {
+            queryItems.append(URLQueryItem(name: "language_detection", value: "true"))
+        }
+
+        if streamingSpeechModelConfiguration.supportsExplicitLanguageCode,
+           let languageCode {
             queryItems.append(URLQueryItem(name: "language_code", value: languageCode))
         }
 

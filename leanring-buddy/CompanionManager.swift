@@ -7,6 +7,7 @@
 //  exposes observable voice state for the panel UI.
 //
 
+@preconcurrency import AVFAudio
 import AVFoundation
 import Combine
 import Foundation
@@ -23,6 +24,8 @@ enum CompanionVoiceState {
 
 @MainActor
 final class CompanionManager: ObservableObject {
+    private static let screenContentPermissionUserDefaultsKey = "hasScreenContentPermission"
+
     @Published private(set) var voiceState: CompanionVoiceState = .idle
     @Published private(set) var lastTranscript: String?
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
@@ -61,6 +64,10 @@ final class CompanionManager: ObservableObject {
 
     private var onboardingMusicPlayer: AVAudioPlayer?
     private var onboardingMusicFadeTimer: Timer?
+    private var onboardingMusicFadeStepsRemaining = 0
+    private var onboardingMusicVolumeDecrement: Float = 0
+    private var onboardingPromptStreamTask: Task<Void, Never>?
+    private let fallbackSpeechSynthesizer = AVSpeechSynthesizer()
 
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
@@ -70,7 +77,7 @@ final class CompanionManager: ObservableObject {
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
+    private static let workerBaseURL = "https://clicky-proxy.clicky-mark.workers.dev"
 
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
@@ -93,6 +100,7 @@ final class CompanionManager: ObservableObject {
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
+    private var screenContentPermissionValidationTask: Task<Void, Never>?
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
@@ -116,7 +124,7 @@ final class CompanionManager: ObservableObject {
         claudeAPI.model = model
     }
 
-    /// Supported voice languages for transcription and TTS.
+    /// Supported voice languages for transcription, AI responses, and TTS.
     enum VoiceLanguage: String, CaseIterable, Identifiable {
         case english = "en"
         case chinese = "zh"
@@ -137,15 +145,35 @@ final class CompanionManager: ObservableObject {
             }
         }
 
-        var assemblyAILanguageCode: String? {
+        var transcriptionLanguageCode: String? {
             switch self {
             case .english: return nil
             case .chinese: return "zh"
             }
         }
 
-        var openAILanguageCode: String {
-            rawValue
+        var textToSpeechLanguageCode: String? {
+            switch self {
+            case .english: return nil
+            case .chinese: return "zh"
+            }
+        }
+
+        var responseSystemPromptInstructions: String {
+            switch self {
+            case .english:
+                return """
+                - reply in english unless the user clearly asks for another language.
+                - all lowercase, casual, warm. no emojis.
+                """
+            case .chinese:
+                return """
+                - reply in simplified chinese unless the user clearly asks for another language.
+                - write the way spoken mandarin sounds in conversation: natural, warm, and compact.
+                - chinese does not need lowercase styling. keep punctuation natural for speech.
+                - if a technical term is much easier to recognize in english, you can mention the english term once alongside the chinese explanation.
+                """
+            }
         }
     }
 
@@ -280,6 +308,8 @@ final class CompanionManager: ObservableObject {
     private func stopOnboardingMusic() {
         onboardingMusicFadeTimer?.invalidate()
         onboardingMusicFadeTimer = nil
+        onboardingMusicFadeStepsRemaining = 0
+        onboardingMusicVolumeDecrement = 0
         onboardingMusicPlayer?.stop()
         onboardingMusicPlayer = nil
     }
@@ -299,7 +329,9 @@ final class CompanionManager: ObservableObject {
 
             // After 1m 30s, fade the music out over 3s
             onboardingMusicFadeTimer = Timer.scheduledTimer(withTimeInterval: 90.0, repeats: false) { [weak self] _ in
-                self?.fadeOutOnboardingMusic()
+                Task { @MainActor [weak self] in
+                    self?.fadeOutOnboardingMusic()
+                }
             }
         } catch {
             print("⚠️ Clicky: Failed to play onboarding music: \(error)")
@@ -312,19 +344,35 @@ final class CompanionManager: ObservableObject {
         let fadeSteps = 30
         let fadeDuration: Double = 3.0
         let stepInterval = fadeDuration / Double(fadeSteps)
-        let volumeDecrement = player.volume / Float(fadeSteps)
-        var stepsRemaining = fadeSteps
+        onboardingMusicFadeStepsRemaining = fadeSteps
+        onboardingMusicVolumeDecrement = player.volume / Float(fadeSteps)
 
         onboardingMusicFadeTimer = Timer.scheduledTimer(withTimeInterval: stepInterval, repeats: true) { [weak self] timer in
-            stepsRemaining -= 1
-            player.volume -= volumeDecrement
-
-            if stepsRemaining <= 0 {
-                timer.invalidate()
-                player.stop()
-                self?.onboardingMusicPlayer = nil
-                self?.onboardingMusicFadeTimer = nil
+            Task { @MainActor [weak self] in
+                self?.handleOnboardingMusicFadeTimerTick(timer)
             }
+        }
+    }
+
+    private func handleOnboardingMusicFadeTimerTick(_ timer: Timer) {
+        guard let onboardingMusicPlayer else {
+            timer.invalidate()
+            onboardingMusicFadeTimer = nil
+            onboardingMusicFadeStepsRemaining = 0
+            onboardingMusicVolumeDecrement = 0
+            return
+        }
+
+        onboardingMusicFadeStepsRemaining -= 1
+        onboardingMusicPlayer.volume -= onboardingMusicVolumeDecrement
+
+        if onboardingMusicFadeStepsRemaining <= 0 {
+            timer.invalidate()
+            onboardingMusicPlayer.stop()
+            self.onboardingMusicPlayer = nil
+            onboardingMusicFadeTimer = nil
+            onboardingMusicFadeStepsRemaining = 0
+            onboardingMusicVolumeDecrement = 0
         }
     }
 
@@ -339,6 +387,8 @@ final class CompanionManager: ObservableObject {
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
         transientHideTask?.cancel()
+        screenContentPermissionValidationTask?.cancel()
+        onboardingPromptStreamTask?.cancel()
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
@@ -364,7 +414,8 @@ final class CompanionManager: ObservableObject {
             globalPushToTalkShortcutMonitor.stop()
         }
 
-        hasScreenRecordingPermission = WindowPositionManager.hasScreenRecordingPermission()
+        hasScreenRecordingPermission = WindowPositionManager
+            .shouldTreatScreenRecordingPermissionAsGrantedForSessionLaunch()
 
         let micAuthStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         hasMicrophonePermission = micAuthStatus == .authorized
@@ -386,10 +437,13 @@ final class CompanionManager: ObservableObject {
         if !previouslyHadMicrophone && hasMicrophonePermission {
             ClickyAnalytics.trackPermissionGranted(permission: "microphone")
         }
-        // Screen content permission is persisted — once the user has approved the
-        // SCShareableContent picker, we don't need to re-check it.
-        if !hasScreenContentPermission {
-            hasScreenContentPermission = UserDefaults.standard.bool(forKey: "hasScreenContentPermission")
+        if !hasScreenRecordingPermission {
+            hasScreenContentPermission = false
+            screenContentPermissionValidationTask?.cancel()
+            screenContentPermissionValidationTask = nil
+        } else if hasScreenContentPermission
+            || UserDefaults.standard.bool(forKey: Self.screenContentPermissionUserDefaultsKey) {
+            validateScreenContentPermissionAgainstSystemIfNeeded()
         }
 
         if !previouslyHadAll && allPermissionsGranted {
@@ -425,7 +479,7 @@ final class CompanionManager: ObservableObject {
                     isRequestingScreenContent = false
                     guard didCapture else { return }
                     hasScreenContentPermission = true
-                    UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
+                    UserDefaults.standard.set(true, forKey: Self.screenContentPermissionUserDefaultsKey)
                     ClickyAnalytics.trackPermissionGranted(permission: "screen_content")
 
                     // If onboarding was already completed, show the cursor overlay now
@@ -437,7 +491,10 @@ final class CompanionManager: ObservableObject {
                 }
             } catch {
                 print("⚠️ Screen content permission request failed: \(error)")
-                await MainActor.run { isRequestingScreenContent = false }
+                await MainActor.run {
+                    isRequestingScreenContent = false
+                    invalidateScreenContentPermissionGrant()
+                }
             }
         }
     }
@@ -559,7 +616,7 @@ final class CompanionManager: ObservableObject {
 
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = Task {
-                buddyDictationManager.languageCode = selectedVoiceLanguage.assemblyAILanguageCode
+                buddyDictationManager.languageCode = selectedVoiceLanguage.transcriptionLanguageCode
                 await buddyDictationManager.startPushToTalkFromKeyboardShortcut(
                     currentDraftText: "",
                     updateDraftText: { _ in
@@ -589,12 +646,15 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Companion Prompt
 
-    private static let companionVoiceResponseSystemPrompt = """
+    private static func companionVoiceResponseSystemPrompt(
+        for voiceLanguage: VoiceLanguage
+    ) -> String {
+        """
     you're clicky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
 
     rules:
     - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
-    - all lowercase, casual, warm. no emojis.
+    \(voiceLanguage.responseSystemPromptInstructions)
     - write for the ear, not the eye. short sentences. no lists, bullet points, markdown, or formatting — just natural speech.
     - don't use abbreviations or symbols that sound weird read aloud. write "for example" not "e.g.", spell out small numbers.
     - if the user's question relates to what's on their screen, reference specific things you see.
@@ -623,6 +683,7 @@ final class CompanionManager: ObservableObject {
     - user asks how to commit in xcode: "see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control]"
     - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
     """
+    }
 
     // MARK: - AI Response Pipeline
 
@@ -660,7 +721,7 @@ final class CompanionManager: ObservableObject {
 
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                    systemPrompt: Self.companionVoiceResponseSystemPrompt(for: selectedVoiceLanguage),
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
                     onTextChunk: { _ in
@@ -749,7 +810,7 @@ final class CompanionManager: ObservableObject {
                 // until the audio actually starts playing, then switch to responding.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     do {
-                        elevenLabsTTSClient.languageCode = selectedVoiceLanguage.assemblyAILanguageCode
+                        elevenLabsTTSClient.languageCode = selectedVoiceLanguage.textToSpeechLanguageCode
                         try await elevenLabsTTSClient.speakText(spokenText)
                         // speakText returns after player.play() — audio is now playing
                         voiceState = .responding
@@ -762,6 +823,12 @@ final class CompanionManager: ObservableObject {
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
+                if Self.isScreenContentPermissionDenied(error) {
+                    invalidateScreenContentPermissionGrant()
+                    print("⚠️ Screen content permission is no longer valid: \(error.localizedDescription)")
+                    voiceState = .idle
+                    return
+                }
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
                 speakCreditsErrorFallback()
@@ -772,6 +839,73 @@ final class CompanionManager: ObservableObject {
                 scheduleTransientHideIfNeeded()
             }
         }
+    }
+
+    private func validateScreenContentPermissionAgainstSystemIfNeeded() {
+        guard screenContentPermissionValidationTask == nil else { return }
+
+        screenContentPermissionValidationTask = Task { [weak self] in
+            let isGranted = await Self.canCaptureScreenContentRightNow()
+
+            await MainActor.run {
+                guard let self else { return }
+                self.screenContentPermissionValidationTask = nil
+
+                if isGranted {
+                    self.hasScreenContentPermission = true
+                    UserDefaults.standard.set(
+                        true,
+                        forKey: Self.screenContentPermissionUserDefaultsKey
+                    )
+                } else {
+                    self.invalidateScreenContentPermissionGrant()
+                }
+            }
+        }
+    }
+
+    private func invalidateScreenContentPermissionGrant() {
+        hasScreenContentPermission = false
+        UserDefaults.standard.removeObject(forKey: Self.screenContentPermissionUserDefaultsKey)
+    }
+
+    private static func canCaptureScreenContentRightNow() async -> Bool {
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(
+                false,
+                onScreenWindowsOnly: true
+            )
+
+            guard let display = content.displays.first else {
+                return false
+            }
+
+            let filter = SCContentFilter(display: display, excludingWindows: [])
+            let configuration = SCStreamConfiguration()
+            configuration.width = 64
+            configuration.height = 64
+
+            let image = try await SCScreenshotManager.captureImage(
+                contentFilter: filter,
+                configuration: configuration
+            )
+
+            return image.width > 0 && image.height > 0
+        } catch {
+            print("⚠️ Screen content validation failed: \(error)")
+            return false
+        }
+    }
+
+    private static func isScreenContentPermissionDenied(_ error: Error) -> Bool {
+        let nsError = error as NSError
+
+        if nsError.domain == "com.apple.ScreenCaptureKit.SCStreamErrorDomain",
+           nsError.code == -3801 {
+            return true
+        }
+
+        return nsError.localizedDescription.contains("TCC")
     }
 
     /// If the cursor is in transient mode (user toggled "Show Clicky" off),
@@ -804,13 +938,14 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Speaks a hardcoded error message using macOS system TTS when API
-    /// credits run out. Uses NSSpeechSynthesizer so it works even when
-    /// ElevenLabs is down.
+    /// Speaks a hardcoded error message using the system speech synthesizer
+    /// when API credits run out, so the user still hears a fallback even if
+    /// ElevenLabs never returns audio.
     private func speakCreditsErrorFallback() {
         let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
+        let speechUtterance = AVSpeechUtterance(string: utterance)
+        fallbackSpeechSynthesizer.stopSpeaking(at: .immediate)
+        fallbackSpeechSynthesizer.speak(speechUtterance)
         voiceState = .responding
     }
 
@@ -905,7 +1040,9 @@ final class CompanionManager: ObservableObject {
             queue: .main
         ) { [weak self] in
             ClickyAnalytics.trackOnboardingDemoTriggered()
-            self?.performOnboardingDemoInteraction()
+            Task { @MainActor [weak self] in
+                self?.performOnboardingDemoInteraction()
+            }
         }
 
         // Fade out and clean up when the video finishes
@@ -914,16 +1051,14 @@ final class CompanionManager: ObservableObject {
             object: player.currentItem,
             queue: .main
         ) { [weak self] _ in
-            guard let self else { return }
             ClickyAnalytics.trackOnboardingVideoCompleted()
-            self.onboardingVideoOpacity = 0.0
-            // Wait for the 2s fade-out animation to complete before tearing down
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.onboardingVideoOpacity = 0.0
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
                 self.tearDownOnboardingVideo()
-                // After the video disappears, stream in the prompt to try talking
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    self.startOnboardingPromptStream()
-                }
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                self.startOnboardingPromptStream()
             }
         }
     }
@@ -944,6 +1079,7 @@ final class CompanionManager: ObservableObject {
 
     private func startOnboardingPromptStream() {
         let message = "press control + option and introduce yourself"
+        onboardingPromptStreamTask?.cancel()
         onboardingPromptText = ""
         showOnboardingPrompt = true
         onboardingPromptOpacity = 0.0
@@ -952,26 +1088,26 @@ final class CompanionManager: ObservableObject {
             onboardingPromptOpacity = 1.0
         }
 
-        var currentIndex = 0
-        Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { timer in
-            guard currentIndex < message.count else {
-                timer.invalidate()
-                // Auto-dismiss after 10 seconds
-                DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) {
-                    guard self.showOnboardingPrompt else { return }
-                    withAnimation(.easeOut(duration: 0.3)) {
-                        self.onboardingPromptOpacity = 0.0
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                        self.showOnboardingPrompt = false
-                        self.onboardingPromptText = ""
-                    }
-                }
-                return
+        onboardingPromptStreamTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            for character in message {
+                guard !Task.isCancelled else { return }
+                self.onboardingPromptText.append(character)
+                try? await Task.sleep(nanoseconds: 30_000_000)
             }
-            let index = message.index(message.startIndex, offsetBy: currentIndex)
-            self.onboardingPromptText.append(message[index])
-            currentIndex += 1
+
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            guard !Task.isCancelled, self.showOnboardingPrompt else { return }
+
+            withAnimation(.easeOut(duration: 0.3)) {
+                self.onboardingPromptOpacity = 0.0
+            }
+
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            self.showOnboardingPrompt = false
+            self.onboardingPromptText = ""
         }
     }
 

@@ -260,9 +260,7 @@ struct CompanionPanelView: View {
 
             screenRecordingPermissionRow
 
-            if companionManager.hasScreenRecordingPermission {
-                screenContentPermissionRow
-            }
+            screenContentPermissionRow
 
         }
     }
@@ -396,6 +394,7 @@ struct CompanionPanelView: View {
 
     private var screenContentPermissionRow: some View {
         let isGranted = companionManager.hasScreenContentPermission
+        let canRequestScreenContentPermission = companionManager.hasScreenRecordingPermission
         return HStack {
             HStack(spacing: 8) {
                 Image(systemName: "eye")
@@ -403,9 +402,21 @@ struct CompanionPanelView: View {
                     .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
                     .frame(width: 16)
 
-                Text("Screen Content")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Screen Content")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+
+                    if !isGranted {
+                        Text(
+                            canRequestScreenContentPermission
+                                ? "Approve the ScreenCaptureKit picker after tapping Grant"
+                                : "Grant Screen Recording first"
+                        )
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                    }
+                }
             }
 
             Spacer()
@@ -435,6 +446,8 @@ struct CompanionPanelView: View {
                 }
                 .buttonStyle(.plain)
                 .pointerCursor()
+                .disabled(!canRequestScreenContentPermission)
+                .opacity(canRequestScreenContentPermission ? 1 : 0.45)
             }
         }
         .padding(.vertical, 6)
