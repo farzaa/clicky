@@ -31,6 +31,10 @@ struct CompanionPanelView: View {
 
                 modelPickerRow
                     .padding(.horizontal, 16)
+
+                voiceLanguagePickerRow
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
             }
 
             if !companionManager.allPermissionsGranted {
@@ -626,6 +630,55 @@ struct CompanionPanelView: View {
         let isSelected = companionManager.selectedModel == modelID
         return Button(action: {
             companionManager.setSelectedModel(modelID)
+        }) {
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    // MARK: - Voice Language Picker
+
+    private var voiceLanguagePickerRow: some View {
+        HStack {
+            Text("Voice")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Spacer()
+
+            HStack(spacing: 0) {
+                ForEach(CompanionManager.VoiceLanguage.allCases) { language in
+                    voiceLanguageOptionButton(
+                        label: language.displayName,
+                        language: language
+                    )
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func voiceLanguageOptionButton(label: String, language: CompanionManager.VoiceLanguage) -> some View {
+        let isSelected = companionManager.selectedVoiceLanguage == language
+        return Button(action: {
+            companionManager.setSelectedVoiceLanguage(language)
         }) {
             Text(label)
                 .font(.system(size: 11, weight: .medium))

@@ -116,6 +116,53 @@ final class CompanionManager: ObservableObject {
         claudeAPI.model = model
     }
 
+    /// Supported voice languages for transcription and TTS.
+    enum VoiceLanguage: String, CaseIterable, Identifiable {
+        case english = "en"
+        case chinese = "zh"
+
+        var id: String { rawValue }
+
+        var displayName: String {
+            switch self {
+            case .english: return "English"
+            case .chinese: return "中文"
+            }
+        }
+
+        var locale: Locale {
+            switch self {
+            case .english: return Locale(identifier: "en-US")
+            case .chinese: return Locale(identifier: "zh-CN")
+            }
+        }
+
+        var assemblyAILanguageCode: String? {
+            switch self {
+            case .english: return nil
+            case .chinese: return "zh"
+            }
+        }
+
+        var openAILanguageCode: String {
+            rawValue
+        }
+    }
+
+    /// The voice language used for transcription and TTS. Persisted to UserDefaults.
+    @Published var selectedVoiceLanguage: VoiceLanguage = {
+        if let savedLanguage = UserDefaults.standard.string(forKey: "selectedVoiceLanguage"),
+           let language = VoiceLanguage(rawValue: savedLanguage) {
+            return language
+        }
+        return .english
+    }()
+
+    func setSelectedVoiceLanguage(_ language: VoiceLanguage) {
+        selectedVoiceLanguage = language
+        UserDefaults.standard.set(language.rawValue, forKey: "selectedVoiceLanguage")
+    }
+
     /// User preference for whether the Clicky cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
@@ -512,6 +559,7 @@ final class CompanionManager: ObservableObject {
 
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = Task {
+                buddyDictationManager.languageCode = selectedVoiceLanguage.assemblyAILanguageCode
                 await buddyDictationManager.startPushToTalkFromKeyboardShortcut(
                     currentDraftText: "",
                     updateDraftText: { _ in
@@ -701,6 +749,7 @@ final class CompanionManager: ObservableObject {
                 // until the audio actually starts playing, then switch to responding.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     do {
+                        elevenLabsTTSClient.languageCode = selectedVoiceLanguage.assemblyAILanguageCode
                         try await elevenLabsTTSClient.speakText(spokenText)
                         // speakText returns after player.play() — audio is now playing
                         voiceState = .responding
