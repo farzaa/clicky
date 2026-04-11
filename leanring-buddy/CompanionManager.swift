@@ -106,6 +106,12 @@ final class CompanionManager: ObservableObject {
     /// Custom speech bubble text for the pointing animation. When set,
     /// BlueCursorView uses this instead of a random pointer phrase.
     @Published var detectedElementBubbleText: String?
+    /// Spoken transcript text shown in a popup near the cursor follower.
+    @Published private(set) var cursorTranscriptText: String = ""
+    /// Optional image sources (URL, file path, or data URL) rendered in the transcript popup.
+    @Published private(set) var cursorTranscriptImageSources: [String] = []
+    /// Whether the transcript popup is currently visible on the cursor overlay.
+    @Published private(set) var isCursorTranscriptVisible: Bool = false
 
     // MARK: - Onboarding Video State (shared across all screen overlays)
 
@@ -168,6 +174,8 @@ final class CompanionManager: ObservableObject {
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
+    /// Scheduled hide for the cursor transcript popup after speech playback.
+    private var cursorTranscriptHideTask: Task<Void, Never>?
 
     /// True when all three required permissions (accessibility, screen recording,
     /// microphone) are granted. Used by the panel to show a single "all good" state.
@@ -206,6 +214,7 @@ final class CompanionManager: ObservableObject {
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
         } else {
+            clearCursorTranscriptPopup()
             overlayWindowManager.hideOverlay()
             isOverlayVisible = false
         }
@@ -359,11 +368,48 @@ final class CompanionManager: ObservableObject {
         detectedElementBubbleText = nil
     }
 
+    private func clearCursorTranscriptPopup() {
+        cursorTranscriptHideTask?.cancel()
+        cursorTranscriptHideTask = nil
+        isCursorTranscriptVisible = false
+        cursorTranscriptText = ""
+        cursorTranscriptImageSources = []
+    }
+
+    private func presentCursorTranscriptPopup(from rawTranscriptText: String) -> ParsedCursorTranscript {
+        let parsedCursorTranscript = Self.parseCursorTranscript(from: rawTranscriptText)
+        guard parsedCursorTranscript.hasVisibleContent else {
+            clearCursorTranscriptPopup()
+            return parsedCursorTranscript
+        }
+
+        cursorTranscriptText = parsedCursorTranscript.spokenText
+        cursorTranscriptImageSources = parsedCursorTranscript.imageSources
+        isCursorTranscriptVisible = true
+        scheduleCursorTranscriptPopupHide()
+        return parsedCursorTranscript
+    }
+
+    private func scheduleCursorTranscriptPopupHide() {
+        cursorTranscriptHideTask?.cancel()
+        cursorTranscriptHideTask = Task {
+            while elevenLabsTTSClient.isPlaying {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+            }
+
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled else { return }
+            clearCursorTranscriptPopup()
+        }
+    }
+
     func stop() {
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
         transientHideTask?.cancel()
+        clearCursorTranscriptPopup()
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
@@ -567,6 +613,7 @@ final class CompanionManager: ObservableObject {
             currentResponseTask?.cancel()
             elevenLabsTTSClient.stopPlayback()
             clearDetectedElementLocation()
+            clearCursorTranscriptPopup()
 
             // Dismiss the onboarding prompt if it's showing
             if showOnboardingPrompt {
@@ -1161,6 +1208,9 @@ final class CompanionManager: ObservableObject {
     - use `workspace.run_bash` with `cat`/`rg` to read `__learner__` before teaching new topics.
     - when you have strong evidence from the student's answer, call `learner.record_topic_update`.
     - update mastery_score only with evidence, and keep scores stable unless there is clear new signal.
+    when you want the cursor transcript popup to include an image, include either
+    `[IMAGE:https://example.com/image.png]` or markdown image syntax
+    `![label](https://example.com/image.png)` inside companion.speak text.
     """
 
     // MARK: - AI Response Pipeline
@@ -1171,6 +1221,7 @@ final class CompanionManager: ObservableObject {
     private func sendTranscriptToAgentWithScreenshots(transcript: String) {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
+        clearCursorTranscriptPopup()
 
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
@@ -1241,9 +1292,15 @@ final class CompanionManager: ObservableObject {
                 backendAgentConversationMessages = trimBackendAgentConversationMessages(conversationMessages)
                 DebAnalytics.trackAIResponseReceived(response: finalOutputText)
 
-                if !didSpeakViaTool && !finalOutputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if !didSpeakViaTool {
+                    let parsedFinalOutput = presentCursorTranscriptPopup(from: finalOutputText)
+                    guard !parsedFinalOutput.spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        voiceState = .idle
+                        scheduleTransientHideIfNeeded()
+                        return
+                    }
                     do {
-                        try await elevenLabsTTSClient.speakText(finalOutputText)
+                        try await elevenLabsTTSClient.speakText(parsedFinalOutput.spokenText)
                         voiceState = .responding
                     } catch {
                         DebAnalytics.trackTTSError(error: error.localizedDescription)
@@ -1476,14 +1533,18 @@ final class CompanionManager: ObservableObject {
                 ]
             } else if toolName == "companion.speak" {
                 let speechText = (argumentsPayload["text"] as? String) ?? ""
-                if !speechText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    try await elevenLabsTTSClient.speakText(speechText)
+                let parsedSpeechTranscript = presentCursorTranscriptPopup(from: speechText)
+                if !parsedSpeechTranscript.spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    try await elevenLabsTTSClient.speakText(parsedSpeechTranscript.spokenText)
                     voiceState = .responding
+                    didSpeak = true
+                } else if parsedSpeechTranscript.hasVisibleContent {
                     didSpeak = true
                 }
                 toolOutput = [
                     "status": "spoken",
-                    "text": speechText,
+                    "text": parsedSpeechTranscript.spokenText,
+                    "image_sources": parsedSpeechTranscript.imageSources,
                 ]
             } else {
                 toolOutput = [
@@ -1707,6 +1768,83 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    /// Speaks a hardcoded error message using macOS system TTS when API
+    /// credits run out. Uses NSSpeechSynthesizer so it works even when
+    /// ElevenLabs is down.
+    private func speakCreditsErrorFallback() {
+        let utterance = "I'm all out of credits. Please DM Farza and tell him to bring Deb back to life."
+        _ = presentCursorTranscriptPopup(from: utterance)
+        let synthesizer = NSSpeechSynthesizer()
+        synthesizer.startSpeaking(utterance)
+        voiceState = .responding
+    }
+
+    // MARK: - Cursor Transcript Parsing
+
+    struct ParsedCursorTranscript {
+        let spokenText: String
+        let imageSources: [String]
+
+        var hasVisibleContent: Bool {
+            !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !imageSources.isEmpty
+        }
+    }
+
+    /// Parses transcript popup content from assistant output.
+    /// Supported image syntaxes:
+    /// - `[IMAGE:https://example.com/image.png]`
+    /// - `![alt](https://example.com/image.png)`
+    static func parseCursorTranscript(from rawTranscriptText: String) -> ParsedCursorTranscript {
+        var mutableTranscriptText = rawTranscriptText
+        var imageTokens: [(range: NSRange, source: String)] = []
+
+        let customImageTagPattern = #"\[IMAGE:([^\]]+)\]"#
+        let markdownImagePattern = #"\!\[[^\]]*\]\(([^)]+)\)"#
+        let patterns = [customImageTagPattern, markdownImagePattern]
+
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+                continue
+            }
+            let fullRange = NSRange(mutableTranscriptText.startIndex..., in: mutableTranscriptText)
+            let matches = regex.matches(in: mutableTranscriptText, options: [], range: fullRange)
+            for match in matches {
+                guard match.numberOfRanges >= 2,
+                      let sourceRange = Range(match.range(at: 1), in: mutableTranscriptText) else {
+                    continue
+                }
+                let sourceText = String(mutableTranscriptText[sourceRange])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !sourceText.isEmpty else { continue }
+                imageTokens.append((range: match.range, source: sourceText))
+            }
+        }
+
+        imageTokens.sort { $0.range.location < $1.range.location }
+
+        var deduplicatedImageSources: [String] = []
+        for imageToken in imageTokens {
+            if !deduplicatedImageSources.contains(imageToken.source) {
+                deduplicatedImageSources.append(imageToken.source)
+            }
+        }
+
+        for imageToken in imageTokens.reversed() {
+            guard let removalRange = Range(imageToken.range, in: mutableTranscriptText) else {
+                continue
+            }
+            mutableTranscriptText.removeSubrange(removalRange)
+        }
+
+        let normalizedSpokenText = mutableTranscriptText
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return ParsedCursorTranscript(
+            spokenText: normalizedSpokenText,
+            imageSources: deduplicatedImageSources
+        )
+    }
     // MARK: - Point Tag Parsing
 
     /// Result of parsing a [POINT:...] tag from Claude's response.

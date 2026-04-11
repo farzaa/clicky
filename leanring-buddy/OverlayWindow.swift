@@ -68,6 +68,13 @@ struct NavigationBubbleSizePreferenceKey: PreferenceKey {
     }
 }
 
+struct TranscriptBubbleSizePreferenceKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
+    }
+}
+
 /// The buddy's behavioral mode. Controls whether it follows the cursor,
 /// is flying toward a detected UI element, or is pointing at an element.
 enum BuddyNavigationMode {
@@ -126,6 +133,7 @@ struct BlueCursorView: View {
     @State private var navigationBubbleText: String = ""
     @State private var navigationBubbleOpacity: Double = 0.0
     @State private var navigationBubbleSize: CGSize = .zero
+    @State private var transcriptBubbleSize: CGSize = .zero
 
     /// The cursor position at the moment navigation started, used to detect
     /// if the user moves the cursor enough to cancel the navigation.
@@ -277,6 +285,28 @@ struct BlueCursorView: View {
                     }
             }
 
+            if companionManager.isCursorTranscriptVisible && buddyIsVisibleOnThisScreen {
+                CompanionCursorTranscriptBubbleView(
+                    transcriptText: companionManager.cursorTranscriptText,
+                    imageSources: companionManager.cursorTranscriptImageSources
+                )
+                .overlay(
+                    GeometryReader { geometryProxy in
+                        Color.clear
+                            .preference(
+                                key: TranscriptBubbleSizePreferenceKey.self,
+                                value: geometryProxy.size
+                            )
+                    }
+                )
+                .position(transcriptBubbleCenterPosition)
+                .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
+                .animation(.easeInOut(duration: 0.18), value: companionManager.isCursorTranscriptVisible)
+                .onPreferenceChange(TranscriptBubbleSizePreferenceKey.self) { updatedSize in
+                    transcriptBubbleSize = updatedSize
+                }
+            }
+
             // Buddy chip + arrow — shown when idle or while TTS is playing (responding).
             // All three states (mark, waveform, spinner) stay in the view tree
             // permanently and cross-fade via opacity so SwiftUI doesn't remove/re-insert
@@ -389,6 +419,41 @@ struct BlueCursorView: View {
         case .navigatingToTarget, .pointingAtTarget:
             return true
         }
+    }
+
+    /// Center position for the transcript popup so it appears next to the buddy
+    /// while staying inside this screen's bounds.
+    private var transcriptBubbleCenterPosition: CGPoint {
+        let horizontalPadding: CGFloat = 10
+        let verticalPadding: CGFloat = 10
+        let horizontalOffsetFromCursor: CGFloat = 16
+        let verticalOffsetFromCursor: CGFloat = 8
+
+        let bubbleWidth = max(transcriptBubbleSize.width, 120)
+        let bubbleHeight = max(transcriptBubbleSize.height, 60)
+        let halfBubbleWidth = bubbleWidth / 2
+        let halfBubbleHeight = bubbleHeight / 2
+
+        var bubbleCenterX = cursorPosition.x + horizontalOffsetFromCursor + halfBubbleWidth
+        if bubbleCenterX + halfBubbleWidth > screenFrame.width - horizontalPadding {
+            bubbleCenterX = cursorPosition.x - horizontalOffsetFromCursor - halfBubbleWidth
+        }
+
+        var bubbleCenterY = cursorPosition.y - verticalOffsetFromCursor - halfBubbleHeight
+        if bubbleCenterY - halfBubbleHeight < verticalPadding {
+            bubbleCenterY = cursorPosition.y + verticalOffsetFromCursor + halfBubbleHeight
+        }
+
+        bubbleCenterX = max(
+            horizontalPadding + halfBubbleWidth,
+            min(bubbleCenterX, screenFrame.width - horizontalPadding - halfBubbleWidth)
+        )
+        bubbleCenterY = max(
+            verticalPadding + halfBubbleHeight,
+            min(bubbleCenterY, screenFrame.height - verticalPadding - halfBubbleHeight)
+        )
+
+        return CGPoint(x: bubbleCenterX, y: bubbleCenterY)
     }
 
     // MARK: - Cursor Tracking
@@ -683,6 +748,135 @@ struct BlueCursorView: View {
             let index = self.fullWelcomeMessage.index(self.fullWelcomeMessage.startIndex, offsetBy: currentIndex)
             self.welcomeText.append(self.fullWelcomeMessage[index])
             currentIndex += 1
+        }
+    }
+}
+
+private struct CompanionCursorTranscriptBubbleView: View {
+    let transcriptText: String
+    let imageSources: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !transcriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(transcriptText)
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundStyle(DS.Colors.textPrimary)
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 300, alignment: .leading)
+            }
+
+            if !imageSources.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(Array(imageSources.enumerated()), id: \.offset) { imageEntry in
+                            CompanionTranscriptImageThumbnail(imageSource: imageEntry.element)
+                        }
+                    }
+                }
+                .frame(maxWidth: 300)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(DS.Colors.surface1.opacity(0.95))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle.opacity(0.5), lineWidth: 0.8)
+                )
+                .shadow(color: Color.black.opacity(0.35), radius: 16, x: 0, y: 8)
+        )
+    }
+}
+
+private struct CompanionTranscriptImageThumbnail: View {
+    let imageSource: String
+
+    var body: some View {
+        Group {
+            if let imageFromDataURL {
+                imageView(from: imageFromDataURL)
+            } else if let localFileImage {
+                imageView(from: localFileImage)
+            } else if let remoteImageURL {
+                AsyncImage(url: remoteImageURL) { phase in
+                    switch phase {
+                    case .empty:
+                        imagePlaceholder(systemImageName: "photo")
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    case .failure:
+                        imagePlaceholder(systemImageName: "exclamationmark.triangle")
+                    @unknown default:
+                        imagePlaceholder(systemImageName: "photo")
+                    }
+                }
+            } else {
+                imagePlaceholder(systemImageName: "questionmark")
+            }
+        }
+        .frame(width: 112, height: 74)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(DS.Colors.borderSubtle.opacity(0.6), lineWidth: 0.8)
+        )
+    }
+
+    private var remoteImageURL: URL? {
+        guard let candidateURL = URL(string: imageSource),
+              let scheme = candidateURL.scheme?.lowercased(),
+              ["http", "https"].contains(scheme) else {
+            return nil
+        }
+        return candidateURL
+    }
+
+    private var localFileImage: NSImage? {
+        if let fileURL = URL(string: imageSource), fileURL.isFileURL {
+            return NSImage(contentsOf: fileURL)
+        }
+        if FileManager.default.fileExists(atPath: imageSource) {
+            return NSImage(contentsOfFile: imageSource)
+        }
+        return nil
+    }
+
+    private var imageFromDataURL: NSImage? {
+        guard imageSource.lowercased().hasPrefix("data:image/"),
+              let commaIndex = imageSource.firstIndex(of: ",") else {
+            return nil
+        }
+        let metadataPrefix = imageSource[..<commaIndex].lowercased()
+        guard metadataPrefix.contains(";base64") else {
+            return nil
+        }
+        let base64PayloadStartIndex = imageSource.index(after: commaIndex)
+        let base64Payload = String(imageSource[base64PayloadStartIndex...])
+        guard let decodedImageData = Data(base64Encoded: base64Payload) else {
+            return nil
+        }
+        return NSImage(data: decodedImageData)
+    }
+
+    private func imageView(from nsImage: NSImage) -> some View {
+        Image(nsImage: nsImage)
+            .resizable()
+            .scaledToFill()
+    }
+
+    private func imagePlaceholder(systemImageName: String) -> some View {
+        ZStack {
+            Rectangle()
+                .fill(DS.Colors.surface2.opacity(0.85))
+            Image(systemName: systemImageName)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(DS.Colors.textSecondary)
         }
     }
 }
