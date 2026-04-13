@@ -1,0 +1,4 @@
+[submodule "references/openwork"]
+	path = references/openwork
+	url = https://github.com/different-ai/openwork.git
+	branch = dev
