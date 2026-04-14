@@ -9,6 +9,10 @@
 /* Begin PBXBuildFile section */
 		AA00BB032F6500030039DA55 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB022F6500020039DA55 /* Sparkle */; };
 		AA00BB062F6500060039DA55 /* PostHog in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB052F6500050039DA55 /* PostHog */; };
+		C25D88DC2F8E1B20008ECA05 /* onnxruntime in Frameworks */ = {isa = PBXBuildFile; productRef = C25D88DB2F8E1B20008ECA05 /* onnxruntime */; };
+		C25D88DE2F8E1B20008ECA05 /* onnxruntime_extensions in Frameworks */ = {isa = PBXBuildFile; productRef = C25D88DD2F8E1B20008ECA05 /* onnxruntime_extensions */; };
+		C25D88E12F8E1B45008ECA05 /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = C25D88E02F8E1B45008ECA05 /* FluidAudio */; };
+		C25D88E32F8E1B45008ECA05 /* fluidaudiocli in Frameworks */ = {isa = PBXBuildFile; productRef = C25D88E22F8E1B45008ECA05 /* fluidaudiocli */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -57,6 +61,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C25D88DE2F8E1B20008ECA05 /* onnxruntime_extensions in Frameworks */,
+				C25D88E32F8E1B45008ECA05 /* fluidaudiocli in Frameworks */,
+				C25D88E12F8E1B45008ECA05 /* FluidAudio in Frameworks */,
+				C25D88DC2F8E1B20008ECA05 /* onnxruntime in Frameworks */,
 				AA00BB032F6500030039DA55 /* Sparkle in Frameworks */,
 				AA00BB062F6500060039DA55 /* PostHog in Frameworks */,
 			);
@@ -121,6 +129,10 @@
 			packageProductDependencies = (
 				AA00BB022F6500020039DA55 /* Sparkle */,
 				AA00BB052F6500050039DA55 /* PostHog */,
+				C25D88DB2F8E1B20008ECA05 /* onnxruntime */,
+				C25D88DD2F8E1B20008ECA05 /* onnxruntime_extensions */,
+				C25D88E02F8E1B45008ECA05 /* FluidAudio */,
+				C25D88E22F8E1B45008ECA05 /* fluidaudiocli */,
 			);
 			productName = "leanring-buddy";
 			productReference = 28F22CBF2F56440300A0FC59 /* Clicky.app */;
@@ -207,6 +219,8 @@
 			packageReferences = (
 				AA00BB012F6500010039DA55 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				AA00BB042F6500040039DA55 /* XCRemoteSwiftPackageReference "posthog-ios" */,
+				C25D88DA2F8E1B20008ECA05 /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */,
+				C25D88DF2F8E1B45008ECA05 /* XCRemoteSwiftPackageReference "FluidAudio" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 28F22CC02F56440300A0FC59 /* Products */;
@@ -411,7 +425,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 2UDAY4J48G;
+				DEVELOPMENT_TEAM = VS3FLTY94C;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
@@ -449,7 +463,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 2UDAY4J48G;
+				DEVELOPMENT_TEAM = VS3FLTY94C;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
@@ -616,6 +630,22 @@
 				minimumVersion = 3.0.0;
 			};
 		};
+		C25D88DA2F8E1B20008ECA05 /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/microsoft/onnxruntime-swift-package-manager.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.24.2;
+			};
+		};
+		C25D88DF2F8E1B45008ECA05 /* XCRemoteSwiftPackageReference "FluidAudio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/FluidInference/FluidAudio.git";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -628,6 +658,26 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA00BB042F6500040039DA55 /* XCRemoteSwiftPackageReference "posthog-ios" */;
 			productName = PostHog;
+		};
+		C25D88DB2F8E1B20008ECA05 /* onnxruntime */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C25D88DA2F8E1B20008ECA05 /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */;
+			productName = onnxruntime;
+		};
+		C25D88DD2F8E1B20008ECA05 /* onnxruntime_extensions */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C25D88DA2F8E1B20008ECA05 /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */;
+			productName = onnxruntime_extensions;
+		};
+		C25D88E02F8E1B45008ECA05 /* FluidAudio */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C25D88DF2F8E1B45008ECA05 /* XCRemoteSwiftPackageReference "FluidAudio" */;
+			productName = FluidAudio;
+		};
+		C25D88E22F8E1B45008ECA05 /* fluidaudiocli */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C25D88DF2F8E1B45008ECA05 /* XCRemoteSwiftPackageReference "FluidAudio" */;
+			productName = fluidaudiocli;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

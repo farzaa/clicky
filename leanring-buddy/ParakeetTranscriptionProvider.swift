@@ -25,7 +25,7 @@ final class ParakeetTranscriptionProvider: BuddyTranscriptionProvider {
 
     /// Shared AsrManager — model loading is expensive, so we keep it alive
     /// in memory after the first transcription and reuse it for all subsequent ones.
-    private static var sharedAsrManager: AsrManager?
+    fileprivate static var sharedAsrManager: AsrManager?
 
     func startStreamingSession(
         keyterms: [String],
@@ -98,9 +98,9 @@ private final class ParakeetTranscriptionSession: BuddyStreamingTranscriptionSes
     }
 
     func cancel() {
-        stateQueue.async {
-            self.isCancelled = true
-            self.bufferedPCM16Data.removeAll(keepingCapacity: false)
+        stateQueue.async { [weak self] in
+            self?.isCancelled = true
+            self?.bufferedPCM16Data.removeAll(keepingCapacity: false)
         }
         inferenceTask?.cancel()
     }
@@ -123,7 +123,8 @@ private final class ParakeetTranscriptionSession: BuddyStreamingTranscriptionSes
             let asrManager = try await loadSharedAsrManagerIfNeeded()
             guard !Task.isCancelled, !stateQueue.sync(execute: { isCancelled }) else { return }
 
-            let transcriptionResult = try await asrManager.transcribe(float32Samples)
+            var decoderState = TdtDecoderState.make()
+            let transcriptionResult = try await asrManager.transcribe(float32Samples, decoderState: &decoderState)
             guard !stateQueue.sync(execute: { isCancelled }) else { return }
 
             let transcriptText = transcriptionResult.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -181,6 +182,8 @@ private final class ParakeetTranscriptionSession: BuddyStreamingTranscriptionSes
     }
 
     deinit {
-        cancel()
+        isCancelled = true
+        bufferedPCM16Data.removeAll(keepingCapacity: false)
+        inferenceTask?.cancel()
     }
 }

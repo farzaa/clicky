@@ -157,7 +157,7 @@ private func supertonicPreprocessText(_ text: String, lang: String) -> String {
 
     if !text.isEmpty {
         let punctPattern = try! NSRegularExpression(
-            pattern: "[.!?;:,'\"\\u{201C}\\u{201D}\\u{2018}\\u{2019})\\]}\u{2026}]$")
+            pattern: "[.!?;:,'\"\u{201C}\u{201D}\u{2018}\u{2019})\\]\\}\u{2026}]$")
         let punctRange = NSRange(text.startIndex..., in: text)
         if punctPattern.firstMatch(in: text, range: punctRange) == nil {
             text += "."
