@@ -70,7 +70,7 @@ final class CompanionManager: ObservableObject {
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
-    private static let workerBaseURL = "http://localhost:8787"
+    private static let workerBaseURL = "http://127.0.0.1:8787"
 
     private lazy var openAIAPI: OpenAIAPI = {
         return OpenAIAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
