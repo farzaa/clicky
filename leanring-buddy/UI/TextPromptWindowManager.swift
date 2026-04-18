@@ -3,7 +3,7 @@
 //  leanring-buddy
 //
 //  A small floating prompt for sending typed messages through the same
-//  screenshot -> Claude -> speech/pointing pipeline as push-to-talk.
+//  screenshot -> AI -> speech/pointing pipeline as push-to-talk.
 //
 
 import AppKit
@@ -27,7 +27,9 @@ final class TextPromptWindowManager {
             createPanel(companionManager: companionManager)
         }
 
-        positionPanelNearCursor()
+        if panel?.isVisible != true {
+            positionPanelNearCursor()
+        }
         NSApp.activate(ignoringOtherApps: true)
         panel?.makeKeyAndOrderFront(nil)
         panel?.orderFrontRegardless()
@@ -230,6 +232,6 @@ private struct TextPromptPanelView: View {
 
         companionManager.submitTypedMessage(textToSubmit)
         promptText = ""
-        onClose()
+        isPromptFocused = true
     }
 }

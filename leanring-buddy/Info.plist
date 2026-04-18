@@ -10,7 +10,6 @@
 	<string>/l3d2rw5ZZFRU3AadP/w2Zf8FHfhA6bKv16BQOV5OSk=</string>
 	<key>VoiceTranscriptionProvider</key>
 	<string>openai</string>
-	<string>assemblyai</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

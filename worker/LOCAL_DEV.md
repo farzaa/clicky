@@ -23,7 +23,4 @@ Do not run `xcodebuild` from the terminal for this project, because it can distu
 
 ## What The Keys Do
 
-- `ANTHROPIC_API_KEY`: sends the screen plus transcript to Claude and streams the answer.
-- `ASSEMBLYAI_API_KEY`: powers push-to-talk speech-to-text.
-- `ELEVENLABS_API_KEY`: generates the spoken reply audio.
-- `ELEVENLABS_VOICE_ID`: chooses which ElevenLabs voice speaks the reply.
+- `OPENAI_API_KEY`: sends the screen plus transcript to OpenAI, transcribes push-to-talk audio, and generates spoken reply audio.

@@ -32,7 +32,7 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var hasScreenContentPermission = false
 
     /// Screen location (global AppKit coords) of a detected UI element the
-    /// buddy should fly to and point at. Parsed from Claude's response;
+    /// buddy should fly to and point at. Parsed from the AI response;
     /// observed by BlueCursorView to trigger the flight animation.
     @Published var detectedElementScreenLocation: CGPoint?
     /// The display frame (global AppKit coords) of the screen the detected
@@ -82,14 +82,13 @@ final class CompanionManager: ObservableObject {
         return OpenAITTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
     }()
 
-    /// Conversation history so Claude remembers prior exchanges within a session.
-    /// Each entry is the user's transcript and Claude's response.
+    /// Conversation history so the AI remembers prior exchanges within a session.
+    /// Each entry is the user's transcript and the assistant's response.
     private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
 
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
-    private var systemSpeechSynthesizer: NSSpeechSynthesizer?
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var textPromptShortcutCancellable: AnyCancellable?
@@ -186,7 +185,7 @@ final class CompanionManager: ObservableObject {
         bindShortcutTransitions()
         // Eagerly touch the OpenAI API so its TLS warmup handshake completes
         bindTextPromptShortcut()
-        // Eagerly touch the Claude API so its TLS warmup handshake completes
+        // Eagerly touch the OpenAI API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = openAIAPI
 
@@ -304,8 +303,6 @@ final class CompanionManager: ObservableObject {
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
-        systemSpeechSynthesizer?.stopSpeaking()
-        systemSpeechSynthesizer = nil
         shortcutTransitionCancellable?.cancel()
         textPromptShortcutCancellable?.cancel()
         isKeyboardShortcutInteractionActive = false
@@ -529,7 +526,7 @@ final class CompanionManager: ObservableObject {
         lastTranscript = trimmedMessage
         print("⌨️ Companion received typed message: \(trimmedMessage)")
         ClickyAnalytics.trackUserMessageSent(transcript: trimmedMessage)
-        sendTranscriptToClaudeWithScreenshot(transcript: trimmedMessage)
+        sendTranscriptToAIWithScreenshot(transcript: trimmedMessage)
     }
 
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
@@ -558,9 +555,6 @@ final class CompanionManager: ObservableObject {
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
             ttsClient.stopPlayback()
-            elevenLabsTTSClient.stopPlayback()
-            systemSpeechSynthesizer?.stopSpeaking()
-            systemSpeechSynthesizer = nil
             clearDetectedElementLocation()
 
             // Dismiss the onboarding prompt if it's showing
@@ -627,7 +621,7 @@ final class CompanionManager: ObservableObject {
     - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
 
     element pointing:
-    you have a small blue triangle cursor that can fly to and point at things on screen. use it whenever pointing would genuinely help the user — if they're asking how to do something, looking for a menu, trying to find a button, or need help navigating an app, point at the relevant element. err on the side of pointing rather than not pointing, because it makes your help way more useful and concrete.
+    you have a small blue triangle cursor that can fly to and point at things on screen. use it whenever pointing would genuinely help the user — if they're asking how to do something, looking for a menu, trying to find a button, or need help navigating an app, point at the relevant element. err on the side of pointing rather than not pointing, because it makes your help way more useful and concrete. if the user asks anything like "where", "what do i click", "show me", "point at", "find", "open", "press", "select", or "how do i", you should almost always return a real coordinate tag instead of [POINT:none].
 
     don't point at things when it would be pointless — like if the user asks a general knowledge question, or the conversation has nothing to do with what's on screen, or you'd just be pointing at something obvious they're already looking at. but if there's a specific UI element, menu, button, or area on screen that's relevant to what you're helping with, point at it.
 
@@ -646,17 +640,14 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - AI Response Pipeline
 
-    /// Captures a screenshot, sends it along with the transcript to Claude,
-    /// and plays the response aloud via ElevenLabs TTS. The cursor stays in
+    /// Captures a screenshot, sends it along with the transcript to OpenAI,
+    /// and plays the response aloud via OpenAI TTS. The cursor stays in
     /// the spinner/processing state until TTS audio begins playing.
-    /// Claude's response may include a [POINT:x,y:label] tag which triggers
+    /// The AI response may include a [POINT:x,y:label] tag which triggers
     /// the buddy to fly to that element on screen.
     private func sendTranscriptToAIWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
         ttsClient.stopPlayback()
-        elevenLabsTTSClient.stopPlayback()
-        systemSpeechSynthesizer?.stopSpeaking()
-        systemSpeechSynthesizer = nil
 
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
@@ -669,14 +660,15 @@ final class CompanionManager: ObservableObject {
                 guard !Task.isCancelled else { return }
 
                 // Build image labels with the actual screenshot pixel dimensions
-                // so Claude's coordinate space matches the image it sees. We
+                // so the AI's coordinate space matches the image it sees. We
                 // scale from screenshot pixels to display points ourselves.
                 let labeledImages = screenCaptures.map { capture in
                     let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
                     return (data: capture.imageData, label: capture.label + dimensionInfo)
                 }
+                print("📸 Captured \(labeledImages.count) screenshot(s) for OpenAI: \(labeledImages.map { $0.label }.joined(separator: " | "))")
 
-                // Pass conversation history so Claude remembers prior exchanges
+                // Pass conversation history so the AI remembers prior exchanges
                 let historyForAPI = conversationHistory.map { entry in
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
@@ -693,11 +685,12 @@ final class CompanionManager: ObservableObject {
 
                 guard !Task.isCancelled else { return }
 
-                // Parse the [POINT:...] tag from Claude's response
+                // Parse the [POINT:...] tag from the AI response
                 let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
                 let spokenText = parseResult.spokenText
+                print("🧭 Point tag parse: coordinate=\(parseResult.coordinate.map { "\(Int($0.x)),\(Int($0.y))" } ?? "none"), label=\(parseResult.elementLabel ?? "none"), screen=\(parseResult.screenNumber.map(String.init) ?? "cursor")")
 
-                // Handle element pointing if Claude returned coordinates.
+                // Handle element pointing if the AI returned coordinates.
                 // Switch to idle BEFORE setting the location so the triangle
                 // becomes visible and can fly to the target. Without this, the
                 // spinner hides the triangle and the flight animation is invisible.
@@ -706,7 +699,7 @@ final class CompanionManager: ObservableObject {
                     voiceState = .idle
                 }
 
-                // Pick the screen capture matching Claude's screen number,
+                // Pick the screen capture matching the AI's screen number,
                 // falling back to the cursor screen if not specified.
                 let targetScreenCapture: CompanionScreenCapture? = {
                     if let screenNumber = parseResult.screenNumber,
@@ -718,7 +711,7 @@ final class CompanionManager: ObservableObject {
 
                 if let pointCoordinate = parseResult.coordinate,
                    let targetScreenCapture {
-                    // Claude's coordinates are in the screenshot's pixel space
+                    // The AI's coordinates are in the screenshot's pixel space
                     // (top-left origin, e.g. 1280x831). Scale to the display's
                     // point space (e.g. 1512x982), then convert to AppKit global coords.
                     let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
@@ -777,21 +770,7 @@ final class CompanionManager: ObservableObject {
                         voiceState = .responding
                     } catch {
                         ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ ElevenLabs TTS error: \(error)")
-                        speakCreditsErrorFallback()
-                    if Self.shouldUseElevenLabsTTS {
-                        do {
-                            try await elevenLabsTTSClient.speakText(spokenText)
-                            // speakText returns after player.play() — audio is now playing
-                            voiceState = .responding
-                        } catch {
-                            ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                            print("⚠️ ElevenLabs TTS error: \(error)")
-                            speakWithSystemVoice(spokenText)
-                        }
-                    } else {
-                        print("🔊 System TTS: ElevenLabs disabled for local development")
-                        speakWithSystemVoice(spokenText)
+                        print("⚠️ OpenAI TTS error: \(error)")
                     }
                 }
             } catch is CancellationError {
@@ -799,7 +778,6 @@ final class CompanionManager: ObservableObject {
             } catch {
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
-                speakResponseErrorFallback()
             }
 
             if !Task.isCancelled {
@@ -839,33 +817,13 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Uses macOS system TTS when ElevenLabs is unavailable, so local
-    /// development can still verify that Claude answered correctly.
-    private func speakWithSystemVoice(_ text: String) {
-        let utterance = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !utterance.isEmpty else { return }
-
-        systemSpeechSynthesizer?.stopSpeaking()
-        let synthesizer = NSSpeechSynthesizer()
-        systemSpeechSynthesizer = synthesizer
-        print("🔊 System TTS: speaking fallback response")
-        synthesizer.startSpeaking(utterance)
-        voiceState = .responding
-    }
-
-    /// Speaks a generic error using macOS system TTS when the AI response
-    /// request fails before Clicky has any real answer to read aloud.
-    private func speakResponseErrorFallback() {
-        speakWithSystemVoice("I couldn't get a response from the AI service. Check the local Worker logs for the exact error.")
-    }
-
     // MARK: - Point Tag Parsing
 
-    /// Result of parsing a [POINT:...] tag from Claude's response.
+    /// Result of parsing a [POINT:...] tag from the AI response.
     struct PointingParseResult {
         /// The response text with the [POINT:...] tag removed — this is what gets spoken.
         let spokenText: String
-        /// The parsed pixel coordinate, or nil if Claude said "none" or no tag was found.
+        /// The parsed pixel coordinate, or nil if the AI said "none" or no tag was found.
         let coordinate: CGPoint?
         /// Short label describing the element (e.g. "run button"), or "none".
         let elementLabel: String?
@@ -873,7 +831,7 @@ final class CompanionManager: ObservableObject {
         let screenNumber: Int?
     }
 
-    /// Parses a [POINT:x,y:label:screenN] or [POINT:none] tag from the end of Claude's response.
+    /// Parses a [POINT:x,y:label:screenN] or [POINT:none] tag from the end of the AI response.
     /// Returns the spoken text (tag removed) and the optional coordinate + label + screen number.
     static func parsePointingCoordinates(from responseText: String) -> PointingParseResult {
         // Match [POINT:none] or [POINT:123,456:label] or [POINT:123,456:label:screen2]
@@ -1055,7 +1013,7 @@ final class CompanionManager: ObservableObject {
     the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. origin (0,0) is top-left. x increases rightward, y increases downward.
     """
 
-    /// Captures a screenshot and asks Claude to find something interesting to
+    /// Captures a screenshot and asks the AI to find something interesting to
     /// point at, then triggers the buddy's flight animation. Used during
     /// onboarding to demo the pointing feature while the intro video plays.
     func performOnboardingDemoInteraction() {
@@ -1066,7 +1024,7 @@ final class CompanionManager: ObservableObject {
             do {
                 let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
 
-                // Only send the cursor screen so Claude can't pick something
+                // Only send the cursor screen so the AI can't pick something
                 // on a different monitor that we can't point at.
                 guard let cursorScreenCapture = screenCaptures.first(where: { $0.isCursorScreen }) else {
                     print("🎯 Onboarding demo: no cursor screen found")
@@ -1106,7 +1064,7 @@ final class CompanionManager: ObservableObject {
                     y: appKitY + displayFrame.origin.y
                 )
 
-                // Set custom bubble text so the pointing animation uses Claude's
+                // Set custom bubble text so the pointing animation uses the AI's
                 // comment instead of a random phrase
                 detectedElementBubbleText = parseResult.spokenText
                 detectedElementScreenLocation = globalLocation
