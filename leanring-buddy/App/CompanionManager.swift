@@ -64,7 +64,9 @@ final class CompanionManager: ObservableObject {
 
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
+    let globalTextPromptShortcutMonitor = GlobalTextPromptShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
+    private let textPromptWindowManager = TextPromptWindowManager()
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
@@ -80,15 +82,18 @@ final class CompanionManager: ObservableObject {
         return OpenAITTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
     }()
 
-    /// Conversation history so the AI remembers prior exchanges within a session.
-    /// Each entry is the user's transcript and the AI's response.
+    /// Conversation history so Claude remembers prior exchanges within a session.
+    /// Each entry is the user's transcript and Claude's response.
     private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
 
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
+    private var systemSpeechSynthesizer: NSSpeechSynthesizer?
 
     private var shortcutTransitionCancellable: AnyCancellable?
+    private var textPromptShortcutCancellable: AnyCancellable?
+    private var isKeyboardShortcutInteractionActive = false
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
@@ -180,6 +185,8 @@ final class CompanionManager: ObservableObject {
         bindAudioPowerLevel()
         bindShortcutTransitions()
         // Eagerly touch the OpenAI API so its TLS warmup handshake completes
+        bindTextPromptShortcut()
+        // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = openAIAPI
 
@@ -289,13 +296,19 @@ final class CompanionManager: ObservableObject {
 
     func stop() {
         globalPushToTalkShortcutMonitor.stop()
+        globalTextPromptShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
+        textPromptWindowManager.hide()
         overlayWindowManager.hideOverlay()
         transientHideTask?.cancel()
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
+        systemSpeechSynthesizer?.stopSpeaking()
+        systemSpeechSynthesizer = nil
         shortcutTransitionCancellable?.cancel()
+        textPromptShortcutCancellable?.cancel()
+        isKeyboardShortcutInteractionActive = false
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
@@ -313,8 +326,10 @@ final class CompanionManager: ObservableObject {
 
         if currentlyHasAccessibility {
             globalPushToTalkShortcutMonitor.start()
+            globalTextPromptShortcutMonitor.start()
         } else {
             globalPushToTalkShortcutMonitor.stop()
+            globalTextPromptShortcutMonitor.stop()
         }
 
         hasScreenRecordingPermission = WindowPositionManager.hasScreenRecordingPermission()
@@ -470,12 +485,61 @@ final class CompanionManager: ObservableObject {
             }
     }
 
+    private func bindTextPromptShortcut() {
+        textPromptShortcutCancellable = globalTextPromptShortcutMonitor
+            .shortcutPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                self?.showTextPromptWindow()
+            }
+    }
+
+    func showTextPromptWindow() {
+        guard !showOnboardingVideo else { return }
+        textPromptWindowManager.show(companionManager: self)
+    }
+
+    func submitTypedMessage(_ message: String) {
+        let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedMessage.isEmpty else { return }
+        guard !buddyDictationManager.isDictationInProgress else { return }
+
+        transientHideTask?.cancel()
+        transientHideTask = nil
+
+        if !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+
+        if showOnboardingPrompt {
+            withAnimation(.easeOut(duration: 0.3)) {
+                onboardingPromptOpacity = 0.0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                self.showOnboardingPrompt = false
+                self.onboardingPromptText = ""
+            }
+        }
+
+        clearDetectedElementLocation()
+        lastTranscript = trimmedMessage
+        print("⌨️ Companion received typed message: \(trimmedMessage)")
+        ClickyAnalytics.trackUserMessageSent(transcript: trimmedMessage)
+        sendTranscriptToClaudeWithScreenshot(transcript: trimmedMessage)
+    }
+
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
         case .pressed:
+            guard !isKeyboardShortcutInteractionActive else { return }
             guard !buddyDictationManager.isDictationInProgress else { return }
             // Don't register push-to-talk while the onboarding video is playing
             guard !showOnboardingVideo else { return }
+            isKeyboardShortcutInteractionActive = true
 
             // Cancel any pending transient hide so the overlay stays visible
             transientHideTask?.cancel()
@@ -494,6 +558,9 @@ final class CompanionManager: ObservableObject {
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
             ttsClient.stopPlayback()
+            elevenLabsTTSClient.stopPlayback()
+            systemSpeechSynthesizer?.stopSpeaking()
+            systemSpeechSynthesizer = nil
             clearDetectedElementLocation()
 
             // Dismiss the onboarding prompt if it's showing
@@ -531,6 +598,7 @@ final class CompanionManager: ObservableObject {
             // Without this, a quick press-and-release drops the release event and
             // leaves the waveform overlay stuck on screen indefinitely.
             ClickyAnalytics.trackPushToTalkReleased()
+            isKeyboardShortcutInteractionActive = false
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
@@ -586,6 +654,9 @@ final class CompanionManager: ObservableObject {
     private func sendTranscriptToAIWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
         ttsClient.stopPlayback()
+        elevenLabsTTSClient.stopPlayback()
+        systemSpeechSynthesizer?.stopSpeaking()
+        systemSpeechSynthesizer = nil
 
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
@@ -708,6 +779,19 @@ final class CompanionManager: ObservableObject {
                         ClickyAnalytics.trackTTSError(error: error.localizedDescription)
                         print("⚠️ ElevenLabs TTS error: \(error)")
                         speakCreditsErrorFallback()
+                    if Self.shouldUseElevenLabsTTS {
+                        do {
+                            try await elevenLabsTTSClient.speakText(spokenText)
+                            // speakText returns after player.play() — audio is now playing
+                            voiceState = .responding
+                        } catch {
+                            ClickyAnalytics.trackTTSError(error: error.localizedDescription)
+                            print("⚠️ ElevenLabs TTS error: \(error)")
+                            speakWithSystemVoice(spokenText)
+                        }
+                    } else {
+                        print("🔊 System TTS: ElevenLabs disabled for local development")
+                        speakWithSystemVoice(spokenText)
                     }
                 }
             } catch is CancellationError {
@@ -715,7 +799,7 @@ final class CompanionManager: ObservableObject {
             } catch {
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
-                speakCreditsErrorFallback()
+                speakResponseErrorFallback()
             }
 
             if !Task.isCancelled {
@@ -755,14 +839,24 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Speaks a hardcoded error message using macOS system TTS when API
-    /// credits run out. Uses NSSpeechSynthesizer so it works even when
-    /// ElevenLabs is down.
-    private func speakCreditsErrorFallback() {
-        let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
+    /// Uses macOS system TTS when ElevenLabs is unavailable, so local
+    /// development can still verify that Claude answered correctly.
+    private func speakWithSystemVoice(_ text: String) {
+        let utterance = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !utterance.isEmpty else { return }
+
+        systemSpeechSynthesizer?.stopSpeaking()
         let synthesizer = NSSpeechSynthesizer()
+        systemSpeechSynthesizer = synthesizer
+        print("🔊 System TTS: speaking fallback response")
         synthesizer.startSpeaking(utterance)
         voiceState = .responding
+    }
+
+    /// Speaks a generic error using macOS system TTS when the AI response
+    /// request fails before Clicky has any real answer to read aloud.
+    private func speakResponseErrorFallback() {
+        speakWithSystemVoice("I couldn't get a response from the AI service. Check the local Worker logs for the exact error.")
     }
 
     // MARK: - Point Tag Parsing

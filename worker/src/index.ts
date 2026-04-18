@@ -21,6 +21,19 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
+    if (request.method === "GET" && url.pathname === "/health") {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          hasAnthropicKey: Boolean(env.ANTHROPIC_API_KEY),
+          hasAssemblyAIKey: Boolean(env.ASSEMBLYAI_API_KEY),
+          hasElevenLabsKey: Boolean(env.ELEVENLABS_API_KEY),
+          hasElevenLabsVoiceId: Boolean(env.ELEVENLABS_VOICE_ID),
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }
+
     if (request.method !== "POST") {
       return new Response("Method not allowed", { status: 405 });
     }
