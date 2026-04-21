@@ -28,6 +28,7 @@ public partial class App : Application
     private TaskbarIcon? _trayIcon;
     private TrayPanelWindow? _trayPanelWindow;
     private TrayPanelViewModel? _trayPanelViewModel;
+    private VoicePipelineOrchestrator? _voicePipelineOrchestrator;
 
     protected override void OnStartup(StartupEventArgs eventArgs)
     {
@@ -43,6 +44,7 @@ public partial class App : Application
 
         _settingsService = new SettingsService();
         _appState = new AppState(_settingsService);
+        _voicePipelineOrchestrator = new VoicePipelineOrchestrator(_appState, Dispatcher);
         _trayPanelViewModel = new TrayPanelViewModel(_appState);
         _trayPanelWindow = new TrayPanelWindow(_trayPanelViewModel);
 
@@ -54,6 +56,12 @@ public partial class App : Application
     {
         _globalHotkeyService?.Dispose();
         _trayIcon?.Dispose();
+        // Orchestrator owns mic/websocket/TTS — dispose synchronously so
+        // their background threads are joined before the process exits.
+        if (_voicePipelineOrchestrator is not null)
+        {
+            _voicePipelineOrchestrator.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
         _singleInstanceMutex?.ReleaseMutex();
         _singleInstanceMutex?.Dispose();
         base.OnExit(eventArgs);
@@ -95,30 +103,19 @@ public partial class App : Application
 
     private void OnPushToTalkPressed(object? sender, EventArgs eventArgs)
     {
-        // Milestone 2 wires this to the dictation pipeline. For now we just
-        // flip the state so the panel can reflect it and we can verify the
-        // hook is detecting the combo.
-        Dispatcher.BeginInvoke(() =>
-        {
-            if (_appState is not null)
-            {
-                _appState.CurrentVoiceState = AppState.VoiceState.Listening;
-            }
-            // Panel shouldn't stay visible while the user is talking to the
-            // app — dismiss it if it happens to be open.
-            _trayPanelWindow?.HidePanel();
-        });
+        // Panel shouldn't stay visible while the user is talking to the
+        // app — dismiss it if it happens to be open.
+        Dispatcher.BeginInvoke(() => _trayPanelWindow?.HidePanel());
+
+        // The orchestrator owns the state transitions (Listening / Processing
+        // / Responding / Idle) from here. Swallow exceptions — the
+        // orchestrator reports them via AppState.LastStatusMessage.
+        _ = _voicePipelineOrchestrator?.HandlePushToTalkPressedAsync();
     }
 
     private void OnPushToTalkReleased(object? sender, EventArgs eventArgs)
     {
-        Dispatcher.BeginInvoke(() =>
-        {
-            if (_appState is not null)
-            {
-                _appState.CurrentVoiceState = AppState.VoiceState.Idle;
-            }
-        });
+        _ = _voicePipelineOrchestrator?.HandlePushToTalkReleasedAsync();
     }
 
     private void ToggleTrayPanel()

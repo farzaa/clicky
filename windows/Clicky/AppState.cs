@@ -34,6 +34,29 @@ public sealed partial class AppState : ObservableObject
     [ObservableProperty]
     private VoiceState _currentVoiceState = VoiceState.Idle;
 
+    /// <summary>
+    /// Live-updating transcript while the user holds push-to-talk. Shows
+    /// partials as they arrive from AssemblyAI and the finalized text once
+    /// the shortcut releases. Cleared at the start of each session.
+    /// </summary>
+    [ObservableProperty]
+    private string _liveTranscript = string.Empty;
+
+    /// <summary>
+    /// Streaming response text from the active AI provider. Appended to
+    /// as SSE chunks arrive so the panel can show the answer forming in
+    /// real time.
+    /// </summary>
+    [ObservableProperty]
+    private string _streamedResponseText = string.Empty;
+
+    /// <summary>
+    /// Latest error/status message surfaced from any pipeline component.
+    /// The panel shows it in the tertiary footer row when present.
+    /// </summary>
+    [ObservableProperty]
+    private string _lastStatusMessage = string.Empty;
+
     // ---- Persisted preferences ----
 
     [ObservableProperty]

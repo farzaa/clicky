@@ -6,3 +6,8 @@ build/
 releases/
 .claude/
 coding-plans/
+
+# Windows / .NET build output
+windows/**/bin/
+windows/**/obj/
+*.user

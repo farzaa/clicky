@@ -43,6 +43,15 @@ public sealed partial class TrayPanelViewModel : ObservableObject
     public ObservableCollection<ModelOption> ClaudeOptions { get; }
     public ObservableCollection<ModelOption> GeminiOptions { get; }
 
+    /// <summary>
+    /// Exposed so the panel can bind directly to
+    /// <see cref="AppState.LiveTranscript"/>,
+    /// <see cref="AppState.StreamedResponseText"/>, and
+    /// <see cref="AppState.LastStatusMessage"/> without the view-model
+    /// having to re-publish them.
+    /// </summary>
+    public AppState AppState => _appState;
+
     [RelayCommand]
     private void SelectModel(string modelId)
     {
