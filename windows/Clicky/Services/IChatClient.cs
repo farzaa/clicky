@@ -35,8 +35,15 @@ public interface IChatClient
 /// <summary>A completed (user, assistant) pair in the rolling history.</summary>
 public sealed record ConversationTurn(string UserMessage, string AssistantMessage);
 
-/// <summary>Inline image for vision calls — raw bytes plus IANA media type.</summary>
-public sealed record InlineImage(byte[] Data, string MimeType);
+/// <summary>
+/// Inline image for vision calls — raw bytes plus IANA media type, and an
+/// optional <paramref name="Label"/>. When <c>Label</c> is non-null the chat
+/// clients emit it as a text part immediately before the image so the model
+/// knows which screen it's looking at (e.g. "screen 1 of 2 — cursor is on
+/// this screen (primary focus) (image dimensions: 1280x800 pixels)"). This
+/// matches the macOS <c>analyzeImageStreaming</c> contract.
+/// </summary>
+public sealed record InlineImage(byte[] Data, string MimeType, string? Label = null);
 
 /// <summary>Result of a streaming chat call — full accumulated text + wall time.</summary>
 public sealed record ChatStreamResult(string FullText, TimeSpan Duration);

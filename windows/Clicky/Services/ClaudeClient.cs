@@ -142,7 +142,10 @@ public sealed class ClaudeClient : IChatClient, IDisposable
             messageArray.Add(new { role = "assistant", content = historicalTurn.AssistantMessage });
         }
 
-        var latestUserContentParts = new List<object>(images.Count + 1);
+        // Each image is followed by a text part carrying its label so the
+        // model can distinguish multiple screens (e.g. "screen 1 of 2 — …").
+        // Mirrors the macOS ClaudeAPI.analyzeImageStreaming payload shape.
+        var latestUserContentParts = new List<object>(images.Count * 2 + 1);
         foreach (var image in images)
         {
             latestUserContentParts.Add(new
@@ -155,6 +158,10 @@ public sealed class ClaudeClient : IChatClient, IDisposable
                     data = Convert.ToBase64String(image.Data),
                 },
             });
+            if (!string.IsNullOrEmpty(image.Label))
+            {
+                latestUserContentParts.Add(new { type = "text", text = image.Label });
+            }
         }
         latestUserContentParts.Add(new { type = "text", text = userPrompt });
         messageArray.Add(new { role = "user", content = latestUserContentParts });

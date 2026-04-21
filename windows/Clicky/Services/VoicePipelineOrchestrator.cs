@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.RegularExpressions;
 using System.Windows.Threading;
 
 namespace Clicky.Services;
@@ -17,13 +19,51 @@ namespace Clicky.Services;
 /// </summary>
 public sealed class VoicePipelineOrchestrator : IAsyncDisposable
 {
-    // Kept short because TTS reads the reply out loud — a long monologue
-    // makes the app feel sluggish. Mirrors the macOS Buddy personality.
+    // Verbatim port of CompanionManager.companionVoiceResponseSystemPrompt.
+    // Kept in sync with the macOS version so prompt-engineering tweaks there
+    // translate directly. The trailing [POINT:...] tag is stripped before
+    // TTS / display; the M4 overlay will start consuming it.
     private const string VoiceSystemPrompt =
-        "You are Clicky, a concise and friendly voice assistant. Reply in one or two short sentences " +
-        "suitable for being read aloud. Avoid lists and markdown. If the user asks you to point at " +
-        "something, say what you would point at in plain words — the visual pointing feature is not " +
-        "available in this milestone.";
+        "you're clicky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.\n" +
+        "\n" +
+        "rules:\n" +
+        "- default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.\n" +
+        "- all lowercase, casual, warm. no emojis.\n" +
+        "- write for the ear, not the eye. short sentences. no lists, bullet points, markdown, or formatting — just natural speech.\n" +
+        "- don't use abbreviations or symbols that sound weird read aloud. write \"for example\" not \"e.g.\", spell out small numbers.\n" +
+        "- if the user's question relates to what's on their screen, reference specific things you see.\n" +
+        "- if the screenshot doesn't seem relevant to their question, just answer the question directly.\n" +
+        "- you can help with anything — coding, writing, general knowledge, brainstorming.\n" +
+        "- never say \"simply\" or \"just\".\n" +
+        "- don't read out code verbatim. describe what the code does or what needs to change conversationally.\n" +
+        "- focus on giving a thorough, useful explanation. don't end with simple yes/no questions like \"want me to explain more?\" or \"should i show you?\" — those are dead ends that force the user to just say yes.\n" +
+        "- instead, when it fits naturally, end by planting a seed — mention something bigger or more ambitious they could try, a related concept that goes deeper, or a next-level technique that builds on what you just explained. make it something worth coming back for, not a question they'd just nod to. it's okay to not end with anything extra if the answer is complete on its own.\n" +
+        "- if you receive multiple screen images, the one labeled \"primary focus\" is where the cursor is — prioritize that one but reference others if relevant.\n" +
+        "\n" +
+        "element pointing:\n" +
+        "you have a small blue triangle cursor that can fly to and point at things on screen. use it whenever pointing would genuinely help the user — if they're asking how to do something, looking for a menu, trying to find a button, or need help navigating an app, point at the relevant element. err on the side of pointing rather than not pointing, because it makes your help way more useful and concrete.\n" +
+        "\n" +
+        "don't point at things when it would be pointless — like if the user asks a general knowledge question, or the conversation has nothing to do with what's on screen, or you'd just be pointing at something obvious they're already looking at. but if there's a specific UI element, menu, button, or area on screen that's relevant to what you're helping with, point at it.\n" +
+        "\n" +
+        "when you point, append a coordinate tag at the very end of your response, AFTER your spoken text. the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. the origin (0,0) is the top-left corner of the image. x increases rightward, y increases downward.\n" +
+        "\n" +
+        "format: [POINT:x,y:label] where x,y are integer pixel coordinates in the screenshot's coordinate space, and label is a short 1-3 word description of the element (like \"search bar\" or \"save button\"). if the element is on the cursor's screen you can omit the screen number. if the element is on a DIFFERENT screen, append :screenN where N is the screen number from the image label (e.g. :screen2). this is important — without the screen number, the cursor will point at the wrong place.\n" +
+        "\n" +
+        "if pointing wouldn't help, append [POINT:none].\n" +
+        "\n" +
+        "examples:\n" +
+        "- user asks how to color grade in final cut: \"you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector]\"\n" +
+        "- user asks what html is: \"html stands for hypertext markup language, it's basically the skeleton of every web page. curious how it connects to the css you're looking at? [POINT:none]\"\n" +
+        "- user asks how to commit in xcode: \"see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control]\"\n" +
+        "- element is on screen 2 (not where cursor is): \"that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]\"";
+
+    // Matches a trailing [POINT:none] / [POINT:x,y:label] / [POINT:x,y:label:screenN]
+    // tag so we can strip it before speaking / displaying. Same shape as the
+    // Swift regex in CompanionManager.parsePointingCoordinates — the M4/M5
+    // overlay will re-parse the captured groups to aim the pointer.
+    private static readonly Regex PointingTagTrailingRegex = new(
+        @"\[POINT:(?:none|(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?)\]\s*$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private const int ConversationHistoryMaxTurns = 10;
 
@@ -32,6 +72,7 @@ public sealed class VoicePipelineOrchestrator : IAsyncDisposable
     private readonly ClaudeClient _claudeClient;
     private readonly GeminiClient _geminiClient;
     private readonly ElevenLabsTtsClient _elevenLabsTtsClient;
+    private readonly ScreenCaptureService _screenCaptureService;
 
     private DictationSession? _activeDictationSession;
     private readonly List<ConversationTurn> _conversationHistory = new();
@@ -47,6 +88,7 @@ public sealed class VoicePipelineOrchestrator : IAsyncDisposable
         _geminiClient = new GeminiClient(model: InferInitialGeminiModel(appState.SelectedModelId));
         _elevenLabsTtsClient = new ElevenLabsTtsClient();
         _elevenLabsTtsClient.PlaybackFinished += OnTtsPlaybackFinished;
+        _screenCaptureService = new ScreenCaptureService();
 
         _appState.PropertyChanged += OnAppStatePropertyChanged;
     }
@@ -124,26 +166,40 @@ public sealed class VoicePipelineOrchestrator : IAsyncDisposable
 
         try
         {
+            // Grab every monitor JPEG before contacting the model. BitBlt is
+            // synchronous and runs on a thread pool thread so the UI doesn't
+            // freeze while the capture happens.
+            var inlineImages = await Task.Run(BuildInlineImagesForCurrentScreens, cancellationToken).ConfigureAwait(false);
+
+            if (cancellationToken.IsCancellationRequested) return;
+
             var streamResult = await selectedClient.StreamChatAsync(
                 systemPrompt: VoiceSystemPrompt,
                 conversationHistory: _conversationHistory,
                 userPrompt: userPrompt,
-                images: Array.Empty<InlineImage>(),
+                images: inlineImages,
                 onTextChunk: AppendToStreamedResponseOnUi,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
 
             if (cancellationToken.IsCancellationRequested) return;
 
-            AppendTurnToHistory(userPrompt, streamResult.FullText);
+            // Strip the trailing [POINT:...] tag — M3 ignores the coordinates,
+            // M4/M5 will parse them to fly the overlay cursor. TTS speaks the
+            // stripped text, and the panel shows the stripped text so the
+            // user doesn't see the raw tag at the end.
+            var strippedReplyText = PointingTagTrailingRegex.Replace(streamResult.FullText, string.Empty).TrimEnd();
+            SetStreamedResponseOnUi(strippedReplyText);
 
-            if (streamResult.FullText.Length == 0)
+            AppendTurnToHistory(userPrompt, strippedReplyText);
+
+            if (strippedReplyText.Length == 0)
             {
                 SetVoiceStateOnUi(AppState.VoiceState.Idle);
                 return;
             }
 
             SetVoiceStateOnUi(AppState.VoiceState.Responding);
-            await _elevenLabsTtsClient.SpeakAsync(streamResult.FullText, cancellationToken).ConfigureAwait(false);
+            await _elevenLabsTtsClient.SpeakAsync(strippedReplyText, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -154,6 +210,34 @@ public sealed class VoicePipelineOrchestrator : IAsyncDisposable
             SetVoiceStateOnUi(AppState.VoiceState.Idle);
             ReportFailureOnUi($"AI request failed: {aiException.Message}");
         }
+    }
+
+    /// <summary>
+    /// Captures every monitor and wraps each JPEG into an <see cref="InlineImage"/>
+    /// whose label matches the macOS format — "screen N of M — cursor is on
+    /// this screen (primary focus) (image dimensions: WxH pixels)" — so the
+    /// model's coordinate space maps to the pixels it actually sees.
+    /// </summary>
+    private IReadOnlyList<InlineImage> BuildInlineImagesForCurrentScreens()
+    {
+        var capturedMonitors = _screenCaptureService.CaptureAllMonitors();
+        if (capturedMonitors.Count == 0) return Array.Empty<InlineImage>();
+
+        var inlineImages = new List<InlineImage>(capturedMonitors.Count);
+        foreach (var monitorCapture in capturedMonitors)
+        {
+            var dimensionSuffix = string.Format(
+                CultureInfo.InvariantCulture,
+                " (image dimensions: {0}x{1} pixels)",
+                monitorCapture.ScreenshotWidthPixels,
+                monitorCapture.ScreenshotHeightPixels);
+
+            inlineImages.Add(new InlineImage(
+                Data: monitorCapture.JpegData,
+                MimeType: monitorCapture.MimeType,
+                Label: monitorCapture.Label + dimensionSuffix));
+        }
+        return inlineImages;
     }
 
     private IChatClient ResolveClientForCurrentModel()

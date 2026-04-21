@@ -145,6 +145,76 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetCursorPos(out POINT lpPoint);
 
+    // ---- Display enumeration + screen capture (BitBlt) ----
+    // Used by ScreenCaptureService to grab per-monitor JPEGs. PerMonitorV2
+    // DPI awareness (set in app.manifest) means GetMonitorInfo returns
+    // physical device pixels and BitBlt copies at the monitor's native
+    // resolution, which is what the AI needs to reason about coordinates.
+
+    public const int MONITOR_DEFAULTTONEAREST = 2;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    public struct MONITORINFOEX
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string szDevice;
+    }
+
+    public const uint MONITORINFOF_PRIMARY = 1;
+
+    public delegate bool MonitorEnumProc(IntPtr hMonitor, IntPtr hdcMonitor, ref RECT lprcMonitor, IntPtr dwData);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr lprcClip, MonitorEnumProc lpfnEnum, IntPtr dwData);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFOEX lpmi);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr GetDesktopWindow();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr GetDC(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    public static extern IntPtr CreateCompatibleDC(IntPtr hDC);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    public static extern IntPtr CreateCompatibleBitmap(IntPtr hDC, int nWidth, int nHeight);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    public static extern IntPtr SelectObject(IntPtr hDC, IntPtr hObject);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool DeleteObject(IntPtr hObject);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool DeleteDC(IntPtr hDC);
+
+    // BitBlt raster-operation codes.
+    public const int SRCCOPY = 0x00CC0020;
+    public const int CAPTUREBLT = 0x40000000; // Includes layered windows in the capture
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool BitBlt(
+        IntPtr hDCDest, int xDest, int yDest, int width, int height,
+        IntPtr hDCSource, int xSource, int ySource, int rop);
+
     // ---- DPI helpers (used when positioning the panel in device-pixel coords) ----
 
     /// <summary>

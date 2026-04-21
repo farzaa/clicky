@@ -10,7 +10,7 @@ Worker, so the Windows app ships with zero embedded secrets.
 
 - [x] **M1 — Foundation**: tray icon, borderless popover panel, global push-to-talk hotkey infrastructure, settings persistence, design system parity with macOS.
 - [x] **M2 — Voice pipeline**: NAudio microphone capture, AssemblyAI v3 streaming transcription, Claude + Gemini SSE chat, ElevenLabs TTS playback. Text-only; vision is added in M3 once screen capture lands.
-- [ ] **M3 — Screen capture**: per-monitor `Windows.Graphics.Capture` with DPI-correct coordinate mapping. Feeds captured JPEGs as inline images into the M2 chat clients.
+- [x] **M3 — Screen capture**: per-monitor GDI `BitBlt` capture (PerMonitorV2-aware), JPEG encode at quality 80, downscale to 1280px longest side, cursor-monitor first. Screens feed into Claude/Gemini as inline images with labels like `"screen 1 of 2 — cursor is on this screen (primary focus) (image dimensions: 1280x800 pixels)"`. System prompt ported verbatim from macOS with the full pointing rules; the trailing `[POINT:…]` tag is stripped before TTS speaks the reply — M4/M5 will start consuming it.
 - [ ] **M4 — Cursor overlay**: transparent per-monitor overlay windows, blue triangle cursor following the system mouse.
 - [ ] **M5 — Element pointing**: `[POINT:x,y:label:screenN]` parser, bezier flight animation, speech bubble.
 - [ ] **M6 — Polish**: permission checks, onboarding flow, analytics parity.
@@ -69,7 +69,8 @@ windows/
       MicrophoneCaptureService.cs    # NAudio WaveInEvent, 16 kHz PCM16 mono
       ElevenLabsTtsClient.cs         # /tts MP3 fetch + NAudio playback
       DictationSession.cs            # mic -> AssemblyAI bridge + finalize-with-fallback
-      VoicePipelineOrchestrator.cs   # end-to-end push-to-talk -> AI -> TTS flow
+      ScreenCaptureService.cs        # per-monitor BitBlt -> JPEG (cursor monitor first)
+      VoicePipelineOrchestrator.cs   # end-to-end push-to-talk -> capture -> AI -> TTS flow
     ViewModels/
       TrayPanelViewModel.cs    # model picker + quit command bindings
     Views/
@@ -93,7 +94,8 @@ windows/
 | `MicrophoneCaptureService` (NAudio `WaveInEvent`) | `AVAudioEngine.inputNode.installTap` |
 | `ElevenLabsTtsClient` (NAudio `Mp3FileReader` + `WaveOutEvent`) | `ElevenLabsTTSClient.swift` + `AVAudioPlayer` |
 | `DictationSession` | `BuddyDictationManager.swift` |
-| `VoicePipelineOrchestrator` | Transcript→AI→TTS pipeline in `CompanionManager.swift` |
+| `ScreenCaptureService` (GDI BitBlt) | `CompanionScreenCaptureUtility.swift` (ScreenCaptureKit) |
+| `VoicePipelineOrchestrator` | Transcript→capture→AI→TTS pipeline in `CompanionManager.swift` |
 | Cloudflare Worker | Same Cloudflare Worker — unchanged |
 
 ## Tray icon

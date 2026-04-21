@@ -152,7 +152,9 @@ public sealed class GeminiClient : IChatClient, IDisposable
             });
         }
 
-        var latestUserParts = new List<object>(images.Count + 1);
+        // Each inline_data image is followed by a text part carrying its
+        // label, matching the macOS GeminiAPI.analyzeImageStreaming payload.
+        var latestUserParts = new List<object>(images.Count * 2 + 1);
         foreach (var image in images)
         {
             latestUserParts.Add(new
@@ -163,6 +165,10 @@ public sealed class GeminiClient : IChatClient, IDisposable
                     data = Convert.ToBase64String(image.Data),
                 },
             });
+            if (!string.IsNullOrEmpty(image.Label))
+            {
+                latestUserParts.Add(new { text = image.Label });
+            }
         }
         latestUserParts.Add(new { text = userPrompt });
         contentsArray.Add(new { role = "user", parts = latestUserParts });
