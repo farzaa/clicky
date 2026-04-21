@@ -29,6 +29,7 @@ public partial class App : Application
     private TrayPanelWindow? _trayPanelWindow;
     private TrayPanelViewModel? _trayPanelViewModel;
     private VoicePipelineOrchestrator? _voicePipelineOrchestrator;
+    private OverlayWindowManager? _overlayWindowManager;
 
     protected override void OnStartup(StartupEventArgs eventArgs)
     {
@@ -50,10 +51,17 @@ public partial class App : Application
 
         InstallTrayIcon();
         InstallGlobalHotkey();
+
+        // The overlay windows are created after the tray is up so nothing
+        // flashes in an uninitialized state. Transparent + click-through, so
+        // their presence is invisible to the desktop beneath.
+        _overlayWindowManager = new OverlayWindowManager(_appState, Dispatcher);
+        _overlayWindowManager.Start();
     }
 
     protected override void OnExit(ExitEventArgs eventArgs)
     {
+        _overlayWindowManager?.Dispose();
         _globalHotkeyService?.Dispose();
         _trayIcon?.Dispose();
         // Orchestrator owns mic/websocket/TTS — dispose synchronously so
