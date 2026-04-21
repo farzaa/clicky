@@ -1,0 +1,237 @@
+<Window x:Class="Clicky.Views.TrayPanelWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:Clicky.ViewModels"
+        mc:Ignorable="d"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        Title="Clicky"
+        Width="320"
+        SizeToContent="Height"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        Topmost="True"
+        ShowActivated="False"
+        WindowStartupLocation="Manual"
+        UseLayoutRounding="True"
+        FontFamily="{DynamicResource PrimaryFontFamily}"
+        d:DataContext="{d:DesignInstance vm:TrayPanelViewModel}">
+
+    <!-- Outer transparent margin reserves space for the drop shadow so it's
+         not clipped to the window bounds. -->
+    <Grid Margin="16">
+
+        <!-- Panel shell: dark rounded surface with a subtle border and a
+             two-layer drop shadow to match the macOS panel's depth. -->
+        <Border Background="{DynamicResource Background}"
+                BorderBrush="{DynamicResource BorderSubtle}"
+                BorderThickness="1"
+                CornerRadius="{DynamicResource CornerRadiusExtraLargeR}"
+                Effect="{DynamicResource PanelShadowEffect}">
+            <StackPanel Margin="16,14,16,14">
+
+                <!-- Header: status dot + app name -->
+                <Grid Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <Ellipse Grid.Column="0"
+                             Width="8" Height="8"
+                             Fill="{DynamicResource Success}"
+                             VerticalAlignment="Center"
+                             Margin="0,0,8,0"/>
+
+                    <TextBlock Grid.Column="1"
+                               Text="Clicky"
+                               Style="{DynamicResource HeaderTextStyle}"
+                               VerticalAlignment="Center"/>
+                </Grid>
+
+                <!-- Divider -->
+                <Rectangle Height="1"
+                           Fill="{DynamicResource BorderSubtle}"
+                           Margin="0,2,0,12"/>
+
+                <!-- Primary instruction -->
+                <TextBlock Style="{DynamicResource BodyTextStyle}"
+                           TextWrapping="Wrap"
+                           Margin="0,0,0,6">
+                    <Run Text="Hold "/>
+                    <Run Text="Ctrl + Alt" FontWeight="SemiBold"/>
+                    <Run Text=" to talk. Release to send."/>
+                </TextBlock>
+
+                <TextBlock Style="{DynamicResource TertiaryTextStyle}"
+                           TextWrapping="Wrap"
+                           Margin="0,0,0,14">
+                    Clicky sees your screen and speaks back. Your mic stays off until you hold the shortcut.
+                </TextBlock>
+
+                <!-- Model picker rows -->
+                <StackPanel Margin="0,4,0,14">
+
+                    <!-- Claude row -->
+                    <Grid Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Grid.Column="0"
+                                   Text="Claude"
+                                   Style="{DynamicResource SecondaryTextStyle}"
+                                   VerticalAlignment="Center"/>
+
+                        <Border Grid.Column="1"
+                                Background="{DynamicResource TranslucentFillLow}"
+                                BorderBrush="{DynamicResource BorderSubtle}"
+                                BorderThickness="0.5"
+                                CornerRadius="{DynamicResource CornerRadiusSmallR}">
+                            <ItemsControl ItemsSource="{Binding ClaudeOptions}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <StackPanel Orientation="Horizontal"/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Style="{DynamicResource ModelOptionButtonStyle}"
+                                                Command="{Binding SelectCommand}"
+                                                CommandParameter="{Binding ModelId}"
+                                                Content="{Binding DisplayLabel}"
+                                                Tag="{Binding IsSelected}"/>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Border>
+                    </Grid>
+
+                    <!-- Gemini row -->
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Grid.Column="0"
+                                   Text="Gemini"
+                                   Style="{DynamicResource SecondaryTextStyle}"
+                                   VerticalAlignment="Center"/>
+
+                        <Border Grid.Column="1"
+                                Background="{DynamicResource TranslucentFillLow}"
+                                BorderBrush="{DynamicResource BorderSubtle}"
+                                BorderThickness="0.5"
+                                CornerRadius="{DynamicResource CornerRadiusSmallR}">
+                            <ItemsControl ItemsSource="{Binding GeminiOptions}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <StackPanel Orientation="Horizontal"/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Style="{DynamicResource ModelOptionButtonStyle}"
+                                                Command="{Binding SelectCommand}"
+                                                CommandParameter="{Binding ModelId}"
+                                                Content="{Binding DisplayLabel}"
+                                                Tag="{Binding IsSelected}"/>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Border>
+                    </Grid>
+
+                </StackPanel>
+
+                <!-- Footer divider -->
+                <Rectangle Height="1"
+                           Fill="{DynamicResource BorderSubtle}"
+                           Margin="0,0,0,10"/>
+
+                <!-- Quit -->
+                <Button Style="{DynamicResource FooterTextButtonStyle}"
+                        Command="{Binding QuitCommand}"
+                        HorizontalContentAlignment="Left"
+                        Content="Quit Clicky"/>
+
+            </StackPanel>
+        </Border>
+
+        <!-- Window-local resources: button styles that depend on the design
+             system brushes. Declared last so the brushes resolve via the
+             merged App.xaml dictionaries. -->
+        <Grid.Resources>
+
+            <!-- Segmented-control option button. Highlights via the Tag
+                 property bound to IsSelected. -->
+            <Style x:Key="ModelOptionButtonStyle" TargetType="Button">
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Foreground" Value="{DynamicResource TextTertiary}"/>
+                <Setter Property="FontFamily" Value="{DynamicResource PrimaryFontFamily}"/>
+                <Setter Property="FontSize" Value="11"/>
+                <Setter Property="FontWeight" Value="Medium"/>
+                <Setter Property="Padding" Value="10,5"/>
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="SnapsToDevicePixels" Value="True"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="OptionBackground"
+                                    Background="Transparent"
+                                    CornerRadius="5"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <!-- Selected state drives the highlight via the Tag bound to IsSelected -->
+                                <Trigger Property="Tag" Value="True">
+                                    <Setter TargetName="OptionBackground" Property="Background" Value="{DynamicResource TranslucentFillMid}"/>
+                                    <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+                                </Trigger>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- Quiet footer button (Quit link) -->
+            <Style x:Key="FooterTextButtonStyle" TargetType="Button">
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+                <Setter Property="FontFamily" Value="{DynamicResource PrimaryFontFamily}"/>
+                <Setter Property="FontSize" Value="12"/>
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="Padding" Value="4,6"/>
+                <Setter Property="HorizontalContentAlignment" Value="Left"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border Background="Transparent" Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                  VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+        </Grid.Resources>
+
+    </Grid>
+</Window>

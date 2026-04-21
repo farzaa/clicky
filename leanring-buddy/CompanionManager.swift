@@ -73,8 +73,26 @@ final class CompanionManager: ObservableObject {
     private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
 
     private lazy var claudeAPI: ClaudeAPI = {
-        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+        // Default to Sonnet when the current selection is a Gemini model so
+        // the Claude client ships with a valid Anthropic model ID even when
+        // Gemini is the active provider.
+        let initialClaudeModel = Self.isGeminiModelID(selectedModel) ? "claude-sonnet-4-6" : selectedModel
+        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: initialClaudeModel)
     }()
+
+    private lazy var geminiAPI: GeminiAPI = {
+        // Default to Flash when the current selection is a Claude model so
+        // the Gemini client ships with a valid Gemini model ID even when
+        // Claude is the active provider.
+        let initialGeminiModel = Self.isGeminiModelID(selectedModel) ? selectedModel : "gemini-2.5-flash"
+        return GeminiAPI(proxyURL: "\(Self.workerBaseURL)/chat-gemini", model: initialGeminiModel)
+    }()
+
+    /// Returns true when the given model ID belongs to the Gemini provider.
+    /// Used throughout the manager to route requests to the correct client.
+    static func isGeminiModelID(_ modelID: String) -> Bool {
+        return modelID.hasPrefix("gemini")
+    }
 
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
         return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
@@ -107,13 +125,23 @@ final class CompanionManager: ObservableObject {
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
 
-    /// The Claude model used for voice responses. Persisted to UserDefaults.
+    /// The model used for voice responses. May be a Claude ID (e.g. "claude-sonnet-4-6")
+    /// or a Gemini ID (e.g. "gemini-2.5-flash"). Persisted to UserDefaults.
+    /// The UserDefaults key is still "selectedClaudeModel" for backwards compatibility
+    /// with installs from before Gemini support existed.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
 
     func setSelectedModel(_ model: String) {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
-        claudeAPI.model = model
+        // Route the new model ID to whichever provider owns it. We leave the
+        // other provider's model untouched — the next time the user flips back,
+        // that provider still remembers its previously-selected model.
+        if Self.isGeminiModelID(model) {
+            geminiAPI.model = model
+        } else {
+            claudeAPI.model = model
+        }
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -179,9 +207,13 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
-        // Eagerly touch the Claude API so its TLS warmup handshake completes
-        // well before the onboarding demo fires at ~40s into the video.
-        _ = claudeAPI
+        // Eagerly touch the active AI provider so its TLS warmup handshake
+        // completes well before the onboarding demo fires at ~40s into the video.
+        if Self.isGeminiModelID(selectedModel) {
+            _ = geminiAPI
+        } else {
+            _ = claudeAPI
+        }
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -578,11 +610,40 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - AI Response Pipeline
 
-    /// Captures a screenshot, sends it along with the transcript to Claude,
-    /// and plays the response aloud via ElevenLabs TTS. The cursor stays in
-    /// the spinner/processing state until TTS audio begins playing.
-    /// Claude's response may include a [POINT:x,y:label] tag which triggers
-    /// the buddy to fly to that element on screen.
+    /// Dispatches a streaming vision request to whichever provider owns the
+    /// currently selected model. Both Claude and Gemini expose an identical
+    /// streaming signature, so call sites don't need to care which one runs.
+    private func runStreamingVisionRequest(
+        images: [(data: Data, label: String)],
+        systemPrompt: String,
+        conversationHistory: [(userPlaceholder: String, assistantResponse: String)],
+        userPrompt: String,
+        onTextChunk: @MainActor @Sendable (String) -> Void
+    ) async throws -> (text: String, duration: TimeInterval) {
+        if Self.isGeminiModelID(selectedModel) {
+            return try await geminiAPI.analyzeImageStreaming(
+                images: images,
+                systemPrompt: systemPrompt,
+                conversationHistory: conversationHistory,
+                userPrompt: userPrompt,
+                onTextChunk: onTextChunk
+            )
+        } else {
+            return try await claudeAPI.analyzeImageStreaming(
+                images: images,
+                systemPrompt: systemPrompt,
+                conversationHistory: conversationHistory,
+                userPrompt: userPrompt,
+                onTextChunk: onTextChunk
+            )
+        }
+    }
+
+    /// Captures a screenshot, sends it along with the transcript to the
+    /// selected AI provider (Claude or Gemini), and plays the response aloud
+    /// via ElevenLabs TTS. The cursor stays in the spinner/processing state
+    /// until TTS audio begins playing. The response may include a
+    /// [POINT:x,y:label] tag which triggers the buddy to fly to that element.
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
@@ -610,7 +671,7 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                let (fullResponseText, _) = try await runStreamingVisionRequest(
                     images: labeledImages,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt,
                     conversationHistory: historyForAPI,
@@ -982,9 +1043,10 @@ final class CompanionManager: ObservableObject {
                 let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
                 let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                let (fullResponseText, _) = try await runStreamingVisionRequest(
                     images: labeledImages,
                     systemPrompt: Self.onboardingDemoSystemPrompt,
+                    conversationHistory: [],
                     userPrompt: "look around my screen and find something interesting to point at",
                     onTextChunk: { _ in }
                 )
