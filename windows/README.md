@@ -15,11 +15,55 @@ Worker, so the Windows app ships with zero embedded secrets.
 - [x] **M5 — Element pointing**: `PointingTagParser` splits each reply into spoken text + `(x, y, label, screenN)` target. `VoicePipelineOrchestrator` rescales screenshot pixels to the monitor's native device pixels and asks `OverlayWindowManager` to fly the triangle. `OverlayWindow.BeginElementPointingFlight` runs a quadratic bezier arc with smoothstep easing, tangent-based rotation (+90° so the tip leads travel), and a scale pulse peaking at 1.3× mid-flight — a port of macOS `animateBezierFlightArc`. On arrival the triangle lands 8/12 DIPs past the element, a blue speech bubble spring-bounces in with a random phrase ("right here!", "this one!", etc.) streamed 30-60 ms per character, holds 3 s, fades 500 ms, then the triangle flies back to the cursor. While any overlay is flying, the other overlays hide their cursor-follow triangles — single buddy at a time.
 - [x] **M6 — Polish**: `MicrophonePermissionHelper` probes for an active capture endpoint at startup (a privacy-blocked mic moves to the `Disabled` state and is filtered out) and `AppState.IsMicrophonePermissionIssue` surfaces a "Open Windows privacy settings" callout in the tray panel that deep-links to `ms-settings:privacy-microphone`. First-run onboarding: if `HasCompletedOnboarding == false` the panel auto-opens centered on the primary monitor with a welcome block and a "Get started" button that flips the flag; a "Watch welcome again" footer link replays it. `ClickyAnalytics` POSTs directly to PostHog `/capture/` with the same event surface as the macOS `ClickyAnalytics.swift` (`app_opened`, `onboarding_*`, `permission_*`, `push_to_talk_*`, `user_message_sent`, `ai_response_received`, `element_pointed`, `response_error`, `tts_error`) using a stable anonymous per-install `distinct_id` persisted alongside settings. No opt-in toggle — matches macOS. The PostHog write key placeholder in `WorkerConfig.cs` must be swapped to enable telemetry; until then every event is silently dropped client-side.
 
+## One-click install (recommended for non-developers)
+
+If you just want to use Clicky and don't plan to touch the code, double-click
+[windows/install/Install-Clicky.bat](install/Install-Clicky.bat). It runs
+entirely per-user (no administrator rights) and will:
+
+1. Verify the .NET 8 SDK is present (it's the only prerequisite — the
+   installer asks you to install it from
+   <https://dotnet.microsoft.com/download/dotnet/8.0> if missing).
+2. Build Clicky as a self-contained single-file `Clicky.exe` so the target
+   machine doesn't need the .NET runtime separately.
+3. Copy it to `%LOCALAPPDATA%\Programs\Clicky\`.
+4. Create **Start Menu** and **Desktop** shortcuts (`Clicky.lnk`), launched
+   minimised since Clicky lives in the system tray.
+5. Register Clicky in **Apps & Features** so you can uninstall it from
+   Windows Settings like any other app.
+6. Add Clicky to the per-user **Run** key so it launches automatically on
+   login (pass `-NoAutoStart` to skip this, or `-NoLaunch` to finish without
+   starting it immediately).
+7. Launch Clicky — look for the blue dot in the system tray.
+
+Advanced switches (run the `.ps1` directly from a PowerShell prompt):
+
+```powershell
+# Smaller framework-dependent build (requires .NET 8 Desktop Runtime on the target)
+.\windows\install\Install-Clicky.ps1 -FrameworkDependent
+
+# Don't register auto-start / don't launch after install
+.\windows\install\Install-Clicky.ps1 -NoAutoStart -NoLaunch
+```
+
+> **Before first talk, edit the Worker URL.** Open
+> [Clicky/Services/WorkerConfig.cs](Clicky/Services/WorkerConfig.cs) and
+> replace the placeholder Cloudflare Worker base URL with your own. All API
+> keys (Anthropic, Gemini, AssemblyAI, ElevenLabs) live on the Worker — the
+> Windows app ships with zero embedded secrets. Re-run the installer after
+> editing to rebuild. The same file also has a PostHog write key placeholder;
+> swap it to enable analytics, or leave it and every event is silently
+> dropped client-side.
+
+To uninstall: open **Settings → Apps → Installed apps**, find **Clicky**, and
+click Uninstall. Or run
+`%LOCALAPPDATA%\Programs\Clicky\Uninstall-Clicky.ps1`.
+
 ## Requirements
 
 - Windows 10 version 1903 (build 18362) or later — earlier builds lack APIs used by later milestones.
 - [.NET 8 SDK](https://dotnet.microsoft.com/en-us/download/dotnet/8.0).
-- Either Visual Studio 2022 (17.8+) with the ".NET desktop development" workload, **or** VS Code with the [C# Dev Kit extension](https://marketplace.visualstudio.com/items?itemName=ms-dotnettools.csdevkit).
+- Either Visual Studio 2022 (17.8+) with the ".NET desktop development" workload, **or** VS Code with the [C# Dev Kit extension](https://marketplace.visualstudio.com/items?itemName=ms-dotnettools.csdevkit) (only required if you plan to build/debug from source — the installer above handles builds for end-users).
 
 ## Build & run
 
@@ -50,6 +94,9 @@ assistant's reply streaming out, then Clicky speaks it back via ElevenLabs.
 ```
 windows/
   Clicky.sln
+  install/
+    Install-Clicky.bat             # double-click entry point (calls the .ps1 with ExecutionPolicy Bypass)
+    Install-Clicky.ps1             # per-user installer: build + copy + shortcuts + Run key + Apps&Features entry
   Clicky/
     Clicky.csproj
     app.manifest               # PerMonitorV2 DPI awareness, asInvoker elevation
