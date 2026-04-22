@@ -1,13 +1,14 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using System.Collections.ObjectModel;
+using Clicky.Services;
 
 namespace Clicky.ViewModels;
 
 /// <summary>
 /// View-model for the borderless tray popover. Binds the model picker rows
 /// (Claude: Sonnet/Opus, Gemini: Flash/Pro) to <see cref="AppState.SelectedModelId"/>
-/// and exposes a Quit command for the app.
+/// and exposes Quit, onboarding, and privacy-settings commands for the app.
 /// </summary>
 public sealed partial class TrayPanelViewModel : ObservableObject
 {
@@ -25,6 +26,11 @@ public sealed partial class TrayPanelViewModel : ObservableObject
                 foreach (var option in ClaudeOptions) option.RefreshSelection(_appState.SelectedModelId);
                 foreach (var option in GeminiOptions) option.RefreshSelection(_appState.SelectedModelId);
             }
+            else if (args.PropertyName == nameof(AppState.HasCompletedOnboarding))
+            {
+                OnPropertyChanged(nameof(IsOnboardingVisible));
+                OnPropertyChanged(nameof(IsMainContentVisible));
+            }
         };
 
         ClaudeOptions = new ObservableCollection<ModelOption>
@@ -38,6 +44,37 @@ public sealed partial class TrayPanelViewModel : ObservableObject
             CreateOption("Flash", "gemini-2.5-flash"),
             CreateOption("Pro",   "gemini-2.5-pro"),
         };
+    }
+
+    /// <summary>
+    /// Shows the welcome/onboarding block (Get started button + intro copy)
+    /// until the user completes it once. After that it stays hidden and the
+    /// regular panel body takes over.
+    /// </summary>
+    public bool IsOnboardingVisible => !_appState.HasCompletedOnboarding;
+
+    /// <summary>The main panel body (transcript, model picker, footer) —
+    /// shown once onboarding is done.</summary>
+    public bool IsMainContentVisible => _appState.HasCompletedOnboarding;
+
+    [RelayCommand]
+    private void CompleteOnboarding()
+    {
+        _appState.HasCompletedOnboarding = true;
+        ClickyAnalytics.TrackOnboardingCompleted();
+    }
+
+    [RelayCommand]
+    private void ReplayOnboarding()
+    {
+        _appState.HasCompletedOnboarding = false;
+        ClickyAnalytics.TrackOnboardingReplayed();
+    }
+
+    [RelayCommand]
+    private void OpenMicrophonePrivacySettings()
+    {
+        MicrophonePermissionHelper.OpenWindowsMicrophonePrivacySettings();
     }
 
     public ObservableCollection<ModelOption> ClaudeOptions { get; }

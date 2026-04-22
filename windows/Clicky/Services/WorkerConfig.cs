@@ -23,4 +23,17 @@ public static class WorkerConfig
     public static string ChatGeminiUrl => $"{BaseUrl}/chat-gemini";
     public static string TranscribeTokenUrl => $"{BaseUrl}/transcribe-token";
     public static string TtsUrl => $"{BaseUrl}/tts";
+
+    /// <summary>
+    /// PostHog project write-only key. PostHog keys are designed to ship in
+    /// client apps — they can only post events, not read data — so it's safe
+    /// to bundle one here. Swap the placeholder for your own project key to
+    /// enable analytics; leave it unset and <see cref="ClickyAnalytics"/>
+    /// silently drops every event.
+    /// </summary>
+    public const string PostHogWriteKey = "phc_YOUR_POSTHOG_WRITE_KEY_HERE";
+
+    /// <summary>PostHog capture endpoint (US region). Matches the macOS
+    /// <c>ClickyAnalytics.swift</c> host.</summary>
+    public const string PostHogCaptureUrl = "https://us.i.posthog.com/capture/";
 }

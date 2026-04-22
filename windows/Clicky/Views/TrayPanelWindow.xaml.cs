@@ -81,6 +81,39 @@ public partial class TrayPanelWindow : Window
         }
     }
 
+    /// <summary>
+    /// Used by the first-run onboarding: centers the panel on the primary
+    /// monitor so the welcome copy is impossible to miss. Falls back to the
+    /// system's default positioning if DPI/metrics queries fail.
+    /// </summary>
+    public void ShowPanelCenteredOnPrimaryScreen()
+    {
+        var windowHandle = new WindowInteropHelper(this).EnsureHandle();
+        var dpiScale = NativeMethods.GetDpiScale(this);
+        if (dpiScale <= 0) dpiScale = 1.0;
+
+        Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var panelWidthDevice = DesiredSize.Width * dpiScale;
+        var panelHeightDevice = DesiredSize.Height * dpiScale;
+
+        var primaryWidthDevice = SystemParameters.PrimaryScreenWidth * dpiScale;
+        var primaryHeightDevice = SystemParameters.PrimaryScreenHeight * dpiScale;
+
+        var panelLeftDevice = (primaryWidthDevice - panelWidthDevice) / 2;
+        var panelTopDevice = (primaryHeightDevice - panelHeightDevice) / 2;
+
+        NativeMethods.SetWindowPos(
+            windowHandle,
+            NativeMethods.HWND_TOPMOST,
+            (int)panelLeftDevice,
+            (int)panelTopDevice,
+            (int)panelWidthDevice,
+            (int)panelHeightDevice,
+            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
+
+        Visibility = Visibility.Visible;
+    }
+
     private void ApplyNonActivatingExtendedStyles(object? sender, EventArgs eventArgs)
     {
         var windowHandle = new WindowInteropHelper(this).Handle;

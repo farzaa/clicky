@@ -57,6 +57,14 @@ public sealed partial class AppState : ObservableObject
     [ObservableProperty]
     private string _lastStatusMessage = string.Empty;
 
+    /// <summary>
+    /// Set when microphone access is blocked or unavailable. The tray panel
+    /// shows a "Open privacy settings" shortcut when this is true so the
+    /// user can fix the permission in one click.
+    /// </summary>
+    [ObservableProperty]
+    private bool _isMicrophonePermissionIssue;
+
     // ---- Persisted preferences ----
 
     [ObservableProperty]

@@ -104,6 +104,8 @@ public sealed class VoicePipelineOrchestrator : IAsyncDisposable
 
     public async Task HandlePushToTalkPressedAsync()
     {
+        ClickyAnalytics.TrackPushToTalkStarted();
+
         // Talking over the previous reply → cancel in-flight AI request and
         // stop TTS so the user isn't competing with the assistant's voice.
         _currentRequestCts?.Cancel();
@@ -120,16 +122,27 @@ public sealed class VoicePipelineOrchestrator : IAsyncDisposable
             newSession.SessionFaulted += OnDictationFaulted;
             await newSession.StartAsync(CancellationToken.None).ConfigureAwait(false);
             _activeDictationSession = newSession;
+
+            // Successful capture start is the clearest signal that the mic
+            // privacy toggle is granted — clear any stale "blocked" state.
+            SetMicrophonePermissionIssueOnUi(false);
         }
         catch (Exception startException)
         {
             SetVoiceStateOnUi(AppState.VoiceState.Idle);
-            ReportFailureOnUi($"Couldn't start dictation: {startException.Message}");
+            SetMicrophonePermissionIssueOnUi(true);
+            ReportFailureOnUi(
+                "Couldn't start microphone. Check Windows privacy settings. "
+                + $"({startException.Message})");
+            ClickyAnalytics.TrackPermissionDenied("microphone");
+            ClickyAnalytics.TrackResponseError(startException.Message);
         }
     }
 
     public async Task HandlePushToTalkReleasedAsync()
     {
+        ClickyAnalytics.TrackPushToTalkReleased();
+
         var releasedSession = _activeDictationSession;
         if (releasedSession is null)
         {
@@ -162,6 +175,7 @@ public sealed class VoicePipelineOrchestrator : IAsyncDisposable
         }
 
         SetLiveTranscriptOnUi(finalTranscript);
+        ClickyAnalytics.TrackUserMessageSent(finalTranscript);
         await DispatchToAiAndSpeakAsync(finalTranscript).ConfigureAwait(false);
     }
 
@@ -207,6 +221,8 @@ public sealed class VoicePipelineOrchestrator : IAsyncDisposable
 
             AppendTurnToHistory(userPrompt, spokenText);
 
+            ClickyAnalytics.TrackAiResponseReceived(spokenText, _appState.SelectedModelId);
+
             TriggerPointingFlightIfRequested(pointingParseResult, capturedMonitors);
 
             if (spokenText.Length == 0)
@@ -216,7 +232,16 @@ public sealed class VoicePipelineOrchestrator : IAsyncDisposable
             }
 
             SetVoiceStateOnUi(AppState.VoiceState.Responding);
-            await _elevenLabsTtsClient.SpeakAsync(spokenText, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await _elevenLabsTtsClient.SpeakAsync(spokenText, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ttsException)
+            {
+                ClickyAnalytics.TrackTtsError(ttsException.Message);
+                throw;
+            }
         }
         catch (OperationCanceledException)
         {
@@ -226,6 +251,7 @@ public sealed class VoicePipelineOrchestrator : IAsyncDisposable
         {
             SetVoiceStateOnUi(AppState.VoiceState.Idle);
             ReportFailureOnUi($"AI request failed: {aiException.Message}");
+            ClickyAnalytics.TrackResponseError(aiException.Message);
         }
     }
 
@@ -303,6 +329,8 @@ public sealed class VoicePipelineOrchestrator : IAsyncDisposable
             targetDisplayLocalDeviceX: displayLocalDeviceX,
             targetDisplayLocalDeviceY: displayLocalDeviceY,
             bubblePhrase: bubblePhrase);
+
+        ClickyAnalytics.TrackElementPointed(parseResult.ElementLabel, targetCaptureIndex + 1);
     }
 
     private IChatClient ResolveClientForCurrentModel()
@@ -393,6 +421,11 @@ public sealed class VoicePipelineOrchestrator : IAsyncDisposable
     private void ReportFailureOnUi(string failureMessage)
     {
         _uiDispatcher.BeginInvoke(() => _appState.LastStatusMessage = failureMessage);
+    }
+
+    private void SetMicrophonePermissionIssueOnUi(bool hasIssue)
+    {
+        _uiDispatcher.BeginInvoke(() => _appState.IsMicrophonePermissionIssue = hasIssue);
     }
 
     // ---- Model defaults ----

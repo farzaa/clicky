@@ -13,7 +13,7 @@ Worker, so the Windows app ships with zero embedded secrets.
 - [x] **M3 — Screen capture**: per-monitor GDI `BitBlt` capture (PerMonitorV2-aware), JPEG encode at quality 80, downscale to 1280px longest side, cursor-monitor first. Screens feed into Claude/Gemini as inline images with labels like `"screen 1 of 2 — cursor is on this screen (primary focus) (image dimensions: 1280x800 pixels)"`. System prompt ported verbatim from macOS with the full pointing rules; the trailing `[POINT:…]` tag is stripped before TTS speaks the reply — M4/M5 will start consuming it.
 - [x] **M4 — Cursor overlay**: one transparent, click-through, topmost `OverlayWindow` per connected display (WS_EX_TRANSPARENT + WS_EX_LAYERED + WS_EX_NOACTIVATE + WS_EX_TOOLWINDOW). A 16-DIP equilateral blue triangle (`#3380FF`, rotated -35°, blue glow) follows the system mouse at 60 fps via `DispatcherTimer` + `GetCursorPos`, offset 35 DIPs right / 25 DIPs down. Only the overlay on the cursor's monitor shows the triangle. Visible during `Idle` / `Responding`; hidden during `Listening` / `Processing` (those swap in waveform/spinner in M5/M6).
 - [x] **M5 — Element pointing**: `PointingTagParser` splits each reply into spoken text + `(x, y, label, screenN)` target. `VoicePipelineOrchestrator` rescales screenshot pixels to the monitor's native device pixels and asks `OverlayWindowManager` to fly the triangle. `OverlayWindow.BeginElementPointingFlight` runs a quadratic bezier arc with smoothstep easing, tangent-based rotation (+90° so the tip leads travel), and a scale pulse peaking at 1.3× mid-flight — a port of macOS `animateBezierFlightArc`. On arrival the triangle lands 8/12 DIPs past the element, a blue speech bubble spring-bounces in with a random phrase ("right here!", "this one!", etc.) streamed 30-60 ms per character, holds 3 s, fades 500 ms, then the triangle flies back to the cursor. While any overlay is flying, the other overlays hide their cursor-follow triangles — single buddy at a time.
-- [ ] **M6 — Polish**: permission checks, onboarding flow, analytics parity.
+- [x] **M6 — Polish**: `MicrophonePermissionHelper` probes for an active capture endpoint at startup (a privacy-blocked mic moves to the `Disabled` state and is filtered out) and `AppState.IsMicrophonePermissionIssue` surfaces a "Open Windows privacy settings" callout in the tray panel that deep-links to `ms-settings:privacy-microphone`. First-run onboarding: if `HasCompletedOnboarding == false` the panel auto-opens centered on the primary monitor with a welcome block and a "Get started" button that flips the flag; a "Watch welcome again" footer link replays it. `ClickyAnalytics` POSTs directly to PostHog `/capture/` with the same event surface as the macOS `ClickyAnalytics.swift` (`app_opened`, `onboarding_*`, `permission_*`, `push_to_talk_*`, `user_message_sent`, `ai_response_received`, `element_pointed`, `response_error`, `tts_error`) using a stable anonymous per-install `distinct_id` persisted alongside settings. No opt-in toggle — matches macOS. The PostHog write key placeholder in `WorkerConfig.cs` must be swapped to enable telemetry; until then every event is silently dropped client-side.
 
 ## Requirements
 
@@ -41,7 +41,9 @@ assistant's reply streaming out, then Clicky speaks it back via ElevenLabs.
 > [Services/WorkerConfig.cs](Clicky/Services/WorkerConfig.cs) with your own
 > Cloudflare Worker base URL (the Swift app uses the same constant). All
 > provider keys stay on the Worker — the Windows app ships with zero
-> embedded secrets.
+> embedded secrets. The same file holds a placeholder PostHog write key —
+> swap it for a real project key to enable analytics, or leave the
+> placeholder in place and `ClickyAnalytics` silently drops every event.
 
 ## Project layout
 
@@ -72,6 +74,8 @@ windows/
       ScreenCaptureService.cs        # per-monitor BitBlt -> JPEG (cursor monitor first)
       OverlayWindowManager.cs        # per-monitor overlay lifecycle + 60 fps cursor tracker + FlyToElement
       PointingTagParser.cs           # splits a reply into spoken text + [POINT:x,y:label:screenN] target
+      MicrophonePermissionHelper.cs  # capture-endpoint probe + ms-settings:privacy-microphone shortcut
+      ClickyAnalytics.cs             # PostHog /capture/ HTTP client, macOS event parity
       VoicePipelineOrchestrator.cs   # end-to-end push-to-talk -> capture -> AI -> TTS + pointing flow
     ViewModels/
       TrayPanelViewModel.cs    # model picker + quit command bindings

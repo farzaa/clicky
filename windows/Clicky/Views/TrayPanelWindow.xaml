@@ -58,20 +58,84 @@
                            Fill="{DynamicResource BorderSubtle}"
                            Margin="0,2,0,12"/>
 
-                <!-- Primary instruction -->
-                <TextBlock Style="{DynamicResource BodyTextStyle}"
-                           TextWrapping="Wrap"
-                           Margin="0,0,0,6">
-                    <Run Text="Hold "/>
-                    <Run Text="Ctrl + Alt" FontWeight="SemiBold"/>
-                    <Run Text=" to talk. Release to send."/>
-                </TextBlock>
+                <!-- First-run onboarding. Hidden once the user hits "Get started". -->
+                <StackPanel Visibility="{Binding IsOnboardingVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <TextBlock Style="{DynamicResource BodyTextStyle}"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,6">
+                        <Run Text="Welcome to Clicky." FontWeight="SemiBold"/>
+                        <Run Text=" Your always-on screen companion."/>
+                    </TextBlock>
 
-                <TextBlock Style="{DynamicResource TertiaryTextStyle}"
-                           TextWrapping="Wrap"
-                           Margin="0,0,0,14">
-                    Clicky sees your screen and speaks back. Your mic stays off until you hold the shortcut.
-                </TextBlock>
+                    <TextBlock Style="{DynamicResource TertiaryTextStyle}"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,10">
+                        <Run Text="Hold "/><Run Text="Ctrl + Alt" FontWeight="SemiBold"/><Run Text=" anywhere to talk. Release to send. Clicky sees your screen, answers out loud, and can fly a blue triangle to point at anything you ask about."/>
+                    </TextBlock>
+
+                    <TextBlock Style="{DynamicResource TertiaryTextStyle}"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,14">
+                        Your mic stays off until you hold the shortcut. Responses are spoken back through your speakers.
+                    </TextBlock>
+
+                    <Button Style="{DynamicResource PrimaryButtonStyle}"
+                            Command="{Binding CompleteOnboardingCommand}"
+                            Content="Get started"
+                            HorizontalAlignment="Stretch"
+                            Margin="0,0,0,14"/>
+                </StackPanel>
+
+                <!-- Regular panel body. Hidden during onboarding. -->
+                <StackPanel Visibility="{Binding IsMainContentVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
+
+                    <!-- Primary instruction -->
+                    <TextBlock Style="{DynamicResource BodyTextStyle}"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,6">
+                        <Run Text="Hold "/>
+                        <Run Text="Ctrl + Alt" FontWeight="SemiBold"/>
+                        <Run Text=" to talk. Release to send."/>
+                    </TextBlock>
+
+                    <TextBlock Style="{DynamicResource TertiaryTextStyle}"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,14">
+                        Clicky sees your screen and speaks back. Your mic stays off until you hold the shortcut.
+                    </TextBlock>
+
+                    <!-- Microphone-denied callout. Shown whenever the mic is
+                         off or blocked by Windows privacy settings; the
+                         button deep-links to ms-settings:privacy-microphone
+                         so the user can fix it in one click. -->
+                    <Border Background="{DynamicResource TranslucentFillLow}"
+                            BorderBrush="{DynamicResource BorderSubtle}"
+                            BorderThickness="0.5"
+                            CornerRadius="{DynamicResource CornerRadiusSmallR}"
+                            Padding="10,8"
+                            Margin="0,0,0,10"
+                            Visibility="{Binding AppState.IsMicrophonePermissionIssue, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <StackPanel>
+                            <TextBlock Text="Microphone appears to be off"
+                                       Style="{DynamicResource SecondaryTextStyle}"
+                                       Margin="0,0,0,2"/>
+                            <TextBlock Style="{DynamicResource TertiaryTextStyle}"
+                                       TextWrapping="Wrap"
+                                       Margin="0,0,0,6">
+                                Clicky can't start dictation until Windows grants microphone access. Open privacy settings and enable microphone access for desktop apps.
+                            </TextBlock>
+                            <Button Style="{DynamicResource FooterTextButtonStyle}"
+                                    Command="{Binding OpenMicrophonePrivacySettingsCommand}"
+                                    HorizontalContentAlignment="Left"
+                                    Content="Open Windows privacy settings"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+
+                <!-- Live transcript / model picker / footer — all only
+                     visible after onboarding completes. Wrapped in an outer
+                     StackPanel so the visibility binding sits on one place. -->
+                <StackPanel Visibility="{Binding IsMainContentVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
 
                 <!-- Live transcript (user side). Shown while dictating and
                      briefly after release. Collapsed when empty. -->
@@ -201,11 +265,21 @@
                            Fill="{DynamicResource BorderSubtle}"
                            Margin="0,0,0,10"/>
 
+                <!-- Replay onboarding — mirrors the macOS "Watch
+                     Onboarding Again" footer link. -->
+                <Button Style="{DynamicResource FooterTextButtonStyle}"
+                        Command="{Binding ReplayOnboardingCommand}"
+                        HorizontalContentAlignment="Left"
+                        Margin="0,0,0,2"
+                        Content="Watch welcome again"/>
+
                 <!-- Quit -->
                 <Button Style="{DynamicResource FooterTextButtonStyle}"
                         Command="{Binding QuitCommand}"
                         HorizontalContentAlignment="Left"
                         Content="Quit Clicky"/>
+
+                </StackPanel><!-- /IsMainContentVisible -->
 
             </StackPanel>
         </Border>
@@ -217,6 +291,42 @@
 
             <!-- Converter: collapses an element when its bound string is empty. -->
             <views:StringToVisibilityConverter x:Key="StringToVisibilityConverter"/>
+
+            <!-- Converter: maps bool → Visibility (pass "Invert" as parameter to flip). -->
+            <views:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+
+            <!-- Primary CTA button used by onboarding "Get started". -->
+            <Style x:Key="PrimaryButtonStyle" TargetType="Button">
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Foreground" Value="White"/>
+                <Setter Property="FontFamily" Value="{DynamicResource PrimaryFontFamily}"/>
+                <Setter Property="FontSize" Value="13"/>
+                <Setter Property="FontWeight" Value="SemiBold"/>
+                <Setter Property="Padding" Value="14,8"/>
+                <Setter Property="Background" Value="{DynamicResource OverlayCursorBlue}"/>
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="SnapsToDevicePixels" Value="True"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="ButtonSurface"
+                                    Background="{TemplateBinding Background}"
+                                    CornerRadius="6"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="ButtonSurface" Property="Opacity" Value="0.9"/>
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="ButtonSurface" Property="Opacity" Value="0.8"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
 
             <!-- Segmented-control option button. Highlights via the Tag
                  property bound to IsSelected. -->

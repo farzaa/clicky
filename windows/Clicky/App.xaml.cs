@@ -48,6 +48,11 @@ public partial class App : Application
         _trayPanelViewModel = new TrayPanelViewModel(_appState);
         _trayPanelWindow = new TrayPanelWindow(_trayPanelViewModel);
 
+        // PostHog setup — idempotent, silent no-op until the write key in
+        // WorkerConfig.cs is replaced with a real project key. Fires
+        // app_opened on success.
+        ClickyAnalytics.Configure(_settingsService.AnalyticsDistinctId);
+
         InstallTrayIcon();
         InstallGlobalHotkey();
 
@@ -60,6 +65,35 @@ public partial class App : Application
         _overlayWindowManager.Start();
 
         _voicePipelineOrchestrator = new VoicePipelineOrchestrator(_appState, Dispatcher, _overlayWindowManager);
+
+        // First-run onboarding: if the user hasn't completed it, auto-open
+        // the panel on a centered position so the very first launch shows
+        // the welcome copy instead of a silent tray icon. Also probe the
+        // microphone so a disabled capture endpoint is surfaced before the
+        // first push-to-talk attempt.
+        ProbeMicrophoneAvailabilityAndUpdateState();
+        if (!_appState.HasCompletedOnboarding)
+        {
+            _trayPanelWindow.ShowPanelCenteredOnPrimaryScreen();
+            ClickyAnalytics.TrackOnboardingStarted();
+        }
+    }
+
+    private void ProbeMicrophoneAvailabilityAndUpdateState()
+    {
+        if (_appState is null) return;
+        var hasMic = MicrophonePermissionHelper.HasActiveCaptureDevice();
+        _appState.IsMicrophonePermissionIssue = !hasMic;
+        if (!hasMic)
+        {
+            _appState.LastStatusMessage =
+                "Microphone appears to be off or blocked. Open Windows privacy settings to enable it.";
+            ClickyAnalytics.TrackPermissionDenied("microphone");
+        }
+        else
+        {
+            ClickyAnalytics.TrackPermissionGranted("microphone");
+        }
     }
 
     protected override void OnExit(ExitEventArgs eventArgs)

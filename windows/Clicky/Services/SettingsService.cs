@@ -63,6 +63,25 @@ public sealed class SettingsService
     }
 
     /// <summary>
+    /// Stable, anonymous per-install identifier used as PostHog's
+    /// <c>distinct_id</c>. Generated lazily on first access so events can be
+    /// correlated across launches without ever linking to an identity.
+    /// </summary>
+    public string AnalyticsDistinctId
+    {
+        get
+        {
+            if (!string.IsNullOrEmpty(_currentSettings.AnalyticsDistinctId))
+            {
+                return _currentSettings.AnalyticsDistinctId;
+            }
+            _currentSettings.AnalyticsDistinctId = Guid.NewGuid().ToString("N");
+            PersistToDisk();
+            return _currentSettings.AnalyticsDistinctId;
+        }
+    }
+
+    /// <summary>
     /// Default to Gemini Flash since it's the cheapest option and the user
     /// explicitly called out credit cost as a concern. Matches the macOS
     /// default (Sonnet) only if that proves to be a better experience.
@@ -113,5 +132,6 @@ public sealed class SettingsService
         public string? SelectedModelId { get; set; }
         public bool? IsClickyCursorEnabled { get; set; }
         public bool? HasCompletedOnboarding { get; set; }
+        public string? AnalyticsDistinctId { get; set; }
     }
 }
