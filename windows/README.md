@@ -12,7 +12,7 @@ Worker, so the Windows app ships with zero embedded secrets.
 - [x] **M2 — Voice pipeline**: NAudio microphone capture, AssemblyAI v3 streaming transcription, Claude + Gemini SSE chat, ElevenLabs TTS playback. Text-only; vision is added in M3 once screen capture lands.
 - [x] **M3 — Screen capture**: per-monitor GDI `BitBlt` capture (PerMonitorV2-aware), JPEG encode at quality 80, downscale to 1280px longest side, cursor-monitor first. Screens feed into Claude/Gemini as inline images with labels like `"screen 1 of 2 — cursor is on this screen (primary focus) (image dimensions: 1280x800 pixels)"`. System prompt ported verbatim from macOS with the full pointing rules; the trailing `[POINT:…]` tag is stripped before TTS speaks the reply — M4/M5 will start consuming it.
 - [x] **M4 — Cursor overlay**: one transparent, click-through, topmost `OverlayWindow` per connected display (WS_EX_TRANSPARENT + WS_EX_LAYERED + WS_EX_NOACTIVATE + WS_EX_TOOLWINDOW). A 16-DIP equilateral blue triangle (`#3380FF`, rotated -35°, blue glow) follows the system mouse at 60 fps via `DispatcherTimer` + `GetCursorPos`, offset 35 DIPs right / 25 DIPs down. Only the overlay on the cursor's monitor shows the triangle. Visible during `Idle` / `Responding`; hidden during `Listening` / `Processing` (those swap in waveform/spinner in M5/M6).
-- [ ] **M5 — Element pointing**: `[POINT:x,y:label:screenN]` parser, bezier flight animation, speech bubble.
+- [x] **M5 — Element pointing**: `PointingTagParser` splits each reply into spoken text + `(x, y, label, screenN)` target. `VoicePipelineOrchestrator` rescales screenshot pixels to the monitor's native device pixels and asks `OverlayWindowManager` to fly the triangle. `OverlayWindow.BeginElementPointingFlight` runs a quadratic bezier arc with smoothstep easing, tangent-based rotation (+90° so the tip leads travel), and a scale pulse peaking at 1.3× mid-flight — a port of macOS `animateBezierFlightArc`. On arrival the triangle lands 8/12 DIPs past the element, a blue speech bubble spring-bounces in with a random phrase ("right here!", "this one!", etc.) streamed 30-60 ms per character, holds 3 s, fades 500 ms, then the triangle flies back to the cursor. While any overlay is flying, the other overlays hide their cursor-follow triangles — single buddy at a time.
 - [ ] **M6 — Polish**: permission checks, onboarding flow, analytics parity.
 
 ## Requirements
@@ -70,8 +70,9 @@ windows/
       ElevenLabsTtsClient.cs         # /tts MP3 fetch + NAudio playback
       DictationSession.cs            # mic -> AssemblyAI bridge + finalize-with-fallback
       ScreenCaptureService.cs        # per-monitor BitBlt -> JPEG (cursor monitor first)
-      OverlayWindowManager.cs        # per-monitor overlay lifecycle + 60 fps cursor tracker
-      VoicePipelineOrchestrator.cs   # end-to-end push-to-talk -> capture -> AI -> TTS flow
+      OverlayWindowManager.cs        # per-monitor overlay lifecycle + 60 fps cursor tracker + FlyToElement
+      PointingTagParser.cs           # splits a reply into spoken text + [POINT:x,y:label:screenN] target
+      VoicePipelineOrchestrator.cs   # end-to-end push-to-talk -> capture -> AI -> TTS + pointing flow
     ViewModels/
       TrayPanelViewModel.cs    # model picker + quit command bindings
     Views/

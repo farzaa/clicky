@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text.RegularExpressions;
 using System.Windows.Threading;
 
 namespace Clicky.Services;
@@ -57,13 +56,18 @@ public sealed class VoicePipelineOrchestrator : IAsyncDisposable
         "- user asks how to commit in xcode: \"see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control]\"\n" +
         "- element is on screen 2 (not where cursor is): \"that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]\"";
 
-    // Matches a trailing [POINT:none] / [POINT:x,y:label] / [POINT:x,y:label:screenN]
-    // tag so we can strip it before speaking / displaying. Same shape as the
-    // Swift regex in CompanionManager.parsePointingCoordinates — the M4/M5
-    // overlay will re-parse the captured groups to aim the pointer.
-    private static readonly Regex PointingTagTrailingRegex = new(
-        @"\[POINT:(?:none|(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?)\]\s*$",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    // Short "here!" phrases picked at random for the speech bubble the
+    // triangle shows once it reaches the element. Mirrors the macOS list
+    // in OverlayWindow.navigationBubblePhrases.
+    private static readonly string[] PointerBubblePhrases =
+    {
+        "right here!",
+        "this one!",
+        "over here!",
+        "click this!",
+        "here it is!",
+        "found it!",
+    };
 
     private const int ConversationHistoryMaxTurns = 10;
 
@@ -73,16 +77,21 @@ public sealed class VoicePipelineOrchestrator : IAsyncDisposable
     private readonly GeminiClient _geminiClient;
     private readonly ElevenLabsTtsClient _elevenLabsTtsClient;
     private readonly ScreenCaptureService _screenCaptureService;
+    private readonly OverlayWindowManager? _overlayWindowManager;
 
     private DictationSession? _activeDictationSession;
     private readonly List<ConversationTurn> _conversationHistory = new();
 
     private CancellationTokenSource? _currentRequestCts;
 
-    public VoicePipelineOrchestrator(AppState appState, Dispatcher uiDispatcher)
+    public VoicePipelineOrchestrator(
+        AppState appState,
+        Dispatcher uiDispatcher,
+        OverlayWindowManager? overlayWindowManager = null)
     {
         _appState = appState;
         _uiDispatcher = uiDispatcher;
+        _overlayWindowManager = overlayWindowManager;
 
         _claudeClient = new ClaudeClient(model: InferInitialClaudeModel(appState.SelectedModelId));
         _geminiClient = new GeminiClient(model: InferInitialGeminiModel(appState.SelectedModelId));
@@ -168,8 +177,13 @@ public sealed class VoicePipelineOrchestrator : IAsyncDisposable
         {
             // Grab every monitor JPEG before contacting the model. BitBlt is
             // synchronous and runs on a thread pool thread so the UI doesn't
-            // freeze while the capture happens.
-            var inlineImages = await Task.Run(BuildInlineImagesForCurrentScreens, cancellationToken).ConfigureAwait(false);
+            // freeze while the capture happens. We also keep the raw capture
+            // list so [POINT:…] coordinates can be mapped back to the matching
+            // monitor's bounds once the reply is parsed.
+            var capturedMonitors = await Task.Run(
+                () => _screenCaptureService.CaptureAllMonitors(),
+                cancellationToken).ConfigureAwait(false);
+            var inlineImages = BuildInlineImagesFromCaptures(capturedMonitors);
 
             if (cancellationToken.IsCancellationRequested) return;
 
@@ -183,23 +197,26 @@ public sealed class VoicePipelineOrchestrator : IAsyncDisposable
 
             if (cancellationToken.IsCancellationRequested) return;
 
-            // Strip the trailing [POINT:...] tag — M3 ignores the coordinates,
-            // M4/M5 will parse them to fly the overlay cursor. TTS speaks the
-            // stripped text, and the panel shows the stripped text so the
-            // user doesn't see the raw tag at the end.
-            var strippedReplyText = PointingTagTrailingRegex.Replace(streamResult.FullText, string.Empty).TrimEnd();
-            SetStreamedResponseOnUi(strippedReplyText);
+            // Split the reply into spoken text + optional pointing target.
+            // TTS speaks the spoken text; the flight fires before playback
+            // starts so the triangle is already en route when the user
+            // hears Clicky start talking.
+            var pointingParseResult = PointingTagParser.Parse(streamResult.FullText);
+            var spokenText = pointingParseResult.SpokenText;
+            SetStreamedResponseOnUi(spokenText);
 
-            AppendTurnToHistory(userPrompt, strippedReplyText);
+            AppendTurnToHistory(userPrompt, spokenText);
 
-            if (strippedReplyText.Length == 0)
+            TriggerPointingFlightIfRequested(pointingParseResult, capturedMonitors);
+
+            if (spokenText.Length == 0)
             {
                 SetVoiceStateOnUi(AppState.VoiceState.Idle);
                 return;
             }
 
             SetVoiceStateOnUi(AppState.VoiceState.Responding);
-            await _elevenLabsTtsClient.SpeakAsync(strippedReplyText, cancellationToken).ConfigureAwait(false);
+            await _elevenLabsTtsClient.SpeakAsync(spokenText, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -213,14 +230,13 @@ public sealed class VoicePipelineOrchestrator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Captures every monitor and wraps each JPEG into an <see cref="InlineImage"/>
-    /// whose label matches the macOS format — "screen N of M — cursor is on
-    /// this screen (primary focus) (image dimensions: WxH pixels)" — so the
+    /// Wraps each monitor capture into an <see cref="InlineImage"/> whose
+    /// label matches the macOS format — "screen N of M — cursor is on this
+    /// screen (primary focus) (image dimensions: WxH pixels)" — so the
     /// model's coordinate space maps to the pixels it actually sees.
     /// </summary>
-    private IReadOnlyList<InlineImage> BuildInlineImagesForCurrentScreens()
+    private static IReadOnlyList<InlineImage> BuildInlineImagesFromCaptures(IReadOnlyList<MonitorCapture> capturedMonitors)
     {
-        var capturedMonitors = _screenCaptureService.CaptureAllMonitors();
         if (capturedMonitors.Count == 0) return Array.Empty<InlineImage>();
 
         var inlineImages = new List<InlineImage>(capturedMonitors.Count);
@@ -238,6 +254,55 @@ public sealed class VoicePipelineOrchestrator : IAsyncDisposable
                 Label: monitorCapture.Label + dimensionSuffix));
         }
         return inlineImages;
+    }
+
+    /// <summary>
+    /// Maps a parsed <c>[POINT:x,y:label:screenN]</c> tag back to a concrete
+    /// overlay flight: picks the target monitor (by screen index, defaulting
+    /// to the cursor's monitor i.e. index 0), rescales screenshot pixels to
+    /// the monitor's native device pixels, clamps into bounds, and tells the
+    /// <see cref="OverlayWindowManager"/> to fly the triangle there.
+    /// </summary>
+    private void TriggerPointingFlightIfRequested(
+        PointingParseResult parseResult,
+        IReadOnlyList<MonitorCapture> capturedMonitors)
+    {
+        if (_overlayWindowManager is null) return;
+        if (parseResult.Coordinate is not (int pointX, int pointY)) return;
+        if (capturedMonitors.Count == 0) return;
+
+        // screenNumber is 1-based and indexes into the cursor-first capture
+        // list. Out-of-range values fall back to the cursor's screen so a
+        // sloppy AI reply still lands somewhere sensible.
+        var targetCaptureIndex = 0;
+        if (parseResult.ScreenNumber is int screenNumber)
+        {
+            var candidateIndex = screenNumber - 1;
+            if (candidateIndex >= 0 && candidateIndex < capturedMonitors.Count)
+            {
+                targetCaptureIndex = candidateIndex;
+            }
+        }
+
+        var targetCapture = capturedMonitors[targetCaptureIndex];
+        if (targetCapture.ScreenshotWidthPixels <= 0 || targetCapture.ScreenshotHeightPixels <= 0) return;
+
+        // Screenshot coords → display-local device pixels. The JPEG may be
+        // downscaled (MaxLongestSidePixels in ScreenCaptureService), so we
+        // rescale to the monitor's native resolution before handing off.
+        var screenshotScaleX = (double)targetCapture.DisplayWidthPixels / targetCapture.ScreenshotWidthPixels;
+        var screenshotScaleY = (double)targetCapture.DisplayHeightPixels / targetCapture.ScreenshotHeightPixels;
+        var displayLocalDeviceX = Math.Clamp(pointX * screenshotScaleX, 0, targetCapture.DisplayWidthPixels - 1);
+        var displayLocalDeviceY = Math.Clamp(pointY * screenshotScaleY, 0, targetCapture.DisplayHeightPixels - 1);
+
+        var bubblePhrase = PointerBubblePhrases[Random.Shared.Next(PointerBubblePhrases.Length)];
+
+        _overlayWindowManager.FlyToElement(
+            targetMonitorBoundsLeftDevicePixels: targetCapture.DisplayBoundsDevicePixels.X,
+            targetMonitorBoundsTopDevicePixels: targetCapture.DisplayBoundsDevicePixels.Y,
+            targetDisplayLocalDeviceX: displayLocalDeviceX,
+            targetDisplayLocalDeviceY: displayLocalDeviceY,
+            bubblePhrase: bubblePhrase);
     }
 
     private IChatClient ResolveClientForCurrentModel()

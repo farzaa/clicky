@@ -75,6 +75,7 @@ public sealed class OverlayWindowManager : IDisposable
         if (!NativeMethods.GetCursorPos(out var cursorPositionDevicePixels)) return;
 
         var triangleShouldBeVisible = TriangleVisibleForVoiceState(_appState.CurrentVoiceState);
+        var anyOverlayIsFlying = _mountedOverlays.Any(mounted => mounted.Window.IsFlightInProgress);
 
         foreach (var mountedOverlay in _mountedOverlays)
         {
@@ -82,12 +83,53 @@ public sealed class OverlayWindowManager : IDisposable
                 cursorPositionDevicePixels.X,
                 cursorPositionDevicePixels.Y);
 
+            // While any overlay is running a pointing flight, suppress the
+            // cursor-following triangle everywhere else — only one buddy at a
+            // time, matching the macOS single-active-overlay contract.
+            var triangleVisibleOnThisOverlay = triangleShouldBeVisible
+                && (!anyOverlayIsFlying || mountedOverlay.Window.IsFlightInProgress);
+
             mountedOverlay.Window.UpdateCursorState(
                 cursorGlobalDeviceX: cursorPositionDevicePixels.X,
                 cursorGlobalDeviceY: cursorPositionDevicePixels.Y,
                 cursorIsOnThisMonitor: cursorIsOnThisMonitor,
-                triangleShouldBeVisible: triangleShouldBeVisible);
+                triangleShouldBeVisible: triangleVisibleOnThisOverlay);
         }
+    }
+
+    /// <summary>
+    /// Kicks off the element-pointing flight on whichever overlay owns the
+    /// given monitor bounds. The caller passes display-local device pixels
+    /// (from <see cref="MonitorCapture.DisplayWidthPixels"/> space), so the
+    /// overlay can scale to DIPs with its own per-monitor DPI.
+    ///
+    /// No-ops if the target monitor is no longer mounted (e.g. unplugged
+    /// between capture and reply) or if a flight is already in progress —
+    /// the AI would have to emit a second [POINT:…] mid-flight for that to
+    /// happen, which in practice doesn't occur during a single TTS turn.
+    /// </summary>
+    public void FlyToElement(
+        int targetMonitorBoundsLeftDevicePixels,
+        int targetMonitorBoundsTopDevicePixels,
+        double targetDisplayLocalDeviceX,
+        double targetDisplayLocalDeviceY,
+        string bubblePhrase)
+    {
+        _uiDispatcher.BeginInvoke(() =>
+        {
+            if (_isDisposed) return;
+            if (_mountedOverlays.Any(mounted => mounted.Window.IsFlightInProgress)) return;
+
+            var targetOverlay = _mountedOverlays.FirstOrDefault(mounted =>
+                mounted.Monitor.BoundsLeft == targetMonitorBoundsLeftDevicePixels
+                && mounted.Monitor.BoundsTop == targetMonitorBoundsTopDevicePixels);
+            if (targetOverlay is null) return;
+
+            targetOverlay.Window.BeginElementPointingFlight(
+                targetDisplayLocalDeviceX: targetDisplayLocalDeviceX,
+                targetDisplayLocalDeviceY: targetDisplayLocalDeviceY,
+                bubblePhrase: bubblePhrase);
+        });
     }
 
     /// <summary>

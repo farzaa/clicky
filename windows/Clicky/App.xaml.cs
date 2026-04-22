@@ -45,7 +45,6 @@ public partial class App : Application
 
         _settingsService = new SettingsService();
         _appState = new AppState(_settingsService);
-        _voicePipelineOrchestrator = new VoicePipelineOrchestrator(_appState, Dispatcher);
         _trayPanelViewModel = new TrayPanelViewModel(_appState);
         _trayPanelWindow = new TrayPanelWindow(_trayPanelViewModel);
 
@@ -54,9 +53,13 @@ public partial class App : Application
 
         // The overlay windows are created after the tray is up so nothing
         // flashes in an uninitialized state. Transparent + click-through, so
-        // their presence is invisible to the desktop beneath.
+        // their presence is invisible to the desktop beneath. The voice
+        // pipeline takes a reference so the [POINT:…] tag on each reply can
+        // fire an element-pointing flight before TTS speaks the text.
         _overlayWindowManager = new OverlayWindowManager(_appState, Dispatcher);
         _overlayWindowManager.Start();
+
+        _voicePipelineOrchestrator = new VoicePipelineOrchestrator(_appState, Dispatcher, _overlayWindowManager);
     }
 
     protected override void OnExit(ExitEventArgs eventArgs)
