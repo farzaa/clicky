@@ -8,7 +8,7 @@
     on the target machine) and installs it to %LOCALAPPDATA%\Programs\Clicky.
     Creates Start Menu and Desktop shortcuts, registers Clicky in
     Apps & Features so it can be uninstalled from Settings, and optionally
-    adds it to the Run key so it launches on login (default: yes — Clicky
+    adds it to the Run key so it launches on login (default: yes -- Clicky
     is a tray app, the user expects it to be there).
 
     Runs entirely per-user; no administrator rights required.
@@ -107,11 +107,11 @@ function Invoke-Publish {
     if ($FrameworkDependent) {
         $publishArgs += '--self-contained'
         $publishArgs += 'false'
-        Write-Info 'Framework-dependent build — end users need the .NET 8 Desktop Runtime.'
+        Write-Info 'Framework-dependent build -- end users need the .NET 8 Desktop Runtime.'
     } else {
         $publishArgs += '--self-contained'
         $publishArgs += 'true'
-        Write-Info 'Self-contained build — bundles the .NET runtime. No end-user prerequisites.'
+        Write-Info 'Self-contained build -- bundles the .NET runtime. No end-user prerequisites.'
     }
 
     & dotnet @publishArgs | Out-Host
@@ -146,7 +146,7 @@ function New-WindowsShortcut {
     param(
         [Parameter(Mandatory)][string]$ShortcutPath,
         [Parameter(Mandatory)][string]$TargetExePath,
-        [string]$Description = 'Clicky — hold Ctrl+Alt to talk.'
+        [string]$Description = 'Clicky - hold Ctrl+Alt to talk.'
     )
     $shellComObject = New-Object -ComObject WScript.Shell
     $shortcut = $shellComObject.CreateShortcut($ShortcutPath)
@@ -154,7 +154,7 @@ function New-WindowsShortcut {
     $shortcut.WorkingDirectory = Split-Path $TargetExePath
     $shortcut.IconLocation     = "$TargetExePath,0"
     $shortcut.Description      = $Description
-    $shortcut.WindowStyle      = 7   # minimized — Clicky lives in the tray
+    $shortcut.WindowStyle      = 7   # minimized -- Clicky lives in the tray
     $shortcut.Save()
 }
 
@@ -174,7 +174,7 @@ function Install-Uninstaller {
     $uninstallerPs1Body = @'
 #Requires -Version 5.1
 <#
-    Uninstalls Clicky — removes the install folder, shortcuts, Run key,
+    Uninstalls Clicky -- removes the install folder, shortcuts, Run key,
     and the Apps & Features entry. Safe to run more than once.
 #>
 $ErrorActionPreference = 'SilentlyContinue'
@@ -192,7 +192,7 @@ Remove-Item -Path $DesktopShortcut   -Force
 Remove-ItemProperty -Path $RunRegistryKey -Name 'Clicky' -ErrorAction SilentlyContinue
 Remove-Item -Path $UninstallRegistryKey -Recurse -Force
 
-# Schedule the install folder for deletion on reboot via a helper cmd —
+# Schedule the install folder for deletion on reboot via a helper cmd --
 # PowerShell can't remove its own running script, so we spawn cmd to do it
 # after this process exits.
 if (Test-Path $InstallRoot) {
@@ -225,7 +225,7 @@ Write-Host 'Clicky has been uninstalled.'
     Set-ItemProperty $UninstallRegistryKey -Name 'NoRepair'          -Value 1     -Type DWord
     Set-ItemProperty $UninstallRegistryKey -Name 'InstallDate'       -Value (Get-Date -Format 'yyyyMMdd')
 
-    Write-Info 'Registered in Apps & Features (Start → Settings → Apps → Installed apps).'
+    Write-Info 'Registered in Apps & Features (Start > Settings > Apps > Installed apps).'
 }
 
 function Register-AutoStartIfRequested {
@@ -240,14 +240,14 @@ function Register-AutoStartIfRequested {
     }
     Set-ItemProperty -Path $RunRegistryKey -Name 'Clicky' -Value ('"{0}"' -f $InstalledExePath)
     Write-Info 'Clicky will now start automatically when you log in.'
-    Write-Info 'Use `msconfig` → Startup, or Task Manager → Startup apps, to disable later.'
+    Write-Info 'Use `msconfig` > Startup, or Task Manager > Startup apps, to disable later.'
 }
 
 function Start-ClickyIfRequested {
     if ($NoLaunch) { return }
     Write-Step 'Launching Clicky'
     Start-Process -FilePath $InstalledExePath
-    Write-Info 'Clicky lives in your system tray — click the blue dot next to the clock to open it.'
+    Write-Info 'Clicky lives in your system tray -- click the blue dot next to the clock to open it.'
 }
 
 # ---------- Main ----------
