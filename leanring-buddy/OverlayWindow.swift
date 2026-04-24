@@ -799,10 +799,6 @@ class OverlayWindowManager {
             )
 
             let hostingView = NSHostingView(rootView: contentView)
-            // NSHostingView lives inside the overlay window's local coordinate
-            // system, so its origin must start at (0, 0). Using the global
-            // screen frame here pushes secondary-display content outside the
-            // window bounds, which makes the buddy disappear off the primary screen.
             hostingView.frame = NSRect(origin: .zero, size: screen.frame.size)
             hostingView.autoresizingMask = [.width, .height]
             window.contentView = hostingView
