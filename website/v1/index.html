@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="AI Sensei 3000 is an on-screen AI teacher for macOS that sees your screen, talks back, and teleports to point at what you need."
+    />
+    <title>AI Sensei 3000 | Your On-Screen AI Teacher</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=M+PLUS+Rounded+1c:wght@400;500;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header" data-reveal>
+      <a class="brand-lockup" href="#top" aria-label="AI Sensei 3000 home">
+        <img src="../logo/ai-sensei-transparent.png" alt="" />
+      </a>
+
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-navigation">
+        <span>Menu</span>
+      </button>
+
+      <nav class="primary-navigation" id="primary-navigation" aria-label="Primary navigation">
+        <a href="#features">Features</a>
+        <a href="#characters">Characters</a>
+        <a href="#gallery">Gallery</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#manifesto">Manifesto</a>
+        <a href="#support">Support</a>
+      </nav>
+
+      <a class="header-cta" href="#download">
+        Get the App
+      </a>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top" aria-labelledby="hero-title">
+        <div class="hero-copy" data-reveal>
+          <p class="eyebrow">On-screen guidance for macOS</p>
+          <h1 id="hero-title">Your On-Screen <span>AI</span> Teacher</h1>
+          <p class="hero-subtitle">あなたのオンスクリーン先生</p>
+          <p class="hero-description">
+            She sees your screen, talks back, and teleports through portals to point at exactly what you need.
+            Learning has never been this magical.
+          </p>
+
+          <div class="hero-actions" id="download">
+            <a class="button button-primary" href="#">
+              <span class="button-icon">⌘</span>
+              Download for macOS
+            </a>
+            <a class="button button-secondary" href="#gallery">
+              <span class="button-icon">▷</span>
+              Watch Demo
+            </a>
+          </div>
+        </div>
+
+        <div class="hero-stage" data-reveal>
+          <figure class="hero-character asset-frame asset-frame-tall">
+            <img src="assets/characters/hero-teacher.png" alt="A cheerful AI Sensei companion pointing at the screen." />
+          </figure>
+        </div>
+      </section>
+
+      <section class="feature-strip" id="features" aria-label="AI Sensei features">
+        <article class="feature-card portal-card" data-reveal>
+          <div class="feature-visual portal-visual" aria-hidden="true"></div>
+          <div>
+            <h2>Portal System <span>ポータルシステム</span></h2>
+            <p>Opens portals to any UI element and teleports to point it out.</p>
+          </div>
+        </article>
+        <article class="feature-card voice-card" data-reveal>
+          <div class="feature-visual microphone-visual" aria-hidden="true"></div>
+          <div>
+            <h2>Voice Powered <span>音声モード</span></h2>
+            <p>Hold a hotkey and ask naturally. She listens, thinks, and speaks back.</p>
+          </div>
+        </article>
+        <article class="feature-card mac-card" data-reveal>
+          <div class="feature-visual mac-visual" aria-hidden="true"></div>
+          <div>
+            <h2>macOS App <span>macOSアプリ</span></h2>
+            <p>Runs beautifully in your menu bar. Lightweight, private, and native.</p>
+          </div>
+        </article>
+        <article class="feature-card shop-card" data-reveal>
+          <div class="feature-visual bag-visual" aria-hidden="true"></div>
+          <div>
+            <h2>Theme Shop <span>テーマショップ</span></h2>
+            <p>Dress your Sensei with outfits, themes, and bright study moods.</p>
+          </div>
+        </article>
+      </section>
+
+      <section class="section companions" id="characters" aria-labelledby="companions-title">
+        <div class="section-heading" data-reveal>
+          <p class="section-kicker">✿ Meet Your Companions ✿</p>
+          <h2 id="companions-title">お花の仲間たち</h2>
+          <p>Choose your AI Sensei. Each has her own personality, study rhythm, and coaching style.</p>
+        </div>
+
+        <div class="character-carousel" data-reveal>
+          <button class="carousel-button carousel-button-previous" type="button" data-carousel-previous aria-label="Previous character">‹</button>
+          <div class="character-grid" data-character-carousel tabindex="0" aria-label="AI Sensei character carousel">
+            <article class="character-card jade-card">
+              <figure class="asset-frame">
+                <img src="assets/characters/jade-card.png" alt="Jade companion character." />
+              </figure>
+              <div class="character-copy">
+                <h3>Jade <span>ジェイド</span></h3>
+                <p class="tag calm">Calm | 癒し系</p>
+                <p>Calm, composed, and endlessly patient. Helps you stay focused and get things done.</p>
+                <div class="trait-row">
+                  <span>Calm</span>
+                  <span>Elegant</span>
+                </div>
+              </div>
+            </article>
+
+            <article class="character-card scooter-card">
+              <figure class="asset-frame">
+                <img src="assets/characters/scooter-card.png" alt="Scooter companion character." />
+              </figure>
+              <div class="character-copy">
+                <h3>Scooter <span>スクーター</span></h3>
+                <p class="tag warm">Warm | やさしい系</p>
+                <p>Low-key, friendly, and easy to talk to. Keeps the pressure off while helping you move forward.</p>
+                <div class="trait-row">
+                  <span>Relaxed</span>
+                  <span>Supportive</span>
+                </div>
+              </div>
+            </article>
+
+            <article class="character-card sakura-card featured-character">
+              <figure class="asset-frame">
+                <img src="assets/characters/sakura-card.png" alt="Sakura companion character." />
+              </figure>
+              <div class="character-copy">
+                <h3>Sakura <span>さくら</span></h3>
+                <p class="tag cheerful">Cheerful | 元気系</p>
+                <p>Bright, energetic, and always cheering you on. Makes every study session fun.</p>
+                <div class="trait-row">
+                  <span>Cheerful</span>
+                  <span>Energetic</span>
+                </div>
+              </div>
+            </article>
+
+            <article class="character-card akane-card">
+              <figure class="asset-frame">
+                <img src="assets/characters/teacher-card.png" alt="Akane companion character." />
+              </figure>
+              <div class="character-copy">
+                <h3>Akane <span>あかね</span></h3>
+                <p class="tag smart">Pro | プロフェッショナル</p>
+                <p>Professional and knowledgeable. Your dedicated guide for serious learning.</p>
+                <div class="trait-row">
+                  <span>Smart</span>
+                  <span>Precise</span>
+                </div>
+              </div>
+            </article>
+
+            <article class="character-card oliver-card">
+              <figure class="asset-frame">
+                <img src="assets/characters/oliver-card.png" alt="Oliver companion character." />
+              </figure>
+              <div class="character-copy">
+                <h3>Oliver <span>オリバー</span></h3>
+                <p class="tag focused">Focused | 集中系</p>
+                <p>Clear, steady, and practical. Great when you want direct guidance without the extra sparkle.</p>
+                <div class="trait-row">
+                  <span>Focused</span>
+                  <span>Steady</span>
+                </div>
+              </div>
+            </article>
+          </div>
+          <button class="carousel-button carousel-button-next" type="button" data-carousel-next aria-label="Next character">›</button>
+        </div>
+
+        <a class="small-link-button" href="#characters">See All Characters <span>すべてのキャラを見る</span></a>
+      </section>
+
+      <section class="section workflow" aria-labelledby="workflow-title">
+        <div class="section-heading compact" data-reveal>
+          <p class="section-kicker">✿ How AI Sensei 3000 Works ✿</p>
+          <h2 id="workflow-title">使い方はカンタン!</h2>
+        </div>
+        <div class="action-grid workflow-grid">
+          <article class="action-card workflow-card" data-reveal>
+            <figure class="action-art asset-frame">
+              <img src="assets/gallery/how-it-works-1.png" alt="Sakura pointing to an on-screen element." />
+            </figure>
+            <div class="action-copy">
+              <h3>Press & Point</h3>
+              <p>Ask for help and she highlights the exact thing you need.</p>
+            </div>
+          </article>
+          <article class="action-card workflow-card" data-reveal>
+            <figure class="action-art asset-frame">
+              <img src="assets/gallery/how-it-works-2.png" alt="Sakura responding through voice mode." />
+            </figure>
+            <div class="action-copy">
+              <h3>Talk Naturally</h3>
+              <p>Hold the hotkey, speak normally, and get a friendly spoken answer.</p>
+            </div>
+          </article>
+          <article class="action-card workflow-card" data-reveal>
+            <figure class="action-art asset-frame">
+              <img src="assets/gallery/how-it-works-3.png" alt="Sakura opening a portal beside an app window." />
+            </figure>
+            <div class="action-copy">
+              <h3>She Teleports</h3>
+              <p>Sakura opens a portal and jumps right to the part of your screen that matters.</p>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="theme-shop" id="pricing" aria-labelledby="theme-title" data-reveal>
+        <figure class="theme-character asset-frame">
+          <img src="assets/themes/sakura-theme-hero.png" alt="Sakura theme outfit preview." />
+        </figure>
+        <div class="theme-copy">
+          <p>Make It Yours</p>
+          <h2 id="theme-title">Sakura Theme <span>桜テーマ</span></h2>
+          <p>Dress your Sensei in Sakura's adorable outfits and bring more joy to your learning space.</p>
+          <a class="button button-pink" href="#">Unlock for $4.99 <small>$4.99でアンロック</small></a>
+        </div>
+        <div class="theme-thumbnails" aria-label="Sakura theme previews">
+          <figure class="asset-frame"><img src="assets/themes/sakura-theme-2.png" alt="Sakura theme preview one." /></figure>
+          <figure class="asset-frame"><img src="assets/themes/sakura-theme-1.png" alt="Sakura theme preview two." /></figure>
+          <figure class="asset-frame"><img src="assets/themes/sakura-theme-3.png" alt="Sakura theme preview three." /></figure>
+        </div>
+      </section>
+
+      <section class="manifesto-panel" id="manifesto" data-reveal>
+        <p class="section-kicker">A tiny teacher for every screen</p>
+        <h2>Learning should feel visible, friendly, and alive.</h2>
+        <p>
+          AI Sensei 3000 turns help into a character you can talk to, see, and follow. No hunting through docs,
+          no lonely blank chat box, just a companion who meets you right where the question appears.
+        </p>
+      </section>
+    </main>
+
+    <footer class="site-footer" id="support">
+      <div class="footer-brand">
+        <img src="../logo/ai-sensei-transparent.png" alt="AI Sensei 3000 logo" />
+        <p>Your on-screen AI teacher. いつでも、そばに。</p>
+      </div>
+      <nav aria-label="Product links">
+        <h2>Product <span>製品</span></h2>
+        <a href="#features">Features</a>
+        <a href="#characters">Characters</a>
+        <a href="#gallery">Gallery</a>
+        <a href="#pricing">Pricing</a>
+      </nav>
+      <nav aria-label="Company links">
+        <h2>Company <span>会社</span></h2>
+        <a href="#manifesto">Manifesto</a>
+        <a href="#support">Support</a>
+        <a href="#support">Changelog</a>
+        <a href="#support">Careers</a>
+      </nav>
+      <nav aria-label="Legal links">
+        <h2>Legal <span>法務</span></h2>
+        <a href="#support">Terms and Conditions</a>
+        <a href="#support">Privacy Policy</a>
+      </nav>
+      <form class="newsletter">
+        <h2>Stay in the loop! <span>登録!</span></h2>
+        <p>Get updates, new themes, and sweet tips.</p>
+        <label>
+          <span>Email address</span>
+          <input type="email" placeholder="Your email" />
+        </label>
+        <button type="submit">Subscribe ✦</button>
+      </form>
+    </footer>
+
+    <script src="script.js"></script>
+  </body>
+</html>

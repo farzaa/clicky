@@ -1,0 +1,28 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "cleanUrls": true,
+  "rewrites": [
+    { "source": "/", "destination": "/v3" },
+    { "source": "/privacy", "destination": "/v3/privacy" },
+    { "source": "/terms", "destination": "/v3/terms" },
+    { "source": "/changelog", "destination": "/v3/changelog" },
+    { "source": "/styles.css", "destination": "/v3/styles.css" },
+    { "source": "/script.js", "destination": "/v3/script.js" },
+    { "source": "/vrm-viewer.js", "destination": "/v3/vrm-viewer.js" }
+  ],
+  "headers": [
+    {
+      "source": "/assets/vrm/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" },
+        { "key": "Access-Control-Allow-Origin", "value": "*" }
+      ]
+    },
+    {
+      "source": "/assets/voices/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+      ]
+    }
+  ]
+}

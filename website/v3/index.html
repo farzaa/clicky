@@ -1,0 +1,583 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Sensei 3000 — Your On-Screen AI Teacher</title>
+    <meta
+      name="description"
+      content="Your desktop buddy that lives on your Mac. When you ask for help, she looks at your screen, understands what you need, and guides you. Learn anything with your AI Sensei."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=Klee+One:wght@400;600&family=M+PLUS+Rounded+1c:wght@400;500;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+          "@pixiv/three-vrm": "https://unpkg.com/@pixiv/three-vrm@2.1.2/lib/three-vrm.module.min.js",
+          "@pixiv/three-vrm-animation": "https://unpkg.com/@pixiv/three-vrm-animation@2.1.2/lib/three-vrm-animation.module.min.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to notebook</a>
+
+    <div class="paper" aria-hidden="true"></div>
+    <div class="paper-rules" aria-hidden="true"></div>
+    <div class="margin-punch" aria-hidden="true">
+      <span></span><span></span><span></span>
+    </div>
+
+    <header class="site-header">
+      <a class="brand-mark" href="#top" aria-label="AI Sensei 3000 home">
+        <img src="../logo/ai-sensei-v2-transparent.png" alt="" />
+      </a>
+
+      <nav class="primary-nav" aria-label="Primary">
+        <a href="#guidance">Guidance</a>
+        <a href="#teachers">Teachers</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+
+      <a class="cta-stamp" href="#download">
+        <span class="cta-stamp-outer">
+          <span class="cta-stamp-inner">
+            <span class="cta-stamp-label">Get it<br />無料</span>
+          </span>
+        </span>
+      </a>
+
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav-mobile">
+        Menu
+      </button>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top" aria-labelledby="hero-name">
+        <div class="hero-copy">
+          <h1 id="hero-name">
+            <span class="hero-line-1">Your On-Screen</span>
+            <span class="hero-line-2">AI <span class="hero-accent">Teacher</span></span>
+          </h1>
+          <p class="hero-kana">あなたのオンスクリーン先生</p>
+
+          <div class="hero-note">
+            <p>
+              Your desktop buddy that lives on your Mac. When you ask for help, she
+              <em>looks at your screen</em>, understands what you need, and guides you.
+            </p>
+            <p class="hero-note-sign">Learn anything with your AI Sensei.</p>
+          </div>
+
+          <div class="hero-actions" id="download">
+            <a class="button button-primary" href="#">
+              <span aria-hidden="true">⌘</span>
+              <span>Download for Mac</span>
+              <span class="button-kana" aria-hidden="true">ダウンロード</span>
+            </a>
+            <a class="button button-ghost" href="#guidance">
+              <span aria-hidden="true">▷</span>
+              Watch video
+            </a>
+          </div>
+        </div>
+
+        <figure class="hero-scene" aria-label="Sakura stepping through a portal to help you on your screen">
+          <img class="hero-scene-bg" src="../assets/backgrounds/hero-bg.png" alt="" aria-hidden="true" />
+          <img class="hero-scene-character" src="../assets/characters/hero-teacher.png" alt="Sakura, a cheerful anime teacher, pointing at your screen." />
+          <span class="hero-name-chip" aria-hidden="true">Sakura <span>✿</span> さくら</span>
+        </figure>
+      </section>
+
+      <section class="moments" id="guidance" aria-labelledby="moments-title">
+        <header class="section-header">
+          <p class="section-tag"><span aria-hidden="true">✿</span> On-screen guidance</p>
+          <h2 id="moments-title">What she does, <em>exactly</em>.</h2>
+          <p class="section-sub">Ask. See. Learn. — 見て、聞いて、わかる。</p>
+        </header>
+
+        <article class="moment moment-point">
+          <div class="moment-index" aria-hidden="true">
+            <span class="moment-index-no">壹</span>
+            <span class="moment-index-latin">One</span>
+          </div>
+          <figure class="moment-figure">
+            <span class="washi washi-left" aria-hidden="true"></span>
+            <img src="../assets/gallery/how-it-works-1.png" alt="Sakura hovering next to an on-screen window with a glowing ring around a button she is pointing at." />
+          </figure>
+          <div class="moment-copy">
+            <h3>She <span>points</span> exactly where you need.</h3>
+            <p class="moment-kana">ポインティング</p>
+            <p>
+              Ask a question about whatever's on your screen and she draws a little circle around
+              the exact thing you meant. No coordinates, no &quot;the third button from the right.&quot;
+            </p>
+            <p class="moment-scribble">
+              <span aria-hidden="true">↳</span>
+              works across every monitor you own.
+            </p>
+          </div>
+        </article>
+
+        <article class="moment moment-voice moment-reverse">
+          <div class="moment-index" aria-hidden="true">
+            <span class="moment-index-no">貳</span>
+            <span class="moment-index-latin">Two</span>
+          </div>
+          <figure class="moment-figure">
+            <span class="washi washi-right" aria-hidden="true"></span>
+            <img src="../assets/gallery/how-it-works-2.png" alt="Sakura smiling with a voice waveform speech bubble, a microphone icon glowing below her." />
+          </figure>
+          <div class="moment-copy">
+            <h3>You <span>talk</span>, she listens.</h3>
+            <p class="moment-kana">お話しモード</p>
+            <p>
+              Hold <kbd>⌃</kbd> + <kbd>⌥</kbd>, say anything in plain voice, let go. She hears you,
+              thinks for a beat, and replies out loud like a friend who's right there.
+            </p>
+            <p class="moment-scribble">
+              <span aria-hidden="true">↳</span>
+              no wake word, no &quot;hey&nbsp;siri.&quot;
+            </p>
+          </div>
+        </article>
+
+        <article class="moment moment-portal">
+          <div class="moment-index" aria-hidden="true">
+            <span class="moment-index-no">参</span>
+            <span class="moment-index-latin">Three</span>
+          </div>
+          <figure class="moment-figure">
+            <span class="washi washi-left" aria-hidden="true"></span>
+            <img src="../assets/gallery/how-it-works-3.png" alt="Sakura stepping out of a glowing pink portal beside a browser window, pointing at a menu option." />
+          </figure>
+          <div class="moment-copy">
+            <h3>Works in <span>every</span> app.</h3>
+            <p class="moment-kana">ユニバーサル対応</p>
+            <p>
+              Excel, Figma, a browser, your bank portal, some weird tool you've never opened
+              before — if it's on your screen, she can guide you through it. No integrations,
+              no plugins, nothing to set up.
+            </p>
+            <p class="moment-scribble">
+              <span aria-hidden="true">↳</span>
+              any app, any website, any time.
+            </p>
+          </div>
+        </article>
+      </section>
+
+      <section class="class-roster" id="teachers" aria-labelledby="class-title">
+        <header class="section-header section-header-left">
+          <p class="section-tag"><span aria-hidden="true">✿</span> Your senseis</p>
+          <h2 id="class-title">Meet the <em>teachers</em>.</h2>
+          <p class="section-sub">Five Senseis. Pick the one whose vibe matches your study mood today.</p>
+        </header>
+
+        <div class="roster-grid">
+          <article class="roster-card roster-sakura">
+            <figure class="roster-figure">
+              <img src="../assets/characters/sakura-card.png" alt="Sakura, a cheerful pink-themed anime teacher." />
+            </figure>
+            <div class="roster-copy">
+              <p class="roster-kana">さくら</p>
+              <h3>Sakura</h3>
+              <p class="roster-blurb">Bright, energetic, cheerleader energy. Makes every study session feel like a festival.</p>
+              <ul class="roster-traits">
+                <li>Cheerful</li>
+                <li>Energetic</li>
+                <li>Sparkly</li>
+              </ul>
+              <p class="roster-pin" aria-hidden="true">featured ♡</p>
+            </div>
+            <aside class="sakura-extras" aria-label="What Sakura is great at">
+              <div class="sakura-quote">
+                <p>
+                  Hi hi! ♡ Show me what you're stuck on and we'll <em>figure it out together</em> — one little step at a time ✿
+                </p>
+                <p class="sakura-quote-sign">— Sakura · 一緒にがんばろう!</p>
+              </div>
+
+              <div class="sakura-skills">
+                <p class="sakura-skills-head">She's pretty good at,</p>
+                <ul class="sakura-skill-cloud">
+                  <li>excel formulas</li>
+                  <li>essay drafts</li>
+                  <li>figma layouts</li>
+                  <li>tax forms</li>
+                  <li>code review</li>
+                  <li>bank portals</li>
+                  <li>recipe scaling</li>
+                  <li>chord diagrams</li>
+                  <li>lyric translation</li>
+                </ul>
+              </div>
+            </aside>
+            <button
+              class="say-hi-button"
+              type="button"
+              data-voice="../assets/voices/teacher_sakura_intro.mp3"
+              data-vrm="../assets/vrm/sakura.vrm"
+              data-character="Sakura"
+              aria-label="Say hi to Sakura"
+            >
+              <span class="say-hi-icon" aria-hidden="true">✿</span>
+              <span class="say-hi-label">Say hi</span>
+            </button>
+          </article>
+
+          <article class="roster-card roster-jade">
+            <figure class="roster-figure">
+              <img src="../assets/characters/jade-card.png" alt="Jade, a calm green-themed anime teacher." />
+            </figure>
+            <div class="roster-copy">
+              <p class="roster-kana">ジェイド</p>
+              <h3>Jade</h3>
+              <p class="roster-blurb">Calm, composed, endlessly patient. Stays with you through the long focused stretches.</p>
+              <ul class="roster-traits">
+                <li>Calm</li>
+                <li>Elegant</li>
+              </ul>
+            </div>
+            <button
+              class="say-hi-button"
+              type="button"
+              data-voice="../assets/voices/teacher_jade_intro.mp3"
+              data-vrm="../assets/vrm/jade.vrm"
+              data-character="Jade"
+              aria-label="Say hi to Jade"
+            >
+              <span class="say-hi-icon" aria-hidden="true">✿</span>
+              <span class="say-hi-label">Say hi</span>
+            </button>
+          </article>
+
+          <article class="roster-card roster-scooter">
+            <figure class="roster-figure">
+              <img src="../assets/characters/scooter-card.png" alt="Scooter, a warm yellow-themed anime teacher." />
+            </figure>
+            <div class="roster-copy">
+              <p class="roster-kana">スクーター</p>
+              <h3>Scooter</h3>
+              <p class="roster-blurb">Low-key and friendly. Takes the pressure off when things are getting heavy.</p>
+              <ul class="roster-traits">
+                <li>Relaxed</li>
+                <li>Supportive</li>
+              </ul>
+            </div>
+            <button
+              class="say-hi-button"
+              type="button"
+              data-voice="../assets/voices/teacher_scooter_intro.mp3"
+              data-vrm="../assets/vrm/scooter.vrm"
+              data-character="Scooter"
+              data-male="true"
+              aria-label="Say hi to Scooter"
+            >
+              <span class="say-hi-icon" aria-hidden="true">✿</span>
+              <span class="say-hi-label">Say hi</span>
+            </button>
+          </article>
+
+          <article class="roster-card roster-akane">
+            <figure class="roster-figure">
+              <img src="../assets/characters/teacher-card.png" alt="Akane, a warm red-themed anime teacher." />
+            </figure>
+            <div class="roster-copy">
+              <p class="roster-kana">あかね</p>
+              <h3>Akane</h3>
+              <p class="roster-blurb">Professional, precise, knows her stuff. For the &quot;let's just get this right&quot; days.</p>
+              <ul class="roster-traits">
+                <li>Smart</li>
+                <li>Precise</li>
+              </ul>
+            </div>
+            <button
+              class="say-hi-button"
+              type="button"
+              data-voice="../assets/voices/teacher_akane_intro.mp3"
+              data-vrm="../assets/vrm/akane.vrm"
+              data-character="Akane"
+              aria-label="Say hi to Akane"
+            >
+              <span class="say-hi-icon" aria-hidden="true">✿</span>
+              <span class="say-hi-label">Say hi</span>
+            </button>
+          </article>
+
+          <article class="roster-card roster-oliver">
+            <figure class="roster-figure">
+              <img src="../assets/characters/oliver-card.png" alt="Oliver, a focused blue-themed anime teacher." />
+            </figure>
+            <div class="roster-copy">
+              <p class="roster-kana">オリバー</p>
+              <h3>Oliver</h3>
+              <p class="roster-blurb">Clear, steady, practical. Great when you want direct guidance without the sparkle.</p>
+              <ul class="roster-traits">
+                <li>Focused</li>
+                <li>Steady</li>
+              </ul>
+            </div>
+            <button
+              class="say-hi-button"
+              type="button"
+              data-voice="../assets/voices/teacher_oliver_intro.mp3"
+              data-vrm="../assets/vrm/oliver.vrm"
+              data-character="Oliver"
+              data-male="true"
+              aria-label="Say hi to Oliver"
+            >
+              <span class="say-hi-icon" aria-hidden="true">✿</span>
+              <span class="say-hi-label">Say hi</span>
+            </button>
+          </article>
+        </div>
+      </section>
+
+      <section class="pricing" id="pricing" aria-labelledby="pricing-title">
+        <header class="section-header">
+          <p class="section-tag"><span aria-hidden="true">✿</span> Pay as you learn</p>
+          <h2 id="pricing-title">Start <em>free</em>. Top up when you need to.</h2>
+          <p class="section-sub">No subscription. 1 credit = 1 guidance turn.</p>
+        </header>
+
+        <div class="pricing-grid">
+          <article class="price-card price-card-free">
+            <p class="price-kicker">Try it</p>
+            <p class="price-amount">15<span>questions</span></p>
+            <p class="price-label">Free</p>
+            <p class="price-note">On the house. Enough to see if Sensei clicks with you.</p>
+          </article>
+
+          <article class="price-card">
+            <p class="price-kicker">Starter</p>
+            <p class="price-amount">50<span>questions</span></p>
+            <p class="price-label">$5</p>
+            <p class="price-note">A busy week of help, give or take.</p>
+          </article>
+
+          <article class="price-card price-card-featured">
+            <p class="price-pin" aria-hidden="true">most popular</p>
+            <p class="price-kicker">Regular</p>
+            <p class="price-amount">120<span>questions</span></p>
+            <p class="price-label">$10</p>
+            <p class="price-note">A full month for most folks. The everyday pack.</p>
+          </article>
+
+          <article class="price-card">
+            <p class="price-kicker">Power</p>
+            <p class="price-amount">260<span>questions</span></p>
+            <p class="price-label">$20</p>
+            <p class="price-note">For the heavy study weeks. Months for the casual.</p>
+          </article>
+        </div>
+
+        <p class="pricing-footnote">
+          <span aria-hidden="true">✿</span>
+          Plus: 2 senseis free at launch. Additional senseis are one-time $4.99 unlocks — never a subscription.
+        </p>
+      </section>
+
+      <section class="shop" id="shop" aria-labelledby="shop-title">
+        <figure class="shop-banner">
+          <img src="../assets/themes/sakura-theme-hero.png" alt="Sakura in her signature outfit." />
+          <figcaption aria-hidden="true">Sakura <span>✿</span> さくら</figcaption>
+        </figure>
+
+        <div class="shop-copy">
+          <p class="section-tag"><span aria-hidden="true">✿</span> Featured Theme</p>
+          <h2 id="shop-title">Get <em>Sakura</em> Theme.</h2>
+          <p class="shop-kana">先生たちをあつめよう</p>
+          <p>
+            Jade and Scooter are included free at launch. The rest are one-time unlocks — yours
+            forever. Match the vibe to the day.
+          </p>
+          <a class="button button-rose" href="#">
+            <span>Unlock Sakura · $4.99</span>
+            <span class="button-kana" aria-hidden="true">一度だけ</span>
+          </a>
+          <div class="shop-thumbs" aria-label="Other purchasable senseis">
+            <figure class="shop-thumb">
+              <img src="../assets/characters/teacher-card.png" alt="" />
+              <figcaption>Akane <span>$4.99</span></figcaption>
+            </figure>
+            <figure class="shop-thumb">
+              <img src="../assets/characters/oliver-card.png" alt="" />
+              <figcaption>Oliver <span>$4.99</span></figcaption>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <section class="faq" id="faq" aria-labelledby="faq-title">
+        <header class="section-header section-header-left">
+          <p class="section-tag"><span aria-hidden="true">✿</span> Common questions</p>
+          <h2 id="faq-title">Asked a lot. <em>Answered once.</em></h2>
+        </header>
+
+        <div class="faq-grid">
+          <details class="faq-item">
+            <summary>
+              <span>How does Sensei actually see my screen?</span>
+              <span class="faq-chevron" aria-hidden="true">+</span>
+            </summary>
+            <p>
+              When you hold <kbd>⌃</kbd> + <kbd>⌥</kbd> and ask a question, she takes a single screenshot
+              of whatever's on screen right then. That snapshot goes along with your question so she
+              has context — it isn't recorded, saved, or sent anywhere else. It lives only for the moment
+              she answers, then disappears.
+            </p>
+          </details>
+
+          <details class="faq-item">
+            <summary>
+              <span>Does it work with every app?</span>
+              <span class="faq-chevron" aria-hidden="true">+</span>
+            </summary>
+            <p>
+              Yes. Sensei works at the screen layer, not the app layer, so there's nothing to integrate.
+              Browser tab, Excel, Figma, that weird internal tool nobody documented — if you can see it,
+              she can guide you through it.
+            </p>
+          </details>
+
+          <details class="faq-item">
+            <summary>
+              <span>What's a credit?</span>
+              <span class="faq-chevron" aria-hidden="true">+</span>
+            </summary>
+            <p>
+              One credit = one guidance turn. You ask, she answers (and points, or teleports, or both).
+              New accounts start with 15 free credits. After that, top up whenever — packs start at $5,
+              and credits never expire.
+            </p>
+          </details>
+
+          <details class="faq-item">
+            <summary>
+              <span>Do I need a subscription?</span>
+              <span class="faq-chevron" aria-hidden="true">+</span>
+            </summary>
+            <p>
+              Nope. Everything is pay-as-you-go at launch. Buy credits when you're running low, unlock
+              extra senseis when you want them, that's it.
+            </p>
+          </details>
+
+          <details class="faq-item">
+            <summary>
+              <span>Which Macs does it run on?</span>
+              <span class="faq-chevron" aria-hidden="true">+</span>
+            </summary>
+            <p>
+              macOS 14.2 or newer, Apple Silicon or Intel. Sensei lives in your menu bar, never the dock —
+              she's asleep until you hold the hotkey.
+            </p>
+          </details>
+
+          <details class="faq-item">
+            <summary>
+              <span>What data is stored?</span>
+              <span class="faq-chevron" aria-hidden="true">+</span>
+            </summary>
+            <p>
+              The bare minimum. Your question and the one-off screenshot go to the AI only to produce an
+              answer; nothing about your screen is retained after the reply. No training, no logging,
+              no background capture.
+            </p>
+          </details>
+        </div>
+      </section>
+
+      <section class="manifesto" aria-labelledby="manifesto-title">
+        <div class="letter">
+          <h2 id="manifesto-title">
+            Learning shouldn't feel<br />
+            <em>lonely</em>.
+          </h2>
+          <p>
+            Most tools drop you into an empty chat box and wish you luck. We wanted something that
+            sits beside you, points at the thing you were squinting at, and sounds like someone
+            actually rooting for you.
+          </p>
+          <p>
+            So here she is. A tiny teacher who lives on your screen and actually shows up. Invite
+            her in. Ask her anything. She'll be there tomorrow too.
+          </p>
+          <p class="letter-sign">よろしくね ✿</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer" id="support">
+      <div class="footer-board">
+        <a class="footer-brand" href="#top">
+          <img src="../logo/ai-sensei-v2-transparent.png" alt="AI Sensei 3000" />
+        </a>
+
+        <div class="footer-columns">
+          <section>
+            <h2>The App <span>アプリ</span></h2>
+            <a href="#download">Download</a>
+            <a href="#guidance">Guidance</a>
+            <a href="#teachers">Teachers</a>
+            <a href="#pricing">Pricing</a>
+          </section>
+          <section>
+            <h2>The Maker <span>制作</span></h2>
+            <a href="https://x.com/atareh">@atareh on X</a>
+            <a href="https://instagram.com/atareh">@atareh on Instagram</a>
+            <a href="changelog.html">Changelog</a>
+          </section>
+          <section>
+            <h2>Fine Print <span>注記</span></h2>
+            <a href="privacy.html">Privacy</a>
+            <a href="terms.html">Terms</a>
+            <a href="mailto:help@atareh.xyz">Support</a>
+          </section>
+          <form class="footer-sub">
+            <h2>Pen pals <span>お便り</span></h2>
+            <p>One letter a month when a new sensei drops.</p>
+            <label>
+              <span>Your email</span>
+              <input type="email" placeholder="you@mail.com" />
+            </label>
+            <button type="submit">Subscribe <span aria-hidden="true">✉</span></button>
+          </form>
+        </div>
+      </div>
+      <p class="footer-tag">
+        <span aria-hidden="true">✿</span>
+        Made by <a href="https://x.com/atareh">@atareh</a>. いつでも、そばに。
+      </p>
+    </footer>
+
+    <aside class="vrm-viewer" data-state="closed" aria-hidden="true">
+      <header class="vrm-viewer-head">
+        <span class="vrm-viewer-name" data-vrm-name>Sakura</span>
+        <button class="vrm-viewer-close" type="button" aria-label="Close viewer" data-vrm-close>×</button>
+      </header>
+      <div class="vrm-viewer-stage" data-vrm-stage>
+        <div class="vrm-loader" data-vrm-loader>
+          <span class="vrm-loader-spinner" aria-hidden="true">✿</span>
+          <span class="vrm-loader-label">Saying hi…</span>
+        </div>
+      </div>
+      <p class="vrm-viewer-foot" data-vrm-foot>
+        <span aria-hidden="true">♡</span>
+        <span data-vrm-status>Loading model…</span>
+      </p>
+    </aside>
+
+    <script src="script.js"></script>
+    <script type="module" src="vrm-viewer.js"></script>
+  </body>
+</html>
