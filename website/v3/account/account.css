@@ -1,0 +1,313 @@
+/* ─────────────────────────────────────────────────────────────────
+   Account / receipt pages
+   Shared styles for /account, /account/success, /account/billing.
+
+   The "receipt" is a single cream washi-paper card centered on the
+   page. Visual gestures are the same family as the rest of the site:
+   a hanko stamp, a kana sub-label, the active sensei's portrait
+   captioned in handwriting, and a primary deep-jade pill button.
+   ───────────────────────────────────────────────────────────────── */
+
+.account-body main {
+  /* Hide the default subpage left margin punch — the receipt is
+     centered, the dashboard-style margin holes don't fit the layout. */
+  padding-bottom: 0;
+}
+
+.account-main {
+  display: flex;
+  justify-content: center;
+  padding: clamp(48px, 8vw, 96px) clamp(20px, 5vw, 60px) 80px;
+}
+
+.receipt {
+  position: relative;
+  width: min(560px, 100%);
+  padding: clamp(36px, 6vw, 56px) clamp(28px, 5vw, 56px) clamp(28px, 4vw, 44px);
+  text-align: center;
+  background: oklch(98% 0.018 80);
+  border: 1.5px solid oklch(86% 0.025 80);
+  border-radius: 16px;
+  box-shadow:
+    0 3px 0 oklch(78% 0.04 80),
+    0 32px 64px oklch(40% 0.13 350 / 0.18);
+}
+
+/* A softer variant used for non-celebratory pages (cancelled, account
+   index). Same layout, lighter shadow, no stamp. */
+.receipt-soft {
+  box-shadow:
+    0 3px 0 oklch(78% 0.04 80),
+    0 18px 40px oklch(40% 0.13 350 / 0.10);
+}
+
+/* ─── Hanko stamp ─── */
+.receipt-stamp {
+  position: absolute;
+  top: -22px;
+  right: clamp(16px, 6vw, 36px);
+  display: grid;
+  place-items: center;
+  width: 84px;
+  height: 84px;
+  background: radial-gradient(
+    circle at 32% 28%,
+    oklch(58% 0.18 25) 0%,
+    oklch(48% 0.18 22) 65%,
+    oklch(40% 0.16 22) 100%
+  );
+  border: 2.5px solid oklch(38% 0.16 22);
+  border-radius: 999px;
+  transform: rotate(-8deg);
+  box-shadow:
+    0 4px 0 oklch(28% 0.10 22 / 0.45),
+    0 12px 24px oklch(40% 0.18 22 / 0.35);
+  /* The faint "wear" you get from a real rubber stamp — a couple of
+     soft inset highlights so the disc doesn't read as a flat decal. */
+  background-blend-mode: normal;
+}
+
+.receipt-stamp::after {
+  position: absolute;
+  inset: 6px;
+  content: "";
+  border: 1.5px dashed oklch(96% 0.04 80 / 0.55);
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.receipt-stamp-inner {
+  display: grid;
+  gap: 1px;
+  text-align: center;
+  font-family: var(--display);
+  font-weight: 800;
+  color: oklch(96% 0.04 80);
+  text-shadow: 0 1px 0 oklch(28% 0.10 22 / 0.55);
+}
+
+.receipt-stamp-line {
+  font-size: 22px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+
+.receipt-stamp-line.receipt-stamp-en {
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  opacity: 0.92;
+}
+
+/* ─── Eyebrow ─── */
+.receipt-eyebrow {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  margin: 0 0 var(--space-md);
+  padding: 4px 12px;
+  font-family: var(--display);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--pink-deep);
+  background: oklch(98% 0.025 350);
+  border: 1px solid oklch(86% 0.04 350);
+  border-radius: 999px;
+}
+
+.receipt-eyebrow span:first-child {
+  color: var(--pink);
+}
+
+/* ─── Headline + kana ─── */
+.receipt-headline {
+  margin: 0 0 8px;
+  font-family: var(--display);
+  font-size: clamp(28px, 4vw, 38px);
+  font-weight: 800;
+  line-height: 1.1;
+  color: oklch(20% 0.02 320);
+  letter-spacing: -0.01em;
+}
+
+.receipt-kana {
+  margin: 0 0 var(--space-lg);
+  font-family: var(--hand);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--pink-deep);
+  opacity: 0.78;
+}
+
+/* ─── Sensei portrait ─── */
+.receipt-portrait {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  margin: 0 0 var(--space-lg);
+}
+
+.receipt-portrait img {
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  background: oklch(96% 0.04 350);
+  border: 3px solid var(--receipt-accent, oklch(56% 0.16 165));
+  border-radius: 999px;
+  box-shadow: 0 6px 18px oklch(45% 0.16 165 / 0.28);
+}
+
+.receipt-portrait figcaption {
+  font-family: var(--hand);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--receipt-accent-deep, oklch(38% 0.14 165));
+}
+
+.receipt-portrait figcaption span {
+  color: var(--receipt-accent, oklch(56% 0.16 165));
+}
+
+/* ─── Body copy ─── */
+.receipt-body {
+  max-width: 44ch;
+  margin: 0 auto var(--space-xl);
+  font-family: var(--body);
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.55;
+  color: oklch(28% 0.015 320);
+}
+
+.receipt-body p + p {
+  margin-top: 12px;
+}
+
+.receipt-body em {
+  font-style: normal;
+  font-weight: 700;
+  color: var(--receipt-accent-deep, oklch(38% 0.14 165));
+}
+
+/* ─── CTAs ─── */
+.receipt-cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  justify-content: center;
+  margin: 0 0 var(--space-xl);
+}
+
+.receipt-cta {
+  display: inline-flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 14px 22px;
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  text-decoration: none;
+  border-radius: 999px;
+  transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.receipt-cta-primary {
+  color: oklch(96% 0.03 80);
+  background: var(--receipt-accent, oklch(48% 0.14 165));
+  box-shadow: 0 3px 0 var(--receipt-accent-deep, oklch(38% 0.14 165));
+}
+
+.receipt-cta-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 5px 0 var(--receipt-accent-deep, oklch(38% 0.14 165));
+}
+
+.receipt-cta-primary:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 var(--receipt-accent-deep, oklch(38% 0.14 165));
+}
+
+.receipt-cta-kana {
+  font-family: var(--hand);
+  font-size: 13px;
+  font-weight: 600;
+  color: oklch(96% 0.04 80 / 0.78);
+}
+
+.receipt-cta-ghost {
+  color: oklch(36% 0.02 320);
+  background: transparent;
+  border: 1px dashed oklch(78% 0.03 320);
+}
+
+.receipt-cta-ghost:hover {
+  color: var(--receipt-accent-deep, oklch(38% 0.14 165));
+  border-color: var(--receipt-accent, oklch(56% 0.16 165));
+}
+
+/* ─── Footnote ─── */
+.receipt-footnote {
+  max-width: 42ch;
+  margin: 0 auto;
+  font-family: var(--body);
+  font-size: 13px;
+  line-height: 1.5;
+  color: oklch(50% 0.015 320);
+}
+
+.receipt-footnote a {
+  color: var(--receipt-accent-deep, oklch(38% 0.14 165));
+  text-decoration: underline;
+  text-decoration-color: oklch(78% 0.10 165 / 0.6);
+  text-underline-offset: 3px;
+}
+
+.receipt-footnote a:hover {
+  text-decoration-color: var(--receipt-accent, oklch(56% 0.16 165));
+}
+
+/* ─── Theme accents (set by JS via --receipt-accent / --receipt-accent-deep) ─── */
+.receipt[data-theme="jade"] {
+  --receipt-accent: oklch(58% 0.13 165);
+  --receipt-accent-deep: oklch(40% 0.10 165);
+}
+
+.receipt[data-theme="sakura"] {
+  --receipt-accent: oklch(70% 0.14 350);
+  --receipt-accent-deep: oklch(48% 0.16 350);
+}
+
+.receipt[data-theme="akane"] {
+  --receipt-accent: oklch(56% 0.18 25);
+  --receipt-accent-deep: oklch(38% 0.16 25);
+}
+
+.receipt[data-theme="oliver"] {
+  --receipt-accent: oklch(72% 0.16 115);
+  --receipt-accent-deep: oklch(48% 0.14 115);
+}
+
+.receipt[data-theme="scooter"] {
+  --receipt-accent: oklch(78% 0.16 90);
+  --receipt-accent-deep: oklch(50% 0.14 80);
+}
+
+@media (max-width: 540px) {
+  .receipt-stamp {
+    top: -20px;
+    right: 12px;
+    width: 72px;
+    height: 72px;
+  }
+  .receipt-stamp-line {
+    font-size: 18px;
+  }
+  .receipt-cta {
+    width: 100%;
+    justify-content: center;
+  }
+}

@@ -6,6 +6,11 @@
     { "source": "/privacy", "destination": "/v3/privacy" },
     { "source": "/terms", "destination": "/v3/terms" },
     { "source": "/changelog", "destination": "/v3/changelog" },
+    { "source": "/account", "destination": "/v3/account/index.html" },
+    { "source": "/account/success", "destination": "/v3/account/success.html" },
+    { "source": "/account/billing", "destination": "/v3/account/billing.html" },
+    { "source": "/account/account.css", "destination": "/v3/account/account.css" },
+    { "source": "/account/account.js", "destination": "/v3/account/account.js" },
     { "source": "/styles.css", "destination": "/v3/styles.css" },
     { "source": "/script.js", "destination": "/v3/script.js" },
     { "source": "/vrm-viewer.js", "destination": "/v3/vrm-viewer.js" }
