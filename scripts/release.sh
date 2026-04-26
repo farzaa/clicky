@@ -33,7 +33,7 @@ export PATH="/opt/homebrew/bin:$PATH"
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-SCHEME="leanring-buddy"
+SCHEME="yardtalk"
 APP_NAME="makesomething"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${PROJECT_DIR}/build"
@@ -46,7 +46,7 @@ DMG_BACKGROUND="${PROJECT_DIR}/dmg-background.png"
 GITHUB_REPO="julianjear/makesomething-mac-app"
 
 # Sparkle tools (auto-discovered from Xcode's SPM cache)
-SPARKLE_BIN=$(find ~/Library/Developer/Xcode/DerivedData/leanring-buddy*/SourcePackages/artifacts/sparkle/Sparkle/bin -maxdepth 0 2>/dev/null | head -1)
+SPARKLE_BIN=$(find ~/Library/Developer/Xcode/DerivedData/yardtalk*/SourcePackages/artifacts/sparkle/Sparkle/bin -maxdepth 0 2>/dev/null | head -1)
 
 if [ -z "$SPARKLE_BIN" ]; then
     echo "❌ Sparkle tools not found. Build the project in Xcode first so SPM downloads Sparkle."

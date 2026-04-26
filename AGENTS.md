@@ -65,7 +65,6 @@ Pen-test report template is deferred — highest-stakes and most privacy-sensiti
 - All UI state on `@MainActor`; async/await throughout
 - Clear names over clever names — `originalQuestionLastAnsweredDate` over `originalAnswered`
 - Comments explain *why*, not *what*
-- Do not rename the `leanring-buddy` directory or scheme until the dedicated Xcode rebrand pass — piecemeal renames will break the project file. See [`REBRAND-TODO.md`](REBRAND-TODO.md).
 - Do not run `xcodebuild` from the terminal — it invalidates TCC (Screen Recording, Accessibility, Microphone) permissions
 
 ## Upstream
@@ -75,8 +74,6 @@ Clicky remains at `upstream` for future cherry-picks (e.g., useful bug fixes to 
 ## Build
 
 ```bash
-open leanring-buddy.xcodeproj
+open yardtalk.xcodeproj
 # Select scheme, set signing team, ⌘R
 ```
-
-The project directory and scheme names retain Clicky's legacy `leanring-buddy` until the rebrand pass in Xcode. Do not attempt to rename them from the command line.
