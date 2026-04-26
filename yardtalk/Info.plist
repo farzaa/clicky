@@ -4,6 +4,17 @@
 <dict>
 	<key>LSUIElement</key>
 	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.yardtalk.app</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>yardtalk</string>
+			</array>
+		</dict>
+	</array>
 	<key>SUFeedURL</key>
 	<string>https://raw.githubusercontent.com/julianjear/makesomething-mac-app/main/appcast.xml</string>
 	<key>SUPublicEDKey</key>

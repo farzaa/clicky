@@ -1,5 +1,5 @@
 //
-//  ClickyAnalytics.swift
+//  Analytics.swift
 //  yardtalk
 //
 //  Analytics stubs — PostHog removed during YardTalk rebrand.
@@ -8,7 +8,7 @@
 
 import Foundation
 
-enum ClickyAnalytics {
+enum Analytics {
 
     static func configure() {}
 

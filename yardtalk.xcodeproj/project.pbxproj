@@ -16,37 +16,37 @@
 			containerPortal = 28F22CB72F56440300A0FC59 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 28F22CBE2F56440300A0FC59;
-			remoteInfo = "yardtalk";
+			remoteInfo = yardtalk;
 		};
 		28F22CD72F56440300A0FC59 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 28F22CB72F56440300A0FC59 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 28F22CBE2F56440300A0FC59;
-			remoteInfo = "yardtalk";
+			remoteInfo = yardtalk;
 		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		28F22CBF2F56440300A0FC59 /* YardTalk.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = YardTalk.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		28F22CCC2F56440300A0FC59 /* yardtalkTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "yardtalkTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
-		28F22CD62F56440300A0FC59 /* yardtalkUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "yardtalkUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		28F22CCC2F56440300A0FC59 /* yardtalkTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = yardtalkTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		28F22CD62F56440300A0FC59 /* yardtalkUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = yardtalkUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		28F22CC12F56440300A0FC59 /* yardtalk */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "yardtalk";
+			path = yardtalk;
 			sourceTree = "<group>";
 		};
 		28F22CCF2F56440300A0FC59 /* yardtalkTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "yardtalkTests";
+			path = yardtalkTests;
 			sourceTree = "<group>";
 		};
 		28F22CD92F56440300A0FC59 /* yardtalkUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "yardtalkUITests";
+			path = yardtalkUITests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -115,11 +115,11 @@
 			fileSystemSynchronizedGroups = (
 				28F22CC12F56440300A0FC59 /* yardtalk */,
 			);
-			name = "yardtalk";
+			name = yardtalk;
 			packageProductDependencies = (
 				AA00BB022F6500020039DA55 /* Sparkle */,
 			);
-			productName = "yardtalk";
+			productName = yardtalk;
 			productReference = 28F22CBF2F56440300A0FC59 /* YardTalk.app */;
 			productType = "com.apple.product-type.application";
 		};
@@ -139,10 +139,10 @@
 			fileSystemSynchronizedGroups = (
 				28F22CCF2F56440300A0FC59 /* yardtalkTests */,
 			);
-			name = "yardtalkTests";
+			name = yardtalkTests;
 			packageProductDependencies = (
 			);
-			productName = "yardtalkTests";
+			productName = yardtalkTests;
 			productReference = 28F22CCC2F56440300A0FC59 /* yardtalkTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
@@ -162,10 +162,10 @@
 			fileSystemSynchronizedGroups = (
 				28F22CD92F56440300A0FC59 /* yardtalkUITests */,
 			);
-			name = "yardtalkUITests";
+			name = yardtalkUITests;
 			packageProductDependencies = (
 			);
-			productName = "yardtalkUITests";
+			productName = yardtalkUITests;
 			productReference = 28F22CD62F56440300A0FC59 /* yardtalkUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
@@ -403,7 +403,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = "yardtalk/yardtalk.entitlements";
+				CODE_SIGN_ENTITLEMENTS = yardtalk/yardtalk.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -414,7 +414,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "yardtalk/Info.plist";
+				INFOPLIST_FILE = yardtalk/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = YardTalk;
 				INFOPLIST_KEY_CFBundleName = YardTalk;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -441,7 +441,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = "yardtalk/yardtalk.entitlements";
+				CODE_SIGN_ENTITLEMENTS = yardtalk/yardtalk.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -452,7 +452,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "yardtalk/Info.plist";
+				INFOPLIST_FILE = yardtalk/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = YardTalk;
 				INFOPLIST_KEY_CFBundleName = YardTalk;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -531,7 +531,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_TARGET_NAME = "yardtalk";
+				TEST_TARGET_NAME = yardtalk;
 			};
 			name = Debug;
 		};
@@ -550,7 +550,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_TARGET_NAME = "yardtalk";
+				TEST_TARGET_NAME = yardtalk;
 			};
 			name = Release;
 		};
