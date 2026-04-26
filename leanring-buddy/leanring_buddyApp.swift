@@ -34,8 +34,8 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var sparkleUpdaterController: SPUStandardUpdaterController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        print("🎯 Clicky: Starting...")
-        print("🎯 Clicky: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
+        print("🎯 YardTalk: Starting...")
+        print("🎯 YardTalk: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
 
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
 
@@ -65,9 +65,9 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         if loginItemService.status != .enabled {
             do {
                 try loginItemService.register()
-                print("🎯 Clicky: Registered as login item")
+                print("🎯 YardTalk: Registered as login item")
             } catch {
-                print("⚠️ Clicky: Failed to register as login item: \(error)")
+                print("⚠️ YardTalk: Failed to register as login item: \(error)")
             }
         }
     }
@@ -83,7 +83,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         do {
             try updaterController.updater.start()
         } catch {
-            print("⚠️ Clicky: Sparkle updater failed to start: \(error)")
+            print("⚠️ YardTalk: Sparkle updater failed to start: \(error)")
         }
     }
 }

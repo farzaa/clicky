@@ -6,29 +6,33 @@ Tasks to complete the Clicky → YardTalk transition. Xcode-side tasks must be d
 
 - [ ] Rename `leanring-buddy` directory and scheme → `yardtalk` (File → Rename; Xcode updates project references)
 - [ ] Rename targets: `leanring-buddy` → `yardtalk`, `leanring-buddyTests` → `yardtalkTests`, `leanring-buddyUITests` → `yardtalkUITests`
-- [ ] Set `CFBundleName` and `CFBundleDisplayName` → `YardTalk`
+- [ ] Set `CFBundleName` and `CFBundleDisplayName` → `YardTalk` (currently still `Clicky` in `.pbxproj` build settings)
+- [ ] Set `PRODUCT_NAME` → `YardTalk` (currently still `Clicky` in `.pbxproj`)
+- [ ] Update `INFOPLIST_KEY_NSScreenCaptureUsageDescription` in build settings (`.pbxproj` still says "Clicky needs…" and overrides `Info.plist`)
 - [ ] Set `CFBundleIdentifier` (e.g. `com.yardtalk.app`). The Python YardTalk does not set a bundle ID in its `setup.py`, so no collision risk on this machine.
 - [ ] Register `yardtalk://` URL scheme in `CFBundleURLTypes` (used for NU signed deep-links later)
+- [ ] Remove PostHog SPM package from the project (code is already stubbed out, but the package reference remains in `.pbxproj`)
 - [ ] Replace app icon in `Assets.xcassets` (temporary placeholder is fine)
 - [ ] Set signing team under Signing & Capabilities
-- [ ] Update `appcast.xml` once Sparkle updates are wired
+- [ ] Rename `ClickyAnalytics.swift` → `Analytics.swift` (or remove entirely) and update the enum name + all call sites
+- [ ] Update `appcast.xml` / `SUFeedURL` once Sparkle updates are wired (currently points to `makesomething-mac-app`)
 
 ## Command-line safe
 
-- [ ] Grep for `clicky`, `Clicky`, `CLICKY`, `farzaa`, `farzatv` across the codebase; update user-facing strings; leave attribution in README/LICENSE intact
-- [ ] Decide fate of `ClickyAnalytics.swift` — port to your own analytics or stub out
-- [ ] Remove PostHog dependency if analytics is out of scope for v1
+- [x] Grep for `clicky`, `Clicky`, `CLICKY`, `farzaa`, `farzatv` across the codebase; update user-facing strings; leave attribution in README/LICENSE intact
+- [x] Decide fate of `ClickyAnalytics.swift` — stubbed out (all no-ops, PostHog removed)
+- [x] Remove PostHog dependency if analytics is out of scope for v1 — code removed; SPM package ref in `.pbxproj` needs removal in Xcode
 - [ ] Replace `clicky-demo.gif` and `dmg-background.png` once YardTalk has its own look
-- [ ] Update any functional URLs (worker endpoints, download links, feedback channels) — keep attribution links
+- [x] Update any functional URLs (worker endpoints, download links, feedback channels) — keep attribution links
 
 ## Cloudflare Worker (`worker/`)
 
 Clicky's worker proxies AssemblyAI, ElevenLabs, and Claude. For YardTalk:
 
-- [ ] **Delete AssemblyAI endpoint** — FluidAudio runs locally, no cloud STT needed
-- [ ] **Delete ElevenLabs endpoint** — no TTS planned for v1
-- [ ] **Keep Claude endpoint** (repurpose) — if API keys shouldn't ship in the binary, the worker is still the right proxy
-- [ ] **No NU endpoint needed** — NU's PAT auth is designed for direct client calls
+- [x] **Delete AssemblyAI endpoint** — FluidAudio runs locally, no cloud STT needed
+- [x] **Delete ElevenLabs endpoint** — no TTS planned for v1
+- [x] **Keep Claude endpoint** (repurpose) — if API keys shouldn't ship in the binary, the worker is still the right proxy
+- [x] **No NU endpoint needed** — NU's PAT auth is designed for direct client calls
 
 ## Replace Clicky's core loop with YardTalk's
 
@@ -52,6 +56,37 @@ Clicky's worker proxies AssemblyAI, ElevenLabs, and Claude. For YardTalk:
 - [ ] Use base URL `https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io` for dev; switch to `neighborhoodunited.org` once the custom domain is live
 - [ ] Always include `"test_mode": true` on sessions pushed from dev builds
 - [ ] Do not push real session data until the "Connected Apps" UI and the assistant-runtime tool are both live on NU — otherwise data lands but the assistant can't use it
+
+## Leftover Clicky code to remove or replace
+
+Files that still exist from Clicky's pipeline and aren't needed for YardTalk v1:
+
+- [ ] `AssemblyAIStreamingTranscriptionProvider.swift` — cloud STT replaced by FluidAudio; remove
+- [ ] `OpenAIAudioTranscriptionProvider.swift` — not used; remove
+- [ ] `OpenAIAPI.swift` — not used; remove
+- [ ] `ElevenLabsTTSClient.swift` — TTS not planned for v1; remove
+- [ ] `ElementLocationDetector.swift` — cursor-pointing pipeline; remove or defer
+- [ ] `CompanionResponseOverlay.swift` — response overlay from Q&A mode; remove or defer
+- [ ] `CompanionScreenCaptureUtility.swift` — screenshot capture; may be repurposed for video clip capture
+- [ ] `AppleSpeechTranscriptionProvider.swift` — system STT fallback; remove once FluidAudio is in
+- [ ] `BuddyAudioConversionSupport.swift` — audio format conversion for AssemblyAI; review if needed for FluidAudio
+- [ ] `BuddyDictationManager.swift` — dictation pipeline; will need rewrite for session recording
+- [ ] `BuddyTranscriptionProvider.swift` — transcription protocol; update for FluidAudio
+- [ ] `ClaudeAPI.swift` — streaming Claude client; keep and adapt for synthesis pipeline
+- [ ] `steve.jpg`, `codex-add-project.png` — Clicky assets; remove
+- [ ] `enter.mp3`, `eshop.mp3` — Clicky sound effects; decide if YardTalk needs sounds
+- [ ] `ff.mp3` — onboarding music; remove or replace
+
+## Next steps (after Xcode rebrand pass)
+
+1. **Complete the Xcode-side renames** — directory, scheme, targets, bundle config, signing
+2. **Remove PostHog SPM package** and dead Clicky files listed above
+3. **Add FluidAudio** as a Swift Package dependency
+4. **Build the project model** — `YardTalkProject` struct, local persistence to `~/Library/Application Support/YardTalk/`, menu bar project picker
+5. **Build session recording** — hotkey-held video capture via `SCStream` + `AVAssetWriter`, local transcription via FluidAudio, per-session timeline
+6. **Build synthesis pipeline** — end-of-session Claude call producing the structured payload (start with presentation prep template)
+7. **Build review/upload UI** — three-way dialog, outbox for queued pushes
+8. **Wire NU integration** — PAT flow, `POST /api/v1/sessions/`, idempotency, test_mode
 
 ## Reference
 
