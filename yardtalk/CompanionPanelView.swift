@@ -14,6 +14,7 @@ import SwiftUI
 
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
+    @StateObject private var smokeTest = TranscriptionSmokeTest()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -29,6 +30,10 @@ struct CompanionPanelView: View {
             if !companionManager.allPermissionsGranted {
                 Spacer().frame(height: 16)
                 permissionsSection
+                    .padding(.horizontal, 16)
+            } else {
+                Spacer().frame(height: 16)
+                smokeTestSection
                     .padding(.horizontal, 16)
             }
 
@@ -101,7 +106,7 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(DS.Colors.textSecondary)
 
-                Text("Session recording isn't wired up yet — this build is the YardTalk skeleton. Capture, transcription, and synthesis ship in subsequent updates.")
+                Text("Session recording isn't wired up yet — this build runs FluidAudio transcription as a smoke test only. Capture and synthesis ship in subsequent updates.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -285,6 +290,79 @@ struct CompanionPanelView: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
+    }
+
+    // MARK: - FluidAudio Smoke Test (debug)
+
+    private var smokeTestSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("FLUIDAUDIO SMOKE TEST")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundColor(DS.Colors.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 8) {
+                Button(action: { smokeTest.runTenSecondTest() }) {
+                    Text(smokeTestButtonLabel)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(DS.Colors.textOnAccent)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(
+                            Capsule().fill(
+                                smokeTestButtonEnabled
+                                    ? DS.Colors.accent
+                                    : DS.Colors.accent.opacity(0.4)
+                            )
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .disabled(!smokeTestButtonEnabled)
+
+                Spacer()
+            }
+
+            if let copy = smokeTestStatusCopy {
+                Text(copy)
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+
+    private var smokeTestButtonEnabled: Bool {
+        switch smokeTest.phase {
+        case .idle, .done, .failed: return true
+        case .recording, .transcribing: return false
+        }
+    }
+
+    private var smokeTestButtonLabel: String {
+        switch smokeTest.phase {
+        case .idle, .failed: return "Test FluidAudio (10s)"
+        case .recording(let s): return "Recording… \(s)s"
+        case .transcribing: return "Transcribing…"
+        case .done: return "Run again"
+        }
+    }
+
+    private var smokeTestStatusCopy: String? {
+        switch smokeTest.phase {
+        case .idle:
+            return nil
+        case .recording:
+            return "Speak into your mic. Recording auto-stops at 10s."
+        case .transcribing:
+            return "Running Parakeet on the ANE. First run downloads ~600 MB of model weights from HuggingFace."
+        case .done(let text):
+            return "Result: \(text.isEmpty ? "[empty transcript]" : text)"
+        case .failed(let message):
+            return "Failed: \(message)"
+        }
     }
 
     // MARK: - Footer
