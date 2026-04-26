@@ -4,8 +4,7 @@
 //
 //  Manages the NSStatusItem (menu bar icon) and a custom borderless NSPanel
 //  that drops down below it when clicked. The panel hosts a SwiftUI view
-//  (CompanionPanelView) via NSHostingView. Uses the same NSPanel pattern as
-//  FloatingSessionButton and GlobalPushToTalkOverlay for consistency.
+//  (CompanionPanelView) via NSHostingView.
 //
 //  The panel is non-activating so it does not steal focus from the user's
 //  current app, and auto-dismisses when the user clicks outside.
@@ -223,8 +222,9 @@ final class MenuBarPanelManager: NSObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 guard panel.isVisible else { return }
 
-                // If permissions aren't all granted yet, a system dialog
-                // may have focus — don't dismiss during onboarding.
+                // If permissions aren't all granted yet, a system dialog may
+                // have focus and steal NSApp activation — don't dismiss in
+                // that window or the user loses the panel mid-grant.
                 if !self.companionManager.allPermissionsGranted && !NSApp.isActive {
                     return
                 }

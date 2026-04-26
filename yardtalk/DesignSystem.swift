@@ -136,13 +136,6 @@ enum DS {
         /// Inline code text color — slightly brighter blue for monospace code snippets.
         static let codeText = Color(hex: "#9DC2FF")           // Radix Blue 11 variant
 
-        // ── Overlay Cursor ───────────────────────────────────────────
-
-        /// The blue cursor/bubble color used in OverlayWindow.
-        /// Kept distinct from the accent since it serves a different purpose
-        /// (screen overlay vs in-app UI).
-        static let overlayCursorBlue = Color(hex: "#3380FF")
-
         // ── Floating Button Gradient ─────────────────────────────────
 
         /// The floating session button gradient colors (unchanged from original —
@@ -745,14 +738,6 @@ extension View {
             }
         }
     }
-}
-
-// MARK: - Buddy Composer Visual Style
-
-enum BuddyComposerVisualStyle {
-    static let waveformLeadingColor = Color(hex: "#F3FBFF")
-    static let waveformTrailingColor = Color(hex: "#8FD2FF")
-    static let waveformGlowColor = Color(hex: "#AEE3FF")
 }
 
 // MARK: - Pointer Cursor (AppKit Bridge)
