@@ -1,0 +1,10 @@
+anthropic
+openai-whisper
+pyttsx3
+mss
+sounddevice
+numpy
+scipy
+Pillow
+pystray
+python-dotenv
