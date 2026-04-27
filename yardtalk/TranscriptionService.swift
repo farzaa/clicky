@@ -10,9 +10,11 @@
 
 import FluidAudio
 import Foundation
+import Observation
 
 @MainActor
-final class TranscriptionService: ObservableObject {
+@Observable
+final class TranscriptionService {
     enum Status: Equatable {
         case idle
         case downloadingModels
@@ -21,7 +23,7 @@ final class TranscriptionService: ObservableObject {
         case failed(message: String)
     }
 
-    @Published private(set) var status: Status = .idle
+    private(set) var status: Status = .idle
 
     private var asrManager: AsrManager?
 
@@ -47,12 +49,17 @@ final class TranscriptionService: ObservableObject {
     /// Format conversion to 16 kHz mono Float32 happens inside FluidAudio via
     /// `AudioConverter` — never decode WAV bytes by hand here, garbage
     /// values produce silently-empty transcripts.
+    ///
+    /// `TdtDecoderState` is rebuilt per call: it carries LSTM hidden/cell
+    /// state for streaming continuity across chunks, which is irrelevant for
+    /// one-shot batch transcription of a complete recording.
     func transcribe(fileAt url: URL) async throws -> String {
         try await loadModelsIfNeeded()
         guard let asrManager else { throw TranscriptionError.modelsNotLoaded }
         status = .transcribing
         defer { status = .ready }
-        let result = try await asrManager.transcribe(url, source: .system)
+        var decoderState = try TdtDecoderState()
+        let result = try await asrManager.transcribe(url, decoderState: &decoderState)
         return result.text
     }
 }

@@ -24,6 +24,11 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var hasScreenContentPermission = false
     @Published private(set) var isRequestingScreenContent = false
 
+    /// Project registry — owns the on-disk projects and active selection.
+    /// `@Observable` rather than `@Published`, so SwiftUI views that read its
+    /// properties get tracked independently of CompanionManager's republish.
+    let projectStore = ProjectStore()
+
     private var permissionPollTimer: Timer?
 
     var allPermissionsGranted: Bool {

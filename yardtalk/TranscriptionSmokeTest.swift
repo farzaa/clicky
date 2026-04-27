@@ -13,9 +13,12 @@
 
 import AVFoundation
 import Foundation
+import Combine
 
 @MainActor
 final class TranscriptionSmokeTest: ObservableObject {
+    let objectWillChange: ObservableObjectPublisher
+
     enum Phase: Equatable {
         case idle
         case recording(secondsRemaining: Int)
@@ -30,8 +33,9 @@ final class TranscriptionSmokeTest: ObservableObject {
     private var recorder: AVAudioRecorder?
     private var countdownTimer: Timer?
 
-    init(service: TranscriptionService = TranscriptionService()) {
-        self.service = service
+    init(service: TranscriptionService? = nil) {
+        self.objectWillChange = ObservableObjectPublisher()
+        self.service = service ?? TranscriptionService()
     }
 
     /// Records 10 seconds, transcribes, publishes the result on `phase`.

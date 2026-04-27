@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		AA00BB032F6500030039DA55 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB022F6500020039DA55 /* Sparkle */; };
+		B2ABB1282F9EC01600685DA2 /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = B2ABB1272F9EC01600685DA2 /* FluidAudio */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -56,6 +57,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B2ABB1282F9EC01600685DA2 /* FluidAudio in Frameworks */,
 				AA00BB032F6500030039DA55 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -83,6 +85,7 @@
 				28F22CC12F56440300A0FC59 /* yardtalk */,
 				28F22CCF2F56440300A0FC59 /* yardtalkTests */,
 				28F22CD92F56440300A0FC59 /* yardtalkUITests */,
+				B2ABB1262F9EC01600685DA2 /* Frameworks */,
 				28F22CC02F56440300A0FC59 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -95,6 +98,13 @@
 				28F22CD62F56440300A0FC59 /* yardtalkUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		B2ABB1262F9EC01600685DA2 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -118,6 +128,7 @@
 			name = yardtalk;
 			packageProductDependencies = (
 				AA00BB022F6500020039DA55 /* Sparkle */,
+				B2ABB1272F9EC01600685DA2 /* FluidAudio */,
 			);
 			productName = yardtalk;
 			productReference = 28F22CBF2F56440300A0FC59 /* YardTalk.app */;
@@ -203,6 +214,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				AA00BB012F6500010039DA55 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				B2ABB1252F9E6EFD00685DA2 /* XCRemoteSwiftPackageReference "FluidAudio" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 28F22CC02F56440300A0FC59 /* Products */;
@@ -604,6 +616,14 @@
 				minimumVersion = 2.9.0;
 			};
 		};
+		B2ABB1252F9E6EFD00685DA2 /* XCRemoteSwiftPackageReference "FluidAudio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/FluidInference/FluidAudio.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.14.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -611,6 +631,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA00BB012F6500010039DA55 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		B2ABB1272F9EC01600685DA2 /* FluidAudio */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B2ABB1252F9E6EFD00685DA2 /* XCRemoteSwiftPackageReference "FluidAudio" */;
+			productName = FluidAudio;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

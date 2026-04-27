@@ -15,6 +15,7 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @StateObject private var smokeTest = TranscriptionSmokeTest()
+    @State private var screen: ProjectPickerScreen = .main
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -23,21 +24,24 @@ struct CompanionPanelView: View {
                 .background(DS.Colors.borderSubtle)
                 .padding(.horizontal, 16)
 
-            statusCopy
-                .padding(.top, 16)
+            switch screen {
+            case .main:
+                mainContent
+            case .newProject:
+                NewProjectForm(
+                    store: companionManager.projectStore,
+                    screen: $screen
+                )
                 .padding(.horizontal, 16)
-
-            if !companionManager.allPermissionsGranted {
-                Spacer().frame(height: 16)
-                permissionsSection
-                    .padding(.horizontal, 16)
-            } else {
-                Spacer().frame(height: 16)
-                smokeTestSection
-                    .padding(.horizontal, 16)
+                .padding(.vertical, 16)
+            case .manage:
+                ManageProjectsView(
+                    store: companionManager.projectStore,
+                    screen: $screen
+                )
+                .padding(.horizontal, 16)
+                .padding(.vertical, 16)
             }
-
-            Spacer().frame(height: 12)
 
             Divider()
                 .background(DS.Colors.borderSubtle)
@@ -49,6 +53,32 @@ struct CompanionPanelView: View {
         }
         .frame(width: 320)
         .background(panelBackground)
+    }
+
+    @ViewBuilder
+    private var mainContent: some View {
+        statusCopy
+            .padding(.top, 16)
+            .padding(.horizontal, 16)
+
+        if !companionManager.allPermissionsGranted {
+            Spacer().frame(height: 16)
+            permissionsSection
+                .padding(.horizontal, 16)
+        } else {
+            Spacer().frame(height: 16)
+            ProjectPickerRow(
+                store: companionManager.projectStore,
+                screen: $screen
+            )
+            .padding(.horizontal, 16)
+
+            Spacer().frame(height: 16)
+            smokeTestSection
+                .padding(.horizontal, 16)
+        }
+
+        Spacer().frame(height: 12)
     }
 
     // MARK: - Header

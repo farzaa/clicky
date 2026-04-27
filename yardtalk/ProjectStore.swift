@@ -1,0 +1,149 @@
+//
+//  ProjectStore.swift
+//  yardtalk
+//
+//  Disk-backed registry of YardTalkProject. Each project is a separate
+//  JSON file under ~/Library/Application Support/YardTalk/projects/ so a
+//  corrupted save can't take down the whole list. The active project's UUID
+//  lives in UserDefaults so it survives restart — that's UI selection state,
+//  not project data, and shouldn't sit alongside the JSON files.
+//
+
+import Foundation
+import Observation
+
+@MainActor
+@Observable
+final class ProjectStore {
+    private(set) var projects: [YardTalkProject] = []
+    private(set) var activeProjectID: UUID?
+
+    var activeProject: YardTalkProject? {
+        guard let id = activeProjectID else { return nil }
+        return projects.first(where: { $0.id == id })
+    }
+
+    @ObservationIgnored
+    private let projectsDirectory: URL
+
+    @ObservationIgnored
+    private let activeProjectKey = "activeProjectID"
+
+    init(projectsDirectory: URL? = nil) {
+        self.projectsDirectory = projectsDirectory ?? Self.defaultProjectsDirectory()
+        bootstrap()
+    }
+
+    /// Creates a new project, persists it, and makes it active. Names are
+    /// trimmed; empty names are rejected because they'd round-trip into the NU
+    /// payload's `project` field (which is the slug, per the contract).
+    @discardableResult
+    func createProject(name: String, type: YardTalkProjectType) throws -> YardTalkProject {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { throw ProjectStoreError.invalidName }
+
+        let project = YardTalkProject(name: trimmedName, type: type)
+        try save(project)
+        projects.insert(project, at: 0)
+        setActive(project.id)
+        return project
+    }
+
+    /// Sets the active project. Pass `nil` to clear the selection (e.g. after
+    /// deleting the last project).
+    func setActive(_ id: UUID?) {
+        activeProjectID = id
+        if let id {
+            UserDefaults.standard.set(id.uuidString, forKey: activeProjectKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: activeProjectKey)
+        }
+    }
+
+    /// Deletes the project's on-disk file and removes it from the list. If
+    /// the deleted project was active, the next-most-recently-updated one
+    /// becomes active.
+    func delete(id: UUID) throws {
+        try FileManager.default.removeItem(at: projectFileURL(for: id))
+        projects.removeAll(where: { $0.id == id })
+        if activeProjectID == id {
+            setActive(projects.first?.id)
+        }
+    }
+
+    // MARK: - Private
+
+    private static func defaultProjectsDirectory() -> URL {
+        let appSupport = (try? FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )) ?? FileManager.default.temporaryDirectory
+        return appSupport
+            .appendingPathComponent("YardTalk", isDirectory: true)
+            .appendingPathComponent("projects", isDirectory: true)
+    }
+
+    private func bootstrap() {
+        try? FileManager.default.createDirectory(
+            at: projectsDirectory,
+            withIntermediateDirectories: true
+        )
+        loadProjects()
+        restoreActiveSelection()
+    }
+
+    private func loadProjects() {
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: projectsDirectory,
+            includingPropertiesForKeys: nil
+        ) else { return }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        var loaded: [YardTalkProject] = []
+        for url in urls where url.pathExtension == "json" {
+            do {
+                let data = try Data(contentsOf: url)
+                loaded.append(try decoder.decode(YardTalkProject.self, from: data))
+            } catch {
+                print("⚠️ YardTalk: skipping unreadable project at \(url.lastPathComponent): \(error)")
+            }
+        }
+        projects = loaded.sorted(by: { $0.updatedAt > $1.updatedAt })
+    }
+
+    private func restoreActiveSelection() {
+        if let stored = UserDefaults.standard.string(forKey: activeProjectKey),
+           let id = UUID(uuidString: stored),
+           projects.contains(where: { $0.id == id }) {
+            activeProjectID = id
+        } else {
+            activeProjectID = projects.first?.id
+        }
+    }
+
+    private func save(_ project: YardTalkProject) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(project)
+        try data.write(to: projectFileURL(for: project.id), options: .atomic)
+    }
+
+    private func projectFileURL(for id: UUID) -> URL {
+        projectsDirectory.appendingPathComponent("\(id.uuidString).json")
+    }
+}
+
+enum ProjectStoreError: LocalizedError {
+    case invalidName
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidName: return "Project name cannot be empty."
+        }
+    }
+}
