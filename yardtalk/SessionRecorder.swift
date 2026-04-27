@@ -15,11 +15,27 @@
 //  inputs. State is `nonisolated(unsafe)` because the delegate methods
 //  must run on captureQueue, not MainActor.
 //
+//  Timing: SCStream sample buffers carry CMTimes referenced to the host
+//  clock; AVCaptureSession audio samples carry CMTimes referenced to the
+//  audio session clock. Mixing those domains as PTS values into one
+//  AVAssetWriter is what produced the "moov atom not found" failure on
+//  the first round of testing — the writer would enter `.failed` state
+//  silently and `finishWriting()` then no-op'd, leaving an unplayable
+//  file. Fix: synthesize a single timeline from host time at sample
+//  arrival, and rebase every sample buffer's PTS via
+//  CMSampleBufferCreateCopyWithNewTiming. Both inputs share one clock
+//  domain so AVAssetWriter has nothing to reject.
+//
 
 import AVFoundation
 import CoreMedia
 import Foundation
+import OSLog
 import ScreenCaptureKit
+
+extension Logger {
+    static let recorder = Logger(subsystem: "com.yardtalk.app", category: "recorder")
+}
 
 enum SessionRecorderError: LocalizedError {
     case noDisplay
@@ -43,7 +59,11 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
     nonisolated(unsafe) private var writer: AVAssetWriter?
     nonisolated(unsafe) private var videoInput: AVAssetWriterInput?
     nonisolated(unsafe) private var audioInput: AVAssetWriterInput?
-    nonisolated(unsafe) private var sessionStartTime: CMTime?
+    /// Host-clock CMTime captured at the first sample's arrival. Used as
+    /// the anchor from which every appended sample's PTS is measured —
+    /// see the file header for why we rebase rather than trust intrinsic
+    /// PTS values.
+    nonisolated(unsafe) private var anchorHostTime: CMTime?
     nonisolated(unsafe) private var stream: SCStream?
     nonisolated(unsafe) private var captureSession: AVCaptureSession?
     nonisolated(unsafe) private var startedAt: Date?
@@ -61,14 +81,15 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
     /// neither capture source should start producing samples until the
     /// writer is ready to receive them.
     nonisolated func start() async throws {
+        Logger.recorder.info("start() begin — output: \(self.outputURL.lastPathComponent, privacy: .public)")
         try prepareWriter()
-        let display = try await configureScreenCapture()
+        try await configureScreenCapture()
         try configureMicCapture()
 
         guard let writer, writer.startWriting() else {
-            throw SessionRecorderError.writerSetupFailed(
-                writer?.error?.localizedDescription ?? "startWriting returned false"
-            )
+            let message = writer?.error?.localizedDescription ?? "startWriting returned false"
+            Logger.recorder.error("startWriting failed: \(message, privacy: .public)")
+            throw SessionRecorderError.writerSetupFailed(message)
         }
 
         // Mic before screen so the audio session is hot when the first
@@ -78,14 +99,17 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
             try await stream.startCapture()
         }
         startedAt = Date()
-        _ = display // silence unused
+        Logger.recorder.info("start() complete — capture running")
     }
 
     /// Stops the pipeline, finalizes the MP4. Returns its file URL and the
-    /// wall-clock duration (close enough for v1 metadata; the exact PTS
-    /// duration is encoded in the MP4 itself).
+    /// wall-clock duration. If no samples were ever processed (a release
+    /// faster than the capture pipeline could spin up), the writer is
+    /// cancelled and the output file removed; duration returned is 0 and
+    /// the caller is responsible for not registering a clip.
     nonisolated func stop() async throws -> (url: URL, duration: TimeInterval) {
         let finishedAt = Date()
+        Logger.recorder.info("stop() begin")
 
         if let stream {
             try? await stream.stopCapture()
@@ -96,14 +120,37 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
         // finished, otherwise late appends would race with finishWriting.
         captureQueue.sync { }
 
+        let duration: TimeInterval = startedAt.map { finishedAt.timeIntervalSince($0) } ?? 0
+
+        guard let writer else {
+            Logger.recorder.warning("stop() — writer was nil (start may have failed)")
+            return (outputURL, duration)
+        }
+
+        guard anchorHostTime != nil else {
+            // No samples ever arrived. Calling finishWriting() on a writer
+            // that never had startSession() called produces an MP4 with no
+            // moov atom — unplayable. Cancel and delete instead.
+            Logger.recorder.warning("stop() — no samples received, cancelling writer")
+            writer.cancelWriting()
+            try? FileManager.default.removeItem(at: outputURL)
+            return (outputURL, duration)
+        }
+
         videoInput?.markAsFinished()
         audioInput?.markAsFinished()
 
-        if let writer {
-            await writer.finishWriting()
+        await writer.finishWriting()
+
+        if writer.status == .completed {
+            Logger.recorder.info("stop() — writer completed cleanly, duration=\(duration, privacy: .public)s")
+        } else {
+            let errorMessage = writer.error?.localizedDescription ?? "no error"
+            Logger.recorder.error(
+                "stop() — writer ended with status=\(writer.status.rawValue, privacy: .public) error=\(errorMessage, privacy: .public)"
+            )
         }
 
-        let duration: TimeInterval = startedAt.map { finishedAt.timeIntervalSince($0) } ?? 0
         return (outputURL, duration)
     }
 
@@ -118,7 +165,7 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
         }
     }
 
-    private nonisolated func configureScreenCapture() async throws -> SCDisplay {
+    private nonisolated func configureScreenCapture() async throws {
         let content: SCShareableContent
         do {
             content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -170,8 +217,6 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
             throw SessionRecorderError.streamFailed("addStreamOutput: \(error.localizedDescription)")
         }
         self.stream = stream
-
-        return display
     }
 
     private nonisolated func configureMicCapture() throws {
@@ -222,15 +267,47 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
         guard CMSampleBufferDataIsReady(sb) else { return }
         guard writer.status == .writing else { return }
 
-        let pts = CMSampleBufferGetPresentationTimeStamp(sb)
-        if sessionStartTime == nil {
-            sessionStartTime = pts
-            writer.startSession(atSourceTime: pts)
+        // Single host-clock anchor for both inputs — see file header.
+        let now = CMClockGetTime(CMClockGetHostTimeClock())
+
+        if anchorHostTime == nil {
+            anchorHostTime = now
+            writer.startSession(atSourceTime: .zero)
+            let kind = isVideo ? "video" : "audio"
+            Logger.recorder.info("First sample arrived (\(kind, privacy: .public)); session started at zero")
+        }
+
+        let relativePTS = CMTimeSubtract(now, anchorHostTime!)
+
+        var newTiming = CMSampleTimingInfo(
+            duration: CMSampleBufferGetDuration(sb),
+            presentationTimeStamp: relativePTS,
+            decodeTimeStamp: .invalid
+        )
+
+        var rebased: CMSampleBuffer?
+        let result = CMSampleBufferCreateCopyWithNewTiming(
+            allocator: kCFAllocatorDefault,
+            sampleBuffer: sb,
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &newTiming,
+            sampleBufferOut: &rebased
+        )
+
+        guard result == noErr, let buffer = rebased else {
+            Logger.recorder.warning("CMSampleBufferCreateCopyWithNewTiming returned \(result, privacy: .public)")
+            return
         }
 
         let input = isVideo ? videoInput : audioInput
-        if let input, input.isReadyForMoreMediaData {
-            input.append(sb)
+        guard let input, input.isReadyForMoreMediaData else { return }
+
+        if !input.append(buffer) {
+            let kind = isVideo ? "video" : "audio"
+            let errorMessage = writer.error?.localizedDescription ?? "no error"
+            Logger.recorder.error(
+                "append failed for \(kind, privacy: .public): \(errorMessage, privacy: .public)"
+            )
         }
     }
 }
@@ -239,7 +316,7 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
 
 extension SessionRecorder: SCStreamDelegate {
     nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
-        print("⚠️ SessionRecorder: SCStream stopped with error: \(error)")
+        Logger.recorder.error("SCStream stopped with error: \(error.localizedDescription, privacy: .public)")
     }
 }
 

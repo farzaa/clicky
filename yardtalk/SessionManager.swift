@@ -10,9 +10,20 @@
 //  metadata under its project. End-of-session synthesis lands later and
 //  will group nearby clips.
 //
+//  The release handler awaits the start Task before tearing down. Without
+//  that, a brief tap-and-release runs stop() concurrently with start()
+//  and produces a 0-byte file. With it, very-short holds still complete
+//  start() before stopping (so the file is at least structurally valid),
+//  and we drop clips shorter than 0.5s as junk afterward.
+//
 
 import Foundation
 import Observation
+import OSLog
+
+extension Logger {
+    static let session = Logger(subsystem: "com.yardtalk.app", category: "session")
+}
 
 @MainActor
 @Observable
@@ -44,6 +55,14 @@ final class SessionManager {
     @ObservationIgnored
     private var activeClipDraft: ClipDraft?
 
+    @ObservationIgnored
+    private var activeStartTask: Task<Void, Error>?
+
+    /// Clips below this duration are discarded — usually a hotkey
+    /// tap-and-release before the capture pipeline could meaningfully
+    /// produce content.
+    private let minimumClipDuration: TimeInterval = 0.5
+
     private struct ClipDraft {
         let id: UUID
         let projectID: UUID
@@ -69,6 +88,7 @@ final class SessionManager {
 
     func start() {
         hotkeyMonitor.start()
+        Logger.session.info("SessionManager started — hotkey monitor armed")
     }
 
     func stop() {
@@ -78,8 +98,12 @@ final class SessionManager {
     // MARK: - Hotkey handlers
 
     private func handleHotkeyPress() {
-        guard status == .idle else { return }
+        switch status {
+        case .recording, .finishing: return
+        default: break
+        }
         guard let project = projectStore.activeProject else {
+            Logger.session.warning("Hotkey pressed with no active project")
             status = .failed(message: "Select a project before recording.")
             return
         }
@@ -95,6 +119,7 @@ final class SessionManager {
                 withIntermediateDirectories: true
             )
         } catch {
+            Logger.session.error("Could not create clips directory: \(error.localizedDescription, privacy: .public)")
             status = .failed(message: "Could not prepare clips directory: \(error.localizedDescription)")
             return
         }
@@ -102,17 +127,14 @@ final class SessionManager {
         let recorder = SessionRecorder(outputURL: outputURL)
         activeRecorder = recorder
         activeClipDraft = ClipDraft(id: clipID, projectID: project.id, fileName: fileName)
-        status = .recording
-
-        Task { @MainActor in
-            do {
-                try await recorder.start()
-            } catch {
-                self.activeRecorder = nil
-                self.activeClipDraft = nil
-                self.status = .failed(message: error.localizedDescription)
-            }
+        // Hold the start Task so the release handler can await it before
+        // calling stop(). Otherwise a fast tap-and-release races start
+        // against stop and produces an unfinalized file.
+        activeStartTask = Task<Void, Error> {
+            try await recorder.start()
         }
+        status = .recording
+        Logger.session.info("Recording started for clip \(clipID.uuidString, privacy: .public) in project \(project.name, privacy: .public)")
     }
 
     private func handleHotkeyRelease() {
@@ -121,13 +143,37 @@ final class SessionManager {
             status = .idle
             return
         }
+        let startTask = activeStartTask
         status = .finishing
 
         Task { @MainActor in
+            // Wait for start to complete (or fail) before tearing down,
+            // otherwise a tap shorter than the capture-startup latency
+            // would race start() against stop().
+            if let startTask {
+                do {
+                    try await startTask.value
+                } catch {
+                    Logger.session.error("start() failed: \(error.localizedDescription, privacy: .public)")
+                    self.cleanupAfterFailure(message: "Recording failed to start: \(error.localizedDescription)")
+                    return
+                }
+            }
+
             do {
                 let (_, duration) = try await recorder.stop()
                 self.activeRecorder = nil
                 self.activeClipDraft = nil
+                self.activeStartTask = nil
+
+                guard duration >= self.minimumClipDuration else {
+                    Logger.session.info("Discarded short clip (\(duration, privacy: .public)s, threshold \(self.minimumClipDuration, privacy: .public)s)")
+                    let videoURL = self.clipStore.clipsDirectory(for: draft.projectID)
+                        .appendingPathComponent(draft.fileName)
+                    try? FileManager.default.removeItem(at: videoURL)
+                    self.status = .idle
+                    return
+                }
 
                 let clip = YardTalkClip(
                     id: draft.id,
@@ -136,14 +182,21 @@ final class SessionManager {
                     durationSeconds: duration
                 )
                 try self.clipStore.add(clip)
+                Logger.session.info("Saved clip \(clip.id.uuidString, privacy: .public) (\(duration, privacy: .public)s)")
                 self.status = .idle
                 self.transcribeInBackground(clip: clip)
             } catch {
-                self.activeRecorder = nil
-                self.activeClipDraft = nil
-                self.status = .failed(message: error.localizedDescription)
+                Logger.session.error("stop() failed: \(error.localizedDescription, privacy: .public)")
+                self.cleanupAfterFailure(message: error.localizedDescription)
             }
         }
+    }
+
+    private func cleanupAfterFailure(message: String) {
+        self.activeRecorder = nil
+        self.activeClipDraft = nil
+        self.activeStartTask = nil
+        self.status = .failed(message: message)
     }
 
     private func transcribeInBackground(clip: YardTalkClip) {
@@ -154,10 +207,12 @@ final class SessionManager {
                 var updated = clip
                 updated.transcript = transcript
                 try? clipStore.update(updated)
+                Logger.session.info("Transcribed clip \(clip.id.uuidString, privacy: .public): \(transcript.count, privacy: .public) chars")
             } catch {
                 var updated = clip
                 updated.transcriptionError = error.localizedDescription
                 try? clipStore.update(updated)
+                Logger.session.error("Transcription failed for \(clip.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
             }
         }
     }
