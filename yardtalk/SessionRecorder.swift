@@ -67,6 +67,7 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
     nonisolated(unsafe) private var stream: SCStream?
     nonisolated(unsafe) private var captureSession: AVCaptureSession?
     nonisolated(unsafe) private var startedAt: Date?
+    nonisolated(unsafe) private var didLogAudioFormat = false
 
     private let outputURL: URL
     private let captureQueue = DispatchQueue(label: "com.yardtalk.capture", qos: .userInteractive)
@@ -81,6 +82,7 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
     /// neither capture source should start producing samples until the
     /// writer is ready to receive them.
     nonisolated func start() async throws {
+        NSLog("YardTalk[recorder] start() begin — output: %@", outputURL.lastPathComponent)
         Logger.recorder.info("start() begin — output: \(self.outputURL.lastPathComponent, privacy: .public)")
         try prepareWriter()
         try await configureScreenCapture()
@@ -88,6 +90,7 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
 
         guard let writer, writer.startWriting() else {
             let message = writer?.error?.localizedDescription ?? "startWriting returned false"
+            NSLog("YardTalk[recorder] startWriting failed: %@", message)
             Logger.recorder.error("startWriting failed: \(message, privacy: .public)")
             throw SessionRecorderError.writerSetupFailed(message)
         }
@@ -99,6 +102,7 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
             try await stream.startCapture()
         }
         startedAt = Date()
+        NSLog("YardTalk[recorder] start() complete — capture running")
         Logger.recorder.info("start() complete — capture running")
     }
 
@@ -109,6 +113,7 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
     /// the caller is responsible for not registering a clip.
     nonisolated func stop() async throws -> (url: URL, duration: TimeInterval) {
         let finishedAt = Date()
+        NSLog("YardTalk[recorder] stop() begin")
         Logger.recorder.info("stop() begin")
 
         if let stream {
@@ -123,7 +128,7 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
         let duration: TimeInterval = startedAt.map { finishedAt.timeIntervalSince($0) } ?? 0
 
         guard let writer else {
-            Logger.recorder.warning("stop() — writer was nil (start may have failed)")
+            NSLog("YardTalk[recorder] stop() — writer was nil (start may have failed)")
             return (outputURL, duration)
         }
 
@@ -131,7 +136,7 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
             // No samples ever arrived. Calling finishWriting() on a writer
             // that never had startSession() called produces an MP4 with no
             // moov atom — unplayable. Cancel and delete instead.
-            Logger.recorder.warning("stop() — no samples received, cancelling writer")
+            NSLog("YardTalk[recorder] stop() — no samples received, cancelling writer")
             writer.cancelWriting()
             try? FileManager.default.removeItem(at: outputURL)
             return (outputURL, duration)
@@ -143,12 +148,11 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
         await writer.finishWriting()
 
         if writer.status == .completed {
-            Logger.recorder.info("stop() — writer completed cleanly, duration=\(duration, privacy: .public)s")
+            NSLog("YardTalk[recorder] stop() — writer completed cleanly, duration=%.2fs", duration)
         } else {
             let errorMessage = writer.error?.localizedDescription ?? "no error"
-            Logger.recorder.error(
-                "stop() — writer ended with status=\(writer.status.rawValue, privacy: .public) error=\(errorMessage, privacy: .public)"
-            )
+            NSLog("YardTalk[recorder] stop() — writer ended with status=%ld error=%@",
+                  writer.status.rawValue, errorMessage)
         }
 
         return (outputURL, duration)
@@ -243,12 +247,20 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
         }
         session.addOutput(audioOutput)
 
-        let audioSettings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 48_000,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 64_000,
-        ]
+        // Let the audio output and the writer agree on a format. Hardcoding
+        // AAC 48 kHz mono / 64 kbps in v1 produced silent (-91 dB) AAC tracks
+        // because the writer's encoder couldn't reconcile the device's native
+        // PCM format with the requested output. recommendedAudioSettingsForAssetWriter
+        // returns settings that match what the output will deliver so the
+        // encoder has no work to do beyond AAC packaging.
+        let audioSettings = audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mp4)
+            ?? [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 48_000,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderBitRateKey: 64_000,
+            ] as [String: Any]
+        NSLog("YardTalk[recorder] audio writer settings: %@", "\(audioSettings)")
         let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
         audioInput.expectsMediaDataInRealTime = true
 
@@ -267,6 +279,22 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
         guard CMSampleBufferDataIsReady(sb) else { return }
         guard writer.status == .writing else { return }
 
+        // One-time format dump on the first audio sample so we can see what
+        // PCM format AVCaptureAudioDataOutput is actually delivering. If
+        // sampleRate / channels disagree with the writer's expected encoding
+        // we get silent AAC tracks.
+        if !isVideo && !didLogAudioFormat {
+            didLogAudioFormat = true
+            if let formatDesc = CMSampleBufferGetFormatDescription(sb),
+               let asbdPtr = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc) {
+                let asbd = asbdPtr.pointee
+                NSLog("YardTalk[recorder] audio input format: %.0f Hz, %u ch, formatID=%u, bytesPerFrame=%u",
+                      asbd.mSampleRate, asbd.mChannelsPerFrame, asbd.mFormatID, asbd.mBytesPerFrame)
+            } else {
+                NSLog("YardTalk[recorder] audio input format: <unavailable>")
+            }
+        }
+
         // Single host-clock anchor for both inputs — see file header.
         let now = CMClockGetTime(CMClockGetHostTimeClock())
 
@@ -274,6 +302,7 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
             anchorHostTime = now
             writer.startSession(atSourceTime: .zero)
             let kind = isVideo ? "video" : "audio"
+            NSLog("YardTalk[recorder] first sample arrived (%@); session started at zero", kind)
             Logger.recorder.info("First sample arrived (\(kind, privacy: .public)); session started at zero")
         }
 
