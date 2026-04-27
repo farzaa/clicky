@@ -87,7 +87,7 @@ struct NavigationBubbleSizePreferenceKey: PreferenceKey {
 
 /// The buddy's behavioral mode. Controls whether it follows the cursor,
 /// is flying toward a detected UI element, or is pointing at an element.
-enum BuddyNavigationMode {
+enum BuddyNavigationMode: Sendable {
     /// Default — buddy follows the mouse cursor with spring animation
     case followingCursor
     /// Buddy is animating toward a detected UI element location
@@ -261,7 +261,7 @@ struct BlueCursorView: View {
             // Navigation pointer bubble — shown when buddy arrives at a detected element.
             // Pops in with a scale-bounce (0.5x → 1.0x spring) and a bright initial
             // glow that settles, creating a "materializing" effect.
-            if buddyNavigationMode == .pointingAtTarget && !navigationBubbleText.isEmpty {
+            if isPointingAtTargetMode && !navigationBubbleText.isEmpty {
                 Text(navigationBubbleText)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.white)
@@ -311,14 +311,14 @@ struct BlueCursorView: View {
                 .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(
-                    buddyNavigationMode == .followingCursor
+                    isFollowingCursorMode
                         ? .spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0)
                         : nil,
                     value: cursorPosition
                 )
                 .animation(.easeIn(duration: 0.25), value: companionManager.voiceState)
                 .animation(
-                    buddyNavigationMode == .navigatingToTarget ? nil : .easeInOut(duration: 0.3),
+                    isNavigatingToTargetMode ? nil : .easeInOut(duration: 0.3),
                     value: triangleRotationDegrees
                 )
 
@@ -368,7 +368,7 @@ struct BlueCursorView: View {
             navigationAnimationTimer?.invalidate()
             companionManager.tearDownOnboardingVideo()
         }
-        .onChange(of: companionManager.detectedElementScreenLocation) { newLocation in
+        .onChange(of: companionManager.detectedElementScreenLocation) { _, newLocation in
             // When a UI element location is detected, navigate the buddy to
             // that position so it points at the element.
             guard let screenLocation = newLocation,
@@ -406,6 +406,27 @@ struct BlueCursorView: View {
         }
     }
 
+    private var isFollowingCursorMode: Bool {
+        if case .followingCursor = buddyNavigationMode {
+            return true
+        }
+        return false
+    }
+
+    private var isNavigatingToTargetMode: Bool {
+        if case .navigatingToTarget = buddyNavigationMode {
+            return true
+        }
+        return false
+    }
+
+    private var isPointingAtTargetMode: Bool {
+        if case .pointingAtTarget = buddyNavigationMode {
+            return true
+        }
+        return false
+    }
+
     // MARK: - Cursor Tracking
 
     private func startTrackingCursor() {
@@ -417,7 +438,7 @@ struct BlueCursorView: View {
             // mouse movement — it completes its full animation and return flight.
             // Only during the RETURN flight do we allow cursor movement to cancel
             // (so the buddy snaps to following if the user moves while it's flying back).
-            if self.buddyNavigationMode == .navigatingToTarget && self.isReturningToCursor {
+            if self.isNavigatingToTargetMode && self.isReturningToCursor {
                 let currentMouseInSwiftUI = self.convertScreenPointToSwiftUICoordinates(mouseLocation)
                 let distanceFromNavigationStart = hypot(
                     currentMouseInSwiftUI.x - self.cursorPositionWhenNavigationStarted.x,
@@ -430,7 +451,7 @@ struct BlueCursorView: View {
             }
 
             // During forward navigation or pointing, just skip cursor tracking
-            if self.buddyNavigationMode != .followingCursor {
+            if !self.isFollowingCursorMode {
                 return
             }
 
@@ -483,7 +504,7 @@ struct BlueCursorView: View {
         isReturningToCursor = false
 
         animateBezierFlightArc(to: clampedTarget) {
-            guard self.buddyNavigationMode == .navigatingToTarget else { return }
+            guard self.isNavigatingToTargetMode else { return }
             self.startPointingAtElement()
         }
     }
@@ -590,10 +611,10 @@ struct BlueCursorView: View {
         streamNavigationBubbleCharacter(phrase: pointerPhrase, characterIndex: 0) {
             // All characters streamed — hold for 3 seconds, then fly back
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                guard self.buddyNavigationMode == .pointingAtTarget else { return }
+                guard self.isPointingAtTargetMode else { return }
                 self.navigationBubbleOpacity = 0.0
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    guard self.buddyNavigationMode == .pointingAtTarget else { return }
+                    guard self.isPointingAtTargetMode else { return }
                     self.startFlyingBackToCursor()
                 }
             }
@@ -607,7 +628,7 @@ struct BlueCursorView: View {
         characterIndex: Int,
         onComplete: @escaping () -> Void
     ) {
-        guard buddyNavigationMode == .pointingAtTarget else { return }
+        guard isPointingAtTargetMode else { return }
         guard characterIndex < phrase.count else {
             onComplete()
             return

@@ -66,12 +66,15 @@ npx wrangler secret put ASSEMBLYAI_API_KEY
 npx wrangler secret put ELEVENLABS_API_KEY
 ```
 
-For the ElevenLabs voice ID, open `wrangler.toml` and set it there (it's not sensitive):
+For the ElevenLabs voice IDs, open `wrangler.toml` and set them there (they're not sensitive):
 
 ```toml
 [vars]
 ELEVENLABS_VOICE_ID = "your-voice-id-here"
+ELEVENLABS_CHINESE_VOICE_ID = "optional-chinese-voice-id"
 ```
+
+`ELEVENLABS_VOICE_ID` stays the default voice. `ELEVENLABS_CHINESE_VOICE_ID` is optional and only used when the app is set to Chinese voice mode. If you leave it blank, the default voice is reused.
 
 Deploy it:
 
@@ -97,6 +100,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 ASSEMBLYAI_API_KEY=...
 ELEVENLABS_API_KEY=...
 ELEVENLABS_VOICE_ID=...
+ELEVENLABS_CHINESE_VOICE_ID=...
 ```
 
 Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing. Grep for `clicky-proxy` to find them all.
@@ -137,7 +141,7 @@ The app will appear in your menu bar (not the dock). Click the icon to open the 
 
 If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
 
-**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied through a Cloudflare Worker.
+**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. English uses AssemblyAI `u3-rt-pro`, while Chinese switches to `whisper-rt` so Chinese speech can be transcribed reliably. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied through a Cloudflare Worker.
 
 ## Project structure
 

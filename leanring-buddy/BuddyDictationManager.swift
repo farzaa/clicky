@@ -265,6 +265,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     private let transcriptionProvider: any BuddyTranscriptionProvider
     private let audioEngine = AVAudioEngine()
     private var activeTranscriptionSession: (any BuddyStreamingTranscriptionSession)?
+    var languageCode: String?
     private var activeStartSource: BuddyDictationStartSource?
     private var draftCallbacks: BuddyDictationDraftCallbacks?
     private var draftTextBeforeCurrentDictation = ""
@@ -519,6 +520,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         let activeTranscriptionSession = try await transcriptionProvider.startStreamingSession(
             keyterms: buildTranscriptionKeyterms(),
+            languageCode: languageCode,
             onTranscriptUpdate: { [weak self] transcriptText in
                 Task { @MainActor in
                     self?.latestRecognizedText = transcriptText
