@@ -70,6 +70,7 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
     nonisolated(unsafe) private var audioLevelTimer: DispatchSourceTimer?
     nonisolated(unsafe) private var startedAt: Date?
     nonisolated(unsafe) private var didLogAudioFormat = false
+    nonisolated(unsafe) private var didLogWriterFailure = false
 
     /// Fired ~20Hz during recording with a normalized 0...1 level so the UI
     /// can show a live mic meter. A flat meter while recording is a visible
@@ -258,19 +259,22 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
         }
         session.addOutput(audioOutput)
 
-        // Let the audio output and the writer agree on a format. Hardcoding
-        // AAC 48 kHz mono / 64 kbps in v1 produced silent (-91 dB) AAC tracks
-        // because the writer's encoder couldn't reconcile the device's native
-        // PCM format with the requested output. recommendedAudioSettingsForAssetWriter
-        // returns settings that match what the output will deliver so the
-        // encoder has no work to do beyond AAC packaging.
-        let audioSettings = audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mp4)
+        // Let the audio output recommend settings that match the format it
+        // will deliver, then patch a hole: in testing, the recommended dict
+        // came back without AVEncoderBitRateKey, which leaves the AAC
+        // encoder with an invalid default — the writer silently transitions
+        // to .failed mid-recording and finishWriting() then no-ops, leaving
+        // a moov-atom-less MP4. Forcing a sane default bitrate when one
+        // isn't recommended fixes that.
+        var audioSettings: [String: Any] = audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mp4)
             ?? [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
                 AVSampleRateKey: 48_000,
                 AVNumberOfChannelsKey: 1,
-                AVEncoderBitRateKey: 64_000,
-            ] as [String: Any]
+            ]
+        if audioSettings[AVEncoderBitRateKey] == nil {
+            audioSettings[AVEncoderBitRateKey] = 64_000
+        }
         NSLog("YardTalk[recorder] audio writer settings: %@", "\(audioSettings)")
         let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
         audioInput.expectsMediaDataInRealTime = true
@@ -289,7 +293,22 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
     private nonisolated func handleSampleOnCaptureQueue(_ sb: CMSampleBuffer, isVideo: Bool) {
         guard let writer else { return }
         guard CMSampleBufferDataIsReady(sb) else { return }
-        guard writer.status == .writing else { return }
+
+        // If the writer slipped into .failed mid-recording (encoder choked,
+        // PTS mismatch, etc.), log it once so we know which sample type
+        // tripped it. Otherwise we silently drop every subsequent sample
+        // and finishWriting() no-ops on a .failed writer — exactly the
+        // moov-atom-less broken-file outcome seen in earlier rounds.
+        if writer.status != .writing {
+            if writer.status == .failed && !didLogWriterFailure {
+                didLogWriterFailure = true
+                let kind = isVideo ? "video" : "audio"
+                let errorMessage = writer.error?.localizedDescription ?? "no error"
+                NSLog("YardTalk[recorder] writer entered .failed during %@ sample: %@",
+                      kind, errorMessage)
+            }
+            return
+        }
 
         // One-time format dump on the first audio sample so we can see what
         // PCM format AVCaptureAudioDataOutput is actually delivering. If
