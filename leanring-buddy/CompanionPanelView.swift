@@ -15,6 +15,7 @@ struct CompanionPanelView: View {
     @State private var emailInput: String = ""
     @State private var devURLInput: String = UserDefaults.standard.string(forKey: "devWorkerBaseURL") ?? ""
     @State private var devEnabled: Bool = !(UserDefaults.standard.string(forKey: "devWorkerBaseURL") ?? "").isEmpty
+    @State private var devUnlimitedEnabled: Bool = UserDefaults.standard.object(forKey: "devUnlimitedMode") == nil ? true : UserDefaults.standard.bool(forKey: "devUnlimitedMode")
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -615,6 +616,31 @@ struct CompanionPanelView: View {
                         devURLInput = ""
                         companionManager.setDevWorkerBaseURL("")
                     }
+                }))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .tint(DS.Colors.accent)
+                .scaleEffect(0.8)
+            }
+
+            // Unlimited interactions toggle
+            HStack {
+                HStack(spacing: 8) {
+                    Image(systemName: "infinity")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .frame(width: 16)
+
+                    Text("Unlimited interactions")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+                }
+
+                Spacer()
+
+                Toggle("", isOn: Binding(get: { devUnlimitedEnabled }, set: { newVal in
+                    devUnlimitedEnabled = newVal
+                    companionManager.setDevUnlimitedMode(newVal)
                 }))
                 .toggleStyle(.switch)
                 .labelsHidden()

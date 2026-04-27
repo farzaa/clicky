@@ -123,6 +123,20 @@ final class CompanionManager: ObservableObject {
     /// Stored in UserDefaults under `devWorkerBaseURL` so it persists across runs.
     @Published var devWorkerBaseURLText: String = UserDefaults.standard.string(forKey: "devWorkerBaseURL") ?? ""
 
+    /// Whether the app should run in a local 'unlimited interactions' dev mode.
+    /// Persisted in UserDefaults under `devUnlimitedMode`.
+    @Published var devUnlimitedMode: Bool = UserDefaults.standard.object(forKey: "devUnlimitedMode") == nil ? true : UserDefaults.standard.bool(forKey: "devUnlimitedMode")
+
+    func setDevUnlimitedMode(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: "devUnlimitedMode")
+        devUnlimitedMode = enabled
+
+        // Recreate API clients so they pick up the new behavior immediately.
+        claudeAPI = ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+        elevenLabsTTSClient = ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
+        _ = claudeAPI
+    }
+
     func setDevWorkerBaseURL(_ url: String) {
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
