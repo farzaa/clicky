@@ -101,7 +101,6 @@ class ClaudeAPI {
     func analyzeImageStreaming(
         images: [(data: Data, label: String)],
         systemPrompt: String,
-        conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
         userPrompt: String,
         onTextChunk: @MainActor @Sendable (String) -> Void
     ) async throws -> (text: String, duration: TimeInterval) {
@@ -111,11 +110,6 @@ class ClaudeAPI {
 
         // Build messages array
         var messages: [[String: Any]] = []
-
-        for (userPlaceholder, assistantResponse) in conversationHistory {
-            messages.append(["role": "user", "content": userPlaceholder])
-            messages.append(["role": "assistant", "content": assistantResponse])
-        }
 
         // Build current message with all labeled images + prompt
         var contentBlocks: [[String: Any]] = []
@@ -215,7 +209,6 @@ class ClaudeAPI {
     func analyzeImage(
         images: [(data: Data, label: String)],
         systemPrompt: String,
-        conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
         userPrompt: String
     ) async throws -> (text: String, duration: TimeInterval) {
         let startTime = Date()
@@ -223,10 +216,6 @@ class ClaudeAPI {
         var request = makeAPIRequest()
 
         var messages: [[String: Any]] = []
-        for (userPlaceholder, assistantResponse) in conversationHistory {
-            messages.append(["role": "user", "content": userPlaceholder])
-            messages.append(["role": "assistant", "content": assistantResponse])
-        }
 
         // Build current message with all labeled images + prompt
         var contentBlocks: [[String: Any]] = []

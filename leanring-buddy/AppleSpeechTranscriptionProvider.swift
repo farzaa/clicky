@@ -48,7 +48,9 @@ final class AppleSpeechTranscriptionProvider: BuddyTranscriptionProvider {
         ]
 
         for preferredLocale in preferredLocales {
-            if let speechRecognizer = SFSpeechRecognizer(locale: preferredLocale) {
+            if let speechRecognizer = SFSpeechRecognizer(locale: preferredLocale),
+               speechRecognizer.isAvailable {
+                print("🎙️ Apple Speech: using locale \(preferredLocale.identifier)")
                 return speechRecognizer
             }
         }
