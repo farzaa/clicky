@@ -66,8 +66,16 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
     nonisolated(unsafe) private var anchorHostTime: CMTime?
     nonisolated(unsafe) private var stream: SCStream?
     nonisolated(unsafe) private var captureSession: AVCaptureSession?
+    nonisolated(unsafe) private var audioOutput: AVCaptureAudioDataOutput?
+    nonisolated(unsafe) private var audioLevelTimer: DispatchSourceTimer?
     nonisolated(unsafe) private var startedAt: Date?
     nonisolated(unsafe) private var didLogAudioFormat = false
+
+    /// Fired ~20Hz during recording with a normalized 0...1 level so the UI
+    /// can show a live mic meter. A flat meter while recording is a visible
+    /// signal that the mic isn't actually capturing — the user can release,
+    /// fix the input, and try again.
+    nonisolated(unsafe) var onAudioLevel: (@Sendable (Float) -> Void)?
 
     private let outputURL: URL
     private let captureQueue = DispatchQueue(label: "com.yardtalk.capture", qos: .userInteractive)
@@ -102,6 +110,7 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
             try await stream.startCapture()
         }
         startedAt = Date()
+        startAudioLevelMonitoring()
         NSLog("YardTalk[recorder] start() complete — capture running")
         Logger.recorder.info("start() complete — capture running")
     }
@@ -115,6 +124,8 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
         let finishedAt = Date()
         NSLog("YardTalk[recorder] stop() begin")
         Logger.recorder.info("stop() begin")
+
+        stopAudioLevelMonitoring()
 
         if let stream {
             try? await stream.stopCapture()
@@ -269,6 +280,7 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
         }
         writer.add(audioInput)
         self.audioInput = audioInput
+        self.audioOutput = audioOutput
         self.captureSession = session
     }
 
@@ -338,6 +350,38 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
                 "append failed for \(kind, privacy: .public): \(errorMessage, privacy: .public)"
             )
         }
+    }
+}
+
+    // MARK: - Audio level monitoring
+
+    private nonisolated func startAudioLevelMonitoring() {
+        let timer = DispatchSource.makeTimerSource(queue: captureQueue)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(50))
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            guard let audioOutput = self.audioOutput,
+                  let connection = audioOutput.connections.first,
+                  let channel = connection.audioChannels.first else {
+                return
+            }
+            let dB = channel.averagePowerLevel
+            // Map -50 dB (mic essentially silent) to 0 dB (full scale) onto
+            // 0...1. -50 dB chosen empirically: ambient room noise sits
+            // around -55 to -45, normal speech -30 to -10, peaks at 0 dB.
+            let normalized = max(0, min(1, (dB + 50) / 50))
+            self.onAudioLevel?(normalized)
+        }
+        timer.resume()
+        audioLevelTimer = timer
+    }
+
+    private nonisolated func stopAudioLevelMonitoring() {
+        audioLevelTimer?.cancel()
+        audioLevelTimer = nil
+        // Reset the published level so the meter doesn't freeze at the
+        // last reading after recording ends.
+        onAudioLevel?(0)
     }
 }
 

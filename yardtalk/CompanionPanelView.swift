@@ -352,6 +352,8 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(DS.Colors.textPrimary)
                 Spacer()
+                AudioLevelMeter(level: companionManager.sessionManager.audioLevel)
+                    .frame(width: 80, height: 6)
             }
         case .finishing:
             HStack(spacing: 8) {
@@ -480,5 +482,31 @@ struct CompanionPanelView: View {
             .fill(DS.Colors.background)
             .shadow(color: Color.black.opacity(0.5), radius: 20, x: 0, y: 10)
             .shadow(color: Color.black.opacity(0.3), radius: 4, x: 0, y: 2)
+    }
+}
+
+/// Horizontal mic-level bar shown next to "Recording…". Color shifts toward
+/// red near clipping so loud peaks are visible and a flat bar at zero is
+/// unmistakable when the mic isn't actually capturing.
+private struct AudioLevelMeter: View {
+    let level: Float
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.white.opacity(0.08))
+                Capsule()
+                    .fill(meterColor)
+                    .frame(width: geo.size.width * CGFloat(max(0, min(1, level))))
+                    .animation(.linear(duration: 0.05), value: level)
+            }
+        }
+    }
+
+    private var meterColor: Color {
+        if level > 0.9 { return Color(red: 0.95, green: 0.35, blue: 0.35) }
+        if level > 0.7 { return Color(red: 0.95, green: 0.8, blue: 0.3) }
+        return DS.Colors.success
     }
 }

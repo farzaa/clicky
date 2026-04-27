@@ -36,6 +36,12 @@ final class SessionManager {
     }
 
     private(set) var status: Status = .idle
+    /// Live mic level during recording, normalized 0...1. Stays at 0 when
+    /// idle. A flat value during recording is a visible signal that the mic
+    /// isn't capturing anything — the user can release the hotkey, fix the
+    /// input, and try again rather than discovering the silence after the
+    /// fact via an empty transcript.
+    private(set) var audioLevel: Float = 0
 
     @ObservationIgnored
     private let hotkeyMonitor = HotkeyMonitor()
@@ -125,6 +131,11 @@ final class SessionManager {
         }
 
         let recorder = SessionRecorder(outputURL: outputURL)
+        recorder.onAudioLevel = { [weak self] level in
+            Task { @MainActor [weak self] in
+                self?.audioLevel = level
+            }
+        }
         activeRecorder = recorder
         activeClipDraft = ClipDraft(id: clipID, projectID: project.id, fileName: fileName)
         // Hold the start Task so the release handler can await it before
