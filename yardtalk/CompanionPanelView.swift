@@ -14,7 +14,6 @@ import SwiftUI
 
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
-    @StateObject private var smokeTest = TranscriptionSmokeTest()
     @State private var screen: ProjectPickerScreen = .main
 
     var body: some View {
@@ -74,7 +73,7 @@ struct CompanionPanelView: View {
             .padding(.horizontal, 16)
 
             Spacer().frame(height: 16)
-            smokeTestSection
+            sessionSection
                 .padding(.horizontal, 16)
         }
 
@@ -136,7 +135,7 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(DS.Colors.textSecondary)
 
-                Text("Session recording isn't wired up yet — this build runs FluidAudio transcription as a smoke test only. Capture and synthesis ship in subsequent updates.")
+                Text("Hold ⌃⌥ anywhere on your Mac to record a narrated screen clip. Release to stop and transcribe.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -322,76 +321,129 @@ struct CompanionPanelView: View {
         .pointerCursor()
     }
 
-    // MARK: - FluidAudio Smoke Test (debug)
+    // MARK: - Session
 
-    private var smokeTestSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("FLUIDAUDIO SMOKE TEST")
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                .foregroundColor(DS.Colors.textTertiary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+    private var sessionSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sessionStatusRow
+            clipsList
+        }
+    }
 
+    @ViewBuilder
+    private var sessionStatusRow: some View {
+        switch companionManager.sessionManager.status {
+        case .idle:
             HStack(spacing: 8) {
-                Button(action: { smokeTest.runTenSecondTest() }) {
-                    Text(smokeTestButtonLabel)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(DS.Colors.textOnAccent)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(
-                            Capsule().fill(
-                                smokeTestButtonEnabled
-                                    ? DS.Colors.accent
-                                    : DS.Colors.accent.opacity(0.4)
-                            )
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-                .disabled(!smokeTestButtonEnabled)
-
+                Image(systemName: "circle")
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .font(.system(size: 9, weight: .semibold))
+                Text("Hold ⌃⌥ to record")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
                 Spacer()
             }
-
-            if let copy = smokeTestStatusCopy {
-                Text(copy)
+        case .recording:
+            HStack(spacing: 8) {
+                Image(systemName: "circle.fill")
+                    .foregroundColor(.red)
+                    .font(.system(size: 9))
+                Text("Recording…")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(DS.Colors.textPrimary)
+                Spacer()
+            }
+        case .finishing:
+            HStack(spacing: 8) {
+                Image(systemName: "circle.fill")
+                    .foregroundColor(DS.Colors.warning)
+                    .font(.system(size: 9))
+                Text("Saving clip…")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textPrimary)
+                Spacer()
+            }
+        case .failed(let message):
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(DS.Colors.warning)
+                    .font(.system(size: 11))
+                    .padding(.top, 1)
+                Text(message)
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+                Spacer()
             }
         }
     }
 
-    private var smokeTestButtonEnabled: Bool {
-        switch smokeTest.phase {
-        case .idle, .done, .failed: return true
-        case .recording, .transcribing: return false
+    @ViewBuilder
+    private var clipsList: some View {
+        let clips = companionManager.clipStore.clipsForActiveProject
+        if !clips.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("RECENT CLIPS")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundColor(DS.Colors.textTertiary)
+                ForEach(clips.prefix(3)) { clip in
+                    clipRow(clip)
+                }
+                if clips.count > 3 {
+                    Text("+ \(clips.count - 3) older clip\(clips.count - 3 == 1 ? "" : "s")")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+            }
         }
     }
 
-    private var smokeTestButtonLabel: String {
-        switch smokeTest.phase {
-        case .idle, .failed: return "Test FluidAudio (10s)"
-        case .recording(let s): return "Recording… \(s)s"
-        case .transcribing: return "Transcribing…"
-        case .done: return "Run again"
+    private func clipRow(_ clip: YardTalkClip) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(clip.recordedAt.formatted(date: .omitted, time: .shortened))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                Text("\(Int(clip.durationSeconds.rounded()))s")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+                Spacer()
+            }
+            clipTranscriptCopy(clip)
         }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.white.opacity(0.04))
+        )
     }
 
-    private var smokeTestStatusCopy: String? {
-        switch smokeTest.phase {
-        case .idle:
-            return nil
-        case .recording:
-            return "Speak into your mic. Recording auto-stops at 10s."
-        case .transcribing:
-            return "Running Parakeet on the ANE. First run downloads ~600 MB of model weights from HuggingFace."
-        case .done(let text):
-            return "Result: \(text.isEmpty ? "[empty transcript]" : text)"
-        case .failed(let message):
-            return "Failed: \(message)"
+    @ViewBuilder
+    private func clipTranscriptCopy(_ clip: YardTalkClip) -> some View {
+        if let error = clip.transcriptionError {
+            Text("Transcription failed: \(error)")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if let transcript = clip.transcript {
+            if transcript.isEmpty {
+                Text("(empty)")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+            } else {
+                Text(transcript)
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+        } else {
+            Text("Transcribing…")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
         }
     }
 

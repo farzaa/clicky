@@ -2,17 +2,16 @@
 //  CompanionManager.swift
 //  yardtalk
 //
-//  App-level state for the YardTalk skeleton phase. Tracks the four
-//  permissions YardTalk needs (mic, screen recording, screen content,
-//  accessibility) and exposes them to the menu bar panel. The Clicky
-//  push-to-talk pipeline that previously lived here was stripped — session
-//  recording, transcription (FluidAudio), and synthesis (Claude) ship in
-//  later commits.
+//  App-level state. Tracks the four permissions, owns the project + clip
+//  stores, and hosts the SessionManager that drives hotkey-held recording.
+//  The stores are `@Observable` rather than `@Published`, so SwiftUI views
+//  that read their properties get tracked independently of CompanionManager.
 //
 
 import AVFoundation
 import Combine
 import Foundation
+import Observation
 import ScreenCaptureKit
 import SwiftUI
 
@@ -24,10 +23,10 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var hasScreenContentPermission = false
     @Published private(set) var isRequestingScreenContent = false
 
-    /// Project registry — owns the on-disk projects and active selection.
-    /// `@Observable` rather than `@Published`, so SwiftUI views that read its
-    /// properties get tracked independently of CompanionManager's republish.
     let projectStore = ProjectStore()
+    let clipStore = ClipStore()
+    let transcriptionService = TranscriptionService()
+    let sessionManager: SessionManager
 
     private var permissionPollTimer: Timer?
 
@@ -38,16 +37,46 @@ final class CompanionManager: ObservableObject {
             && hasScreenContentPermission
     }
 
+    init() {
+        self.sessionManager = SessionManager(
+            projectStore: projectStore,
+            clipStore: clipStore,
+            transcriptionService: transcriptionService
+        )
+        // Bring the clip list into sync with whichever project is active
+        // when the app launches, then keep it in sync as the user picks
+        // different projects.
+        clipStore.setActiveProject(projectStore.activeProjectID)
+        observeActiveProjectChanges()
+    }
+
     func start() {
         refreshAllPermissions()
         promptForMicrophoneIfNotDetermined()
         startPermissionPolling()
+        sessionManager.start()
         print("🔑 YardTalk start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
     }
 
     func stop() {
         permissionPollTimer?.invalidate()
         permissionPollTimer = nil
+        sessionManager.stop()
+    }
+
+    /// `withObservationTracking` only fires once per registration, so we
+    /// re-arm inside the change handler. The closure can run on any actor;
+    /// the `Task { @MainActor }` hop ensures we touch ClipStore from main.
+    private func observeActiveProjectChanges() {
+        withObservationTracking {
+            _ = projectStore.activeProjectID
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.clipStore.setActiveProject(self.projectStore.activeProjectID)
+                self.observeActiveProjectChanges()
+            }
+        }
     }
 
     func refreshAllPermissions() {

@@ -60,11 +60,15 @@ final class ProjectStore {
         }
     }
 
-    /// Deletes the project's on-disk file and removes it from the list. If
-    /// the deleted project was active, the next-most-recently-updated one
-    /// becomes active.
+    /// Deletes the project's on-disk file, its clips directory if any, and
+    /// removes it from the list. If the deleted project was active, the
+    /// next-most-recently-updated one becomes active.
     func delete(id: UUID) throws {
         try FileManager.default.removeItem(at: projectFileURL(for: id))
+        // The project's clips directory at projects/<uuid>/ may not exist
+        // yet (no clips recorded), so this best-effort remove is fine.
+        let projectDir = projectsDirectory.appendingPathComponent(id.uuidString, isDirectory: true)
+        try? FileManager.default.removeItem(at: projectDir)
         projects.removeAll(where: { $0.id == id })
         if activeProjectID == id {
             setActive(projects.first?.id)
