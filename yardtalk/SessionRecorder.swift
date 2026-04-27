@@ -351,7 +351,6 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
             )
         }
     }
-}
 
     // MARK: - Audio level monitoring
 
