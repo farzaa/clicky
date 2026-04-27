@@ -13,6 +13,8 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    @State private var devURLInput: String = UserDefaults.standard.string(forKey: "devWorkerBaseURL") ?? ""
+    @State private var devEnabled: Bool = !(UserDefaults.standard.string(forKey: "devWorkerBaseURL") ?? "").isEmpty
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -30,6 +32,12 @@ struct CompanionPanelView: View {
                     .frame(height: 12)
 
                 modelPickerRow
+                    .padding(.horizontal, 16)
+            
+                Spacer()
+                    .frame(height: 12)
+
+                devProxyRow
                     .padding(.horizontal, 16)
             }
 
@@ -570,6 +578,98 @@ struct CompanionPanelView: View {
             .labelsHidden()
             .tint(DS.Colors.accent)
             .scaleEffect(0.8)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var devProxyRow: some View {
+        VStack(spacing: 6) {
+            Text("DEVELOPER")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundColor(DS.Colors.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, 4)
+
+            HStack {
+                HStack(spacing: 8) {
+                    Image(systemName: "wrench.and.screwdriver")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .frame(width: 16)
+
+                    Text("Dev proxy")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+                }
+
+                Spacer()
+
+                Toggle("", isOn: Binding(get: { devEnabled }, set: { newVal in
+                    devEnabled = newVal
+                    if newVal {
+                        if devURLInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            devURLInput = "http://127.0.0.1:8787"
+                        }
+                        companionManager.setDevWorkerBaseURL(devURLInput)
+                    } else {
+                        devURLInput = ""
+                        companionManager.setDevWorkerBaseURL("")
+                    }
+                }))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .tint(DS.Colors.accent)
+                .scaleEffect(0.8)
+            }
+
+            if devEnabled {
+                HStack(spacing: 8) {
+                    TextField("Dev worker URL", text: $devURLInput)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                        .foregroundColor(DS.Colors.textPrimary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                                .fill(Color.white.opacity(0.03))
+                        )
+
+                    Button(action: {
+                        companionManager.setDevWorkerBaseURL(devURLInput)
+                    }) {
+                        Text("Save")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(DS.Colors.textOnAccent)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                Capsule()
+                                    .fill(DS.Colors.accent)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+
+                    Button(action: {
+                        devURLInput = ""
+                        devEnabled = false
+                        companionManager.setDevWorkerBaseURL("")
+                    }) {
+                        Text("Reset")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(DS.Colors.textSecondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                Capsule()
+                                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.8)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                }
+            }
         }
         .padding(.vertical, 4)
     }

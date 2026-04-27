@@ -70,7 +70,16 @@ final class CompanionManager: ObservableObject {
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
+    ///
+    /// For local development you can override this by setting the
+    /// `devWorkerBaseURL` UserDefaults string (e.g. via `defaults write`).
+    /// Example: `defaults write com.your.bundle.identifier devWorkerBaseURL "http://127.0.0.1:8787"`
+    private static var workerBaseURL: String {
+        if let dev = UserDefaults.standard.string(forKey: "devWorkerBaseURL"), !dev.isEmpty {
+            return dev
+        }
+        return "https://your-worker-name.your-subdomain.workers.dev"
+    }
 
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
@@ -109,6 +118,26 @@ final class CompanionManager: ObservableObject {
 
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+
+    /// Optional developer override for the worker base URL used for API proxying.
+    /// Stored in UserDefaults under `devWorkerBaseURL` so it persists across runs.
+    @Published var devWorkerBaseURLText: String = UserDefaults.standard.string(forKey: "devWorkerBaseURL") ?? ""
+
+    func setDevWorkerBaseURL(_ url: String) {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            UserDefaults.standard.removeObject(forKey: "devWorkerBaseURL")
+        } else {
+            UserDefaults.standard.set(trimmed, forKey: "devWorkerBaseURL")
+        }
+        devWorkerBaseURLText = trimmed
+
+        // Recreate API clients so they pick up the new proxy URL immediately.
+        claudeAPI = ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+        elevenLabsTTSClient = ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
+        // Trigger TLS warmup on new client instance
+        _ = claudeAPI
+    }
 
     func setSelectedModel(_ model: String) {
         selectedModel = model
