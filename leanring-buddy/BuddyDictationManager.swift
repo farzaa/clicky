@@ -262,7 +262,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         return AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined
     }
 
-    private let transcriptionProvider: any BuddyTranscriptionProvider
+    private var transcriptionProvider: any BuddyTranscriptionProvider
     private let audioEngine = AVAudioEngine()
     private var activeTranscriptionSession: (any BuddyStreamingTranscriptionSession)?
     private var activeStartSource: BuddyDictationStartSource?
@@ -285,6 +285,19 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         self.transcriptionProvider = transcriptionProvider
         self.transcriptionProviderDisplayName = transcriptionProvider.displayName
         super.init()
+    }
+
+    /// Swaps the active transcription provider between push-to-talk sessions.
+    /// Safe to call at any time — if a session is in progress the change takes
+    /// effect after the current session finishes.
+    func switchTranscriptionProvider(to provider: any BuddyTranscriptionProvider) {
+        guard !isDictationInProgress else {
+            print("⚠️ Transcription: provider switch deferred — session in progress")
+            return
+        }
+        transcriptionProvider = provider
+        transcriptionProviderDisplayName = provider.displayName
+        print("🎙️ Transcription: switched to \(provider.displayName)")
     }
 
     func updateContextualKeyterms(_ contextualKeyterms: [String]) {
