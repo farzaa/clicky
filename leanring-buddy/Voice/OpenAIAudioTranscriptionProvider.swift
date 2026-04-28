@@ -17,21 +17,15 @@ struct OpenAIAudioTranscriptionProviderError: LocalizedError {
 }
 
 final class OpenAIAudioTranscriptionProvider: BuddyTranscriptionProvider {
-    private let apiKey = AppBundleConfiguration.stringValue(forKey: "OpenAIAPIKey")
+    private static let transcribeProxyURL = "http://localhost:8787/transcribe"
     private let modelName = AppBundleConfiguration.stringValue(forKey: "OpenAITranscriptionModel")
         ?? "gpt-4o-transcribe"
 
     let displayName = "OpenAI"
     let requiresSpeechRecognitionPermission = false
 
-    var isConfigured: Bool {
-        apiKey != nil
-    }
-
-    var unavailableExplanation: String? {
-        guard !isConfigured else { return nil }
-        return "OpenAI transcription is not configured. Add OpenAIAPIKey to Info.plist."
-    }
+    var isConfigured: Bool { true }
+    var unavailableExplanation: String? { nil }
 
     func startStreamingSession(
         keyterms: [String],
@@ -39,14 +33,8 @@ final class OpenAIAudioTranscriptionProvider: BuddyTranscriptionProvider {
         onFinalTranscriptReady: @escaping (String) -> Void,
         onError: @escaping (Error) -> Void
     ) async throws -> any BuddyStreamingTranscriptionSession {
-        guard let apiKey else {
-            throw OpenAIAudioTranscriptionProviderError(
-                message: unavailableExplanation ?? "OpenAI transcription is not configured."
-            )
-        }
-
         return OpenAIAudioTranscriptionSession(
-            apiKey: apiKey,
+            proxyURL: Self.transcribeProxyURL,
             modelName: modelName,
             keyterms: keyterms,
             onTranscriptUpdate: onTranscriptUpdate,
@@ -63,10 +51,9 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
         let text: String
     }
 
-    private static let transcriptionURL = URL(string: "https://api.openai.com/v1/audio/transcriptions")!
     private static let targetSampleRate = 16_000
 
-    private let apiKey: String
+    private let proxyURL: URL
     private let modelName: String
     private let keyterms: [String]
     private let onTranscriptUpdate: (String) -> Void
@@ -86,14 +73,14 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
     private var transcriptionUploadTask: Task<Void, Never>?
 
     init(
-        apiKey: String,
+        proxyURL: String,
         modelName: String,
         keyterms: [String],
         onTranscriptUpdate: @escaping (String) -> Void,
         onFinalTranscriptReady: @escaping (String) -> Void,
         onError: @escaping (Error) -> Void
     ) {
-        self.apiKey = apiKey
+        self.proxyURL = URL(string: proxyURL)!
         self.modelName = modelName
         self.keyterms = keyterms
         self.onTranscriptUpdate = onTranscriptUpdate
@@ -113,15 +100,15 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
             return
         }
 
-        stateQueue.async {
-            guard !self.hasRequestedFinalTranscript, !self.isCancelled else { return }
+        stateQueue.async { [weak self] in
+            guard let self, !self.hasRequestedFinalTranscript, !self.isCancelled else { return }
             self.bufferedPCM16AudioData.append(audioPCM16Data)
         }
     }
 
     func requestFinalTranscript() {
-        stateQueue.async {
-            guard !self.hasRequestedFinalTranscript, !self.isCancelled else { return }
+        stateQueue.async { [weak self] in
+            guard let self, !self.hasRequestedFinalTranscript, !self.isCancelled else { return }
             self.hasRequestedFinalTranscript = true
 
             let bufferedPCM16AudioData = self.bufferedPCM16AudioData
@@ -132,13 +119,13 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
     }
 
     func cancel() {
-        stateQueue.async {
+        stateQueue.async { [weak self] in
+            guard let self else { return }
             self.isCancelled = true
             self.bufferedPCM16AudioData.removeAll(keepingCapacity: false)
         }
 
         transcriptionUploadTask?.cancel()
-        urlSession.invalidateAndCancel()
     }
 
     private func transcribeBufferedAudio(_ bufferedPCM16AudioData: Data) async {
@@ -176,9 +163,8 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
 
     private func requestTranscription(for wavAudioData: Data) async throws -> String {
         let multipartBoundary = "Boundary-\(UUID().uuidString)"
-        var request = URLRequest(url: Self.transcriptionURL)
+        var request = URLRequest(url: proxyURL)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(multipartBoundary)", forHTTPHeaderField: "Content-Type")
 
         let requestBodyData = makeMultipartRequestBody(
