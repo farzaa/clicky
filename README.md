@@ -90,7 +90,7 @@ cd worker
 npx wrangler dev
 ```
 
-This starts a local server (usually `http://localhost:8787`) that behaves exactly like the deployed Worker. You'll need to create a `.dev.vars` file in the `worker/` directory with your keys:
+This starts a local server (usually `http://localhost:8787`) that behaves exactly like the deployed Worker. There isn't an in-app screen for API keys right now, so if you want to use your own keys this Worker config is where you do it. Create a `.dev.vars` file in the `worker/` directory with your keys:
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
@@ -99,14 +99,14 @@ ELEVENLABS_API_KEY=...
 ELEVENLABS_VOICE_ID=...
 ```
 
-Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing. Grep for `clicky-proxy` to find them all.
+Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing. Search for the placeholder Worker URL to find every spot that needs updating.
 
 ### 3. Update the proxy URLs in the app
 
 The app has the Worker URL hardcoded in a few places. Search for `your-worker-name.your-subdomain.workers.dev` and replace it with your Worker URL:
 
 ```bash
-grep -r "clicky-proxy" leanring-buddy/
+grep -r "your-worker-name.your-subdomain.workers.dev" leanring-buddy/
 ```
 
 You'll find it in:
