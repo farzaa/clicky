@@ -64,6 +64,12 @@ struct CompanionPanelView: View {
 
                 dmFarzaButton
                     .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 8)
+
+                clearConversationHistoryButton
+                    .padding(.horizontal, 16)
             }
 
             Spacer()
@@ -662,6 +668,36 @@ struct CompanionPanelView: View {
                 }
             }
             .foregroundColor(DS.Colors.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    // MARK: - Clear Conversation History
+
+    private var clearConversationHistoryButton: some View {
+        Button(action: {
+            companionManager.clearConversationHistory()
+        }) {
+            HStack(spacing: 8) {
+                Image(systemName: "trash")
+                    .font(.system(size: 12, weight: .medium))
+
+                Text("Clear History")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundColor(DS.Colors.textTertiary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
