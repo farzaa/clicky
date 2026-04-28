@@ -122,6 +122,9 @@ struct BlueCursorView: View {
         let localY = screenFrame.height - (mouseLocation.y - screenFrame.origin.y)
         _cursorPosition = State(initialValue: CGPoint(x: localX + 35, y: localY + 25))
         _isCursorOnThisScreen = State(initialValue: screenFrame.contains(mouseLocation))
+        // Seed typing-reset tracker from current mouse location so the first
+        // mouse move after a keypress is detected correctly from the start.
+        _lastMouseLocationForTypingDetection = State(initialValue: mouseLocation)
     }
     @State private var timer: Timer?
     @State private var welcomeText: String = ""
@@ -129,6 +132,9 @@ struct BlueCursorView: View {
     @State private var bubbleSize: CGSize = .zero
     @State private var bubbleOpacity: Double = 1.0
     @State private var cursorOpacity: Double = 0.0
+    /// Tracks the previous mouse location so we can detect movement and reset
+    /// the typing-hide state — matching NSCursor.setHiddenUntilMouseMoves(true).
+    @State private var lastMouseLocationForTypingDetection: CGPoint = .zero
 
     // MARK: - Buddy Navigation State
 
@@ -308,7 +314,7 @@ struct BlueCursorView: View {
                 .rotationEffect(.degrees(triangleRotationDegrees))
                 .shadow(color: DS.Colors.overlayCursorBlue, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
                 .scaleEffect(buddyFlightScale)
-                .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
+                .opacity(buddyIsVisibleOnThisScreen && !shouldHideForTyping && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(
                     buddyNavigationMode == .followingCursor
@@ -386,6 +392,14 @@ struct BlueCursorView: View {
         }
     }
 
+    /// True when the cursor should be hidden because the user is typing in idle state.
+    /// Mirrors macOS NSCursor.setHiddenUntilMouseMoves(true) — hide on keypress,
+    /// reappear on mouse move. Never hides during voice interaction (listening/
+    /// processing/responding) so the waveform and spinner stay visible.
+    private var shouldHideForTyping: Bool {
+        companionManager.isUserTyping && companionManager.voiceState == .idle
+    }
+
     /// Whether the buddy triangle should be visible on this screen.
     /// True when cursor is on this screen during normal following, or
     /// when navigating/pointing at a target on this screen. When another
@@ -412,6 +426,20 @@ struct BlueCursorView: View {
         timer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { _ in
             let mouseLocation = NSEvent.mouseLocation
             self.isCursorOnThisScreen = self.screenFrame.contains(mouseLocation)
+
+            // When typing-hide is active, any mouse movement resets it —
+            // mirroring the "until mouse moves" part of NSCursor.setHiddenUntilMouseMoves.
+            // Runs before the navigation early-returns so it fires regardless of buddy mode.
+            if self.companionManager.isUserTyping {
+                let movementDistance = hypot(
+                    mouseLocation.x - self.lastMouseLocationForTypingDetection.x,
+                    mouseLocation.y - self.lastMouseLocationForTypingDetection.y
+                )
+                if movementDistance > 1.0 {
+                    self.companionManager.resetUserTyping()
+                }
+            }
+            self.lastMouseLocationForTypingDetection = mouseLocation
 
             // During forward flight or pointing, the buddy is NOT interrupted by
             // mouse movement — it completes its full animation and return flight.
