@@ -60,6 +60,14 @@ struct CompanionPanelView: View {
 
             if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
                 Spacer()
+                    .frame(height: 12)
+
+                screenshotSettingsSection
+                    .padding(.horizontal, 16)
+            }
+
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
                     .frame(height: 16)
 
                 dmFarzaButton
@@ -639,6 +647,112 @@ struct CompanionPanelView: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
+    }
+
+    // MARK: - Screenshot Settings
+
+    private var screenshotSettingsSection: some View {
+        VStack(spacing: 2) {
+            Text("SCREENSHOT")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundColor(DS.Colors.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, 6)
+
+            primaryScreenOnlyToggleRow
+
+            activeWindowOnlyToggleRow
+
+            jpegQualitySliderRow
+        }
+    }
+
+    private var primaryScreenOnlyToggleRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "display")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                Text("Primary screen only")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { companionManager.captureOnlyPrimaryScreen },
+                set: { companionManager.setCaptureOnlyPrimaryScreen($0) }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .tint(DS.Colors.accent)
+            .scaleEffect(0.8)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var activeWindowOnlyToggleRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "macwindow")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                Text("Active window only")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { companionManager.captureActiveWindowOnly },
+                set: { companionManager.setCaptureActiveWindowOnly($0) }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .tint(DS.Colors.accent)
+            .scaleEffect(0.8)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var jpegQualitySliderRow: some View {
+        VStack(spacing: 6) {
+            HStack {
+                HStack(spacing: 8) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .frame(width: 16)
+
+                    Text("Image quality")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+                }
+
+                Spacer()
+
+                Text("\(Int(companionManager.screenshotJPEGQuality * 100))%")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+
+            Slider(
+                value: Binding(
+                    get: { companionManager.screenshotJPEGQuality },
+                    set: { companionManager.setScreenshotJPEGQuality($0) }
+                ),
+                in: 0.3...1.0,
+                step: 0.1
+            )
+            .tint(DS.Colors.accent)
+        }
+        .padding(.vertical, 4)
     }
 
     // MARK: - DM Farza Button
