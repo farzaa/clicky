@@ -16,11 +16,22 @@ struct leanring_buddyApp: App {
     @NSApplicationDelegateAdaptor(CompanionAppDelegate.self) var appDelegate
 
     var body: some Scene {
-        // The app lives entirely in the menu bar panel managed by the AppDelegate.
-        // This empty Settings scene satisfies SwiftUI's requirement for at least
-        // one scene but is never shown (LSUIElement=true removes the app menu).
+        // SwiftUI requires at least one scene. Users can reach this via
+        // Cmd+, so show a helpful redirect instead of a blank window.
         Settings {
-            EmptyView()
+            VStack(spacing: 12) {
+                Image(systemName: "menubar.arrow.up.rectangle")
+                    .font(.system(size: 32))
+                    .foregroundColor(.secondary)
+
+                Text("Clicky lives in your menu bar")
+                    .font(.system(size: 14, weight: .medium))
+
+                Text("Click the menu bar icon to open controls.")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
+            .frame(width: 260, height: 140)
         }
     }
 }
