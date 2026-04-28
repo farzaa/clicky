@@ -799,7 +799,8 @@ class OverlayWindowManager {
             )
 
             let hostingView = NSHostingView(rootView: contentView)
-            hostingView.frame = screen.frame
+            hostingView.frame = NSRect(origin: .zero, size: screen.frame.size)
+            hostingView.autoresizingMask = [.width, .height]
             window.contentView = hostingView
 
             overlayWindows.append(window)
