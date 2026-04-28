@@ -107,6 +107,18 @@ final class CompanionManager: ObservableObject {
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
 
+    /// The user's chosen push-to-talk modifier combination. Persisted to UserDefaults
+    /// so it survives app restarts. Defaults to Ctrl+Option (the original hardcoded shortcut).
+    @Published var selectedPushToTalkModifierCombination: BuddyPushToTalkShortcut.ShortcutOption = BuddyPushToTalkShortcut.currentShortcutOption
+
+    func setSelectedPushToTalkModifierCombination(_ newShortcutOption: BuddyPushToTalkShortcut.ShortcutOption) {
+        selectedPushToTalkModifierCombination = newShortcutOption
+        UserDefaults.standard.set(newShortcutOption.rawValue, forKey: BuddyPushToTalkShortcut.pushToTalkShortcutUserDefaultsKey)
+        // Reset the monitor's pressed state so the old shortcut doesn't get stuck
+        // in the "pressed" position when the user switches to a new combination.
+        globalPushToTalkShortcutMonitor.resetShortcutPressedState()
+    }
+
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
 
