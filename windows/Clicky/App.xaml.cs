@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -123,11 +124,16 @@ public partial class App : Application
 
     private void InstallTrayIcon()
     {
+        // H.NotifyIcon's IconSource (ImageSource) path can't reliably consume
+        // a programmatically-rendered bitmap (it tries to round-trip via a
+        // BitmapImage.UriSource it never has). The Icon property accepts a
+        // System.Drawing.Icon directly and bypasses that whole conversion,
+        // so we generate or load a real Win32 icon instead.
         _trayIcon = new TaskbarIcon
         {
-            ToolTipText = "Clicky — hold Ctrl+Alt to talk",
-            IconSource = LoadTrayIconSource(),
-            // No built-in context menu — left- and right-click both open the
+            ToolTipText = "Clicky - hold Ctrl+Alt to talk",
+            Icon = LoadTrayIcon(),
+            // No built-in context menu - left- and right-click both open the
             // custom popover. Quit lives inside the panel.
             NoLeftClickDelay = true,
         };
@@ -184,7 +190,7 @@ public partial class App : Application
     /// generated blue-dot placeholder if the resource is missing so the app
     /// is runnable before an artist drops a real .ico in.
     /// </summary>
-    private static ImageSource LoadTrayIconSource()
+    private static System.Drawing.Icon LoadTrayIcon()
     {
         try
         {
@@ -192,13 +198,8 @@ public partial class App : Application
             var packResource = GetResourceStream(packIconUri);
             if (packResource?.Stream is not null)
             {
-                var bundledIconBitmap = new BitmapImage();
-                bundledIconBitmap.BeginInit();
-                bundledIconBitmap.CacheOption = BitmapCacheOption.OnLoad;
-                bundledIconBitmap.StreamSource = packResource.Stream;
-                bundledIconBitmap.EndInit();
-                bundledIconBitmap.Freeze();
-                return bundledIconBitmap;
+                using var iconStream = packResource.Stream;
+                return new System.Drawing.Icon(iconStream);
             }
         }
         catch
@@ -206,39 +207,45 @@ public partial class App : Application
             // Fall through to the generated placeholder.
         }
 
-        return CreatePlaceholderBlueDotBitmap();
+        return CreatePlaceholderBlueDotIcon();
     }
 
-    private static BitmapSource CreatePlaceholderBlueDotBitmap()
+    /// <summary>
+    /// Builds a 32x32 transparent-background blue dot Icon using GDI so
+    /// H.NotifyIcon can take it directly. Used when no real clicky-tray.ico
+    /// resource has been bundled.
+    /// </summary>
+    private static System.Drawing.Icon CreatePlaceholderBlueDotIcon()
     {
         const int iconPixelSize = 32;
         const int iconPadding = 6;
 
-        var drawingVisual = new DrawingVisual();
-        using (var drawingContext = drawingVisual.RenderOpen())
+        using var bitmap = new System.Drawing.Bitmap(
+            iconPixelSize,
+            iconPixelSize,
+            System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+
+        using (var graphics = System.Drawing.Graphics.FromImage(bitmap))
         {
-            var overlayCursorBlue = new SolidColorBrush(Color.FromRgb(0x33, 0x80, 0xFF));
-            overlayCursorBlue.Freeze();
+            graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            graphics.Clear(System.Drawing.Color.Transparent);
 
-            var circleCenter = new System.Windows.Point(iconPixelSize / 2.0, iconPixelSize / 2.0);
-            var circleRadius = (iconPixelSize - (iconPadding * 2)) / 2.0;
+            using var overlayCursorBlueBrush = new System.Drawing.SolidBrush(
+                System.Drawing.Color.FromArgb(0xFF, 0x33, 0x80, 0xFF));
 
-            drawingContext.DrawEllipse(
-                brush: overlayCursorBlue,
-                pen: null,
-                center: circleCenter,
-                radiusX: circleRadius,
-                radiusY: circleRadius);
+            graphics.FillEllipse(
+                overlayCursorBlueBrush,
+                iconPadding,
+                iconPadding,
+                iconPixelSize - (iconPadding * 2),
+                iconPixelSize - (iconPadding * 2));
         }
 
-        var renderTarget = new RenderTargetBitmap(
-            pixelWidth: iconPixelSize,
-            pixelHeight: iconPixelSize,
-            dpiX: 96,
-            dpiY: 96,
-            pixelFormat: PixelFormats.Pbgra32);
-        renderTarget.Render(drawingVisual);
-        renderTarget.Freeze();
-        return renderTarget;
+        // GetHicon hands ownership of the HICON to us; FromHandle doesn't take
+        // ownership, so we'd normally have to clean it up. The TaskbarIcon
+        // keeps this Icon for the lifetime of the app, so the leak is bounded
+        // to a single 32x32 cursor handle.
+        var hIcon = bitmap.GetHicon();
+        return (System.Drawing.Icon)System.Drawing.Icon.FromHandle(hIcon).Clone();
     }
 }

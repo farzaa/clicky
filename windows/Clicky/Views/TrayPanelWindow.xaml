@@ -25,6 +25,119 @@
          not clipped to the window bounds. -->
     <Grid Margin="16">
 
+        <!-- Window-local resources. MUST be declared before any descendant
+             that references them via {StaticResource ...}: WPF resolves
+             static-resource markup extensions at parse time and does NOT
+             support forward references within the same XAML scope. The
+             DynamicResource brushes below resolve later via the merged
+             App.xaml dictionaries, which is why they don't need to live
+             here. -->
+        <Grid.Resources>
+
+            <!-- Converter: collapses an element when its bound string is empty. -->
+            <views:StringToVisibilityConverter x:Key="StringToVisibilityConverter"/>
+
+            <!-- Converter: maps bool -> Visibility (pass "Invert" as parameter to flip). -->
+            <views:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+
+            <!-- Primary CTA button used by onboarding "Get started". -->
+            <Style x:Key="PrimaryButtonStyle" TargetType="Button">
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Foreground" Value="White"/>
+                <Setter Property="FontFamily" Value="{DynamicResource PrimaryFontFamily}"/>
+                <Setter Property="FontSize" Value="13"/>
+                <Setter Property="FontWeight" Value="SemiBold"/>
+                <Setter Property="Padding" Value="14,8"/>
+                <Setter Property="Background" Value="{DynamicResource OverlayCursorBlue}"/>
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="SnapsToDevicePixels" Value="True"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="ButtonSurface"
+                                    Background="{TemplateBinding Background}"
+                                    CornerRadius="6"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="ButtonSurface" Property="Opacity" Value="0.9"/>
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="ButtonSurface" Property="Opacity" Value="0.8"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- Segmented-control option button. Highlights via the Tag
+                 property bound to IsSelected. -->
+            <Style x:Key="ModelOptionButtonStyle" TargetType="Button">
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Foreground" Value="{DynamicResource TextTertiary}"/>
+                <Setter Property="FontFamily" Value="{DynamicResource PrimaryFontFamily}"/>
+                <Setter Property="FontSize" Value="11"/>
+                <Setter Property="FontWeight" Value="Medium"/>
+                <Setter Property="Padding" Value="10,5"/>
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="SnapsToDevicePixels" Value="True"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="OptionBackground"
+                                    Background="Transparent"
+                                    CornerRadius="5"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <!-- Selected state drives the highlight via the Tag bound to IsSelected -->
+                                <Trigger Property="Tag" Value="True">
+                                    <Setter TargetName="OptionBackground" Property="Background" Value="{DynamicResource TranslucentFillMid}"/>
+                                    <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+                                </Trigger>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- Quiet footer button (Quit link) -->
+            <Style x:Key="FooterTextButtonStyle" TargetType="Button">
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+                <Setter Property="FontFamily" Value="{DynamicResource PrimaryFontFamily}"/>
+                <Setter Property="FontSize" Value="12"/>
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="Padding" Value="4,6"/>
+                <Setter Property="HorizontalContentAlignment" Value="Left"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border Background="Transparent" Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                  VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+        </Grid.Resources>
+
         <!-- Panel shell: dark rounded surface with a subtle border and a
              two-layer drop shadow to match the macOS panel's depth. -->
         <Border Background="{DynamicResource Background}"
@@ -283,115 +396,6 @@
 
             </StackPanel>
         </Border>
-
-        <!-- Window-local resources: button styles that depend on the design
-             system brushes. Declared last so the brushes resolve via the
-             merged App.xaml dictionaries. -->
-        <Grid.Resources>
-
-            <!-- Converter: collapses an element when its bound string is empty. -->
-            <views:StringToVisibilityConverter x:Key="StringToVisibilityConverter"/>
-
-            <!-- Converter: maps bool → Visibility (pass "Invert" as parameter to flip). -->
-            <views:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
-
-            <!-- Primary CTA button used by onboarding "Get started". -->
-            <Style x:Key="PrimaryButtonStyle" TargetType="Button">
-                <Setter Property="Cursor" Value="Hand"/>
-                <Setter Property="Foreground" Value="White"/>
-                <Setter Property="FontFamily" Value="{DynamicResource PrimaryFontFamily}"/>
-                <Setter Property="FontSize" Value="13"/>
-                <Setter Property="FontWeight" Value="SemiBold"/>
-                <Setter Property="Padding" Value="14,8"/>
-                <Setter Property="Background" Value="{DynamicResource OverlayCursorBlue}"/>
-                <Setter Property="BorderThickness" Value="0"/>
-                <Setter Property="SnapsToDevicePixels" Value="True"/>
-                <Setter Property="Template">
-                    <Setter.Value>
-                        <ControlTemplate TargetType="Button">
-                            <Border x:Name="ButtonSurface"
-                                    Background="{TemplateBinding Background}"
-                                    CornerRadius="6"
-                                    Padding="{TemplateBinding Padding}">
-                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                            </Border>
-                            <ControlTemplate.Triggers>
-                                <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter TargetName="ButtonSurface" Property="Opacity" Value="0.9"/>
-                                </Trigger>
-                                <Trigger Property="IsPressed" Value="True">
-                                    <Setter TargetName="ButtonSurface" Property="Opacity" Value="0.8"/>
-                                </Trigger>
-                            </ControlTemplate.Triggers>
-                        </ControlTemplate>
-                    </Setter.Value>
-                </Setter>
-            </Style>
-
-            <!-- Segmented-control option button. Highlights via the Tag
-                 property bound to IsSelected. -->
-            <Style x:Key="ModelOptionButtonStyle" TargetType="Button">
-                <Setter Property="Cursor" Value="Hand"/>
-                <Setter Property="Foreground" Value="{DynamicResource TextTertiary}"/>
-                <Setter Property="FontFamily" Value="{DynamicResource PrimaryFontFamily}"/>
-                <Setter Property="FontSize" Value="11"/>
-                <Setter Property="FontWeight" Value="Medium"/>
-                <Setter Property="Padding" Value="10,5"/>
-                <Setter Property="Background" Value="Transparent"/>
-                <Setter Property="BorderThickness" Value="0"/>
-                <Setter Property="SnapsToDevicePixels" Value="True"/>
-                <Setter Property="Template">
-                    <Setter.Value>
-                        <ControlTemplate TargetType="Button">
-                            <Border x:Name="OptionBackground"
-                                    Background="Transparent"
-                                    CornerRadius="5"
-                                    Padding="{TemplateBinding Padding}">
-                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                            </Border>
-                            <ControlTemplate.Triggers>
-                                <!-- Selected state drives the highlight via the Tag bound to IsSelected -->
-                                <Trigger Property="Tag" Value="True">
-                                    <Setter TargetName="OptionBackground" Property="Background" Value="{DynamicResource TranslucentFillMid}"/>
-                                    <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
-                                </Trigger>
-                                <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
-                                </Trigger>
-                            </ControlTemplate.Triggers>
-                        </ControlTemplate>
-                    </Setter.Value>
-                </Setter>
-            </Style>
-
-            <!-- Quiet footer button (Quit link) -->
-            <Style x:Key="FooterTextButtonStyle" TargetType="Button">
-                <Setter Property="Cursor" Value="Hand"/>
-                <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
-                <Setter Property="FontFamily" Value="{DynamicResource PrimaryFontFamily}"/>
-                <Setter Property="FontSize" Value="12"/>
-                <Setter Property="Background" Value="Transparent"/>
-                <Setter Property="BorderThickness" Value="0"/>
-                <Setter Property="Padding" Value="4,6"/>
-                <Setter Property="HorizontalContentAlignment" Value="Left"/>
-                <Setter Property="Template">
-                    <Setter.Value>
-                        <ControlTemplate TargetType="Button">
-                            <Border Background="Transparent" Padding="{TemplateBinding Padding}">
-                                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                                  VerticalAlignment="Center"/>
-                            </Border>
-                            <ControlTemplate.Triggers>
-                                <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
-                                </Trigger>
-                            </ControlTemplate.Triggers>
-                        </ControlTemplate>
-                    </Setter.Value>
-                </Setter>
-            </Style>
-
-        </Grid.Resources>
 
     </Grid>
 </Window>
