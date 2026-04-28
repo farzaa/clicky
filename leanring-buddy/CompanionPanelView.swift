@@ -62,6 +62,9 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 16)
 
+                autoCopyResponseToggleRow
+                    .padding(.horizontal, 16)
+
                 dmFarzaButton
                     .padding(.horizontal, 16)
             }
@@ -544,6 +547,35 @@ struct CompanionPanelView: View {
     }
 
 
+
+    // MARK: - Auto-Copy Response Toggle
+
+    private var autoCopyResponseToggleRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "doc.on.clipboard")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                Text("Copy responses")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { companionManager.isAutoCopyResponseEnabled },
+                set: { companionManager.setAutoCopyResponseEnabled($0) }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .tint(DS.Colors.accent)
+            .scaleEffect(0.8)
+        }
+        .padding(.vertical, 4)
+    }
 
     // MARK: - Show Clicky Cursor Toggle
 
