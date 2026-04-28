@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- net8.0-windows10.0.19041.0 enables WinRT interop for Windows.Graphics.Capture
+         in later milestones. 19041 (20H1) is the minimum SDK with the full API surface. -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <RootNamespace>Clicky</RootNamespace>
+    <AssemblyName>Clicky</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- Single high-DPI aware WPF app, no console window -->
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Modern tray icon for WPF. H.NotifyIcon is the actively-maintained fork
+         of WPF-NotifyIcon and supports .NET 8 + per-monitor DPI cleanly. -->
+    <PackageReference Include="H.NotifyIcon.Wpf" Version="2.1.3" />
+    <!-- Source-generated MVVM primitives (ObservableObject, RelayCommand). -->
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.3.2" />
+    <!-- Microphone capture (WasapiCapture) + MP3 playback for ElevenLabs TTS.
+         NAudio ships the MP3 frame reader we need; no ffmpeg/GStreamer required. -->
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+</Project>

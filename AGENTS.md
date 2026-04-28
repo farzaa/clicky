@@ -5,16 +5,24 @@
 
 ## Overview
 
-macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to Claude. Claude responds with text (streamed via SSE) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements Claude references on any connected monitor.
+Cross-platform companion app. Lives entirely in the OS's system tray / menu bar (no dock icon, no main window). Clicking the tray icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option on macOS, ctrl+alt on Windows) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to the active AI provider (Claude or Gemini). The AI responds with text (streamed via SSE) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements the AI references on any connected monitor.
 
-All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in the app.
+All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in either app.
+
+## Repository layout
+
+| Folder | Purpose |
+|--------|---------|
+| `leanring-buddy/` + `leanring-buddy.xcodeproj` | macOS menu bar app. Swift + SwiftUI + AppKit. Ships first, most features live here. |
+| `windows/` | Windows port. C# + WPF on .NET 8. Currently at Milestone 1 (foundation). See `windows/README.md` for milestone progress. |
+| `worker/` | Cloudflare Worker proxy. Shared by both apps unchanged — same routes, same secrets. |
 
 ## Architecture
 
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via Cloudflare Worker proxy with SSE streaming
+- **AI Chat**: User-selectable provider — Claude (Sonnet 4.6 default, Opus 4.6 optional) or Gemini (2.5 Flash, 2.5 Pro). Both route through the Cloudflare Worker proxy with SSE streaming.
 - **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with OpenAI and Apple Speech as fallbacks
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
@@ -30,10 +38,11 @@ The app never calls external APIs directly. All requests go through a Cloudflare
 | Route | Upstream | Purpose |
 |-------|----------|---------|
 | `POST /chat` | `api.anthropic.com/v1/messages` | Claude vision + streaming chat |
+| `POST /chat-gemini` | `generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent` | Gemini vision + streaming chat. The `model` field in the request body is used to build the upstream URL path. |
 | `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
 | `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Fetches a short-lived (480s) AssemblyAI websocket token |
 
-Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`
+Worker secrets: `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`
 Worker vars: `ELEVENLABS_VOICE_ID`
 
 ### Key Architecture Decisions
@@ -67,6 +76,7 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `BuddyAudioConversionSupport.swift` | ~108 | Audio conversion helpers. Converts live mic buffers to PCM16 mono audio and builds WAV payloads for upload-based providers. |
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
 | `ClaudeAPI.swift` | ~291 | Claude vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
+| `GeminiAPI.swift` | ~240 | Google Gemini vision API client. Mirrors `ClaudeAPI`'s public streaming signature so `CompanionManager` can swap providers transparently. Translates the Gemini-specific request shape (`contents`/`parts`/`inline_data`, `systemInstruction`, `role: "model"`) and parses Gemini's SSE events. Routes through the Worker `/chat-gemini` route — the model ID travels in the body and the Worker plugs it into the upstream URL path. |
 | `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
 | `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
@@ -98,6 +108,7 @@ npm install
 
 # Add secrets
 npx wrangler secret put ANTHROPIC_API_KEY
+npx wrangler secret put GEMINI_API_KEY
 npx wrangler secret put ASSEMBLYAI_API_KEY
 npx wrangler secret put ELEVENLABS_API_KEY
 

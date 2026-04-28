@@ -1,0 +1,92 @@
+<Window x:Class="Clicky.Views.OverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        Topmost="True"
+        ResizeMode="NoResize"
+        Focusable="False"
+        IsHitTestVisible="False"
+        SnapsToDevicePixels="False"
+        UseLayoutRounding="False"
+        ShowActivated="False"
+        Title="Clicky Overlay"
+        Width="1"
+        Height="1">
+
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/Resources/DesignSystem.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <!--
+        The canvas fills the whole overlay; the triangle and the pointer
+        bubble position themselves via Canvas.Left / Canvas.Top in DIPs
+        relative to the overlay's top-left.
+
+        Triangle geometry (equilateral, 16 DIPs):
+          - base    from (0,   13.86) to (16,  13.86)
+          - apex    at   (8,    0)
+          - centroid is the average of the three points = (8, ~4.62).
+        The rotation + uniform scale are applied around the centroid so the
+        "visual anchor" lines up with the computed cursor-offset position.
+    -->
+    <Canvas x:Name="OverlayCanvas" Background="Transparent" IsHitTestVisible="False">
+
+        <!-- Blue triangle cursor -->
+        <Polygon x:Name="BlueTriangle"
+                 Points="8,0 16,13.856 0,13.856"
+                 Fill="{StaticResource OverlayCursorBlue}"
+                 IsHitTestVisible="False"
+                 Visibility="Collapsed"
+                 RenderTransformOrigin="0.5,0.3333">
+            <Polygon.Effect>
+                <DropShadowEffect Color="#3380FF"
+                                  BlurRadius="12"
+                                  ShadowDepth="0"
+                                  Opacity="0.85"/>
+            </Polygon.Effect>
+            <Polygon.RenderTransform>
+                <TransformGroup>
+                    <ScaleTransform x:Name="BlueTriangleScale" ScaleX="1" ScaleY="1"/>
+                    <RotateTransform x:Name="BlueTriangleRotation" Angle="-35"/>
+                </TransformGroup>
+            </Polygon.RenderTransform>
+        </Polygon>
+
+        <!--
+            Pointer speech bubble. Positioned relative to the triangle via
+            Canvas.Left / Canvas.Top updates at runtime. Matches the macOS
+            navigationBubble: rounded 6pt pill, white 11pt text, blue fill,
+            blue drop-shadow glow, scale-bounce entrance (0.5 → 1.0).
+        -->
+        <Border x:Name="PointerBubble"
+                Background="{StaticResource OverlayCursorBlue}"
+                CornerRadius="6"
+                Padding="8,4"
+                IsHitTestVisible="False"
+                Visibility="Collapsed"
+                RenderTransformOrigin="0.5,0.5">
+            <Border.Effect>
+                <DropShadowEffect Color="#3380FF"
+                                  BlurRadius="10"
+                                  ShadowDepth="0"
+                                  Opacity="0.55"/>
+            </Border.Effect>
+            <Border.RenderTransform>
+                <ScaleTransform x:Name="PointerBubbleScale" ScaleX="0.5" ScaleY="0.5"/>
+            </Border.RenderTransform>
+            <TextBlock x:Name="PointerBubbleText"
+                       FontFamily="{StaticResource PrimaryFontFamily}"
+                       FontSize="11"
+                       FontWeight="Medium"
+                       Foreground="White"
+                       Text=""/>
+        </Border>
+    </Canvas>
+</Window>

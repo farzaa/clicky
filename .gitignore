@@ -1,8 +1,14 @@
 worker/node_modules/
 worker/.dev.vars
+worker/.secrets.local
 .DS_Store
 *.xcuserstate
 build/
 releases/
 .claude/
 coding-plans/
+
+# Windows / .NET build output
+windows/**/bin/
+windows/**/obj/
+*.user

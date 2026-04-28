@@ -1,16 +1,18 @@
 /**
  * Clicky Proxy Worker
  *
- * Proxies requests to Claude and ElevenLabs APIs so the app never
+ * Proxies requests to Claude, Gemini, and ElevenLabs APIs so the app never
  * ships with raw API keys. Keys are stored as Cloudflare secrets.
  *
  * Routes:
- *   POST /chat  → Anthropic Messages API (streaming)
- *   POST /tts   → ElevenLabs TTS API
+ *   POST /chat         → Anthropic Messages API (streaming)
+ *   POST /chat-gemini  → Google Gemini streamGenerateContent API (streaming SSE)
+ *   POST /tts          → ElevenLabs TTS API
  */
 
 interface Env {
   ANTHROPIC_API_KEY: string;
+  GEMINI_API_KEY: string;
   ELEVENLABS_API_KEY: string;
   ELEVENLABS_VOICE_ID: string;
   ASSEMBLYAI_API_KEY: string;
@@ -27,6 +29,10 @@ export default {
     try {
       if (url.pathname === "/chat") {
         return await handleChat(request, env);
+      }
+
+      if (url.pathname === "/chat-gemini") {
+        return await handleGeminiChat(request, env);
       }
 
       if (url.pathname === "/tts") {
@@ -64,6 +70,64 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   if (!response.ok) {
     const errorBody = await response.text();
     console.error(`[/chat] Anthropic API error ${response.status}: ${errorBody}`);
+    return new Response(errorBody, {
+      status: response.status,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  return new Response(response.body, {
+    status: response.status,
+    headers: {
+      "content-type": response.headers.get("content-type") || "text/event-stream",
+      "cache-control": "no-cache",
+    },
+  });
+}
+
+async function handleGeminiChat(request: Request, env: Env): Promise<Response> {
+  // Gemini's API puts the model in the URL path (not the body like Anthropic).
+  // The app sends the model in a top-level `model` field in the JSON body;
+  // we extract it here, construct the upstream URL, and forward the rest.
+  const bodyText = await request.text();
+
+  let parsedBody: { model?: string; [key: string]: unknown };
+  try {
+    parsedBody = JSON.parse(bodyText);
+  } catch (parseError) {
+    return new Response(
+      JSON.stringify({ error: `Invalid JSON body: ${String(parseError)}` }),
+      { status: 400, headers: { "content-type": "application/json" } }
+    );
+  }
+
+  const requestedGeminiModel = parsedBody.model;
+  if (typeof requestedGeminiModel !== "string" || requestedGeminiModel.length === 0) {
+    return new Response(
+      JSON.stringify({ error: "Missing or invalid 'model' field in request body" }),
+      { status: 400, headers: { "content-type": "application/json" } }
+    );
+  }
+
+  // Strip the model field from the body before forwarding — Gemini doesn't
+  // expect it in the body and it's only used for URL construction.
+  const { model: _omittedModel, ...geminiRequestBody } = parsedBody;
+
+  const upstreamURL = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    requestedGeminiModel
+  )}:streamGenerateContent?alt=sse&key=${env.GEMINI_API_KEY}`;
+
+  const response = await fetch(upstreamURL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(geminiRequestBody),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    console.error(`[/chat-gemini] Gemini API error ${response.status}: ${errorBody}`);
     return new Response(errorBody, {
       status: response.status,
       headers: { "content-type": "application/json" },
