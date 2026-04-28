@@ -21,6 +21,20 @@ enum CompanionVoiceState {
     case responding
 }
 
+enum CompanionAssistantMode: String, CaseIterable {
+    case general = "general"
+    case tftCoach = "tft_coach"
+
+    var panelLabel: String {
+        switch self {
+        case .general:
+            return "General"
+        case .tftCoach:
+            return "TFT Coach"
+        }
+    }
+}
+
 @MainActor
 final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle
@@ -109,11 +123,30 @@ final class CompanionManager: ObservableObject {
 
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+    /// The assistant behavior mode shown in the panel.
+    @Published var selectedAssistantMode: CompanionAssistantMode = {
+        guard let storedMode = UserDefaults.standard.string(forKey: "selectedAssistantMode"),
+              let resolvedMode = CompanionAssistantMode(rawValue: storedMode) else {
+            return .general
+        }
+        return resolvedMode
+    }()
+    /// Human-readable status for the TFT snapshot shown in the panel.
+    @Published private(set) var tftMetaStatusMessage: String = TFTMetaPromptBuilder.buildStatusMessage()
 
     func setSelectedModel(_ model: String) {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
         claudeAPI.model = model
+    }
+
+    func setSelectedAssistantMode(_ mode: CompanionAssistantMode) {
+        selectedAssistantMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: "selectedAssistantMode")
+        if mode == .tftCoach {
+            tftMetaStatusMessage = TFTMetaPromptBuilder.buildStatusMessage()
+        }
+        ClickyAnalytics.trackAssistantModeSelected(mode: mode.rawValue)
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -576,6 +609,18 @@ final class CompanionManager: ObservableObject {
     - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
     """
 
+    /// Additional instructions when the assistant runs in TFT coach mode.
+    /// This is appended to the default companion prompt.
+    private static let tftCoachModePrompt = """
+    you are in teamfight tactics coach mode.
+
+    extra rules for tft coach mode:
+    - prioritize advice for the board and shop you currently see, then use the patch snapshot as supporting context.
+    - if meta guidance is uncertain, say that plainly instead of pretending confidence.
+    - keep recommendations actionable: what to buy, what to itemize, what to level, and which unit placement changes matter most.
+    - when the screenshot shows a clear next move, point directly at the relevant unit, shop slot, item, augment, or trait panel.
+    """
+
     // MARK: - AI Response Pipeline
 
     /// Captures a screenshot, sends it along with the transcript to Claude,
@@ -610,9 +655,35 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
+                let resolvedSystemPrompt: String = {
+                    guard selectedAssistantMode == .tftCoach else {
+                        return Self.companionVoiceResponseSystemPrompt
+                    }
+
+                    let tftContext = TFTMetaPromptBuilder.buildPromptContext()
+                    tftMetaStatusMessage = TFTMetaPromptBuilder.buildStatusMessage()
+
+                    return Self.companionVoiceResponseSystemPrompt
+                        + "\n\n"
+                        + Self.tftCoachModePrompt
+                        + "\n\nmanual tft snapshot context:\n"
+                        + tftContext
+                }()
+
+                let promptLogPayload: [String: Any] = [
+                    "event": "clicky_prompt_context",
+                    "assistantMode": selectedAssistantMode.rawValue,
+                    "transcriptCharacterCount": transcript.count,
+                    "conversationHistoryCount": conversationHistory.count
+                ]
+                if let logData = try? JSONSerialization.data(withJSONObject: promptLogPayload),
+                   let logMessage = String(data: logData, encoding: .utf8) {
+                    print(logMessage)
+                }
+
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                    systemPrompt: resolvedSystemPrompt,
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
                     onTextChunk: { _ in
