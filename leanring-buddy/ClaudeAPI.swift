@@ -107,6 +107,26 @@ class ClaudeAPI {
     ) async throws -> (text: String, duration: TimeInterval) {
         let startTime = Date()
 
+        // Dev/local mock: return a synthesized progressive response when
+        // `devUnlimitedMode` is enabled in UserDefaults. This lets the app
+        // run without calling the remote Claude API for unlimited testing.
+        if UserDefaults.standard.bool(forKey: "devUnlimitedMode") {
+            var accumulatedResponseText = ""
+            let chunks = [
+                "Hello from Clicky (local unlimited).",
+                " This is a mock response for development.",
+                " Interact as much as you like."
+            ]
+            for chunk in chunks {
+                accumulatedResponseText += chunk
+                await onTextChunk(accumulatedResponseText)
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                guard !Task.isCancelled else { break }
+            }
+            let duration = Date().timeIntervalSince(startTime)
+            return (text: accumulatedResponseText, duration: duration)
+        }
+
         var request = makeAPIRequest()
 
         // Build messages array
@@ -219,6 +239,13 @@ class ClaudeAPI {
         userPrompt: String
     ) async throws -> (text: String, duration: TimeInterval) {
         let startTime = Date()
+
+        // Dev/local mock for non-streaming requests.
+        if UserDefaults.standard.bool(forKey: "devUnlimitedMode") {
+            let text = "Hello from Clicky (local unlimited). This is a mock non-streaming response."
+            let duration = Date().timeIntervalSince(startTime)
+            return (text: text, duration: duration)
+        }
 
         var request = makeAPIRequest()
 

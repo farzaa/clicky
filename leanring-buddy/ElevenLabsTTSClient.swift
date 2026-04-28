@@ -9,6 +9,7 @@
 
 import AVFoundation
 import Foundation
+import AppKit
 
 @MainActor
 final class ElevenLabsTTSClient {
@@ -31,6 +32,15 @@ final class ElevenLabsTTSClient {
     /// Sends `text` to ElevenLabs TTS and plays the resulting audio.
     /// Throws on network or decoding errors. Cancellation-safe.
     func speakText(_ text: String) async throws {
+        // If dev unlimited mode is enabled, use the system TTS to avoid
+        // calling external ElevenLabs APIs (keeps interactions local).
+        if UserDefaults.standard.bool(forKey: "devUnlimitedMode") {
+            let synthesizer = NSSpeechSynthesizer()
+            synthesizer.startSpeaking(text)
+            // Clear any existing audio player reference — we're using system TTS.
+            audioPlayer = nil
+            return
+        }
         var request = URLRequest(url: proxyURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
