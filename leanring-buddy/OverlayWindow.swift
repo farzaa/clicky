@@ -85,6 +85,50 @@ struct NavigationBubbleSizePreferenceKey: PreferenceKey {
     }
 }
 
+/// Top-right response panel rendered on top of every screen during
+/// text-mode chat. While Claude is processing the response is empty and
+/// we show a small circular spinner; once text starts streaming, the
+/// spinner is replaced with the response text. The view has a fixed max
+/// width and a content-sized height that grows as text streams in.
+private struct StreamingResponseBox: View {
+    let responseText: String
+    /// True while the response is empty (processing). Drives whether the
+    /// spinner or the streaming text is shown.
+    let isProcessing: Bool
+
+    var body: some View {
+        Group {
+            if isProcessing {
+                // Match the visual language of the voice-mode processing
+                // spinner so users see consistent "AI is thinking" feedback
+                // across input modes.
+                BlueCursorSpinnerView()
+                    .frame(width: 18, height: 18)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+            } else {
+                Text(responseText)
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundColor(.white)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 360, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(DS.Colors.background)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
+        )
+        .shadow(color: Color.black.opacity(0.35), radius: 18, x: 0, y: 8)
+    }
+}
+
 /// The buddy's behavioral mode. Controls whether it follows the cursor,
 /// is flying toward a detected UI element, or is pointing at an element.
 enum BuddyNavigationMode {
@@ -143,6 +187,7 @@ struct BlueCursorView: View {
     @State private var navigationBubbleText: String = ""
     @State private var navigationBubbleOpacity: Double = 0.0
     @State private var navigationBubbleSize: CGSize = .zero
+
 
     /// The cursor position at the moment navigation started, used to detect
     /// if the user moves the cursor enough to cancel the navigation.
@@ -294,6 +339,31 @@ struct BlueCursorView: View {
                     }
             }
 
+            // Top-right response box — shown in text mode while the AI is
+            // processing or has streamed a response. Renders on every
+            // screen (each BlueCursorView is per-screen) so the user sees
+            // the response no matter which monitor they're looking at.
+            // Opaque dark background — distinct from the transparent
+            // cursor overlay infrastructure so the response is fully
+            // readable against any background.
+            ZStack(alignment: .topTrailing) {
+                // Spacer to fill the screen — alignment pushes the box
+                // to the top-right corner with the padding below.
+                Color.clear
+                if companionManager.isStreamingResponseBubbleVisible {
+                    StreamingResponseBox(
+                        responseText: companionManager.streamingResponseText,
+                        isProcessing: companionManager.streamingResponseText.isEmpty
+                    )
+                    .padding(.top, 24)
+                    .padding(.trailing, 24)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+            }
+            .frame(width: screenFrame.width, height: screenFrame.height)
+            .allowsHitTesting(false)
+            .animation(.easeInOut(duration: 0.35), value: companionManager.isStreamingResponseBubbleVisible)
+
             // Blue triangle cursor — shown when idle or while TTS is playing (responding).
             // All three states (triangle, waveform, spinner) stay in the view tree
             // permanently and cross-fade via opacity so SwiftUI doesn't remove/re-insert
@@ -308,7 +378,7 @@ struct BlueCursorView: View {
                 .rotationEffect(.degrees(triangleRotationDegrees))
                 .shadow(color: DS.Colors.overlayCursorBlue, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
                 .scaleEffect(buddyFlightScale)
-                .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
+                .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) && companionManager.isCursorTriangleVisible ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(
                     buddyNavigationMode == .followingCursor
@@ -317,6 +387,7 @@ struct BlueCursorView: View {
                     value: cursorPosition
                 )
                 .animation(.easeIn(duration: 0.25), value: companionManager.voiceState)
+                .animation(.easeInOut(duration: 0.25), value: companionManager.isCursorTriangleVisible)
                 .animation(
                     buddyNavigationMode == .navigatingToTarget ? nil : .easeInOut(duration: 0.3),
                     value: triangleRotationDegrees
@@ -324,14 +395,14 @@ struct BlueCursorView: View {
 
             // Blue waveform — replaces the triangle while listening
             BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel)
-                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .listening ? cursorOpacity : 0)
+                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .listening && companionManager.isCursorTriangleVisible ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
 
             // Blue spinner — shown while the AI is processing (transcription + Claude + waiting for TTS)
             BlueCursorSpinnerView()
-                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing ? cursorOpacity : 0)
+                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing && companionManager.isCursorTriangleVisible ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)

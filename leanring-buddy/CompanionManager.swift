@@ -21,6 +21,29 @@ enum CompanionVoiceState {
     case responding
 }
 
+/// How the user submits prompts to Clicky. Either holds the push-to-talk
+/// hotkey to dictate (.voice) or taps the same hotkey to summon a small
+/// floating chat bubble and type (.text). Persisted to UserDefaults.
+enum CompanionInputMode: String {
+    case voice
+    case text
+}
+
+/// Which AI backend handles chat requests.
+/// - `.clickyProxy` — default, route through the Cloudflare Worker which
+///   holds the app's shared API keys (no setup needed for the user).
+/// - `.userAnthropic` — bypass the proxy and call Anthropic directly with
+///   the user's own `x-api-key`. Bills against their own Anthropic account.
+/// - `.userOpenAI` — call OpenAI's chat completions endpoint directly with
+///   the user's own bearer token. Uses GPT-class models instead of Claude.
+/// In all three modes voice transcription and TTS still go through the
+/// Worker (those use AssemblyAI / ElevenLabs, not the chat provider).
+enum AIProvider: String {
+    case clickyProxy
+    case userAnthropic
+    case userOpenAI
+}
+
 @MainActor
 final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle
@@ -65,20 +88,43 @@ final class CompanionManager: ObservableObject {
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
+    let chatInputBubbleManager = ChatInputBubbleManager()
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
-    /// Base URL for the Cloudflare Worker proxy. All API requests route
-    /// through this so keys never ship in the app binary.
+    /// Base URL for the Cloudflare Worker proxy. Used for chat (when
+    /// `aiProvider == .clickyProxy`), TTS (always), and voice
+    /// transcription tokens (always). User-supplied API keys only affect
+    /// the chat path — TTS and voice still go through the proxy.
     private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
 
-    private lazy var claudeAPI: ClaudeAPI = {
-        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
-    }()
+    /// Keychain account names for user-supplied API keys.
+    private static let anthropicKeychainAccountName = "userAnthropicAPIKey"
+    private static let openaiKeychainAccountName = "userOpenAIAPIKey"
+
+    /// Active Claude client. Re-created when `aiProvider` switches between
+    /// `.clickyProxy` and `.userAnthropic`, or when the user updates their
+    /// Anthropic API key, or when the model changes.
+    private var claudeAPI: ClaudeAPI
+
+    /// Active OpenAI client. Non-nil only when `aiProvider == .userOpenAI`
+    /// AND the user has entered an OpenAI key. Re-created when those
+    /// preconditions change.
+    private var openaiAPI: OpenAIAPI?
 
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
         return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
     }()
+
+    init() {
+        // Seed `claudeAPI` with the proxy version so the property is
+        // initialized before any other code runs. `rebuildAPIs()` then
+        // immediately swaps to the right configuration based on the
+        // user's persisted provider choice and any stored API keys.
+        self.claudeAPI = ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: "claude-sonnet-4-6")
+        self.openaiAPI = nil
+        rebuildAPIs()
+    }
 
     /// Conversation history so Claude remembers prior exchanges within a session.
     /// Each entry is the user's transcript and Claude's response.
@@ -113,7 +159,12 @@ final class CompanionManager: ObservableObject {
     func setSelectedModel(_ model: String) {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
+        // Update the in-flight client. Then rebuild so that if the user
+        // is in `.userAnthropic` mode the new model is picked up by a
+        // fresh ClaudeAPI instance (defensive — the current code path
+        // doesn't strictly need this, but it keeps state coherent).
         claudeAPI.model = model
+        rebuildAPIs()
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -122,6 +173,167 @@ final class CompanionManager: ObservableObject {
     @Published var isClickyCursorEnabled: Bool = UserDefaults.standard.object(forKey: "isClickyCursorEnabled") == nil
         ? true
         : UserDefaults.standard.bool(forKey: "isClickyCursorEnabled")
+
+    /// How the user submits prompts. Defaults to `.voice` to preserve the
+    /// existing push-to-talk experience for users upgrading from older builds.
+    /// Persisted to UserDefaults so the choice survives app restarts.
+    @Published private(set) var inputMode: CompanionInputMode = {
+        let storedRawValue = UserDefaults.standard.string(forKey: "inputMode") ?? ""
+        return CompanionInputMode(rawValue: storedRawValue) ?? .voice
+    }()
+
+    /// Which AI backend handles chat. Defaults to `.clickyProxy` so the
+    /// user has zero setup on first launch.
+    @Published private(set) var aiProvider: AIProvider = {
+        let storedRawValue = UserDefaults.standard.string(forKey: "aiProvider") ?? ""
+        return AIProvider(rawValue: storedRawValue) ?? .clickyProxy
+    }()
+
+    /// Switches to a new chat backend, persists the choice, and rebuilds
+    /// the active API client(s). Safe to call repeatedly.
+    func setAIProvider(_ newProvider: AIProvider) {
+        aiProvider = newProvider
+        UserDefaults.standard.set(newProvider.rawValue, forKey: "aiProvider")
+        rebuildAPIs()
+    }
+
+    /// User-supplied Anthropic API key, read from the macOS Keychain.
+    /// Returns the empty string when no key is stored. Read each time
+    /// rather than cached so the UI text field always reflects the
+    /// authoritative value.
+    var userAnthropicAPIKey: String {
+        KeychainHelper.readString(forAccount: Self.anthropicKeychainAccountName) ?? ""
+    }
+
+    /// User-supplied OpenAI API key, read from the macOS Keychain.
+    /// Returns the empty string when no key is stored.
+    var userOpenAIAPIKey: String {
+        KeychainHelper.readString(forAccount: Self.openaiKeychainAccountName) ?? ""
+    }
+
+    /// Saves a user-supplied Anthropic key to the Keychain (or deletes it
+    /// if the trimmed value is empty) and rebuilds the chat client so the
+    /// next request uses the new key. Triggers a manual `objectWillChange`
+    /// so any UI bound to this manager reflects the new "has key" state.
+    func setUserAnthropicAPIKey(_ key: String) {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            KeychainHelper.deleteString(forAccount: Self.anthropicKeychainAccountName)
+        } else {
+            KeychainHelper.saveString(trimmed, forAccount: Self.anthropicKeychainAccountName)
+        }
+        objectWillChange.send()
+        rebuildAPIs()
+    }
+
+    /// Saves a user-supplied OpenAI key to the Keychain (or deletes it
+    /// if the trimmed value is empty) and rebuilds the chat client.
+    func setUserOpenAIAPIKey(_ key: String) {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            KeychainHelper.deleteString(forAccount: Self.openaiKeychainAccountName)
+        } else {
+            KeychainHelper.saveString(trimmed, forAccount: Self.openaiKeychainAccountName)
+        }
+        objectWillChange.send()
+        rebuildAPIs()
+    }
+
+    /// Rebuilds the chat clients to match the current `aiProvider` and any
+    /// user-supplied API keys. Called from `init`, on provider changes,
+    /// when keys are saved/deleted, and when the model picker changes.
+    private func rebuildAPIs() {
+        switch aiProvider {
+        case .clickyProxy:
+            // Default: route through the Cloudflare Worker. No user key needed.
+            claudeAPI = ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+            openaiAPI = nil
+
+        case .userAnthropic:
+            // If the user picked Anthropic but hasn't entered a key yet,
+            // fall back to the proxy so the app keeps working until they
+            // do. They'll see a "key required" hint in the panel UI.
+            let key = userAnthropicAPIKey
+            if key.isEmpty {
+                claudeAPI = ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+            } else {
+                claudeAPI = ClaudeAPI(directAnthropicAPIKey: key, model: selectedModel)
+            }
+            openaiAPI = nil
+
+        case .userOpenAI:
+            // OpenAI mode keeps a proxy claudeAPI around as a safety
+            // fallback (e.g. if the user clears their key while in OpenAI
+            // mode), but the chat dispatch only uses openaiAPI when the
+            // key is present.
+            claudeAPI = ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+            let key = userOpenAIAPIKey
+            openaiAPI = key.isEmpty ? nil : OpenAIAPI(apiKey: key)
+        }
+    }
+
+    func setInputMode(_ newInputMode: CompanionInputMode) {
+        // If the user switches away from voice while a push-to-talk recording
+        // is in progress, stop it cleanly so the audio engine doesn't keep
+        // running with no UI to surface its state.
+        if newInputMode != .voice && buddyDictationManager.isDictationInProgress {
+            pendingKeyboardShortcutStartTask?.cancel()
+            pendingKeyboardShortcutStartTask = nil
+            buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
+        }
+
+        // If the user switches away from text, dismiss anything still on
+        // screen from the text-mode flow: the input bubble and any
+        // streaming response chat bubble. Otherwise the user is left
+        // staring at orphaned UI from the old mode.
+        if newInputMode != .text {
+            chatInputBubbleManager.hideBubble()
+            streamingResponseAutoHideTask?.cancel()
+            isStreamingResponseBubbleVisible = false
+            streamingResponseText = ""
+        }
+
+        inputMode = newInputMode
+        UserDefaults.standard.set(newInputMode.rawValue, forKey: "inputMode")
+    }
+
+    /// Whether the blue triangle cursor should be visible. Independent from
+    /// `isOverlayVisible` (which controls the overlay panels' existence) —
+    /// this is the per-frame opacity of the cursor itself. Default is hidden:
+    /// the cursor only appears during onboarding or when Claude returns a
+    /// `[POINT:...]` tag and physically points at something on screen.
+    @Published private(set) var isCursorTriangleVisible: Bool = false
+
+    /// Reveals the cursor triangle (used when Claude points at something or
+    /// during onboarding). Idempotent — safe to call repeatedly.
+    func revealCursorTriangle() {
+        isCursorTriangleVisible = true
+    }
+
+    /// Hides the cursor triangle. Called after a pointing animation completes
+    /// or when onboarding ends.
+    func hideCursorTriangle() {
+        isCursorTriangleVisible = false
+    }
+
+    /// Claude's response text streamed character-by-character so the
+    /// overlay can render it as a chat bubble next to the (hidden) cursor
+    /// when input mode is `.text`. Empty string means no response is
+    /// being shown. Voice mode leaves this empty since responses are spoken
+    /// aloud via TTS instead of rendered visually.
+    @Published private(set) var streamingResponseText: String = ""
+
+    /// Whether the streaming-response chat bubble should be rendered. Stays
+    /// true from the moment the user submits text input until a few seconds
+    /// after the response finishes streaming, even while `streamingResponseText`
+    /// is empty (e.g. while the AI is still processing) so the user sees a
+    /// "..." thinking indicator immediately after submitting.
+    @Published private(set) var isStreamingResponseBubbleVisible: Bool = false
+
+    /// Auto-hide task for the streaming response bubble. Cancelled and
+    /// rescheduled if a new text-mode submission arrives before the
+    /// previous one's bubble has faded.
+    private var streamingResponseAutoHideTask: Task<Void, Never>?
 
     func setClickyCursorEnabled(_ enabled: Bool) {
         isClickyCursorEnabled = enabled
@@ -215,6 +427,10 @@ final class CompanionManager: ObservableObject {
         // the welcome animation and onboarding video
         overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
         isOverlayVisible = true
+        // Onboarding is one of the few moments the cursor is visible in
+        // the new "summon-on-demand" design — the user is being introduced
+        // to Clicky and needs to see the cursor companion.
+        revealCursorTriangle()
     }
 
     /// Replays the onboarding experience from the "Watch Onboarding Again"
@@ -228,6 +444,7 @@ final class CompanionManager: ObservableObject {
         overlayWindowManager.hasShownOverlayBefore = false
         overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
         isOverlayVisible = true
+        revealCursorTriangle()
     }
 
     private func stopOnboardingMusic() {
@@ -473,6 +690,14 @@ final class CompanionManager: ObservableObject {
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
         case .pressed:
+            // In text mode the hotkey is a momentary tap — we summon the chat
+            // bubble on .pressed and ignore .released entirely. Voice mode
+            // uses the same hotkey as a push-and-hold, handled below.
+            if inputMode == .text {
+                handleTextModeShortcutPressed()
+                return
+            }
+
             guard !buddyDictationManager.isDictationInProgress else { return }
             // Don't register push-to-talk while the onboarding video is playing
             guard !showOnboardingVideo else { return }
@@ -487,6 +712,12 @@ final class CompanionManager: ObservableObject {
                 overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                 isOverlayVisible = true
             }
+
+            // Voice mode shows the cursor visualizations (waveform during
+            // recording, spinner during processing, triangle during TTS) so
+            // the user has feedback that they're being heard. Reveal here;
+            // scheduleTransientHideIfNeeded() hides it after the interaction.
+            revealCursorTriangle()
 
             // Dismiss the menu bar panel so it doesn't cover the screen
             NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
@@ -506,7 +737,7 @@ final class CompanionManager: ObservableObject {
                     self.onboardingPromptText = ""
                 }
             }
-    
+
 
             ClickyAnalytics.trackPushToTalkStarted()
 
@@ -526,6 +757,9 @@ final class CompanionManager: ObservableObject {
                 )
             }
         case .released:
+            // Text mode treats the hotkey as a tap — releases are no-ops.
+            if inputMode == .text { return }
+
             // Cancel the pending start task in case the user released the shortcut
             // before the async startPushToTalk had a chance to begin recording.
             // Without this, a quick press-and-release drops the release event and
@@ -537,6 +771,62 @@ final class CompanionManager: ObservableObject {
         case .none:
             break
         }
+    }
+
+    /// Text-mode handler for a push-to-talk hotkey press: summons the floating
+    /// chat bubble near the cursor. Mirrors the side effects of the voice
+    /// path (dismiss the menu bar panel, cancel any in-flight response) so
+    /// the user gets a fresh interaction every time they tap the shortcut.
+    private func handleTextModeShortcutPressed() {
+        // Don't open the bubble during the onboarding video — same guard
+        // used for the voice path.
+        guard !showOnboardingVideo else { return }
+
+        // Dismiss the menu bar panel so it doesn't cover the chat bubble.
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+
+        // Cancel any in-progress response and TTS from a previous prompt so
+        // the user can interrupt by re-summoning the bubble.
+        currentResponseTask?.cancel()
+        elevenLabsTTSClient.stopPlayback()
+        clearDetectedElementLocation()
+
+        // Dismiss the onboarding prompt if it's showing
+        if showOnboardingPrompt {
+            withAnimation(.easeOut(duration: 0.3)) {
+                onboardingPromptOpacity = 0.0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                self.showOnboardingPrompt = false
+                self.onboardingPromptText = ""
+            }
+        }
+
+        // Text mode chat keeps the cursor hidden until Claude returns a
+        // [POINT:] tag. If onboarding had revealed it, hide it now so the
+        // chat experience is bubble-only.
+        hideCursorTriangle()
+
+        chatInputBubbleManager.showBubble(
+            onSubmit: { [weak self] submittedText in
+                self?.submitTextInput(submittedText)
+            },
+            onCancel: {
+                // Nothing to do — the bubble is already dismissed.
+            }
+        )
+    }
+
+    /// Submits a text prompt typed into the chat bubble. Trims whitespace
+    /// and forwards to the same Claude + screenshot pipeline used by voice
+    /// dictation. Empty submissions are ignored.
+    func submitTextInput(_ text: String) {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else { return }
+
+        lastTranscript = trimmedText
+        ClickyAnalytics.trackUserMessageSent(transcript: trimmedText)
+        sendTranscriptToClaudeWithScreenshot(transcript: trimmedText)
     }
 
     // MARK: - Companion Prompt
@@ -583,9 +873,28 @@ final class CompanionManager: ObservableObject {
     /// the spinner/processing state until TTS audio begins playing.
     /// Claude's response may include a [POINT:x,y:label] tag which triggers
     /// the buddy to fly to that element on screen.
-    private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
+    /// Internal so both voice dictation and the text-input chat bubble can
+    /// hand off a finalized prompt string to the same pipeline.
+    func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
+        streamingResponseAutoHideTask?.cancel()
+
+        // Capture the input mode at submission time — if the user toggles
+        // mid-flight, this turn should still behave as the mode it started in.
+        let isTextMode = inputMode == .text
+
+        // In text mode, the chat bubble is the only feedback the user gets
+        // that the AI is working. Show it immediately as a "..." placeholder
+        // so there's no visual gap between dismissing the input bubble and
+        // the response streaming in.
+        if isTextMode {
+            streamingResponseText = ""
+            isStreamingResponseBubbleVisible = true
+        } else {
+            streamingResponseText = ""
+            isStreamingResponseBubbleVisible = false
+        }
 
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
@@ -610,15 +919,54 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
-                    conversationHistory: historyForAPI,
-                    userPrompt: transcript,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
+                // Route the request to whichever provider the user picked.
+                // If they selected OpenAI but haven't set a key, surface
+                // an error message in the response bubble rather than
+                // silently falling back to a different AI.
+                let fullResponseText: String
+                if aiProvider == .userOpenAI {
+                    guard let openaiAPI else {
+                        let errorMessage = "Add your OpenAI API key in Clicky's settings to use OpenAI mode."
+                        if isTextMode {
+                            streamingResponseText = errorMessage
+                            scheduleStreamingResponseBubbleAutoHide(forResponseLength: errorMessage.count)
+                        }
+                        voiceState = .idle
+                        return
                     }
-                )
+                    let (responseText, _) = try await openaiAPI.analyzeImage(
+                        images: labeledImages,
+                        systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                        conversationHistory: historyForAPI,
+                        userPrompt: transcript
+                    )
+                    fullResponseText = responseText
+                    // OpenAI is non-streaming, so the text arrives in one
+                    // shot. Render it immediately so the bubble updates
+                    // before the [POINT:] parsing + cleanup step below.
+                    if isTextMode {
+                        streamingResponseText = responseText
+                    }
+                } else {
+                    let (responseText, _) = try await claudeAPI.analyzeImageStreaming(
+                        images: labeledImages,
+                        systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                        conversationHistory: historyForAPI,
+                        userPrompt: transcript,
+                        onTextChunk: { [weak self] accumulatedTextSoFar in
+                            // ClaudeAPI delivers the FULL accumulated text on
+                            // every chunk (not deltas), so we assign rather
+                            // than append. The text may contain a partial
+                            // [POINT:...] tag at the end; we don't strip it
+                            // here because it gets replaced with the cleaned
+                            // spokenText once the full response arrives.
+                            guard let self else { return }
+                            guard isTextMode else { return }
+                            self.streamingResponseText = accumulatedTextSoFar
+                        }
+                    )
+                    fullResponseText = responseText
+                }
 
                 guard !Task.isCancelled else { return }
 
@@ -633,6 +981,11 @@ final class CompanionManager: ObservableObject {
                 let hasPointCoordinate = parseResult.coordinate != nil
                 if hasPointCoordinate {
                     voiceState = .idle
+                    // Reveal the cursor BEFORE the location is set so the
+                    // triangle is on screen when the bezier flight starts.
+                    // Critical for text mode where the cursor was previously
+                    // hidden — without this, the flight is invisible.
+                    revealCursorTriangle()
                 }
 
                 // Pick the screen capture matching Claude's screen number,
@@ -697,9 +1050,19 @@ final class CompanionManager: ObservableObject {
 
                 ClickyAnalytics.trackAIResponseReceived(response: spokenText)
 
-                // Play the response via TTS. Keep the spinner (processing state)
-                // until the audio actually starts playing, then switch to responding.
-                if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // In text mode the response is rendered visually in a chat
+                // bubble next to the cursor. Replace whatever streamed in
+                // with the cleaned spokenText (with any [POINT:...] tag
+                // stripped) so the bubble doesn't show the raw tag at the
+                // end. Text mode is silent — no TTS playback.
+                if isTextMode {
+                    streamingResponseText = spokenText
+                    voiceState = .responding
+                    scheduleStreamingResponseBubbleAutoHide(forResponseLength: spokenText.count)
+                } else if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    // Voice mode: play the response via TTS. Keep the spinner
+                    // (processing state) until the audio actually starts
+                    // playing, then switch to responding.
                     do {
                         try await elevenLabsTTSClient.speakText(spokenText)
                         // speakText returns after player.play() — audio is now playing
@@ -725,12 +1088,48 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// If the cursor is in transient mode (user toggled "Show Clicky" off),
-    /// waits for TTS playback and any pointing animation to finish, then
-    /// fades out the overlay after a 1-second pause. Cancelled automatically
-    /// if the user starts another push-to-talk interaction.
+    /// Schedules a fade-out of the streaming response chat bubble after a
+    /// dwell time proportional to the response length, so longer responses
+    /// stay on screen longer than short ones. Used only in text mode where
+    /// the bubble is the user's primary read-back surface.
+    private func scheduleStreamingResponseBubbleAutoHide(forResponseLength characterCount: Int) {
+        streamingResponseAutoHideTask?.cancel()
+
+        // Roughly 50 chars per second of reading + a 3.5s buffer floor so
+        // even one-word answers linger long enough to read comfortably.
+        let secondsPerCharacter = 0.06
+        let bufferSeconds = 3.5
+        let dwellSeconds = bufferSeconds + Double(max(0, characterCount)) * secondsPerCharacter
+        let nanosecondsToWait = UInt64(dwellSeconds * 1_000_000_000)
+
+        streamingResponseAutoHideTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: nanosecondsToWait)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self else { return }
+                self.isStreamingResponseBubbleVisible = false
+                // Wait for the SwiftUI fade animation to finish before
+                // clearing the text so the bubble doesn't go blank during
+                // the fade-out.
+                Task {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    await MainActor.run {
+                        guard !(self.isStreamingResponseBubbleVisible) else { return }
+                        self.streamingResponseText = ""
+                    }
+                }
+            }
+        }
+    }
+
+    /// Waits for TTS playback and any pointing animation to finish, then
+    /// hides the cursor visualizations after a 1-second pause. Cancelled
+    /// automatically if the user starts another push-to-talk interaction.
+    /// In the new "summon-on-demand" design this fires after every chat
+    /// turn so the cursor returns to its hidden default state.
+    /// Also tears down the overlay panels entirely if "Show Clicky" is off.
     private func scheduleTransientHideIfNeeded() {
-        guard !isClickyCursorEnabled && isOverlayVisible else { return }
+        guard isOverlayVisible else { return }
 
         transientHideTask?.cancel()
         transientHideTask = Task {
@@ -747,11 +1146,26 @@ final class CompanionManager: ObservableObject {
                 guard !Task.isCancelled else { return }
             }
 
-            // Pause 1s after everything finishes, then fade out
+            // Pause 1s after everything finishes, then hide the cursor.
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard !Task.isCancelled else { return }
-            overlayWindowManager.fadeOutAndHideOverlay()
-            isOverlayVisible = false
+
+            // Don't hide while the user is being onboarded — onboarding
+            // shows the cursor as part of its scripted experience.
+            if showOnboardingVideo || showOnboardingPrompt {
+                return
+            }
+
+            hideCursorTriangle()
+
+            // Preserve the original "Show Clicky off" behavior: tear down
+            // the overlay panels entirely. With the toggle on (default),
+            // we only hide the cursor — the panels stay alive so a future
+            // [POINT:] event can reveal the cursor on any screen instantly.
+            if !isClickyCursorEnabled {
+                overlayWindowManager.fadeOutAndHideOverlay()
+                isOverlayVisible = false
+            }
         }
     }
 
@@ -916,6 +1330,11 @@ final class CompanionManager: ObservableObject {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                         self.showOnboardingPrompt = false
                         self.onboardingPromptText = ""
+                        // Onboarding has finished — hide the cursor. From
+                        // here on the cursor only appears during a [POINT:]
+                        // flight or, in voice mode, while the user is
+                        // actively speaking.
+                        self.hideCursorTriangle()
                     }
                 }
                 return
