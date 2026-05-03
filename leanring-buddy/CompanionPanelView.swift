@@ -25,11 +25,33 @@ struct CompanionPanelView: View {
                 .padding(.top, 16)
                 .padding(.horizontal, 16)
 
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+            // Hide the Sonnet/Opus picker when the user is on OpenAI mode —
+            // those model IDs aren't valid for OpenAI, so the picker would
+            // be misleading. Clicky-proxy and user-Anthropic both use
+            // Anthropic models so the picker applies in both cases.
+            if companionManager.hasCompletedOnboarding
+                && companionManager.allPermissionsGranted
+                && companionManager.aiProvider != .userOpenAI {
                 Spacer()
                     .frame(height: 12)
 
                 modelPickerRow
+                    .padding(.horizontal, 16)
+            }
+
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 8)
+
+                inputModePickerRow
+                    .padding(.horizontal, 16)
+            }
+
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 8)
+
+                aiProviderSection
                     .padding(.horizontal, 16)
             }
 
@@ -641,6 +663,121 @@ struct CompanionPanelView: View {
         .pointerCursor()
     }
 
+    // MARK: - Input Mode Picker
+
+    private var inputModePickerRow: some View {
+        HStack {
+            Text("Input")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Spacer()
+
+            HStack(spacing: 0) {
+                inputModeOptionButton(label: "Voice", mode: .voice)
+                inputModeOptionButton(label: "Text", mode: .text)
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func inputModeOptionButton(label: String, mode: CompanionInputMode) -> some View {
+        let isSelected = companionManager.inputMode == mode
+        return Button(action: {
+            companionManager.setInputMode(mode)
+        }) {
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    // MARK: - AI Provider
+
+    /// Picker that lets the user route chat through the Cloudflare Worker
+    /// proxy (default), through their own Anthropic key, or through their
+    /// own OpenAI key. When a non-default provider is selected, an inline
+    /// secure field appears so the user can paste their API key.
+    private var aiProviderSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("AI")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                HStack(spacing: 0) {
+                    aiProviderOptionButton(label: "Clicky", provider: .clickyProxy)
+                    aiProviderOptionButton(label: "Anthropic", provider: .userAnthropic)
+                    aiProviderOptionButton(label: "OpenAI", provider: .userOpenAI)
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+            }
+
+            if companionManager.aiProvider == .userAnthropic {
+                APIKeyEntryRow(
+                    placeholder: "Anthropic API key (sk-ant-...)",
+                    hasSavedKey: !companionManager.userAnthropicAPIKey.isEmpty,
+                    onSave: { newKey in
+                        companionManager.setUserAnthropicAPIKey(newKey)
+                    }
+                )
+            } else if companionManager.aiProvider == .userOpenAI {
+                APIKeyEntryRow(
+                    placeholder: "OpenAI API key (sk-...)",
+                    hasSavedKey: !companionManager.userOpenAIAPIKey.isEmpty,
+                    onSave: { newKey in
+                        companionManager.setUserOpenAIAPIKey(newKey)
+                    }
+                )
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func aiProviderOptionButton(label: String, provider: AIProvider) -> some View {
+        let isSelected = companionManager.aiProvider == provider
+        return Button(action: {
+            companionManager.setAIProvider(provider)
+        }) {
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
     // MARK: - DM Farza Button
 
     private var dmFarzaButton: some View {
@@ -758,4 +895,79 @@ struct CompanionPanelView: View {
         }
     }
 
+}
+
+/// Inline secure-text-field row for entering an API key. We deliberately
+/// do NOT pre-fill the field with the saved key, even masked: the goal is
+/// to never echo the secret back to the screen, since SecureField content
+/// can be inspected via accessibility or screen recordings. Instead, the
+/// row displays a "Saved in Keychain" indicator when a key already exists.
+/// To replace, the user types a new value and presses return (or clicks
+/// the inline checkmark button).
+private struct APIKeyEntryRow: View {
+    /// SecureField placeholder hint, e.g. "Anthropic API key (sk-ant-...)".
+    let placeholder: String
+    /// Whether a key is already stored in the Keychain. Drives the status
+    /// indicator below the field.
+    let hasSavedKey: Bool
+    /// Persists the entered key. Called on return-key submit and on the
+    /// inline save-button click. Empty values delete the stored key.
+    let onSave: (String) -> Void
+
+    @State private var inputText: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                SecureField(placeholder, text: $inputText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .foregroundColor(DS.Colors.textPrimary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .onSubmit {
+                        commitKey()
+                    }
+
+                if !inputText.isEmpty {
+                    Button(action: commitKey) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 13))
+                            .foregroundColor(DS.Colors.success)
+                            .padding(.trailing, 8)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+
+            HStack(spacing: 5) {
+                Image(systemName: hasSavedKey ? "lock.fill" : "exclamationmark.circle")
+                    .font(.system(size: 9))
+                    .foregroundColor(hasSavedKey ? DS.Colors.textTertiary : DS.Colors.warningText)
+
+                Text(hasSavedKey
+                     ? "Saved in macOS Keychain. Type a new key to replace."
+                     : "Required — paste your key and press return.")
+                    .font(.system(size: 10))
+                    .foregroundColor(hasSavedKey ? DS.Colors.textTertiary : DS.Colors.warningText)
+            }
+            .padding(.leading, 2)
+        }
+    }
+
+    private func commitKey() {
+        onSave(inputText)
+        // Clear the field after saving so the secret isn't left on screen
+        // and the "Saved" indicator becomes the source of truth.
+        inputText = ""
+    }
 }
