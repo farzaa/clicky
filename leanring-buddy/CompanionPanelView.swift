@@ -13,42 +13,119 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
-
+    @State private var isAPIKeyVisible: Bool = false
+    @State private var isShowingSettings: Bool = false
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             panelHeader
             Divider()
                 .background(DS.Colors.borderSubtle)
                 .padding(.horizontal, 16)
+            
+            if isShowingSettings {
+                settingsView
+            } else {
+                mainContentView
+            }
+            
+            Spacer()
+                .frame(height: 12)
+            
+            Divider()
+                .background(DS.Colors.borderSubtle)
+                .padding(.horizontal, 16)
+            
+            footerSection // <-- This is now defined below
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+        }
+        .frame(width: 320)
+        .background(panelBackground) // <-- This is now defined below
+    }
+    
+    private var settingsView: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            modelPickerRow
+            localAPIKeyRow
+            languagePickerRow
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 16)
+    }
 
+    private var localAPIKeyRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                ZStack(alignment: .leading) {
+                    if companionManager.lmStudioAPIKey.isEmpty {
+                        Text("LM Studio API Key (leave empty if none)")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.6))
+                    }
+                    
+                    if isAPIKeyVisible {
+                        TextField("", text: Binding(
+                            get: { companionManager.lmStudioAPIKey },
+                            set: { companionManager.lmStudioAPIKey = $0 }
+                        ))
+                        .textFieldStyle(PlainTextFieldStyle())
+                        .font(.system(size: 11))
+                        .foregroundColor(.white)
+                    } else {
+                        SecureField("", text: Binding(
+                            get: { companionManager.lmStudioAPIKey },
+                            set: { companionManager.lmStudioAPIKey = $0 }
+                        ))
+                        .textFieldStyle(PlainTextFieldStyle())
+                        .font(.system(size: 11))
+                        .foregroundColor(.white)
+                    }
+                }
+                
+                Button(action: {
+                    isAPIKeyVisible.toggle()
+                }) {
+                    Image(systemName: isAPIKeyVisible ? "eye.slash.fill" : "eye.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.white.opacity(0.06))
+            .cornerRadius(6)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+    }
+
+    private var mainContentView: some View {
+        VStack(alignment: .leading, spacing: 0) {
             permissionsCopySection
                 .padding(.top, 16)
                 .padding(.horizontal, 16)
-
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 12)
-
-                modelPickerRow
-                    .padding(.horizontal, 16)
-            }
-
+            
             if !companionManager.allPermissionsGranted {
                 Spacer()
                     .frame(height: 16)
-
+                
                 settingsSection
                     .padding(.horizontal, 16)
             }
-
+            
             if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
                 Spacer()
                     .frame(height: 16)
-
+                
                 startButton
                     .padding(.horizontal, 16)
             }
-
+            
             // Show Clicky toggle — hidden for now
             // if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
             //     Spacer()
@@ -57,52 +134,58 @@ struct CompanionPanelView: View {
             //     showClickyCursorToggleRow
             //         .padding(.horizontal, 16)
             // }
-
+            
             if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
                 Spacer()
                     .frame(height: 16)
-
-                dmFarzaButton
+                
+                dmFarzaButton // <-- This is now defined below
                     .padding(.horizontal, 16)
             }
-
-            Spacer()
-                .frame(height: 12)
-
-            Divider()
-                .background(DS.Colors.borderSubtle)
-                .padding(.horizontal, 16)
-
-            footerSection
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
         }
-        .frame(width: 320)
-        .background(panelBackground)
     }
-
+    
     // MARK: - Header
-
+    
     private var panelHeader: some View {
         HStack {
             HStack(spacing: 8) {
                 // Animated status dot
                 Circle()
-                    .fill(statusDotColor)
+                    .fill(statusDotColor) // <-- This is now defined below
                     .frame(width: 8, height: 8)
                     .shadow(color: statusDotColor.opacity(0.6), radius: 4)
-
+                
                 Text("Clicky")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(DS.Colors.textPrimary)
             }
-
+            
             Spacer()
-
-            Text(statusText)
+            
+            Text(statusText) // <-- This is now defined below
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(DS.Colors.textTertiary)
-
+            
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Button(action: {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        isShowingSettings.toggle()
+                    }
+                }) {
+                    Image(systemName: "gear")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(isShowingSettings ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                        .frame(width: 20, height: 20)
+                        .background(
+                            Circle()
+                                .fill(isShowingSettings ? Color.white.opacity(0.12) : Color.white.opacity(0.08))
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+            
             Button(action: {
                 NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
             }) {
@@ -121,9 +204,9 @@ struct CompanionPanelView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
     }
-
+    
     // MARK: - Permissions Copy
-
+    
     @ViewBuilder
     private var permissionsCopySection: some View {
         if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
@@ -152,7 +235,7 @@ struct CompanionPanelView: View {
                 Text("Permissions needed")
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(DS.Colors.textSecondary)
-
+                
                 Text("Some permissions were revoked. Grant all four below to keep using Clicky.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
@@ -164,12 +247,12 @@ struct CompanionPanelView: View {
                 Text("Hi, I'm Farza. This is Clicky.")
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(DS.Colors.textSecondary)
-
+                
                 Text("A side project I made for fun to help me learn stuff as I use my computer.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
-
+                
                 Text("Nothing runs in the background. Clicky will only take a screenshot when you press the hot key. So, you can give that permission in peace. If you are still sus, eh, I can't do much there champ.")
                     .font(.system(size: 11))
                     .foregroundColor(Color(red: 0.9, green: 0.4, blue: 0.4))
@@ -178,9 +261,9 @@ struct CompanionPanelView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
-
+    
     // MARK: - Email + Start Button
-
+    
     @ViewBuilder
     private var startButton: some View {
         if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
@@ -200,7 +283,7 @@ struct CompanionPanelView: View {
                             RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
                                 .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
                         )
-
+                    
                     Button(action: {
                         companionManager.submitEmail(emailInput)
                     }) {
@@ -239,9 +322,9 @@ struct CompanionPanelView: View {
             }
         }
     }
-
+    
     // MARK: - Permissions
-
+    
     private var settingsSection: some View {
         VStack(spacing: 2) {
             Text("PERMISSIONS")
@@ -249,20 +332,20 @@ struct CompanionPanelView: View {
                 .foregroundColor(DS.Colors.textTertiary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.bottom, 6)
-
+            
             microphonePermissionRow
-
+            
             accessibilityPermissionRow
-
+            
             screenRecordingPermissionRow
-
+            
             if companionManager.hasScreenRecordingPermission {
                 screenContentPermissionRow
             }
-
+            
         }
     }
-
+    
     private var accessibilityPermissionRow: some View {
         let isGranted = companionManager.hasAccessibilityPermission
         return HStack {
@@ -271,14 +354,14 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
                     .frame(width: 16)
-
+                
                 Text("Accessibility")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
             }
-
+            
             Spacer()
-
+            
             if isGranted {
                 HStack(spacing: 4) {
                     Circle()
@@ -307,7 +390,7 @@ struct CompanionPanelView: View {
                     }
                     .buttonStyle(.plain)
                     .pointerCursor()
-
+                    
                     Button(action: {
                         // Reveals the app in Finder so the user can drag it into
                         // the Accessibility list if it doesn't appear automatically
@@ -332,7 +415,7 @@ struct CompanionPanelView: View {
         }
         .padding(.vertical, 6)
     }
-
+    
     private var screenRecordingPermissionRow: some View {
         let isGranted = companionManager.hasScreenRecordingPermission
         return HStack {
@@ -341,22 +424,22 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
                     .frame(width: 16)
-
+                
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Screen Recording")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(DS.Colors.textSecondary)
-
+                    
                     Text(isGranted
                          ? "Only takes a screenshot when you use the hotkey"
                          : "Quit and reopen after granting")
-                        .font(.system(size: 10))
-                        .foregroundColor(DS.Colors.textTertiary)
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
                 }
             }
-
+            
             Spacer()
-
+            
             if isGranted {
                 HStack(spacing: 4) {
                     Circle()
@@ -389,7 +472,7 @@ struct CompanionPanelView: View {
         }
         .padding(.vertical, 6)
     }
-
+    
     private var screenContentPermissionRow: some View {
         let isGranted = companionManager.hasScreenContentPermission
         return HStack {
@@ -398,14 +481,14 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
                     .frame(width: 16)
-
+                
                 Text("Screen Content")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
             }
-
+            
             Spacer()
-
+            
             if isGranted {
                 HStack(spacing: 4) {
                     Circle()
@@ -435,7 +518,7 @@ struct CompanionPanelView: View {
         }
         .padding(.vertical, 6)
     }
-
+    
     private var microphonePermissionRow: some View {
         let isGranted = companionManager.hasMicrophonePermission
         return HStack {
@@ -444,14 +527,14 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
                     .frame(width: 16)
-
+                
                 Text("Microphone")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
             }
-
+            
             Spacer()
-
+            
             if isGranted {
                 HStack(spacing: 4) {
                     Circle()
@@ -490,7 +573,7 @@ struct CompanionPanelView: View {
         }
         .padding(.vertical, 6)
     }
-
+    
     private func permissionRow(
         label: String,
         iconName: String,
@@ -503,14 +586,14 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
                     .frame(width: 16)
-
+                
                 Text(label)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
             }
-
+            
             Spacer()
-
+            
             if isGranted {
                 HStack(spacing: 4) {
                     Circle()
@@ -542,11 +625,11 @@ struct CompanionPanelView: View {
         }
         .padding(.vertical, 6)
     }
-
-
-
+    
+    
+    
     // MARK: - Show Clicky Cursor Toggle
-
+    
     private var showClickyCursorToggleRow: some View {
         HStack {
             HStack(spacing: 8) {
@@ -554,14 +637,14 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(DS.Colors.textTertiary)
                     .frame(width: 16)
-
+                
                 Text("Show Clicky")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
             }
-
+            
             Spacer()
-
+            
             Toggle("", isOn: Binding(
                 get: { companionManager.isClickyCursorEnabled },
                 set: { companionManager.setClickyCursorEnabled($0) }
@@ -573,7 +656,7 @@ struct CompanionPanelView: View {
         }
         .padding(.vertical, 4)
     }
-
+    
     private var speechToTextProviderRow: some View {
         HStack {
             HStack(spacing: 8) {
@@ -581,43 +664,174 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(DS.Colors.textTertiary)
                     .frame(width: 16)
-
+                
                 Text("Speech to Text")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
             }
-
+            
             Spacer()
-
+            
             Text(companionManager.buddyDictationManager.transcriptionProviderDisplayName)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(DS.Colors.textTertiary)
         }
         .padding(.vertical, 4)
     }
-
-    // MARK: - Model Picker
-
-    private var modelPickerRow: some View {
+    
+    // MARK: - Language Picker
+    
+    private var languagePickerRow: some View {
         HStack {
-            Text("Model")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-
-            Spacer()
-
-            HStack(spacing: 0) {
-                modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
-                modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
+            HStack(spacing: 8) {
+                Image(systemName: "globe")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 16)
+                
+                Text("Language")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
             }
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-            )
+            
+            Spacer()
+            
+            Menu {
+                // ElevenLabs supports up to 32 base languages automatically on flash 2.5
+                Button("🇺🇸 English") { companionManager.selectedLanguageCode = "en" }
+                Button("🇫🇷 French") { companionManager.selectedLanguageCode = "fr" }
+                Button("🇪🇸 Spanish") { companionManager.selectedLanguageCode = "es" }
+                Button("🇩🇪 German") { companionManager.selectedLanguageCode = "de" }
+                Button("🇮🇹 Italian") { companionManager.selectedLanguageCode = "it" }
+                Button("🇯🇵 Japanese") { companionManager.selectedLanguageCode = "ja" }
+                Button("🇵🇹 Portuguese") { companionManager.selectedLanguageCode = "pt" }
+                Button("🇷🇺 Russian") { companionManager.selectedLanguageCode = "ru" }
+                // AssemblyAI supports these natively
+            } label: {
+                HStack(spacing: 4) {
+                    Text(flagForLanguage(companionManager.selectedLanguageCode))
+                        .font(.system(size: 14))
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .frame(maxWidth: 80)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func flagForLanguage(_ code: String) -> String {
+        switch code {
+        case "fr": return "🇫🇷"
+        case "es": return "🇪🇸"
+        case "de": return "🇩🇪"
+        case "it": return "🇮🇹"
+        case "ja": return "🇯🇵"
+        case "pt": return "🇵🇹"
+        case "ru": return "🇷🇺"
+        default: return "🇺🇸"
+        }
+    }
+    
+    // MARK: - Model Picker
+    
+    private var modelPickerRow: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Text("Model")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                
+                Spacer()
+                
+                Menu {
+                    // Section for Local LM Studio Models
+                    Section(header: Text("LM Studio (Local)")) {
+                    if companionManager.availableModels.isEmpty {
+                        Text("No models found").disabled(true)
+                    } else {
+                        ForEach(companionManager.availableModels, id: \.self) { modelID in
+                            Button(action: {
+                                companionManager.setSelectedModel(modelID)
+                            }) {
+                                HStack {
+                                    Text(modelID)
+                                    if companionManager.selectedModel == modelID {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Button("Refresh LM Studio Models") {
+                        companionManager.fetchAvailableModels()
+                    }
+                }
+                
+                Divider()
+                
+                // Section for Cloud / Claude Models
+                Section(header: Text("Anthropic (Cloud)")) {
+                    let claudeModels = [
+                        ("Claude 3.5 Sonnet", "claude-3-5-sonnet-20241022"),
+                        ("Claude 3 Opus", "claude-3-opus-20240229"),
+                        ("Claude 3 Haiku", "claude-3-haiku-20240307")
+                    ]
+                    
+                    ForEach(claudeModels, id: \.1) { label, modelID in
+                        Button(action: {
+                            companionManager.setSelectedModel(modelID)
+                        }) {
+                            HStack {
+                                Text(label)
+                                if companionManager.selectedModel == modelID {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                }
+                
+            } label: {
+                HStack(spacing: 4) {
+                    Text(companionManager.selectedModel)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.textPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .frame(maxWidth: 200)
+        }
         }
         .padding(.vertical, 4)
     }
@@ -757,5 +971,4 @@ struct CompanionPanelView: View {
             return "Responding"
         }
     }
-
 }
