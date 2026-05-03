@@ -25,6 +25,14 @@ struct CompanionPanelView: View {
                 .padding(.top, 16)
                 .padding(.horizontal, 16)
 
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted && !companionManager.conversationHistory.isEmpty {
+                Spacer()
+                    .frame(height: 12)
+
+                sessionTranscriptSection
+                    .padding(.horizontal, 16)
+            }
+
             if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
                 Spacer()
                     .frame(height: 12)
@@ -714,6 +722,80 @@ struct CompanionPanelView: View {
                 .pointerCursor()
             }
         }
+    }
+
+    // MARK: - Session Transcript
+
+    private var sessionTranscriptSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("THIS SESSION")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundColor(DS.Colors.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            ScrollViewReader { scrollProxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(companionManager.conversationHistory) { entry in
+                            conversationEntryRow(entry: entry)
+                                .id(entry.id)
+                        }
+                    }
+                }
+                .frame(maxHeight: 180)
+                .onChange(of: companionManager.conversationHistory.count) { _, _ in
+                    if let latestEntry = companionManager.conversationHistory.last {
+                        withAnimation {
+                            scrollProxy.scrollTo(latestEntry.id, anchor: .bottom)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func conversationEntryRow(entry: ConversationEntry) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .top) {
+                Text(entry.userTranscript)
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text(entry.timestamp, style: .time)
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+
+            HStack(alignment: .top, spacing: 6) {
+                Text(entry.assistantResponse)
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .lineLimit(4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Button(action: {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(entry.assistantResponse, forType: .string)
+                }) {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                .fill(Color.white.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+        )
     }
 
     // MARK: - Visual Helpers
