@@ -44,6 +44,22 @@ enum AIProvider: String {
     case userOpenAI
 }
 
+/// One turn in the chat history shown in the streaming response panel.
+/// Each turn is a complete user prompt + the assistant's full response.
+/// `id` is `Identifiable` for SwiftUI's `ForEach` so list updates animate
+/// smoothly as new turns are appended during a follow-up exchange.
+struct CompanionConversationTurn: Identifiable, Equatable {
+    let id: UUID
+    let userMessage: String
+    let assistantResponse: String
+
+    init(userMessage: String, assistantResponse: String) {
+        self.id = UUID()
+        self.userMessage = userMessage
+        self.assistantResponse = assistantResponse
+    }
+}
+
 @MainActor
 final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle
@@ -89,6 +105,8 @@ final class CompanionManager: ObservableObject {
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
     let chatInputBubbleManager = ChatInputBubbleManager()
+    let streamingResponsePanelManager = StreamingResponsePanelManager()
+    let processingShimmerManager = ProcessingShimmerManager()
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
@@ -97,6 +115,7 @@ final class CompanionManager: ObservableObject {
     /// transcription tokens (always). User-supplied API keys only affect
     /// the chat path — TTS and voice still go through the proxy.
     private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
+
 
     /// Keychain account names for user-supplied API keys.
     private static let anthropicKeychainAccountName = "userAnthropicAPIKey"
@@ -128,7 +147,19 @@ final class CompanionManager: ObservableObject {
 
     /// Conversation history so Claude remembers prior exchanges within a session.
     /// Each entry is the user's transcript and Claude's response.
-    private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
+    /// Completed turns of the current chat. `@Published` so the streaming
+    /// response panel re-renders the chat thread when new turns are
+    /// appended after a follow-up exchange completes. Cleared when the
+    /// user dismisses the chat with the X button.
+    @Published private(set) var conversationHistory: [CompanionConversationTurn] = []
+
+    /// The user's message that's currently being processed by the AI but
+    /// hasn't been written to `conversationHistory` yet (the history is
+    /// only updated after the response completes). Set by `submitTextInput`,
+    /// cleared at the end of the response pipeline. The chat panel uses
+    /// this to render the user's prompt immediately on send so the chat
+    /// doesn't look frozen during the processing window.
+    @Published private(set) var pendingUserPrompt: String?
 
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
@@ -136,6 +167,9 @@ final class CompanionManager: ObservableObject {
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
+    /// Subscription that drives the screen-edge shimmer overlay on/off
+    /// based on whether the AI is currently processing a request.
+    private var shimmerStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
@@ -283,14 +317,17 @@ final class CompanionManager: ObservableObject {
         }
 
         // If the user switches away from text, dismiss anything still on
-        // screen from the text-mode flow: the input bubble and any
-        // streaming response chat bubble. Otherwise the user is left
+        // screen from the text-mode flow: the input bubble, the chat
+        // panel, and the entire chat thread. Otherwise the user is left
         // staring at orphaned UI from the old mode.
         if newInputMode != .text {
             chatInputBubbleManager.hideBubble()
             streamingResponseAutoHideTask?.cancel()
+            streamingResponsePanelManager.hide()
             isStreamingResponseBubbleVisible = false
             streamingResponseText = ""
+            pendingUserPrompt = nil
+            conversationHistory.removeAll()
         }
 
         inputMode = newInputMode
@@ -314,6 +351,21 @@ final class CompanionManager: ObservableObject {
     /// or when onboarding ends.
     func hideCursorTriangle() {
         isCursorTriangleVisible = false
+    }
+
+    /// User-initiated dismissal of the chat panel — called by the X
+    /// close button. Cancels any in-flight response, hides the panel, and
+    /// clears the entire conversation so the next hotkey press starts a
+    /// fresh chat. (We deliberately drop `conversationHistory` on dismiss:
+    /// the user closed the chat to start over, not to suspend it.)
+    func dismissStreamingResponse() {
+        currentResponseTask?.cancel()
+        streamingResponseAutoHideTask?.cancel()
+        streamingResponsePanelManager.hide()
+        isStreamingResponseBubbleVisible = false
+        streamingResponseText = ""
+        pendingUserPrompt = nil
+        conversationHistory.removeAll()
     }
 
     /// Claude's response text streamed character-by-character so the
@@ -389,6 +441,7 @@ final class CompanionManager: ObservableObject {
         print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
         bindVoiceStateObservation()
+        bindProcessingShimmerToVoiceState()
         bindAudioPowerLevel()
         bindShortcutTransitions()
         // Eagerly touch the Claude API so its TLS warmup handshake completes
@@ -514,6 +567,8 @@ final class CompanionManager: ObservableObject {
         currentResponseTask = nil
         shortcutTransitionCancellable?.cancel()
         voiceStateCancellable?.cancel()
+        shimmerStateCancellable?.cancel()
+        processingShimmerManager.hide()
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
@@ -641,6 +696,25 @@ final class CompanionManager: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] powerLevel in
                 self?.currentAudioPowerLevel = powerLevel
+            }
+    }
+
+    /// Reacts to `voiceState` transitions and toggles the screen-edge
+    /// shimmer overlay accordingly. The shimmer is the Apple-Intelligence-
+    /// style "the system is thinking" feedback — visible only while the
+    /// AI is actually processing a request, hidden otherwise so the
+    /// screen edges aren't constantly glowing.
+    private func bindProcessingShimmerToVoiceState() {
+        shimmerStateCancellable = $voiceState
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] newState in
+                guard let self else { return }
+                if newState == .processing {
+                    self.processingShimmerManager.show()
+                } else {
+                    self.processingShimmerManager.hide()
+                }
             }
     }
 
@@ -817,14 +891,19 @@ final class CompanionManager: ObservableObject {
         )
     }
 
-    /// Submits a text prompt typed into the chat bubble. Trims whitespace
-    /// and forwards to the same Claude + screenshot pipeline used by voice
-    /// dictation. Empty submissions are ignored.
+    /// Submits a text prompt typed into the chat bubble or as a follow-up
+    /// inside the chat panel. Trims whitespace and forwards to the same
+    /// Claude + screenshot pipeline used by voice dictation. Empty
+    /// submissions are ignored.
     func submitTextInput(_ text: String) {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else { return }
 
         lastTranscript = trimmedText
+        // Render the user's message in the chat thread immediately. The
+        // pending prompt is cleared once the response completes and the
+        // turn is committed to `conversationHistory`.
+        pendingUserPrompt = trimmedText
         ClickyAnalytics.trackUserMessageSent(transcript: trimmedText)
         sendTranscriptToClaudeWithScreenshot(transcript: trimmedText)
     }
@@ -849,21 +928,38 @@ final class CompanionManager: ObservableObject {
     - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
 
     element pointing:
-    you have a small blue triangle cursor that can fly to and point at things on screen. use it whenever pointing would genuinely help the user — if they're asking how to do something, looking for a menu, trying to find a button, or need help navigating an app, point at the relevant element. err on the side of pointing rather than not pointing, because it makes your help way more useful and concrete.
+    you have a small blue triangle cursor that can fly to and point at a specific UI element on screen. it's a strong gesture — only use it when pointing genuinely adds value. DEFAULT TO NOT POINTING.
 
-    don't point at things when it would be pointless — like if the user asks a general knowledge question, or the conversation has nothing to do with what's on screen, or you'd just be pointing at something obvious they're already looking at. but if there's a specific UI element, menu, button, or area on screen that's relevant to what you're helping with, point at it.
+    only point when ALL of these are true:
+    1. the user is asking about a specific UI element, where to find something, what a button does, or how to navigate an app
+    2. the relevant element is clearly visible in the screenshot
+    3. pointing at it would teach the user something they couldn't easily figure out on their own
 
-    when you point, append a coordinate tag at the very end of your response, AFTER your spoken text. the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. the origin (0,0) is the top-left corner of the image. x increases rightward, y increases downward.
+    do NOT point for:
+    - greetings or casual messages ("hey", "hi", "thanks", "ok", "cool")
+    - general knowledge questions unrelated to the screen ("what is git?", "explain async/await")
+    - acknowledgments, agreements, or one-word responses
+    - follow-up clarifications on a previous response (the user is reading what you said, not looking for a new element)
+    - questions you can answer with words alone
+    - anything where the user isn't actively trying to find or click something
+
+    in every other case, append [POINT:none]. when in doubt, [POINT:none] is the safe default.
+
+    when you DO point, append a coordinate tag at the very end of your response, AFTER your spoken text. the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. the origin (0,0) is the top-left corner of the image. x increases rightward, y increases downward.
 
     format: [POINT:x,y:label] where x,y are integer pixel coordinates in the screenshot's coordinate space, and label is a short 1-3 word description of the element (like "search bar" or "save button"). if the element is on the cursor's screen you can omit the screen number. if the element is on a DIFFERENT screen, append :screenN where N is the screen number from the image label (e.g. :screen2). this is important — without the screen number, the cursor will point at the wrong place.
 
-    if pointing wouldn't help, append [POINT:none].
-
-    examples:
+    examples of when TO point:
     - user asks how to color grade in final cut: "you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector]"
-    - user asks what html is: "html stands for hypertext markup language, it's basically the skeleton of every web page. curious how it connects to the css you're looking at? [POINT:none]"
     - user asks how to commit in xcode: "see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control]"
     - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
+
+    examples of when NOT to point — these all get [POINT:none]:
+    - user says "hey": "hey! what's up? [POINT:none]"
+    - user says "thanks": "anytime! [POINT:none]"
+    - user asks what html is: "html stands for hypertext markup language, it's basically the skeleton of every web page. [POINT:none]"
+    - user says "explain that more": "sure — the way it works is... [POINT:none]"
+    - user asks "what time is it?": "i can't actually see your clock, but the menu bar usually shows it in the top right. [POINT:none]"
     """
 
     // MARK: - AI Response Pipeline
@@ -891,9 +987,16 @@ final class CompanionManager: ObservableObject {
         if isTextMode {
             streamingResponseText = ""
             isStreamingResponseBubbleVisible = true
+            // The panel observes `CompanionManager` directly via
+            // SwiftUI, so we only need to ensure it's on screen — the
+            // chat thread, streaming text, and pending prompt all
+            // re-render automatically as their `@Published` sources
+            // update during the response pipeline.
+            streamingResponsePanelManager.show(companionManager: self)
         } else {
             streamingResponseText = ""
             isStreamingResponseBubbleVisible = false
+            streamingResponsePanelManager.hide()
         }
 
         currentResponseTask = Task {
@@ -915,8 +1018,8 @@ final class CompanionManager: ObservableObject {
                 }
 
                 // Pass conversation history so Claude remembers prior exchanges
-                let historyForAPI = conversationHistory.map { entry in
-                    (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
+                let historyForAPI = conversationHistory.map { turn in
+                    (userPlaceholder: turn.userMessage, assistantResponse: turn.assistantResponse)
                 }
 
                 // Route the request to whichever provider the user picked.
@@ -929,7 +1032,17 @@ final class CompanionManager: ObservableObject {
                         let errorMessage = "Add your OpenAI API key in Clicky's settings to use OpenAI mode."
                         if isTextMode {
                             streamingResponseText = errorMessage
-                            scheduleStreamingResponseBubbleAutoHide(forResponseLength: errorMessage.count)
+                            // Surface the error as a synthetic completed
+                            // turn so it joins the chat thread cleanly
+                            // rather than sitting as a perma-streaming
+                            // message. Then clear the pending prompt.
+                            if let pendingPrompt = pendingUserPrompt {
+                                conversationHistory.append(CompanionConversationTurn(
+                                    userMessage: pendingPrompt,
+                                    assistantResponse: errorMessage
+                                ))
+                                pendingUserPrompt = nil
+                            }
                         }
                         voiceState = .idle
                         return
@@ -956,13 +1069,13 @@ final class CompanionManager: ObservableObject {
                         onTextChunk: { [weak self] accumulatedTextSoFar in
                             // ClaudeAPI delivers the FULL accumulated text on
                             // every chunk (not deltas), so we assign rather
-                            // than append. The text may contain a partial
-                            // [POINT:...] tag at the end; we don't strip it
-                            // here because it gets replaced with the cleaned
-                            // spokenText once the full response arrives.
+                            // than append. The chat panel observes
+                            // `streamingResponseText` directly and re-renders
+                            // automatically on each update.
                             guard let self else { return }
                             guard isTextMode else { return }
                             self.streamingResponseText = accumulatedTextSoFar
+                            print("📡 Stream chunk: \(accumulatedTextSoFar.count) chars total")
                         }
                     )
                     fullResponseText = responseText
@@ -1020,7 +1133,11 @@ final class CompanionManager: ObservableObject {
                     // Convert from top-left origin (screenshot) to bottom-left origin (AppKit)
                     let appKitY = displayHeight - displayLocalY
 
-                    // Convert display-local coords to global screen coords
+                    // Convert display-local coords to global screen coords.
+                    // The cursor's tip-to-center offset is applied later
+                    // in OverlayWindow.startNavigatingToElement so this
+                    // location reflects the AI's *intended target*, not
+                    // a pre-shifted center position.
                     let globalLocation = CGPoint(
                         x: displayLocalX + displayFrame.origin.x,
                         y: appKitY + displayFrame.origin.y
@@ -1034,31 +1151,42 @@ final class CompanionManager: ObservableObject {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
                 }
 
-                // Save this exchange to conversation history (with the point tag
-                // stripped so it doesn't confuse future context)
-                conversationHistory.append((
-                    userTranscript: transcript,
+                print("💾 About to commit turn: history.count=\(conversationHistory.count), pending=\(pendingUserPrompt ?? "nil"), streaming.count=\(streamingResponseText.count)")
+
+                // Order matters: SwiftUI batches @Published writes that
+                // happen in the same synchronous run, so all three of
+                // these mutations result in ONE re-render. By writing
+                // streamingResponseText first, then appending to history,
+                // and only then clearing pendingUserPrompt, the batched
+                // re-render sees the completed turn already in
+                // conversationHistory before the in-flight section
+                // collapses — there's no frame where the user could see
+                // the chat with neither the in-flight bubble nor the
+                // history turn rendered.
+                streamingResponseText = spokenText
+                conversationHistory.append(CompanionConversationTurn(
+                    userMessage: transcript,
                     assistantResponse: spokenText
                 ))
+                pendingUserPrompt = nil
 
                 // Keep only the last 10 exchanges to avoid unbounded context growth
                 if conversationHistory.count > 10 {
                     conversationHistory.removeFirst(conversationHistory.count - 10)
                 }
 
+                print("🔄 Cleared pending. history.count=\(conversationHistory.count), streaming.count=\(streamingResponseText.count)")
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")
 
                 ClickyAnalytics.trackAIResponseReceived(response: spokenText)
 
-                // In text mode the response is rendered visually in a chat
-                // bubble next to the cursor. Replace whatever streamed in
-                // with the cleaned spokenText (with any [POINT:...] tag
-                // stripped) so the bubble doesn't show the raw tag at the
-                // end. Text mode is silent — no TTS playback.
+                // In text mode the response was already committed to
+                // history above. We only need to flip voiceState here so
+                // the cursor visualizations know the AI is no longer
+                // processing. The chat panel is the user's read-back
+                // surface and persists until they dismiss it with X.
                 if isTextMode {
-                    streamingResponseText = spokenText
                     voiceState = .responding
-                    scheduleStreamingResponseBubbleAutoHide(forResponseLength: spokenText.count)
                 } else if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     // Voice mode: play the response via TTS. Keep the spinner
                     // (processing state) until the audio actually starts
@@ -1108,6 +1236,7 @@ final class CompanionManager: ObservableObject {
             await MainActor.run {
                 guard let self else { return }
                 self.isStreamingResponseBubbleVisible = false
+                self.streamingResponsePanelManager.hide()
                 // Wait for the SwiftUI fade animation to finish before
                 // clearing the text so the bubble doesn't go blank during
                 // the fade-out.
@@ -1426,6 +1555,8 @@ final class CompanionManager: ObservableObject {
                 let displayLocalX = clampedX * (displayWidth / screenshotWidth)
                 let displayLocalY = clampedY * (displayHeight / screenshotHeight)
                 let appKitY = displayHeight - displayLocalY
+                // The cursor's tip-to-center offset is applied later
+                // in OverlayWindow.startNavigatingToElement.
                 let globalLocation = CGPoint(
                     x: displayLocalX + displayFrame.origin.x,
                     y: appKitY + displayFrame.origin.y

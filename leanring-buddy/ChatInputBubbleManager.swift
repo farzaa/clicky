@@ -60,9 +60,13 @@ final class ChatInputBubbleManager: NSObject {
     private let cursorHalfWidth: CGFloat = 8
     /// Small visual gap between the cursor and the bubble's tail.
     private let gapBetweenCursorAndBubble: CGFloat = 4
-    /// Where on the bubble's vertical axis the tail attaches (must match
-    /// `ChatBubbleShape.tailVerticalAnchor` in `ChatInputBubbleView.swift`).
-    private let tailVerticalAnchor: CGFloat = 0.28
+    /// Where on the bubble's vertical axis the tail's TIP sits (0 = top
+    /// of bubble, 1 = bottom). Must match `ChatBubbleShape.tailVerticalAnchor`
+    /// in `ChatInputBubbleView.swift`. The position formula below uses this
+    /// so that the tip — not the tail's geometric center — aligns with the
+    /// cursor's vertical center, which is what the user perceives as "the
+    /// tail is pointing at the cursor."
+    private let tailVerticalAnchor: CGFloat = 0.18
 
     deinit {
         if let monitor = clickOutsideMonitor {

@@ -19,29 +19,39 @@
 
 import SwiftUI
 
-/// Speech-bubble shape: a capsule body (corner radius = body height / 2) with
-/// a small triangular tail on the upper-left edge, pointing toward the AI
-/// cursor (which sits to the upper-left of the bubble in the layout used
-/// by ChatInputBubbleManager).
+/// Speech-bubble shape: a capsule body (corner radius = body height / 2)
+/// with a small triangular tail on the upper-left edge.
+///
+/// Why the tip's y is intentionally aligned with the top body-anchor's y
+/// (creating a horizontal upper edge): if the tip sat ABOVE the top
+/// body-anchor, the tail's diagonal upper edge would slant up-and-left
+/// from the body's curve to the tip. But above the body-anchor's y, the
+/// capsule's outline curves outward (rightward) — so between the tail's
+/// upper edge and the capsule's curve there's a wedge of empty space
+/// that reads as a gap detaching the tail from the bubble.
+///
+/// Aligning the tip with the top anchor's y makes the upper edge purely
+/// horizontal, eliminating that wedge entirely. The tail then reads as a
+/// small flag/pennant emerging from the bubble's upper-left, with all
+/// edges either resting on the bubble's curve or extending cleanly out
+/// to the tip.
 struct ChatBubbleShape: Shape {
-    /// Where on the bubble's left edge the tail should attach (0 = top, 1 = bottom).
-    /// 0.25 puts the tail near the upper-left to match the Figma reference,
-    /// where the tail emerges from the bubble pointing up-and-left toward
-    /// the cursor.
-    var tailVerticalAnchor: CGFloat = 0.28
-    /// How far the tail sticks out from the bubble's left edge, in points.
-    var tailWidth: CGFloat = 9
-    /// Vertical extent of the tail, in points. Slightly larger than the
-    /// width gives the tail a leaning-upward shape rather than a point.
-    var tailHeight: CGFloat = 12
+    /// Where on the bubble's vertical axis the tail's TOP edge attaches
+    /// (0 = bubble top, 1 = bubble bottom). 0.18 puts the tail's top
+    /// fairly high on the bubble, with the tail extending downward and
+    /// outward from there.
+    var tailVerticalAnchor: CGFloat = 0.18
+    /// How far the tail's tip sticks out from the bubble's left edge.
+    var tailWidth: CGFloat = 11
+    /// Vertical extent of the tail (from top edge to the bottom anchor).
+    var tailHeight: CGFloat = 14
 
     func path(in rect: CGRect) -> Path {
         var path = Path()
 
         // Bubble body — capsule. Corner radius is exactly half the body's
         // height so the left and right edges round all the way around.
-        // Inset from the left to leave room for the tail to extrude beyond
-        // the body's left edge.
+        // Inset from the left to leave room for the tail to extrude.
         let bodyRect = CGRect(
             x: rect.minX + tailWidth,
             y: rect.minY,
@@ -55,20 +65,46 @@ struct ChatBubbleShape: Shape {
             style: .continuous
         )
 
-        // Tail — small triangle sticking out from the left edge of the
-        // body, pointing up-and-left toward where the cursor sits.
-        let tailCenterY = rect.minY + (rect.height * tailVerticalAnchor)
+        // Tail — flag/pennant shape. The tip and the top body-anchor share
+        // the same y so the upper edge is horizontal (no wedge of empty
+        // space above the tip). The bottom body-anchor is below them on
+        // the curve, with the tip-to-bottom edge slanting down-right.
+        let tailTopY = bodyRect.minY + (bodyRect.height * tailVerticalAnchor)
+        let tailBottomY = tailTopY + tailHeight
         let tailTipX = rect.minX
-        let tailTipY = tailCenterY - (tailHeight * 0.45)
-        let tailTopAnchor = CGPoint(x: bodyRect.minX, y: tailCenterY - (tailHeight / 2))
-        let tailBottomAnchor = CGPoint(x: bodyRect.minX, y: tailCenterY + (tailHeight / 2))
+        let tailTipY = tailTopY
 
-        path.move(to: tailTopAnchor)
-        path.addLine(to: CGPoint(x: tailTipX, y: tailTipY))
-        path.addLine(to: tailBottomAnchor)
+        let topAnchorX = leftEdgeX(at: tailTopY, in: bodyRect, cornerRadius: capsuleCornerRadius)
+        let bottomAnchorX = leftEdgeX(at: tailBottomY, in: bodyRect, cornerRadius: capsuleCornerRadius)
+
+        path.move(to: CGPoint(x: tailTipX, y: tailTipY))
+        path.addLine(to: CGPoint(x: topAnchorX, y: tailTopY))
+        path.addLine(to: CGPoint(x: bottomAnchorX, y: tailBottomY))
         path.closeSubpath()
 
         return path
+    }
+
+    /// Returns the x-coordinate of the body's left outline at a given y.
+    /// For a capsule (corner radius = half-height), every y on the left
+    /// side is within a corner curve, so this solves the circle equation
+    /// for the quarter-arc. Without this, anchoring at `bodyRect.minX`
+    /// places the tail outside the actual visible curve, leaving a gap.
+    private func leftEdgeX(at y: CGFloat, in bodyRect: CGRect, cornerRadius: CGFloat) -> CGFloat {
+        let centerY = bodyRect.midY
+        let yOffsetFromCenter = abs(y - centerY)
+
+        // Outside the corner zone (won't happen for a true capsule but
+        // covered for safety in case future tweaks reduce cornerRadius).
+        if yOffsetFromCenter >= cornerRadius {
+            return bodyRect.minX
+        }
+
+        // Solve circle equation: x² + (y - centerY)² = r² → x = sqrt(r² - dy²).
+        // The body's left edge at this y is `cornerRadius - x` to the right
+        // of `bodyRect.minX`.
+        let dx = sqrt(cornerRadius * cornerRadius - yOffsetFromCenter * yOffsetFromCenter)
+        return bodyRect.minX + (cornerRadius - dx)
     }
 }
 

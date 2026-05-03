@@ -85,49 +85,6 @@ struct NavigationBubbleSizePreferenceKey: PreferenceKey {
     }
 }
 
-/// Top-right response panel rendered on top of every screen during
-/// text-mode chat. While Claude is processing the response is empty and
-/// we show a small circular spinner; once text starts streaming, the
-/// spinner is replaced with the response text. The view has a fixed max
-/// width and a content-sized height that grows as text streams in.
-private struct StreamingResponseBox: View {
-    let responseText: String
-    /// True while the response is empty (processing). Drives whether the
-    /// spinner or the streaming text is shown.
-    let isProcessing: Bool
-
-    var body: some View {
-        Group {
-            if isProcessing {
-                // Match the visual language of the voice-mode processing
-                // spinner so users see consistent "AI is thinking" feedback
-                // across input modes.
-                BlueCursorSpinnerView()
-                    .frame(width: 18, height: 18)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
-            } else {
-                Text(responseText)
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundColor(.white)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 360, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
-            }
-        }
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(DS.Colors.background)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
-        )
-        .shadow(color: Color.black.opacity(0.35), radius: 18, x: 0, y: 8)
-    }
-}
 
 /// The buddy's behavioral mode. Controls whether it follows the cursor,
 /// is flying toward a detected UI element, or is pointing at an element.
@@ -339,31 +296,6 @@ struct BlueCursorView: View {
                     }
             }
 
-            // Top-right response box — shown in text mode while the AI is
-            // processing or has streamed a response. Renders on every
-            // screen (each BlueCursorView is per-screen) so the user sees
-            // the response no matter which monitor they're looking at.
-            // Opaque dark background — distinct from the transparent
-            // cursor overlay infrastructure so the response is fully
-            // readable against any background.
-            ZStack(alignment: .topTrailing) {
-                // Spacer to fill the screen — alignment pushes the box
-                // to the top-right corner with the padding below.
-                Color.clear
-                if companionManager.isStreamingResponseBubbleVisible {
-                    StreamingResponseBox(
-                        responseText: companionManager.streamingResponseText,
-                        isProcessing: companionManager.streamingResponseText.isEmpty
-                    )
-                    .padding(.top, 24)
-                    .padding(.trailing, 24)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-                }
-            }
-            .frame(width: screenFrame.width, height: screenFrame.height)
-            .allowsHitTesting(false)
-            .animation(.easeInOut(duration: 0.35), value: companionManager.isStreamingResponseBubbleVisible)
-
             // Blue triangle cursor — shown when idle or while TTS is playing (responding).
             // All three states (triangle, waveform, spinner) stay in the view tree
             // permanently and cross-fade via opacity so SwiftUI doesn't remove/re-insert
@@ -400,9 +332,14 @@ struct BlueCursorView: View {
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
 
-            // Blue spinner — shown while the AI is processing (transcription + Claude + waiting for TTS)
+            // Blue spinner — shown while the AI is processing (transcription + Claude + waiting for TTS).
+            // Intentionally NOT gated on `isCursorTriangleVisible` so the
+            // spinner appears next to the mouse during text-mode chat too,
+            // mirroring the visual feedback voice mode gets while waiting
+            // on Claude. The triangle/waveform stay gated on visibility,
+            // but the spinner is always meaningful when processing.
             BlueCursorSpinnerView()
-                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing && companionManager.isCursorTriangleVisible ? cursorOpacity : 0)
+                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
@@ -528,20 +465,29 @@ struct BlueCursorView: View {
         // Don't interrupt welcome animation
         guard !showWelcome || welcomeText.isEmpty else { return }
 
-        // Convert the AppKit screen location to SwiftUI coordinates for this screen
+        // Convert the AppKit screen location to SwiftUI coordinates for this screen.
         let targetInSwiftUI = convertScreenPointToSwiftUICoordinates(screenLocation)
 
-        // Offset the target so the buddy sits beside the element rather than
-        // directly on top of it — 8px to the right, 12px below.
-        let offsetTarget = CGPoint(
-            x: targetInSwiftUI.x + 8,
-            y: targetInSwiftUI.y + 12
+        // Compensate for the cursor's tip-to-center offset so the
+        // visible TIP of the triangle lands directly on the target
+        // (not the triangle's geometric center). The Triangle shape's
+        // top vertex is ~9.24px above the 16x16 frame's center, and a
+        // -35° rotation shifts that vertex to (-5.30, -7.57) in SwiftUI
+        // coords. To put the tip ON the target, the cursor's center
+        // must be at `target + (5.30, 7.57)` — i.e., shift the
+        // animation destination down-and-right by exactly that amount.
+        // The navigation speech bubble is positioned offset from the
+        // cursor anyway (see line ~288), so it ends up beside the
+        // target as a natural consequence — no extra padding needed.
+        let tipCompensatedTarget = CGPoint(
+            x: targetInSwiftUI.x + 5.30,
+            y: targetInSwiftUI.y + 7.57
         )
 
         // Clamp target to screen bounds with padding
         let clampedTarget = CGPoint(
-            x: max(20, min(offsetTarget.x, screenFrame.width - 20)),
-            y: max(20, min(offsetTarget.y, screenFrame.height - 20))
+            x: max(20, min(tipCompensatedTarget.x, screenFrame.width - 20)),
+            y: max(20, min(tipCompensatedTarget.y, screenFrame.height - 20))
         )
 
         // Record the current cursor position so we can detect if the user
