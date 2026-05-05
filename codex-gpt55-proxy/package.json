@@ -1,0 +1,13 @@
+{
+  "name": "clicky-codex-gpt55-proxy",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "smoke": "node src/server.mjs --smoke"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

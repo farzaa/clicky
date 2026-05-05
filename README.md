@@ -47,11 +47,25 @@ If you want to do it yourself, here's the deal.
 - Xcode 15+
 - Node.js 18+ (for the Cloudflare Worker)
 - A [Cloudflare](https://cloudflare.com) account (free tier works)
-- API keys for: [Anthropic](https://console.anthropic.com), [AssemblyAI](https://www.assemblyai.com), [ElevenLabs](https://elevenlabs.io)
+- Codex CLI authenticated with ChatGPT OAuth for GPT-5.5 chat
+- API keys for: [AssemblyAI](https://www.assemblyai.com), [ElevenLabs](https://elevenlabs.io)
 
-### 1. Set up the Cloudflare Worker
+### 1. Set up the Codex GPT-5.5 OAuth chat proxy
 
-The Worker is a tiny proxy that holds your API keys. The app talks to the Worker, the Worker talks to the APIs. This way your keys never ship in the app binary.
+This fork routes `/chat` to a local Node proxy that uses your Codex/ChatGPT OAuth session and `gpt-5.5`. The proxy reads `~/.codex/auth.json`, so keep it local and never deploy it to Cloudflare.
+
+```bash
+codex login
+cd codex-gpt55-proxy
+npm install
+npm start
+```
+
+The app is preconfigured to call `http://127.0.0.1:8787/chat`.
+
+### 2. Set up the Cloudflare Worker for voice services
+
+The Worker still holds your AssemblyAI and ElevenLabs API keys for transcription token minting and TTS. The app can either call it directly for those routes, or the local Codex proxy can forward `/tts` and `/transcribe-token` when `CLICKY_UPSTREAM_WORKER_URL` is set.
 
 ```bash
 cd worker
@@ -61,7 +75,6 @@ npm install
 Now add your secrets. Wrangler will prompt you to paste each one:
 
 ```bash
-npx wrangler secret put ANTHROPIC_API_KEY
 npx wrangler secret put ASSEMBLYAI_API_KEY
 npx wrangler secret put ELEVENLABS_API_KEY
 ```
@@ -93,25 +106,22 @@ npx wrangler dev
 This starts a local server (usually `http://localhost:8787`) that behaves exactly like the deployed Worker. You'll need to create a `.dev.vars` file in the `worker/` directory with your keys:
 
 ```
-ANTHROPIC_API_KEY=sk-ant-...
-ASSEMBLYAI_API_KEY=...
-ELEVENLABS_API_KEY=...
+ASSEMBLYAI_API_KEY=***
+ELEVENLABS_API_KEY=***
 ELEVENLABS_VOICE_ID=...
 ```
 
-Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing. Grep for `clicky-proxy` to find them all.
+Then run `codex-gpt55-proxy` with `CLICKY_UPSTREAM_WORKER_URL=http://localhost:8787` so it can forward `/tts` and `/transcribe-token` while keeping `/chat` on GPT-5.5.
 
 ### 3. Update the proxy URLs in the app
 
-The app has the Worker URL hardcoded in a few places. Search for `your-worker-name.your-subdomain.workers.dev` and replace it with your Worker URL:
+This fork defaults chat to the local GPT-5.5 OAuth proxy in `CompanionManager.swift`:
 
-```bash
-grep -r "clicky-proxy" leanring-buddy/
+```swift
+private static let workerBaseURL = "http://127.0.0.1:8787"
 ```
 
-You'll find it in:
-- `CompanionManager.swift` — Claude chat + ElevenLabs TTS
-- `AssemblyAIStreamingTranscriptionProvider.swift` — AssemblyAI token endpoint
+For AssemblyAI and ElevenLabs, run the local Codex proxy with `CLICKY_UPSTREAM_WORKER_URL` pointing at your deployed Worker or a local `wrangler dev` instance so it can forward `/tts` and `/transcribe-token`.
 
 ### 4. Open in Xcode and run
 
@@ -137,7 +147,7 @@ The app will appear in your menu bar (not the dock). Click the icon to open the 
 
 If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
 
-**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied through a Cloudflare Worker.
+**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to GPT-5.5 through the local Codex OAuth proxy via streaming SSE, and plays the response through ElevenLabs TTS. The model can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. Chat is proxied locally with Codex OAuth; voice services remain proxied through Cloudflare/forwarding.
 
 ## Project structure
 
@@ -145,13 +155,15 @@ If you want the full technical breakdown, read `CLAUDE.md`. But here's the short
 leanring-buddy/          # Swift source (yes, the typo stays)
   CompanionManager.swift    # Central state machine
   CompanionPanelView.swift  # Menu bar panel UI
-  ClaudeAPI.swift           # Claude streaming client
+  ClaudeAPI.swift           # Anthropic-shaped SSE client used by the GPT-5.5 proxy
   ElevenLabsTTSClient.swift # Text-to-speech playback
   OverlayWindow.swift       # Blue cursor overlay
   AssemblyAI*.swift         # Real-time transcription
   BuddyDictation*.swift     # Push-to-talk pipeline
 worker/                  # Cloudflare Worker proxy
-  src/index.ts              # Three routes: /chat, /tts, /transcribe-token
+  src/index.ts              # Voice service routes: /tts, /transcribe-token; legacy /chat remains
+codex-gpt55-proxy/       # Local GPT-5.5 Codex OAuth chat proxy
+  src/server.mjs            # Translates Anthropic-shaped Clicky chat to Codex Responses API
 CLAUDE.md                # Full architecture doc (agents read this)
 ```
 
