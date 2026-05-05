@@ -76,4 +76,26 @@ struct leanring_buddyTests {
         #expect(entry.id == entry.id)
     }
 
+    @Test func lastConversationEntryIDChangesWhenHistoryIsCappedAtTen() {
+        var history: [ConversationEntry] = (1...10).map { i in
+            ConversationEntry(userTranscript: "Q\(i)", assistantResponse: "A\(i)", timestamp: Date())
+        }
+
+        for i in 11...12 {
+            let idBeforeAppend = history.last?.id
+
+            history.append(ConversationEntry(
+                userTranscript: "Q\(i)",
+                assistantResponse: "A\(i)",
+                timestamp: Date()
+            ))
+            if history.count > 10 {
+                history.removeFirst(history.count - 10)
+            }
+
+            #expect(history.count == 10)
+            #expect(history.last?.id != idBeforeAppend)
+        }
+    }
+
 }

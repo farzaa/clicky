@@ -743,7 +743,7 @@ struct CompanionPanelView: View {
                     }
                 }
                 .frame(maxHeight: 180)
-                .onChange(of: companionManager.conversationHistory.count) { _, _ in
+                .onChange(of: companionManager.conversationHistory.last?.id) { _, _ in
                     if let latestEntry = companionManager.conversationHistory.last {
                         withAnimation {
                             scrollProxy.scrollTo(latestEntry.id, anchor: .bottom)
