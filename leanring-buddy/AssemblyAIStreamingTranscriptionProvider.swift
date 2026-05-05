@@ -19,7 +19,7 @@ struct AssemblyAIStreamingTranscriptionProviderError: LocalizedError {
 final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider {
     /// URL for the Cloudflare Worker endpoint that returns a short-lived
     /// AssemblyAI streaming token. The real API key never leaves the server.
-    private static let tokenProxyURL = "http://127.0.0.1:8787/transcribe-token"
+    private static let tokenProxyURL = "http://127.0.0.1:8877/transcribe-token"
 
     let displayName = "AssemblyAI"
     let requiresSpeechRecognitionPermission = false
@@ -35,9 +35,9 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
 
     func startStreamingSession(
         keyterms: [String],
-        onTranscriptUpdate: @escaping (String) -> Void,
-        onFinalTranscriptReady: @escaping (String) -> Void,
-        onError: @escaping (Error) -> Void
+        onTranscriptUpdate: @escaping @Sendable (String) -> Void,
+        onFinalTranscriptReady: @escaping @Sendable (String) -> Void,
+        onError: @escaping @Sendable (Error) -> Void
     ) async throws -> any BuddyStreamingTranscriptionSession {
         // Fetch a fresh temporary token from the proxy before each session
         let temporaryToken = try await fetchTemporaryToken()
@@ -117,9 +117,9 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
     private let apiKey: String?
     private let temporaryToken: String?
     private let keyterms: [String]
-    private let onTranscriptUpdate: (String) -> Void
-    private let onFinalTranscriptReady: (String) -> Void
-    private let onError: (Error) -> Void
+    private let onTranscriptUpdate: @Sendable (String) -> Void
+    private let onFinalTranscriptReady: @Sendable (String) -> Void
+    private let onError: @Sendable (Error) -> Void
 
     private let stateQueue = DispatchQueue(label: "com.learningbuddy.assemblyai.state")
     private let sendQueue = DispatchQueue(label: "com.learningbuddy.assemblyai.send")
@@ -142,9 +142,9 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
         temporaryToken: String?,
         urlSession: URLSession,
         keyterms: [String],
-        onTranscriptUpdate: @escaping (String) -> Void,
-        onFinalTranscriptReady: @escaping (String) -> Void,
-        onError: @escaping (Error) -> Void
+        onTranscriptUpdate: @escaping @Sendable (String) -> Void,
+        onFinalTranscriptReady: @escaping @Sendable (String) -> Void,
+        onError: @escaping @Sendable (Error) -> Void
     ) {
         self.apiKey = apiKey
         self.temporaryToken = temporaryToken

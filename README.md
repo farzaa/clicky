@@ -61,7 +61,7 @@ npm install
 npm start
 ```
 
-The app is preconfigured to call `http://127.0.0.1:8787/chat`.
+The app is preconfigured to call `http://127.0.0.1:8877/chat`.
 
 ### 2. Set up the Cloudflare Worker for voice services
 
@@ -118,7 +118,7 @@ Then run `codex-gpt55-proxy` with `CLICKY_UPSTREAM_WORKER_URL=http://localhost:8
 This fork defaults chat to the local GPT-5.5 OAuth proxy in `CompanionManager.swift`:
 
 ```swift
-private static let workerBaseURL = "http://127.0.0.1:8787"
+private static let workerBaseURL = "http://127.0.0.1:8877"
 ```
 
 For AssemblyAI and ElevenLabs, run the local Codex proxy with `CLICKY_UPSTREAM_WORKER_URL` pointing at your deployed Worker or a local `wrangler dev` instance so it can forward `/tts` and `/transcribe-token`.

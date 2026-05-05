@@ -1,8 +1,10 @@
 worker/node_modules/
 worker/.dev.vars
+codex-gpt55-proxy/node_modules/
 .DS_Store
 *.xcuserstate
 build/
+.build/
 releases/
 .claude/
 coding-plans/

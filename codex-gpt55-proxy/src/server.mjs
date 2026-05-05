@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 
-const PORT = Number(process.env.PORT || 8787);
+const PORT = Number(process.env.PORT || 8877);
 const CODEX_AUTH_FILE = expandHome(process.env.CODEX_AUTH_FILE || '~/.codex/auth.json');
 const CODEX_MODEL = process.env.CODEX_MODEL || 'gpt-5.5';
 const CODEX_UPSTREAM_URL = process.env.CODEX_UPSTREAM_URL || 'https://chatgpt.com/backend-api/codex/responses';

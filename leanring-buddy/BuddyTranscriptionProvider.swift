@@ -23,9 +23,9 @@ protocol BuddyTranscriptionProvider {
 
     func startStreamingSession(
         keyterms: [String],
-        onTranscriptUpdate: @escaping (String) -> Void,
-        onFinalTranscriptReady: @escaping (String) -> Void,
-        onError: @escaping (Error) -> Void
+        onTranscriptUpdate: @escaping @Sendable (String) -> Void,
+        onFinalTranscriptReady: @escaping @Sendable (String) -> Void,
+        onError: @escaping @Sendable (Error) -> Void
     ) async throws -> any BuddyStreamingTranscriptionSession
 }
 

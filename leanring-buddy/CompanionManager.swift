@@ -71,7 +71,7 @@ final class CompanionManager: ObservableObject {
     /// Base URL for the local Codex GPT-5.5 proxy. Chat requests go through
     /// `codex-gpt55-proxy/`, which uses the user's local Codex/ChatGPT OAuth
     /// credentials instead of shipping an Anthropic key in the app or Worker.
-    private static let workerBaseURL = "http://127.0.0.1:8787"
+    private static let workerBaseURL = "http://127.0.0.1:8877"
 
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)

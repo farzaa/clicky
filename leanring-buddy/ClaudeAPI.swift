@@ -8,6 +8,7 @@ import Foundation
 /// Claude API helper with streaming for progressive text display.
 class ClaudeAPI {
     private static let tlsWarmupLock = NSLock()
+    nonisolated(unsafe)
     private static var hasStartedTLSWarmup = false
 
     private let apiURL: URL

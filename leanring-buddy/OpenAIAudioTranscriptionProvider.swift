@@ -35,9 +35,9 @@ final class OpenAIAudioTranscriptionProvider: BuddyTranscriptionProvider {
 
     func startStreamingSession(
         keyterms: [String],
-        onTranscriptUpdate: @escaping (String) -> Void,
-        onFinalTranscriptReady: @escaping (String) -> Void,
-        onError: @escaping (Error) -> Void
+        onTranscriptUpdate: @escaping @Sendable (String) -> Void,
+        onFinalTranscriptReady: @escaping @Sendable (String) -> Void,
+        onError: @escaping @Sendable (Error) -> Void
     ) async throws -> any BuddyStreamingTranscriptionSession {
         guard let apiKey else {
             throw OpenAIAudioTranscriptionProviderError(
@@ -69,9 +69,9 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
     private let apiKey: String
     private let modelName: String
     private let keyterms: [String]
-    private let onTranscriptUpdate: (String) -> Void
-    private let onFinalTranscriptReady: (String) -> Void
-    private let onError: (Error) -> Void
+    private let onTranscriptUpdate: @Sendable (String) -> Void
+    private let onFinalTranscriptReady: @Sendable (String) -> Void
+    private let onError: @Sendable (Error) -> Void
 
     private let stateQueue = DispatchQueue(label: "com.learningbuddy.openai.transcription")
     private let audioPCM16Converter = BuddyPCM16AudioConverter(
@@ -89,9 +89,9 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
         apiKey: String,
         modelName: String,
         keyterms: [String],
-        onTranscriptUpdate: @escaping (String) -> Void,
-        onFinalTranscriptReady: @escaping (String) -> Void,
-        onError: @escaping (Error) -> Void
+        onTranscriptUpdate: @escaping @Sendable (String) -> Void,
+        onFinalTranscriptReady: @escaping @Sendable (String) -> Void,
+        onError: @escaping @Sendable (Error) -> Void
     ) {
         self.apiKey = apiKey
         self.modelName = modelName

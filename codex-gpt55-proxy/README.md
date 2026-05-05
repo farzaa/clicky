@@ -18,15 +18,15 @@ cd codex-gpt55-proxy
 CLICKY_UPSTREAM_WORKER_URL="https://your-existing-clicky-worker.workers.dev" npm start
 ```
 
-The proxy listens on `http://127.0.0.1:8787` by default. Configure the Clicky app chat proxy URL to:
+The proxy listens on `http://127.0.0.1:8877` by default. Configure the Clicky app chat proxy URL to:
 
 ```text
-http://127.0.0.1:8787/chat
+http://127.0.0.1:8877/chat
 ```
 
 Optional environment variables:
 
-- `PORT`: listen port, default `8787`
+- `PORT`: listen port, default `8877`
 - `CODEX_AUTH_FILE`: path to Codex auth JSON, default `~/.codex/auth.json`
 - `CODEX_MODEL`: model slug, default `gpt-5.5`
 - `CLICKY_UPSTREAM_WORKER_URL`: forwards `/tts` and `/transcribe-token` to your existing Clicky worker
