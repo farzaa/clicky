@@ -130,6 +130,14 @@ struct BlueCursorView: View {
     @State private var bubbleOpacity: Double = 1.0
     @State private var cursorOpacity: Double = 0.0
 
+    // Idle dim state — separate from cursorOpacity so the initial 0→1 fade-in is unaffected
+    @State private var cursorIdleDimFactor: Double = 1.0
+    @State private var lastTrackedMousePosition: CGPoint = .zero
+    @State private var lastCursorMovementDate: Date = Date()
+    private let idleDimTimeoutSeconds: Double = 0.7
+    private let idleDimmedOpacity: Double = 0.5
+    private let idleShrinkScale: Double = 0.8
+
     // MARK: - Buddy Navigation State
 
     /// The buddy's current behavioral mode (following cursor, navigating, or pointing).
@@ -307,8 +315,8 @@ struct BlueCursorView: View {
                 .frame(width: 16, height: 16)
                 .rotationEffect(.degrees(triangleRotationDegrees))
                 .shadow(color: DS.Colors.overlayCursorBlue, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
-                .scaleEffect(buddyFlightScale)
-                .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
+                .scaleEffect(buddyFlightScale * (cursorIdleDimFactor < 1.0 ? idleShrinkScale : 1.0))
+                .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity * cursorIdleDimFactor : 0)
                 .position(cursorPosition)
                 .animation(
                     buddyNavigationMode == .followingCursor
@@ -321,20 +329,34 @@ struct BlueCursorView: View {
                     buddyNavigationMode == .navigatingToTarget ? nil : .easeInOut(duration: 0.3),
                     value: triangleRotationDegrees
                 )
+                .animation(
+                    cursorIdleDimFactor < 1.0 ? .easeInOut(duration: 1.0) : .easeInOut(duration: 0.4),
+                    value: cursorIdleDimFactor
+                )
 
             // Blue waveform — replaces the triangle while listening
             BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel)
-                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .listening ? cursorOpacity : 0)
+                .scaleEffect(cursorIdleDimFactor < 1.0 ? idleShrinkScale : 1.0)
+                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .listening ? cursorOpacity * cursorIdleDimFactor : 0)
                 .position(cursorPosition)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
+                .animation(
+                    cursorIdleDimFactor < 1.0 ? .easeInOut(duration: 1.0) : .easeInOut(duration: 0.4),
+                    value: cursorIdleDimFactor
+                )
 
             // Blue spinner — shown while the AI is processing (transcription + Claude + waiting for TTS)
             BlueCursorSpinnerView()
-                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing ? cursorOpacity : 0)
+                .scaleEffect(cursorIdleDimFactor < 1.0 ? idleShrinkScale : 1.0)
+                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing ? cursorOpacity * cursorIdleDimFactor : 0)
                 .position(cursorPosition)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
+                .animation(
+                    cursorIdleDimFactor < 1.0 ? .easeInOut(duration: 1.0) : .easeInOut(duration: 0.4),
+                    value: cursorIdleDimFactor
+                )
 
         }
         .frame(width: screenFrame.width, height: screenFrame.height)
@@ -348,6 +370,10 @@ struct BlueCursorView: View {
             self.cursorPosition = CGPoint(x: swiftUIPosition.x + 35, y: swiftUIPosition.y + 25)
 
             startTrackingCursor()
+
+            // Seed the last known mouse position and timestamp for idle dim tracking
+            lastTrackedMousePosition = mouseLocation
+            lastCursorMovementDate = Date()
 
             // Only show welcome message on first appearance (app start)
             // and only if the cursor starts on this screen
@@ -406,12 +432,40 @@ struct BlueCursorView: View {
         }
     }
 
+    // MARK: - Idle Dim
+
+    /// Called every cursor-tracking frame. Dims the cursor after 30 seconds of no movement
+    /// and restores it immediately when the cursor moves again.
+    private func handleCursorMovementForIdleDimming(currentMouseLocation: CGPoint) {
+        let movementDistance = hypot(
+            currentMouseLocation.x - lastTrackedMousePosition.x,
+            currentMouseLocation.y - lastTrackedMousePosition.y
+        )
+
+        if movementDistance > 2.0 {
+            // Cursor moved — record position and time, restore opacity if dimmed
+            lastTrackedMousePosition = currentMouseLocation
+            lastCursorMovementDate = Date()
+
+            if cursorIdleDimFactor < 1.0 {
+                cursorIdleDimFactor = 1.0
+            }
+        } else {
+            // Cursor is still — dim after the idle timeout has elapsed
+            let secondsIdle = Date().timeIntervalSince(lastCursorMovementDate)
+            if secondsIdle >= idleDimTimeoutSeconds && cursorIdleDimFactor >= 1.0 {
+                cursorIdleDimFactor = idleDimmedOpacity
+            }
+        }
+    }
+
     // MARK: - Cursor Tracking
 
     private func startTrackingCursor() {
         timer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { _ in
             let mouseLocation = NSEvent.mouseLocation
             self.isCursorOnThisScreen = self.screenFrame.contains(mouseLocation)
+            self.handleCursorMovementForIdleDimming(currentMouseLocation: mouseLocation)
 
             // During forward flight or pointing, the buddy is NOT interrupted by
             // mouse movement — it completes its full animation and return flight.
