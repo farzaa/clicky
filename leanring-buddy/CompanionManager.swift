@@ -64,7 +64,9 @@ final class CompanionManager: ObservableObject {
 
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
+    let globalTextInputShortcutMonitor = GlobalTextInputShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
+    lazy var textCommandPopupManager = TextCommandPopupManager(companionManager: self)
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
@@ -89,10 +91,12 @@ final class CompanionManager: ObservableObject {
     private var currentResponseTask: Task<Void, Never>?
 
     private var shortcutTransitionCancellable: AnyCancellable?
+    private var textInputShortcutCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
+    @Published private(set) var isTypedCommandSubmissionInFlight = false
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
@@ -114,6 +118,22 @@ final class CompanionManager: ObservableObject {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
         claudeAPI.model = model
+    }
+
+    @Published var textInputKeyboardShortcut: ClickyKeyboardShortcut = .persistedTextInputShortcut()
+
+    var isTextCommandSubmissionBusy: Bool {
+        isTypedCommandSubmissionInFlight
+            || buddyDictationManager.isDictationInProgress
+            || voiceState == .listening
+            || voiceState == .processing
+    }
+
+    func setTextInputKeyboardShortcut(_ shortcut: ClickyKeyboardShortcut) {
+        guard shortcut.validationErrorMessage == nil else { return }
+        textInputKeyboardShortcut = shortcut
+        shortcut.persistAsTextInputShortcut()
+        globalTextInputShortcutMonitor.currentShortcut = shortcut
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -179,6 +199,8 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
+        bindTextInputShortcut()
+        _ = textCommandPopupManager
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
@@ -289,13 +311,16 @@ final class CompanionManager: ObservableObject {
 
     func stop() {
         globalPushToTalkShortcutMonitor.stop()
+        globalTextInputShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
+        textCommandPopupManager.hidePopup()
         transientHideTask?.cancel()
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
         shortcutTransitionCancellable?.cancel()
+        textInputShortcutCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
@@ -313,8 +338,10 @@ final class CompanionManager: ObservableObject {
 
         if currentlyHasAccessibility {
             globalPushToTalkShortcutMonitor.start()
+            globalTextInputShortcutMonitor.start()
         } else {
             globalPushToTalkShortcutMonitor.stop()
+            globalTextInputShortcutMonitor.stop()
         }
 
         hasScreenRecordingPermission = WindowPositionManager.hasScreenRecordingPermission()
@@ -470,6 +497,23 @@ final class CompanionManager: ObservableObject {
             }
     }
 
+    private func bindTextInputShortcut() {
+        textInputShortcutCancellable = globalTextInputShortcutMonitor
+            .shortcutTriggeredPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                self?.handleTextInputShortcut()
+            }
+    }
+
+    private func handleTextInputShortcut() {
+        guard hasCompletedOnboarding && allPermissionsGranted else { return }
+        guard !showOnboardingVideo else { return }
+
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+        textCommandPopupManager.showPopup()
+    }
+
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
         case .pressed:
@@ -490,23 +534,15 @@ final class CompanionManager: ObservableObject {
 
             // Dismiss the menu bar panel so it doesn't cover the screen
             NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+            textCommandPopupManager.hidePopup()
 
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
+            isTypedCommandSubmissionInFlight = false
             elevenLabsTTSClient.stopPlayback()
             clearDetectedElementLocation()
 
-            // Dismiss the onboarding prompt if it's showing
-            if showOnboardingPrompt {
-                withAnimation(.easeOut(duration: 0.3)) {
-                    onboardingPromptOpacity = 0.0
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    self.showOnboardingPrompt = false
-                    self.onboardingPromptText = ""
-                }
-            }
-    
+            dismissOnboardingPromptIfNeeded()
 
             ClickyAnalytics.trackPushToTalkStarted()
 
@@ -539,10 +575,52 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    func submitTypedCommand(_ typedCommand: String) {
+        let trimmedTypedCommand = typedCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTypedCommand.isEmpty else { return }
+        guard !isTextCommandSubmissionBusy else { return }
+
+        textCommandPopupManager.hidePopup()
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+
+        transientHideTask?.cancel()
+        transientHideTask = nil
+
+        if !isClickyCursorEnabled && !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+
+        clearDetectedElementLocation()
+        dismissOnboardingPromptIfNeeded()
+
+        isTypedCommandSubmissionInFlight = true
+        lastTranscript = trimmedTypedCommand
+        print("⌨️ Companion received typed command: \(trimmedTypedCommand)")
+        ClickyAnalytics.trackUserMessageSent(transcript: trimmedTypedCommand)
+
+        sendTranscriptToClaudeWithScreenshot(transcript: trimmedTypedCommand) { [weak self] in
+            self?.isTypedCommandSubmissionInFlight = false
+        }
+    }
+
+    private func dismissOnboardingPromptIfNeeded() {
+        guard showOnboardingPrompt else { return }
+
+        withAnimation(.easeOut(duration: 0.3)) {
+            onboardingPromptOpacity = 0.0
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            self.showOnboardingPrompt = false
+            self.onboardingPromptText = ""
+        }
+    }
+
     // MARK: - Companion Prompt
 
     private static let companionVoiceResponseSystemPrompt = """
-    you're clicky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
+    you're clicky, a friendly always-on companion that lives in the user's menu bar. the user sent you a command by voice or text and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
 
     rules:
     - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
@@ -583,11 +661,18 @@ final class CompanionManager: ObservableObject {
     /// the spinner/processing state until TTS audio begins playing.
     /// Claude's response may include a [POINT:x,y:label] tag which triggers
     /// the buddy to fly to that element on screen.
-    private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
+    private func sendTranscriptToClaudeWithScreenshot(
+        transcript: String,
+        onCompletion: (@MainActor () -> Void)? = nil
+    ) {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
 
         currentResponseTask = Task {
+            defer {
+                onCompletion?()
+            }
+
             // Stay in processing (spinner) state — no streaming text displayed
             voiceState = .processing
 
