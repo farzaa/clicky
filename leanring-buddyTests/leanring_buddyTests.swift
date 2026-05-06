@@ -6,6 +6,7 @@
 //
 
 import Testing
+import AppKit
 @testable import leanring_buddy
 
 struct leanring_buddyTests {
@@ -35,6 +36,26 @@ struct leanring_buddyTests {
         )
 
         #expect(shouldTreatPermissionAsGranted)
+    }
+
+    @Test func defaultTextInputShortcutUsesOptionCommandSpace() async throws {
+        let shortcut = ClickyKeyboardShortcut.defaultTextInputShortcut
+
+        #expect(shortcut.keyCode == 49)
+        #expect(shortcut.modifierFlags.contains(.option))
+        #expect(shortcut.modifierFlags.contains(.command))
+        #expect(shortcut.displayText == "⌥⌘Space")
+        #expect(shortcut.validationErrorMessage == nil)
+    }
+
+    @Test func textInputShortcutRejectsVoiceShortcutConflict() async throws {
+        let shortcut = ClickyKeyboardShortcut(
+            keyCode: 49,
+            modifierFlags: [.control, .option],
+            keyDisplayText: "Space"
+        )
+
+        #expect(shortcut.validationErrorMessage == "Control+Option is reserved for voice.")
     }
 
 }
