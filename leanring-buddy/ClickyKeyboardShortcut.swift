@@ -11,9 +11,9 @@ import Foundation
 struct ClickyKeyboardShortcut: Codable, Equatable {
     static let textInputUserDefaultsKey = "textInputKeyboardShortcut"
     static let defaultTextInputShortcut = ClickyKeyboardShortcut(
-        keyCode: 49,
+        keyCode: 40,
         modifierFlags: [.option, .command],
-        keyDisplayText: "Space"
+        keyDisplayText: "K"
     )
     private static let supportedModifierFlags: NSEvent.ModifierFlags = [
         .control,

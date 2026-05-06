@@ -19,7 +19,7 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
-- **Text Input**: Customizable global hotkey (`⌥⌘Space` by default) opens a compact typed-command popup near the cursor. Typed commands reuse the same screenshot → Claude → TTS/pointing pipeline as voice.
+- **Text Input**: Customizable global hotkey (`⌥⌘K` by default) opens a compact typed-command popup near the cursor. Typed commands reuse the same screenshot → Claude → TTS/pointing pipeline as voice.
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
 - **Analytics**: PostHog via `ClickyAnalytics.swift`

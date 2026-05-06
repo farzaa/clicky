@@ -38,13 +38,13 @@ struct leanring_buddyTests {
         #expect(shouldTreatPermissionAsGranted)
     }
 
-    @Test func defaultTextInputShortcutUsesOptionCommandSpace() async throws {
+    @Test func defaultTextInputShortcutUsesOptionCommandK() async throws {
         let shortcut = ClickyKeyboardShortcut.defaultTextInputShortcut
 
-        #expect(shortcut.keyCode == 49)
+        #expect(shortcut.keyCode == 40)
         #expect(shortcut.modifierFlags.contains(.option))
         #expect(shortcut.modifierFlags.contains(.command))
-        #expect(shortcut.displayText == "⌥⌘Space")
+        #expect(shortcut.displayText == "⌥⌘K")
         #expect(shortcut.validationErrorMessage == nil)
     }
 
