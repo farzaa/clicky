@@ -31,6 +31,7 @@ protocol BuddyTranscriptionProvider {
 
 enum BuddyTranscriptionProviderFactory {
     private enum PreferredProvider: String {
+        case deepgram = "deepgram"
         case assemblyAI = "assemblyai"
         case openAI = "openai"
         case appleSpeech = "apple"
@@ -48,11 +49,16 @@ enum BuddyTranscriptionProviderFactory {
             .lowercased()
         let preferredProvider = preferredProviderRawValue.flatMap(PreferredProvider.init(rawValue:))
 
+        let deepgramProvider = DeepgramAudioTranscriptionProvider()
         let assemblyAIProvider = AssemblyAIStreamingTranscriptionProvider()
         let openAIProvider = OpenAIAudioTranscriptionProvider()
 
         if preferredProvider == .appleSpeech {
             return AppleSpeechTranscriptionProvider()
+        }
+
+        if preferredProvider == .deepgram {
+            return deepgramProvider
         }
 
         if preferredProvider == .assemblyAI {
@@ -85,6 +91,10 @@ enum BuddyTranscriptionProviderFactory {
 
             print("⚠️ Transcription: using Apple Speech as fallback")
             return AppleSpeechTranscriptionProvider()
+        }
+
+        if deepgramProvider.isConfigured {
+            return deepgramProvider
         }
 
         if assemblyAIProvider.isConfigured {

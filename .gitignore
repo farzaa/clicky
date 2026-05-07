@@ -1,6 +1,7 @@
 worker/node_modules/
 worker/.dev.vars
 codex-gpt55-proxy/node_modules/
+codex-gpt55-proxy/.env
 .DS_Store
 *.xcuserstate
 build/

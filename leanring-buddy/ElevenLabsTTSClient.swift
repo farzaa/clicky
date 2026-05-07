@@ -28,7 +28,7 @@ final class ElevenLabsTTSClient {
         self.session = URLSession(configuration: configuration)
     }
 
-    /// Sends `text` to ElevenLabs TTS and plays the resulting audio.
+    /// Sends `text` to the local TTS proxy and plays the resulting audio.
     /// Throws on network or decoding errors. Cancellation-safe.
     func speakText(_ text: String) async throws {
         var request = URLRequest(url: proxyURL)
@@ -65,7 +65,7 @@ final class ElevenLabsTTSClient {
         let player = try AVAudioPlayer(data: data)
         self.audioPlayer = player
         player.play()
-        print("🔊 ElevenLabs TTS: playing \(data.count / 1024)KB audio")
+        print("🔊 TTS proxy: playing \(data.count / 1024)KB audio")
     }
 
     /// Whether TTS audio is currently playing back.

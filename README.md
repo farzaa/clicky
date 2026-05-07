@@ -32,7 +32,7 @@ Clone https://github.com/farzaa/clicky.git into my current directory.
 
 Then read the CLAUDE.md. I want to get Clicky running locally on my Mac.
 
-Help me set up everything — the Cloudflare Worker with my own API keys, the proxy URLs, and getting it building in Xcode. Walk me through it.
+Help me set up everything — the local GPT-5.5/Deepgram proxy with my own API keys, the proxy URLs, and getting it building in Xcode. Walk me through it.
 ```
 
 That's it. It'll clone the repo, read the docs, and walk you through the whole setup. Once you're running you can just keep talking to it — build features, fix bugs, whatever. Go crazy.
@@ -45,10 +45,10 @@ If you want to do it yourself, here's the deal.
 
 - macOS 14.2+ (for ScreenCaptureKit)
 - Xcode 15+
-- Node.js 18+ (for the Cloudflare Worker)
-- A [Cloudflare](https://cloudflare.com) account (free tier works)
+- Node.js 20.18.1+ (for the local GPT-5.5/voice proxy)
 - Codex CLI authenticated with ChatGPT OAuth for GPT-5.5 chat
-- API keys for: [AssemblyAI](https://www.assemblyai.com), [ElevenLabs](https://elevenlabs.io)
+- A Deepgram API key, or Agent Vault broker access to Deepgram
+- Optional: a [Cloudflare](https://cloudflare.com) account if you also want to run the legacy Worker
 
 ### 1. Set up the Codex GPT-5.5 OAuth chat proxy
 
@@ -57,15 +57,26 @@ This fork routes `/chat` to a local Node proxy that uses your Codex/ChatGPT OAut
 ```bash
 codex login
 cd codex-gpt55-proxy
+cp .env.example .env
+# Set DEEPGRAM_API_KEY in .env, or configure the AGENT_VAULT_* broker variables instead.
 npm install
 npm start
 ```
 
 The app is preconfigured to call `http://127.0.0.1:8877/chat`.
 
-### 2. Set up the Cloudflare Worker for voice services
+### 2. Voice services
 
-The Worker still holds your AssemblyAI and ElevenLabs API keys for transcription token minting and TTS. The app can either call it directly for those routes, or the local Codex proxy can forward `/tts` and `/transcribe-token` when `CLICKY_UPSTREAM_WORKER_URL` is set.
+This fork uses the same local proxy for voice:
+
+- `/transcribe` sends recorded push-to-talk audio to Deepgram Listen.
+- `/tts` sends responses to Deepgram Speak and returns MP3 audio.
+
+The app is preconfigured to use Deepgram via the local proxy, so no Cloudflare Worker is required for the default local setup. Keep secrets in `codex-gpt55-proxy/.env` (ignored by git) or broker them through Agent Vault.
+
+### 3. Optional: legacy Cloudflare Worker
+
+If you want to test or maintain the original Worker routes, install and deploy it separately:
 
 ```bash
 cd worker
@@ -111,8 +122,6 @@ ELEVENLABS_API_KEY=***
 ELEVENLABS_VOICE_ID=...
 ```
 
-Then run `codex-gpt55-proxy` with `CLICKY_UPSTREAM_WORKER_URL=http://localhost:8787` so it can forward `/tts` and `/transcribe-token` while keeping `/chat` on GPT-5.5.
-
 ### 3. Update the proxy URLs in the app
 
 This fork defaults chat to the local GPT-5.5 OAuth proxy in `CompanionManager.swift`:
@@ -121,7 +130,7 @@ This fork defaults chat to the local GPT-5.5 OAuth proxy in `CompanionManager.sw
 private static let workerBaseURL = "http://127.0.0.1:8877"
 ```
 
-For AssemblyAI and ElevenLabs, run the local Codex proxy with `CLICKY_UPSTREAM_WORKER_URL` pointing at your deployed Worker or a local `wrangler dev` instance so it can forward `/tts` and `/transcribe-token`.
+Voice transcription and TTS also use the same local proxy by default: `http://127.0.0.1:8877/transcribe` and `http://127.0.0.1:8877/tts`.
 
 ### 4. Open in Xcode and run
 
@@ -147,7 +156,7 @@ The app will appear in your menu bar (not the dock). Click the icon to open the 
 
 If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
 
-**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to GPT-5.5 through the local Codex OAuth proxy via streaming SSE, and plays the response through ElevenLabs TTS. The model can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. Chat is proxied locally with Codex OAuth; voice services remain proxied through Cloudflare/forwarding.
+**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk records audio, sends the final WAV to Deepgram through the local proxy, sends the transcript + screenshot to GPT-5.5 through the local Codex OAuth proxy via streaming SSE, and plays the response through the local Deepgram TTS route. The model can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors.
 
 ## Project structure
 
@@ -156,14 +165,14 @@ leanring-buddy/          # Swift source (yes, the typo stays)
   CompanionManager.swift    # Central state machine
   CompanionPanelView.swift  # Menu bar panel UI
   ClaudeAPI.swift           # Anthropic-shaped SSE client used by the GPT-5.5 proxy
-  ElevenLabsTTSClient.swift # Text-to-speech playback
-  OverlayWindow.swift       # Blue cursor overlay
-  AssemblyAI*.swift         # Real-time transcription
+  ElevenLabsTTSClient.swift # Text-to-speech playback through the local TTS route
+  DeepgramAudioTranscriptionProvider.swift # Push-to-talk transcription through the local proxy
+  AssemblyAI*.swift         # Legacy real-time transcription provider
   BuddyDictation*.swift     # Push-to-talk pipeline
-worker/                  # Cloudflare Worker proxy
-  src/index.ts              # Voice service routes: /tts, /transcribe-token; legacy /chat remains
-codex-gpt55-proxy/       # Local GPT-5.5 Codex OAuth chat proxy
-  src/server.mjs            # Translates Anthropic-shaped Clicky chat to Codex Responses API
+worker/                  # Legacy Cloudflare Worker proxy
+  src/index.ts              # Legacy voice service routes: /tts, /transcribe-token; legacy /chat remains
+codex-gpt55-proxy/       # Local GPT-5.5 Codex OAuth + Deepgram voice proxy
+  src/server.mjs            # Translates Anthropic-shaped Clicky chat to Codex Responses API and exposes /tts + /transcribe
 CLAUDE.md                # Full architecture doc (agents read this)
 ```
 

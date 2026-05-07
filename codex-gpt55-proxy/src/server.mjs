@@ -1,15 +1,26 @@
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { ProxyAgent } from 'undici';
 import os from 'node:os';
 import path from 'node:path';
+
+loadDotEnv(path.join(process.cwd(), '.env'));
 
 const PORT = Number(process.env.PORT || 8877);
 const CODEX_AUTH_FILE = expandHome(process.env.CODEX_AUTH_FILE || '~/.codex/auth.json');
 const CODEX_MODEL = process.env.CODEX_MODEL || 'gpt-5.5';
 const CODEX_UPSTREAM_URL = process.env.CODEX_UPSTREAM_URL || 'https://chatgpt.com/backend-api/codex/responses';
-const CLICKY_UPSTREAM_WORKER_URL = process.env.CLICKY_UPSTREAM_WORKER_URL || '';
+const DEEPGRAM_API_KEY=process.env.DEEPGRAM_API_KEY || '';
+const DEEPGRAM_STT_MODEL = process.env.DEEPGRAM_STT_MODEL || 'nova-3';
+const DEEPGRAM_TTS_MODEL = process.env.DEEPGRAM_TTS_MODEL || 'aura-2-thalia-en';
+const DEEPGRAM_TTS_ENCODING = process.env.DEEPGRAM_TTS_ENCODING || 'mp3';
+const AGENT_VAULT_ADDR = process.env.AGENT_VAULT_ADDR || '';
+const AGENT_VAULT_TOKEN = process.env.AGENT_VAULT_TOKEN || process.env.AGENT_VAULT_SESSION_TOKEN || '';
+const AGENT_VAULT_VAULT = process.env.AGENT_VAULT_VAULT || 'default';
+const AGENT_VAULT_PROXY = process.env.AGENT_VAULT_PROXY || '';
+const AGENT_VAULT_CA_FILE = process.env.AGENT_VAULT_CA_FILE || '';
 const CODEX_BIN = process.env.CODEX_BIN || firstExisting([
   path.join(os.homedir(), '.local/bin/codex'),
   '/Applications/Codex.app/Contents/Resources/codex',
@@ -24,6 +35,92 @@ function expandHome(value) {
 
 function firstExisting(candidates) {
   return candidates.find((candidate) => candidate === 'codex' || existsSync(candidate)) || 'codex';
+}
+
+function deepgramFetchOptions(extraHeaders = {}) {
+  const headers = { ...extraHeaders };
+  if (DEEPGRAM_API_KEY) {
+    headers.authorization = `Token ${DEEPGRAM_API_KEY}`;
+    return { headers };
+  }
+
+  if (!AGENT_VAULT_TOKEN) {
+    throw new Error('Missing DEEPGRAM_API_KEY or AGENT_VAULT_TOKEN');
+  }
+
+  if (AGENT_VAULT_VAULT) {
+    headers['X-Vault'] = AGENT_VAULT_VAULT;
+  }
+
+  const dispatcher = agentVaultDispatcher();
+  if (!dispatcher) {
+    throw new Error('Agent Vault is configured but missing a valid HTTPS proxy URL or readable AGENT_VAULT_CA_FILE');
+  }
+  return { headers, dispatcher };
+}
+
+function agentVaultDispatcher() {
+  if (!AGENT_VAULT_TOKEN) return undefined;
+  const proxyURL = agentVaultProxyURL();
+  if (!proxyURL) return undefined;
+  const proxyCA = agentVaultProxyCA();
+  if (!proxyCA) return undefined;
+
+  const token = Buffer.from(`${AGENT_VAULT_TOKEN}:`).toString('base64');
+  return new ProxyAgent({
+    uri: proxyURL,
+    token: `Basic ${token}`,
+    proxyTls: { ca: proxyCA },
+    requestTls: { ca: proxyCA },
+  });
+}
+
+function agentVaultProxyURL() {
+  const configuredProxyURL = AGENT_VAULT_PROXY || '';
+  if (configuredProxyURL) {
+    try {
+      const proxyURL = new URL(configuredProxyURL);
+      return proxyURL.protocol === 'https:' ? proxyURL.toString() : '';
+    } catch {
+      return '';
+    }
+  }
+
+  if (!AGENT_VAULT_ADDR) return '';
+  try {
+    const vaultURL = new URL(AGENT_VAULT_ADDR);
+    return `https://${vaultURL.hostname}:14322`;
+  } catch {
+    return '';
+  }
+}
+
+function agentVaultProxyCA() {
+  if (!AGENT_VAULT_CA_FILE) return undefined;
+  try {
+    return readFileSync(expandHome(AGENT_VAULT_CA_FILE));
+  } catch (error) {
+    console.error(`[Agent Vault] unable to read AGENT_VAULT_CA_FILE: ${error.message}`);
+    return undefined;
+  }
+}
+
+function loadDotEnv(filePath) {
+  if (!existsSync(filePath)) return;
+  const raw = readFileSync(filePath, 'utf8');
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const equals = trimmed.indexOf('=');
+    if (equals === -1) continue;
+    const key = trimmed.slice(0, equals).trim();
+    if (!key || process.env[key] !== undefined) continue;
+    let value = trimmed.slice(equals + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
+  }
 }
 
 async function readCodexTokens() {
@@ -183,26 +280,78 @@ async function callCodexResponses(payload, tokens) {
   });
 }
 
-async function handleForward(req, res, pathname) {
-  if (!CLICKY_UPSTREAM_WORKER_URL) {
-    return sendJson(res, 502, {
-      error: `No CLICKY_UPSTREAM_WORKER_URL configured for ${pathname}`,
-    });
+async function handleTranscribe(req, res) {
+  if (!DEEPGRAM_API_KEY && !AGENT_VAULT_TOKEN) {
+    return sendJson(res, 500, { error: 'Missing DEEPGRAM_API_KEY or AGENT_VAULT_TOKEN' });
   }
 
-  const upstreamURL = new URL(pathname, CLICKY_UPSTREAM_WORKER_URL).toString();
-  const body = await readRequestBody(req);
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const audioBody = Buffer.concat(chunks);
+  if (!audioBody.length) {
+    return sendJson(res, 400, { error: 'Missing audio body' });
+  }
+
+  const upstreamURL = new URL('https://api.deepgram.com/v1/listen');
+  upstreamURL.searchParams.set('model', DEEPGRAM_STT_MODEL);
+  upstreamURL.searchParams.set('smart_format', 'true');
+  upstreamURL.searchParams.set('punctuate', 'true');
+  upstreamURL.searchParams.set('language', 'en');
+
   const upstream = await fetch(upstreamURL, {
-    method: req.method,
-    headers: { 'content-type': req.headers['content-type'] || 'application/json' },
-    body,
+    method: 'POST',
+    ...deepgramFetchOptions({
+      'content-type': req.headers['content-type'] || 'audio/wav',
+      accept: 'application/json',
+    }),
+    body: audioBody,
   });
 
-  res.writeHead(upstream.status, {
-    'content-type': upstream.headers.get('content-type') || 'application/octet-stream',
+  await pipeUpstreamResponse(res, upstream, 'application/json', 'Deepgram transcription');
+}
+
+async function handleTTS(req, res) {
+  if (!DEEPGRAM_API_KEY && !AGENT_VAULT_TOKEN) {
+    return sendJson(res, 500, { error: 'Missing DEEPGRAM_API_KEY or AGENT_VAULT_TOKEN' });
+  }
+
+  const rawBody = await readRequestBody(req);
+  let text = '';
+  try {
+    const parsed = JSON.parse(rawBody || '{}');
+    text = typeof parsed.text === 'string' ? parsed.text : '';
+  } catch {
+    return sendJson(res, 400, { error: 'Invalid JSON body' });
+  }
+  if (!text.trim()) {
+    return sendJson(res, 400, { error: 'Missing text' });
+  }
+
+  const upstreamURL = new URL('https://api.deepgram.com/v1/speak');
+  upstreamURL.searchParams.set('model', DEEPGRAM_TTS_MODEL);
+  upstreamURL.searchParams.set('encoding', DEEPGRAM_TTS_ENCODING);
+
+  const upstream = await fetch(upstreamURL, {
+    method: 'POST',
+    ...deepgramFetchOptions({
+      'content-type': 'application/json',
+      accept: 'audio/mpeg',
+    }),
+    body: JSON.stringify({ text }),
   });
+
+  await pipeUpstreamResponse(res, upstream, 'audio/mpeg', 'Deepgram TTS');
+}
+
+async function pipeUpstreamResponse(res, upstream, fallbackContentType, label) {
+  const contentType = upstream.headers.get('content-type') || fallbackContentType;
+  res.writeHead(upstream.status, { 'content-type': contentType });
   if (upstream.body) {
     for await (const chunk of upstream.body) res.write(chunk);
+  } else if (!upstream.ok) {
+    const text = await upstream.text();
+    console.error(`[${label}] upstream error ${upstream.status}: ${text}`);
+    res.write(text);
   }
   res.end();
 }
@@ -234,9 +383,8 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (url.pathname === '/chat') return await handleChat(req, res);
-    if (url.pathname === '/tts' || url.pathname === '/transcribe-token') {
-      return await handleForward(req, res, url.pathname);
-    }
+    if (url.pathname === '/tts') return await handleTTS(req, res);
+    if (url.pathname === '/transcribe') return await handleTranscribe(req, res);
     res.writeHead(404, { 'content-type': 'text/plain' });
     res.end('Not found');
   } catch (error) {

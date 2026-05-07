@@ -8,6 +8,9 @@
     "smoke": "node src/server.mjs --smoke"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.18.1"
+  },
+  "dependencies": {
+    "undici": "^7.25.0"
   }
 }
