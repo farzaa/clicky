@@ -239,6 +239,11 @@ private final class DeepgramAudioTranscriptionSession: BuddyStreamingTranscripti
     }
 
     deinit {
-        cancel()
+        // Do not call cancel() here: cancel() schedules an async stateQueue block that
+        // captures self. If the session is already deinitializing on/near that queue,
+        // Swift detects the object being resurrected during deinit and aborts with:
+        // "deallocated with non-zero retain count".
+        transcriptionUploadTask?.cancel()
+        urlSession.invalidateAndCancel()
     }
 }
