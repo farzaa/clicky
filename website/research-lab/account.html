@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Your Vibe Research account</title>
+  <style>
+    :root {
+      --bg: #0b0d0c;
+      --bg-elevated: #14171a;
+      --border: #2b2f33;
+      --text-primary: #ecedef;
+      --text-secondary: #a8aeb4;
+      --text-tertiary: #6b7178;
+      --accent: #60a5fa;
+      --accent-strong: #3b82f6;
+      --danger: #f87171;
+      --radius: 14px;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: var(--bg); color: var(--text-primary); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.55; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .page { max-width: 640px; margin: 0 auto; padding: 64px 20px 64px; }
+    .top-nav { display: flex; justify-content: flex-start; align-items: center; gap: 16px; margin-bottom: 36px; font-size: 13px; }
+    .top-nav a { color: var(--text-tertiary); text-decoration: none; }
+    .top-nav a:hover { color: var(--text-primary); }
+    .brand { font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-tertiary); font-weight: 600; }
+    h1 { margin: 14px 0 8px; font-size: 36px; letter-spacing: -0.02em; line-height: 1.15; }
+    .lede { color: var(--text-secondary); font-size: 17px; margin: 0 0 28px; }
+    .card { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px 24px; margin-bottom: 16px; }
+    .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .button { font: inherit; font-weight: 600; padding: 11px 18px; border: 0; border-radius: 10px; background: var(--accent-strong); color: #fff; cursor: pointer; text-decoration: none; display: inline-block; }
+    .button:hover { background: var(--accent); text-decoration: none; }
+    .button.danger { background: transparent; color: var(--danger); border: 1px solid var(--border); }
+    h2 { font-size: 18px; margin: 0 0 6px; }
+    .project-id { color: var(--text-tertiary); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 10px; font-weight: 600; }
+    .endpoints { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+    .endpoint-cell { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+    .endpoint-cell .num { font-size: 22px; font-weight: 600; }
+    .endpoint-cell .name { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.06em; }
+    .endpoint-cell .limit { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
+    .label { color: var(--text-secondary); font-size: 13px; }
+    .error { color: var(--danger); font-size: 13px; margin-top: 12px; }
+    footer { margin-top: 60px; color: var(--text-tertiary); font-size: 12px; letter-spacing: 0.04em; }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <nav class="top-nav">
+      <a href="index.html">← Vibe Research</a>
+    </nav>
+
+    <div class="brand">Vibe Research</div>
+    <h1 id="greeting">Your account</h1>
+    <p class="lede" id="subtitle">Sign in to see your usage across every project.</p>
+
+    <section id="signedOutSection" class="card" style="display: none;">
+      <p style="margin-top: 0;">Sign in with Google to see your usage and limits across every Vibe Research project. One account, every product.</p>
+      <a id="signInButton" href="#" class="button">Sign in with Google</a>
+    </section>
+
+    <section id="signedInSection" style="display: none;">
+      <div class="card">
+        <div class="row">
+          <div>
+            <div class="label">Signed in as</div>
+            <div id="emailLabel" style="font-size: 16px; font-weight: 600;"></div>
+          </div>
+          <button id="signOutButton" class="button danger">Sign out</button>
+        </div>
+      </div>
+
+      <div id="projectCardsContainer"></div>
+
+      <div class="card">
+        <p style="margin-top: 0;">Limits reset on a rolling 24-hour window — your numbers go back down on their own. If you're hitting a limit and want it raised, send Mark a note.</p>
+      </div>
+    </section>
+
+    <p id="errorBox" class="error" style="display: none;"></p>
+
+    <footer>© Vibe Research</footer>
+  </main>
+
+  <script>
+    // The account page lives on the lab homepage (vibe-research.net) so users
+    // see usage across every project from one neutral location. We hit
+    // vibe-id directly — no per-project worker is in the auth path.
+    var VIBE_ID_BASE_URL = "https://api.accounts.vibe-research.net";
+
+    // Project id used as the device-scoping for the install token. Any
+    // project the user has signed into works; "dot" is a sensible default
+    // since it's the only shipped product right now.
+    var DEFAULT_PROJECT_ID = "dot";
+
+    var TOKEN_STORAGE_KEY = "vibeResearch.installToken";
+    var EMAIL_STORAGE_KEY = "vibeResearch.email";
+
+    function escapeHtml(text) {
+      return String(text == null ? "" : text).replace(/[&<>"']/g, function (c) {
+        return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
+      });
+    }
+
+    var ENDPOINT_DISPLAY_NAMES = {
+      "chat": "Chats",
+      "tts": "TTS chars",
+      "transcribe-token": "Voice sessions"
+    };
+
+    // Pull token + email out of the URL fragment (set by /auth/callback)
+    // on first arrival, then strip them so they don't sit in the bar.
+    function consumeAuthCallbackFragmentIfPresent() {
+      if (!window.location.hash) return;
+      var fragmentParameters = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      var receivedToken = fragmentParameters.get("token");
+      var receivedEmail = fragmentParameters.get("email");
+      if (receivedToken) {
+        localStorage.setItem(TOKEN_STORAGE_KEY, receivedToken);
+        if (receivedEmail) localStorage.setItem(EMAIL_STORAGE_KEY, receivedEmail);
+        history.replaceState(null, "", window.location.pathname);
+      }
+    }
+
+    function showErrorMessage(messageText) {
+      var errorBox = document.getElementById("errorBox");
+      errorBox.textContent = messageText;
+      errorBox.style.display = "block";
+    }
+
+    function setVisibility(elementId, visible) {
+      document.getElementById(elementId).style.display = visible ? "" : "none";
+    }
+
+    function buildSignInUrl() {
+      var websiteOrigin = window.location.origin;
+      var returnTo = websiteOrigin.replace(/\/$/, "") + window.location.pathname;
+      return VIBE_ID_BASE_URL + "/auth/start?project=" + encodeURIComponent(DEFAULT_PROJECT_ID) +
+             "&return_to=" + encodeURIComponent(returnTo);
+    }
+
+    function showSignedOut() {
+      setVisibility("signedInSection", false);
+      setVisibility("signedOutSection", true);
+      document.getElementById("greeting").textContent = "Your account";
+      document.getElementById("subtitle").textContent = "Sign in to see your usage across every project.";
+      document.getElementById("signInButton").setAttribute("href", buildSignInUrl());
+    }
+
+    function renderProjectCards(meResponse) {
+      var container = document.getElementById("projectCardsContainer");
+      container.innerHTML = "";
+
+      var quotas = meResponse.quotas || {};
+      var usageByProject = meResponse.usage_today_by_project || {};
+      var projectIds = Object.keys(usageByProject).sort();
+
+      // Always show the default project even if zero usage today.
+      if (projectIds.indexOf(DEFAULT_PROJECT_ID) === -1) {
+        projectIds.unshift(DEFAULT_PROJECT_ID);
+      }
+
+      projectIds.forEach(function (projectId) {
+        var endpointUsage = usageByProject[projectId] || {};
+        // Show every endpoint we have a quota for, plus any actually used.
+        var endpointNamesShown = Object.keys(quotas).concat(Object.keys(endpointUsage))
+          .filter(function (value, index, array) { return array.indexOf(value) === index; })
+          .sort();
+
+        var endpointCellsHtml = endpointNamesShown.map(function (endpointName) {
+          var usedAmount = endpointUsage[endpointName] || 0;
+          var limit = quotas[endpointName];
+          var displayName = ENDPOINT_DISPLAY_NAMES[endpointName] || endpointName;
+          return '<div class="endpoint-cell">' +
+                 '<div class="name">' + escapeHtml(displayName) + '</div>' +
+                 '<div class="num">' + usedAmount + '</div>' +
+                 (limit != null ? '<div class="limit">of ' + limit + '</div>' : '') +
+                 '</div>';
+        }).join("");
+
+        var card = document.createElement("div");
+        card.className = "card";
+        card.innerHTML =
+          '<div class="project-id">' + escapeHtml(projectId) + '</div>' +
+          '<h2>Today</h2>' +
+          '<div class="endpoints">' + endpointCellsHtml + '</div>';
+        container.appendChild(card);
+      });
+    }
+
+    function showSignedIn(meResponse) {
+      setVisibility("signedOutSection", false);
+      setVisibility("signedInSection", true);
+      var displayName = meResponse.user.display_name || meResponse.user.email;
+      document.getElementById("greeting").textContent = "Hi, " + displayName;
+      document.getElementById("subtitle").textContent = "Here's your usage across every Vibe Research project today.";
+      document.getElementById("emailLabel").textContent = meResponse.user.email;
+      renderProjectCards(meResponse);
+    }
+
+    async function loadAccount() {
+      var installToken = localStorage.getItem(TOKEN_STORAGE_KEY);
+      if (!installToken) {
+        showSignedOut();
+        return;
+      }
+
+      try {
+        var meResponse = await fetch(VIBE_ID_BASE_URL + "/auth/me", {
+          headers: { authorization: "Bearer " + installToken },
+        });
+        if (meResponse.status === 401) {
+          localStorage.removeItem(TOKEN_STORAGE_KEY);
+          showSignedOut();
+          return;
+        }
+        if (!meResponse.ok) {
+          showErrorMessage("Couldn't load your account (status " + meResponse.status + ").");
+          return;
+        }
+        var responseJson = await meResponse.json();
+        showSignedIn(responseJson);
+      } catch (networkError) {
+        showErrorMessage("Couldn't reach the identity server: " + networkError.message);
+      }
+    }
+
+    async function handleSignOutClick() {
+      var installToken = localStorage.getItem(TOKEN_STORAGE_KEY);
+      if (installToken) {
+        try {
+          await fetch(VIBE_ID_BASE_URL + "/auth/signout", {
+            method: "POST",
+            headers: { authorization: "Bearer " + installToken },
+          });
+        } catch (_ignored) { /* best-effort */ }
+      }
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+      localStorage.removeItem(EMAIL_STORAGE_KEY);
+      showSignedOut();
+    }
+
+    consumeAuthCallbackFragmentIfPresent();
+    document.getElementById("signOutButton").addEventListener("click", handleSignOutClick);
+    loadAccount();
+  </script>
+</body>
+</html>

@@ -106,6 +106,37 @@
       color: var(--text-tertiary);
       font-size: 18px;
     }
+    .project-card.disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    .project-card.disabled:hover { border-color: var(--border); }
+    .project-tag {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(96, 165, 250, 0.12);
+      color: var(--accent);
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+    .top-nav {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 36px;
+      font-size: 13px;
+    }
+    .top-nav a {
+      color: var(--text-tertiary);
+      text-decoration: none;
+    }
+    .top-nav a:hover { color: var(--text-primary); }
     footer {
       margin-top: 64px;
       color: var(--text-tertiary);
@@ -116,15 +147,22 @@
 </head>
 <body>
   <main class="page">
+    <nav class="top-nav">
+      <a href="account.html">Your account →</a>
+    </nav>
+
     <div class="brand">Vibe Research</div>
     <h1>A tiny lab building tools that feel good to use.</h1>
     <p class="lede">Two things in flight right now. Pick whichever sounds more interesting.</p>
 
     <div class="project-list">
-      <a class="project-card" href="https://swarmlab.vibe-research.net">
-        <div class="project-name"><span class="project-marker-square"></span> Swarmlab <span class="project-arrow">↗</span></div>
+      <div class="project-card disabled">
+        <div class="project-name">
+          <span class="project-marker-square"></span> Swarmlab
+          <span class="project-tag">Coming soon</span>
+        </div>
         <p class="project-blurb">Multi-agent experiments — swarms of small models cooperating on real tasks.</p>
-      </a>
+      </div>
 
       <a class="project-card" href="https://dot.vibe-research.net">
         <div class="project-name"><span class="project-marker-dot"></span> Dot <span class="project-arrow">↗</span></div>
