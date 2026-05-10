@@ -65,6 +65,13 @@ final class CompanionManager: ObservableObject {
     /// in sync with the actual click + sound effect.
     @Published var clickPulseToken: UUID = UUID()
 
+    /// Transient hint for the overlay: when the agent loop fires a scroll
+    /// tool call, this is set to the scroll direction's unit vector for
+    /// ~250ms so the blue cursor briefly nudges that way to visually mirror
+    /// the scroll. Reset to nil after the animation window so the cursor
+    /// springs back to its tracking position.
+    @Published var scrollAnimationHintUnitVector: CGVector?
+
     // MARK: - Onboarding Video State (shared across all screen overlays)
 
     @Published var onboardingVideoPlayer: AVPlayer?
@@ -1460,6 +1467,35 @@ final class CompanionManager: ObservableObject {
             )
             return AgentToolExecutionResult(
                 toolResultContent: "executed \(mediaCommand.rawValue)",
+                didTriggerBailOut: false
+            )
+
+        case .scroll(let scrollDirection, let scrollAmount):
+            DotDebugLogger.log("computer.actions", "scroll action requested", metadata: [
+                "direction": scrollDirection.rawValue,
+                "amount": scrollAmount.rawValue
+            ])
+            // Set the visual hint BEFORE posting the scroll so the cursor
+            // nudge starts in sync with the wheel event. Cleared shortly
+            // afterward so the cursor springs back to its tracking position.
+            scrollAnimationHintUnitVector = scrollDirection.visualHintUnitVector
+            CompanionComputerController.scrollWheel(
+                direction: scrollDirection,
+                magnitude: scrollAmount.scrollLineMagnitude
+            )
+            // Hold the nudge briefly so the user sees the dot move; then
+            // clear so the overlay animates it back. Both phases together
+            // are ~350ms — fast enough to feel responsive, slow enough to
+            // see.
+            try? await Task.sleep(nanoseconds: 220_000_000)
+            scrollAnimationHintUnitVector = nil
+            try? await Task.sleep(nanoseconds: 130_000_000)
+            DotDebugLogger.log("computer.actions", "scroll action completed", metadata: [
+                "direction": scrollDirection.rawValue,
+                "amount": scrollAmount.rawValue
+            ])
+            return AgentToolExecutionResult(
+                toolResultContent: "scrolled \(scrollDirection.rawValue) (\(scrollAmount.rawValue))",
                 didTriggerBailOut: false
             )
 
