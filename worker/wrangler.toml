@@ -11,33 +11,22 @@ routes = [
 ]
 
 # ----------------------------------------------------------------------------
-# Public, non-secret configuration. Update these to match your deployed setup.
+# Dot inference proxy. Identity (users, OAuth, install tokens, quotas, admin)
+# lives in the central `vibe-id` worker. This worker is stateless: it just
+# verifies the bearer token with vibe-id, proxies to upstream APIs, and
+# reports usage back to vibe-id.
+#
+# Local dev runs on port 8787; vibe-id runs on 8790.
 # ----------------------------------------------------------------------------
 
 [vars]
 ELEVENLABS_VOICE_ID = "kPzsL2i3teMYv0FxEYQ6"
-WORKER_PUBLIC_URL = "https://api.dot.vibe-research.net"
-WEBSITE_PUBLIC_URL = "https://dot.vibe-research.net"
-APP_URL_SCHEME = "dot"
+VIBE_ID_BASE_URL = "https://api.accounts.vibe-research.net"
 
 # ----------------------------------------------------------------------------
 # Secrets are NOT defined here. Set them with `wrangler secret put`:
 #   ANTHROPIC_API_KEY
 #   ASSEMBLYAI_API_KEY
 #   ELEVENLABS_API_KEY
-#   GOOGLE_OAUTH_CLIENT_ID
-#   GOOGLE_OAUTH_CLIENT_SECRET
-#   DOT_ADMIN_TOKEN
+#   VIBE_ID_INTERNAL_KEY  — must match the value set in vibe-id's secrets
 # ----------------------------------------------------------------------------
-
-# ----------------------------------------------------------------------------
-# D1 database binding. Create the DB once with:
-#   npx wrangler d1 create dot-proxy
-# Then paste the printed `database_id` below and apply schema.sql:
-#   npx wrangler d1 execute dot-proxy --file=schema.sql
-# ----------------------------------------------------------------------------
-
-[[d1_databases]]
-binding = "DB"
-database_name = "dot-proxy"
-database_id = "43768343-6cc4-486c-b1ca-5808dfbb073a"
