@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Your Dot account</title>
+  <title>Your Vibe Research account</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -36,26 +36,7 @@
         </div>
       </div>
 
-      <div class="card">
-        <h2 style="margin-top: 0; margin-bottom: 4px; font-size: 16px;">Today (rolling 24h)</h2>
-        <div class="usage-grid">
-          <div class="usage-cell">
-            <div class="name">Chats</div>
-            <div class="num"><span id="chatToday">—</span></div>
-            <div class="limit">of <span id="chatLimit">—</span></div>
-          </div>
-          <div class="usage-cell">
-            <div class="name">TTS chars</div>
-            <div class="num"><span id="ttsToday">—</span></div>
-            <div class="limit">of <span id="ttsLimit">—</span></div>
-          </div>
-          <div class="usage-cell">
-            <div class="name">Voice sessions</div>
-            <div class="num"><span id="transcribeToday">—</span></div>
-            <div class="limit">of <span id="transcribeLimit">—</span></div>
-          </div>
-        </div>
-      </div>
+      <div id="projectCardsContainer"></div>
 
       <div class="card">
         <p style="margin-top: 0;">Limits reset on a rolling 24-hour window — once enough time has passed, your numbers go back down on their own. If you're hitting the limit and want it raised, send Mark a note.</p>
@@ -123,23 +104,74 @@
         }
       }
 
+      function escapeHtml(text) {
+        return String(text == null ? "" : text).replace(/[&<>"']/g, function (singleChar) {
+          return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[singleChar];
+        });
+      }
+
+      // Endpoint name → friendly heading shown on the card. Anything not
+      // listed here falls back to the raw endpoint name.
+      var ENDPOINT_DISPLAY_NAMES = {
+        "chat": "Chats",
+        "tts": "TTS chars",
+        "transcribe-token": "Voice sessions"
+      };
+
+      function renderProjectCards(meResponse) {
+        var container = document.getElementById("projectCardsContainer");
+        container.innerHTML = "";
+
+        var quotas = meResponse.quotas || {};
+        var usageByProject = meResponse.usage_today_by_project || {};
+        var projectIds = Object.keys(usageByProject).sort();
+
+        // Make sure the project the user just signed into is shown even if
+        // they haven't used it yet today (zero-state card with limits).
+        if (projectIds.indexOf(PROJECT_ID) === -1) {
+          projectIds.unshift(PROJECT_ID);
+        }
+
+        projectIds.forEach(function (projectId) {
+          var endpointUsage = usageByProject[projectId] || {};
+          // Show every endpoint we have a quota for (so a brand-new user
+          // sees the full set of limits even with all zeroes), plus any
+          // endpoint that's actually been used.
+          var endpointNamesShown = Object.keys(quotas).concat(Object.keys(endpointUsage))
+            .filter(function (value, index, array) { return array.indexOf(value) === index; })
+            .sort();
+
+          var endpointCellsHtml = endpointNamesShown.map(function (endpointName) {
+            var usedAmount = endpointUsage[endpointName] || 0;
+            var limit = quotas[endpointName];
+            var displayName = ENDPOINT_DISPLAY_NAMES[endpointName] || endpointName;
+            return '<div class="usage-cell">' +
+                   '<div class="name">' + escapeHtml(displayName) + '</div>' +
+                   '<div class="num">' + usedAmount + '</div>' +
+                   (limit != null ? '<div class="limit">of ' + limit + '</div>' : '') +
+                   '</div>';
+          }).join("");
+
+          var projectCardElement = document.createElement("div");
+          projectCardElement.className = "card";
+          projectCardElement.innerHTML =
+            '<h2 style="margin-top: 0; margin-bottom: 4px; font-size: 16px;">' +
+              escapeHtml(projectId) +
+              ' <span class="muted" style="font-weight: 400;">— today (rolling 24h)</span>' +
+            '</h2>' +
+            '<div class="usage-grid">' + endpointCellsHtml + '</div>';
+          container.appendChild(projectCardElement);
+        });
+      }
+
       function showSignedInWithMe(meResponse) {
         setVisibility("signedOutSection", false);
         setVisibility("signedInSection", true);
         var displayName = meResponse.user.display_name || meResponse.user.email;
         document.getElementById("greeting").textContent = "Hi, " + displayName;
-        document.getElementById("subtitle").textContent = "Here's how much of today's quota you've used.";
+        document.getElementById("subtitle").textContent = "Here's your usage across every Vibe Research project today.";
         document.getElementById("emailLabel").textContent = meResponse.user.email;
-
-        var quotas = meResponse.quotas || {};
-        var dotUsage = (meResponse.usage_today_by_project && meResponse.usage_today_by_project[PROJECT_ID]) || {};
-
-        document.getElementById("chatToday").textContent = dotUsage.chat || 0;
-        document.getElementById("chatLimit").textContent = (quotas.chat != null) ? quotas.chat : "—";
-        document.getElementById("ttsToday").textContent = dotUsage.tts || 0;
-        document.getElementById("ttsLimit").textContent = (quotas.tts != null) ? quotas.tts : "—";
-        document.getElementById("transcribeToday").textContent = dotUsage["transcribe-token"] || 0;
-        document.getElementById("transcribeLimit").textContent = (quotas["transcribe-token"] != null) ? quotas["transcribe-token"] : "—";
+        renderProjectCards(meResponse);
       }
 
       async function loadAccount() {

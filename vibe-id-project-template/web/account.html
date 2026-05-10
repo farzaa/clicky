@@ -1,0 +1,175 @@
+<!doctype html>
+<!--
+  Cross-project account page. Drop this on any subdomain (e.g.
+  account.vibe-research.net or one of your project subdomains) and
+  configure the script tag below. It uses the vibe-id JS SDK to:
+    1. Restore the sign-in (if the user already signed in here or on
+       another project — the install token is per-project, so they'd
+       need to sign in here at least once).
+    2. Render usage cards across every project the user has touched.
+
+  The data comes straight from vibe-id's /auth/me, which returns
+  usage_today_by_project and quotas. No per-project code needed in
+  this page.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Your account</title>
+  <style>
+    :root {
+      --bg: #0b0d0c;
+      --bg-elevated: #14171a;
+      --border: #2b2f33;
+      --text-primary: #ecedef;
+      --text-secondary: #a8aeb4;
+      --text-tertiary: #6b7178;
+      --accent: #60a5fa;
+      --accent-strong: #3b82f6;
+      --danger: #f87171;
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: var(--bg); color: var(--text-primary); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.55; }
+    .page { max-width: 720px; margin: 0 auto; padding: 64px 20px 80px; }
+    h1 { font-size: 36px; letter-spacing: -0.02em; margin: 14px 0 8px; }
+    .lede { color: var(--text-secondary); margin: 0 0 32px; }
+    .card { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 22px; margin-bottom: 16px; }
+    .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .button { font: inherit; font-weight: 600; padding: 11px 18px; border: 0; border-radius: 8px; background: var(--accent-strong); color: #fff; cursor: pointer; text-decoration: none; display: inline-block; }
+    .button:hover { background: var(--accent); }
+    .button.secondary { background: transparent; color: var(--text-primary); border: 1px solid var(--border); }
+    .button.danger { background: transparent; color: var(--danger); border: 1px solid var(--border); }
+    h2 { font-size: 18px; margin: 0 0 6px; }
+    .project-id { color: var(--text-tertiary); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 10px; }
+    .endpoints { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+    .endpoint-cell { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+    .endpoint-cell .num { font-size: 22px; font-weight: 600; }
+    .endpoint-cell .name { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.06em; }
+    .endpoint-cell .limit { font-size: 11px; color: var(--text-tertiary); }
+    .label { color: var(--text-secondary); font-size: 13px; }
+    .error { color: var(--danger); font-size: 13px; margin-top: 12px; }
+    footer { margin-top: 60px; color: var(--text-tertiary); font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1 id="greeting">Your account</h1>
+    <p class="lede" id="subtitle">Sign in to see your usage across every project.</p>
+
+    <section id="signedOutSection" class="card" style="display: none;">
+      <p style="margin-top: 0;">Sign in with Google to see your usage and limits across every Vibe Research project.</p>
+      <a id="signInButton" href="#" class="button">Sign in with Google</a>
+    </section>
+
+    <section id="signedInSection" style="display: none;">
+      <div class="card">
+        <div class="row">
+          <div>
+            <div class="label">Signed in as</div>
+            <div id="emailLabel" style="font-size: 16px; font-weight: 600;"></div>
+          </div>
+          <button id="signOutButton" class="button danger">Sign out</button>
+        </div>
+      </div>
+
+      <div id="projectCards"></div>
+    </section>
+
+    <p id="errorBox" class="error" style="display: none;"></p>
+
+    <footer>© Vibe Research</footer>
+  </div>
+
+  <script src="vibeid.js"></script>
+  <script>
+    // CHANGE ME: point at your vibe-id deployment + give a project id (any
+    // project the user has signed into is fine — the page shows usage
+    // across ALL projects, but the SDK still scopes its own session token
+    // to one project_id for storage).
+    VibeId.configure({
+      projectId: "myproject",
+      vibeIdBaseURL: "https://api.accounts.vibe-research.net",
+    });
+
+    function escapeHtml(text) {
+      return String(text == null ? "" : text).replace(/[&<>"']/g, function (c) {
+        return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
+      });
+    }
+
+    function renderProjectCards(account) {
+      var quotas = account.quotas || {};
+      var usageByProject = account.usage_today_by_project || {};
+      var container = document.getElementById("projectCards");
+      container.innerHTML = "";
+
+      var projectIds = Object.keys(usageByProject).sort();
+      if (projectIds.length === 0) {
+        container.innerHTML = '<div class="card"><p style="margin: 0; color: var(--text-secondary);">No usage yet. Once you start using a project, your stats will appear here.</p></div>';
+        return;
+      }
+
+      projectIds.forEach(function (projectId) {
+        var usage = usageByProject[projectId] || {};
+        var endpointNames = Object.keys(usage).sort();
+
+        var endpointsHtml = endpointNames.map(function (endpointName) {
+          var usedAmount = usage[endpointName] || 0;
+          // Quotas in vibe-id are flat (one limit per endpoint per user, not
+          // per-project per-endpoint), so the limit shown is the user's
+          // overall daily allowance for that endpoint type.
+          var limit = quotas[endpointName];
+          return '<div class="endpoint-cell">' +
+                 '<div class="name">' + escapeHtml(endpointName) + '</div>' +
+                 '<div class="num">' + usedAmount + '</div>' +
+                 (limit != null ? '<div class="limit">of ' + limit + '</div>' : '') +
+                 '</div>';
+        }).join("");
+
+        var card = document.createElement("div");
+        card.className = "card";
+        card.innerHTML =
+          '<div class="project-id">' + escapeHtml(projectId) + '</div>' +
+          '<h2>Today</h2>' +
+          '<div class="endpoints">' + endpointsHtml + '</div>';
+        container.appendChild(card);
+      });
+    }
+
+    function showSignedOut() {
+      document.getElementById("signedOutSection").style.display = "";
+      document.getElementById("signedInSection").style.display = "none";
+      document.getElementById("greeting").textContent = "Your account";
+      document.getElementById("subtitle").textContent = "Sign in to see your usage across every project.";
+      document.getElementById("signInButton").href = VibeId.signInUrl({ returnTo: window.location.href });
+    }
+
+    function showSignedIn(account) {
+      document.getElementById("signedOutSection").style.display = "none";
+      document.getElementById("signedInSection").style.display = "";
+      var name = account.user.display_name || account.user.email;
+      document.getElementById("greeting").textContent = "Hi, " + name;
+      document.getElementById("subtitle").textContent = "Here's your usage across every project today.";
+      document.getElementById("emailLabel").textContent = account.user.email;
+      renderProjectCards(account);
+    }
+
+    document.getElementById("signOutButton").addEventListener("click", async function () {
+      await VibeId.signOut();
+      showSignedOut();
+    });
+
+    VibeId.bootstrap().then(function (state) {
+      if (state.signedIn) showSignedIn(state.account);
+      else showSignedOut();
+      if (state.error) {
+        var errorBox = document.getElementById("errorBox");
+        errorBox.textContent = state.error;
+        errorBox.style.display = "block";
+      }
+    });
+  </script>
+</body>
+</html>

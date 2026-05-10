@@ -104,6 +104,8 @@ The macOS app and web pages call vibe-id directly for sign-in / `/auth/me` / `/a
 | `worker/wrangler.toml` | — | Worker config: custom domain (`api.dot.vibe-research.net`), Service Binding to `vibe-id`, KV namespace binding for the token-check cache. |
 | `website/dot/index.html` + `account.html` + `admin.html` | — | Static pages deployed to `dot.vibe-research.net`: landing/download, per-user usage dashboard, admin dashboard. All call vibe-id directly for auth + admin. |
 | `website/research-lab/index.html` | — | Minimal landing page deployed to `vibe-research.net` root with links to `swarmlab.vibe-research.net` and `dot.vibe-research.net`. |
+| `vibe-id-project-template/` | — | Drop-in starter for any new vibe-id-powered product. Holds the 75-line forwarder, a project-agnostic Swift SDK (`VibeIdAccount` + `VibeIdInstallTokenStore`), a JS SDK (`vibeid.js`), a cross-project account page, and a README. Copy + change `PROJECT_ID` + deploy = new project online. |
+| `VIBE_ID_HANDOFF.md` | — | Schema + handler changes that need to land in the vibe-id repo for the multi-project story (per-project URL schemes, per-project upstream routing in a `project_endpoints` table). Apply once; future projects then bootstrap from the template with no vibe-id-side changes. |
 
 ## Build & Run
 
