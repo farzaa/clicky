@@ -179,8 +179,9 @@
         document.getElementById("emailLabel").textContent = meResponse.user.email;
         var creditsBalanceElement = document.getElementById("creditsBalance");
         if (creditsBalanceElement) {
+          // Credits are stored as integer cents; display as dollars.
           creditsBalanceElement.textContent = (typeof meResponse.credits_balance === "number")
-            ? meResponse.credits_balance.toLocaleString()
+            ? "$" + (meResponse.credits_balance / 100).toFixed(2)
             : "—";
         }
         renderProjectCards(meResponse);

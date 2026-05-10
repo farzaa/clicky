@@ -129,7 +129,7 @@ final class DotAccountManager: ObservableObject {
             }
 
             let parsed = try JSONDecoder().decode(AuthMeResponse.self, from: data)
-            applyAccountSnapshot(user: parsed.user, quotas: parsed.quotas, usageForCurrentProject: parsed.usage_today_by_project[Self.projectId] ?? [:], creditsBalance: parsed.credits_balance)
+            applyAccountSnapshot(user: parsed.user, quotas: parsed.quotas ?? [:], usageForCurrentProject: parsed.usage_today_by_project[Self.projectId] ?? [:], creditsBalance: parsed.credits_balance)
         } catch {
             lastErrorMessage = "Couldn't reach the identity server: \(error.localizedDescription)"
         }
@@ -170,7 +170,7 @@ final class DotAccountManager: ObservableObject {
                 lastErrorMessage = "Couldn't save your sign-in to the macOS Keychain. Try again, and click Always Allow if macOS asks for your password."
                 return
             }
-            applyAccountSnapshot(user: parsed.user, quotas: parsed.quotas, usageForCurrentProject: [:], creditsBalance: nil)
+            applyAccountSnapshot(user: parsed.user, quotas: parsed.quotas ?? [:], usageForCurrentProject: [:], creditsBalance: nil)
             isSignedIn = true
             await refreshCurrentUser()
         } catch {
@@ -208,12 +208,12 @@ final class DotAccountManager: ObservableObject {
 private struct AuthExchangeResponse: Decodable {
     let install_token: String
     let user: VibeIdUser
-    let quotas: [String: Int]
+    let quotas: [String: Int]?
 }
 
 private struct AuthMeResponse: Decodable {
     let user: VibeIdUser
-    let quotas: [String: Int]
+    let quotas: [String: Int]?
     let usage_today_by_project: [String: [String: Int]]
     let credits_balance: Int?
 }
