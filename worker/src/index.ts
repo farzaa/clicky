@@ -851,16 +851,19 @@ async function createInstallTokenForUser(
   const installTokenHash = await sha256Hex(installToken);
   const nowSeconds = currentTimeSeconds();
 
-  // Revoke any existing active row for this (user, device_id) so re-signing in
-  // on the same machine doesn't leave stale tokens behind.
+  // UPSERT: re-signing in on the same (user, device) rotates the token in
+  // place rather than creating a new row. We can't INSERT then revoke the
+  // old row because (user_id, device_id) is unique — the second INSERT
+  // would violate that constraint. ON CONFLICT … DO UPDATE handles both
+  // first-time and repeat sign-in cleanly.
   await env.DB.prepare(
-    "UPDATE devices SET revoked_at = ? WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL"
-  )
-    .bind(nowSeconds, fields.userId, fields.deviceId)
-    .run();
-
-  await env.DB.prepare(
-    "INSERT INTO devices (user_id, device_id, install_token_hash, device_label, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)"
+    `INSERT INTO devices (user_id, device_id, install_token_hash, device_label, created_at, last_seen_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id, device_id) DO UPDATE SET
+       install_token_hash = excluded.install_token_hash,
+       device_label = COALESCE(excluded.device_label, devices.device_label),
+       last_seen_at = excluded.last_seen_at,
+       revoked_at = NULL`
   )
     .bind(fields.userId, fields.deviceId, installTokenHash, fields.deviceLabel, nowSeconds, nowSeconds)
     .run();
