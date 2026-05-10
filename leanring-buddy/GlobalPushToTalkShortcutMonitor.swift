@@ -17,6 +17,13 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
+
+    /// Whether the listen-only CGEvent tap is currently alive. We use this as
+    /// the source of truth for "do we have Input Monitoring permission?",
+    /// because `CGPreflightListenEventAccess()` is known to return a stale
+    /// `false` even after the user grants permission in System Settings — but
+    /// `CGEvent.tapCreate` itself only succeeds when permission is real.
+    var isEventTapActive: Bool { globalEventTap != nil }
     /// Mutated exclusively from the CGEvent tap callback, which runs on
     /// `CFRunLoopGetMain()` and therefore always executes on the main thread.
     /// Published so the overlay can hide immediately on key release without

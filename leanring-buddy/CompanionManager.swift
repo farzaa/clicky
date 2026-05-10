@@ -360,14 +360,24 @@ final class CompanionManager: ObservableObject {
         let previouslyHadAll = allPermissionsGranted
 
         let currentlyHasLiveAccessibility = WindowPositionManager.hasLiveAccessibilityPermission()
-        let currentlyHasInputMonitoring = WindowPositionManager.hasInputMonitoringPermission()
         let currentlyHasPersistentContentCaptureEntitlement = Self.hasPersistentContentCaptureEntitlement()
         hasAccessibilityPermission = currentlyHasLiveAccessibility
+
+        // Input Monitoring detection is awkward on macOS: CGPreflightListenEventAccess()
+        // famously returns a stale `false` even after the user grants permission in
+        // System Settings, until the process is killed and relaunched. We work around
+        // that by also attempting to start the real event tap whenever Accessibility
+        // is granted and we don't yet have a live tap. CGEvent.tapCreate only succeeds
+        // when permission is truly granted, so its success/failure is the actual truth.
+        let preflightSaysHasInputMonitoring = WindowPositionManager.hasInputMonitoringPermission()
+        if currentlyHasLiveAccessibility && !globalPushToTalkShortcutMonitor.isEventTapActive {
+            globalPushToTalkShortcutMonitor.start()
+        }
+        let currentlyHasInputMonitoring = globalPushToTalkShortcutMonitor.isEventTapActive
+            || preflightSaysHasInputMonitoring
         hasInputMonitoringPermission = currentlyHasInputMonitoring
 
-        if currentlyHasLiveAccessibility && currentlyHasInputMonitoring {
-            globalPushToTalkShortcutMonitor.start()
-        } else {
+        if !(currentlyHasLiveAccessibility && currentlyHasInputMonitoring) {
             globalPushToTalkShortcutMonitor.stop()
         }
 
