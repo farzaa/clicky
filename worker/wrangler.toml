@@ -1,6 +1,14 @@
 name = "dot-proxy"
 main = "src/index.ts"
 compatibility_date = "2024-09-23"
+workers_dev = false
+
+# Bind the worker to a custom domain on the vibe-research.net Cloudflare zone.
+# `custom_domain = true` makes Cloudflare provision the DNS record + edge
+# routing automatically, no manual CNAME needed.
+routes = [
+  { pattern = "api.dot.vibe-research.net", custom_domain = true }
+]
 
 # ----------------------------------------------------------------------------
 # Public, non-secret configuration. Update these to match your deployed setup.
@@ -32,4 +40,4 @@ APP_URL_SCHEME = "dot"
 [[d1_databases]]
 binding = "DB"
 database_name = "dot-proxy"
-database_id = "REPLACE_WITH_REAL_D1_DATABASE_ID"
+database_id = "43768343-6cc4-486c-b1ca-5808dfbb073a"

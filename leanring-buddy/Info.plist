@@ -11,7 +11,7 @@
 	<key>VoiceTranscriptionProvider</key>
 	<string>assemblyai</string>
 	<key>DotProxyBaseURL</key>
-	<string>http://127.0.0.1:8787</string>
+	<string>https://api.dot.vibe-research.net</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Dot uses your microphone so you can talk to it</string>
 	<key>NSInputMonitoringUsageDescription</key>

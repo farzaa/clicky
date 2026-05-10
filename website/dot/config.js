@@ -5,9 +5,10 @@ window.DOT_CONFIG = {
   // behind the same Worker — separate subdomain is recommended.
   workerBaseURL: "https://api.dot.vibe-research.net",
 
-  // The latest macOS download. Replace once you cut a real release.
-  downloadDmgURL: "https://github.com/REPLACE_WITH_YOUR_GITHUB/dot/releases/latest/download/Dot.dmg",
+  // The latest macOS download. Replace once you cut a real release on GitHub.
+  // Until then, friends can only run dev builds via the install script in the repo.
+  downloadDmgURL: "https://github.com/Clamepending/clicky/releases/latest/download/Dot.dmg",
 
   // Where to send users from the "Open Source" link.
-  githubURL: "https://github.com/REPLACE_WITH_YOUR_GITHUB/dot",
+  githubURL: "https://github.com/Clamepending/clicky",
 };

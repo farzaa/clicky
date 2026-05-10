@@ -498,7 +498,7 @@ final class CompanionManager: ObservableObject {
     /// re-bind a freshly granted permission within a running process on
     /// macOS 14.2+ / 15.x.
     func relaunchAppAfterPermissionChange() {
-        ClickyDebugLogger.log("permissions.screenContent", "relaunching to pick up freshly granted permission")
+        DotDebugLogger.log("permissions.screenContent", "relaunching to pick up freshly granted permission")
         let appBundleURL = Bundle.main.bundleURL
         let openConfiguration = NSWorkspace.OpenConfiguration()
         openConfiguration.createsNewApplicationInstance = true
@@ -628,8 +628,8 @@ final class CompanionManager: ObservableObject {
         if combinedDescription.contains("declined") || combinedDescription.contains("denied") {
             // Sequoia (macOS 15) renamed the relevant pane to "Screen & System Audio Recording".
             // SCK can't pick up a freshly-granted permission until the process restarts, so the
-            // recovery flow is always: enable in Settings, then relaunch Clicky.
-            return "Enable Screen & System Audio Recording for Clicky in System Settings, then relaunch."
+            // recovery flow is always: enable in Settings, then relaunch Dot.
+            return "Enable Screen & System Audio Recording for Dot in System Settings, then relaunch."
         }
         return "Screen capture check failed; see log."
     }

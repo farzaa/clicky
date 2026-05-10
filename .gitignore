@@ -7,3 +7,6 @@ build/
 releases/
 .claude/
 coding-plans/
+
+# Cloudflare Pages local cache (do not commit)
+.wrangler/
