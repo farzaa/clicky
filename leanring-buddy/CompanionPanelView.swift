@@ -191,8 +191,10 @@ struct CompanionPanelView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
 
-                if let chatLimit = accountManager.dailyChatLimit {
-                    Text("\(accountManager.todayChatCount) / \(chatLimit) chats today")
+                if let creditsBalance = accountManager.creditsBalance {
+                    // Credits are stored as cents; display as dollars.
+                    let dollarsString = String(format: "%.2f", Double(creditsBalance) / 100.0)
+                    Text("$\(dollarsString) balance")
                         .font(.system(size: 10))
                         .foregroundColor(DS.Colors.textTertiary)
                 }

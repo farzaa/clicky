@@ -36,6 +36,12 @@
         </div>
       </div>
 
+      <div class="card">
+        <div class="label">Credits</div>
+        <div style="font-size: 28px; font-weight: 700; margin-top: 4px;"><span id="creditsBalance">—</span></div>
+        <div class="muted" style="margin-top: 4px;">Spendable across every Vibe Research project that charges credits (today: ottoauth).</div>
+      </div>
+
       <div id="projectCardsContainer"></div>
 
       <div class="card">
@@ -171,6 +177,13 @@
         document.getElementById("greeting").textContent = "Hi, " + displayName;
         document.getElementById("subtitle").textContent = "Here's your usage across every Vibe Research project today.";
         document.getElementById("emailLabel").textContent = meResponse.user.email;
+        var creditsBalanceElement = document.getElementById("creditsBalance");
+        if (creditsBalanceElement) {
+          // Credits are stored as integer cents; display as dollars.
+          creditsBalanceElement.textContent = (typeof meResponse.credits_balance === "number")
+            ? "$" + (meResponse.credits_balance / 100).toFixed(2)
+            : "—";
+        }
         renderProjectCards(meResponse);
       }
 
