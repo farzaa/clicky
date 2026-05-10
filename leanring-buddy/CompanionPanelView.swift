@@ -423,45 +423,23 @@ struct CompanionPanelView: View {
                         .foregroundColor(DS.Colors.success)
                 }
             } else {
-                HStack(spacing: 6) {
-                    Button(action: {
-                        // Triggers the system accessibility prompt (AXIsProcessTrustedWithOptions)
-                        // on first attempt, then opens System Settings on subsequent attempts.
-                        WindowPositionManager.requestAccessibilityPermission()
-                    }) {
-                        Text("Grant")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(DS.Colors.textOnAccent)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(
-                                Capsule()
-                                    .fill(DS.Colors.accent)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .pointerCursor()
-
-                    Button(action: {
-                        // Reveals the app in Finder so the user can drag it into
-                        // the Accessibility list if it doesn't appear automatically
-                        // (common with unsigned dev builds).
-                        WindowPositionManager.revealAppInFinder()
-                        WindowPositionManager.openAccessibilitySettings()
-                    }) {
-                        Text("Find App")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(DS.Colors.textSecondary)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(
-                                Capsule()
-                                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.8)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .pointerCursor()
+                Button(action: {
+                    // Triggers the system accessibility prompt (AXIsProcessTrustedWithOptions)
+                    // on first attempt, then opens System Settings on subsequent attempts.
+                    WindowPositionManager.requestAccessibilityPermission()
+                }) {
+                    Text("Grant")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(DS.Colors.textOnAccent)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule()
+                                .fill(DS.Colors.accent)
+                        )
                 }
+                .buttonStyle(.plain)
+                .pointerCursor()
             }
         }
         .padding(.vertical, 6)
