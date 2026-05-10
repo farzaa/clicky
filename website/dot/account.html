@@ -74,7 +74,8 @@
   <script>
     (function () {
       var config = window.DOT_CONFIG || {};
-      var workerBaseURL = (config.workerBaseURL || "").replace(/\/$/, "");
+      var vibeIdBaseURL = (config.vibeIdBaseURL || "").replace(/\/$/, "");
+      var PROJECT_ID = "dot";
 
       // Storage keys for the install token + cached email so we can show the
       // signed-in state on subsequent visits without round-tripping the worker.
@@ -108,7 +109,7 @@
       function buildSignInUrl() {
         var websiteOrigin = window.location.origin;
         var returnTo = websiteOrigin.replace(/\/$/, "") + window.location.pathname;
-        return workerBaseURL + "/auth/start?return_to=" + encodeURIComponent(returnTo);
+        return vibeIdBaseURL + "/auth/start?project=" + encodeURIComponent(PROJECT_ID) + "&return_to=" + encodeURIComponent(returnTo);
       }
 
       function showSignedOut() {
@@ -117,7 +118,7 @@
         document.getElementById("greeting").textContent = "Your account";
         document.getElementById("subtitle").textContent = "Sign in to see your daily usage and limits.";
         var signInButton = document.getElementById("signInButton");
-        if (signInButton && workerBaseURL) {
+        if (signInButton && vibeIdBaseURL) {
           signInButton.setAttribute("href", buildSignInUrl());
         }
       }
@@ -129,12 +130,16 @@
         document.getElementById("greeting").textContent = "Hi, " + displayName;
         document.getElementById("subtitle").textContent = "Here's how much of today's quota you've used.";
         document.getElementById("emailLabel").textContent = meResponse.user.email;
-        document.getElementById("chatToday").textContent = meResponse.usage.chat_count;
-        document.getElementById("chatLimit").textContent = meResponse.user.daily_chat_limit;
-        document.getElementById("ttsToday").textContent = meResponse.usage.tts_chars;
-        document.getElementById("ttsLimit").textContent = meResponse.user.daily_tts_chars_limit;
-        document.getElementById("transcribeToday").textContent = meResponse.usage.transcribe_sessions;
-        document.getElementById("transcribeLimit").textContent = meResponse.user.daily_transcribe_session_limit;
+
+        var quotas = meResponse.quotas || {};
+        var dotUsage = (meResponse.usage_today_by_project && meResponse.usage_today_by_project[PROJECT_ID]) || {};
+
+        document.getElementById("chatToday").textContent = dotUsage.chat || 0;
+        document.getElementById("chatLimit").textContent = (quotas.chat != null) ? quotas.chat : "—";
+        document.getElementById("ttsToday").textContent = dotUsage.tts || 0;
+        document.getElementById("ttsLimit").textContent = (quotas.tts != null) ? quotas.tts : "—";
+        document.getElementById("transcribeToday").textContent = dotUsage["transcribe-token"] || 0;
+        document.getElementById("transcribeLimit").textContent = (quotas["transcribe-token"] != null) ? quotas["transcribe-token"] : "—";
       }
 
       async function loadAccount() {
@@ -145,11 +150,10 @@
         }
 
         try {
-          var meResponse = await fetch(workerBaseURL + "/auth/me", {
+          var meResponse = await fetch(vibeIdBaseURL + "/auth/me", {
             headers: { authorization: "Bearer " + installToken },
           });
           if (meResponse.status === 401) {
-            // Token revoked or invalid — clear it and show sign-in.
             localStorage.removeItem(TOKEN_STORAGE_KEY);
             showSignedOut();
             return;
@@ -161,7 +165,7 @@
           var responseJson = await meResponse.json();
           showSignedInWithMe(responseJson);
         } catch (networkError) {
-          showErrorMessage("Couldn't reach the Dot server: " + networkError.message);
+          showErrorMessage("Couldn't reach the identity server: " + networkError.message);
         }
       }
 
@@ -169,7 +173,7 @@
         var installToken = localStorage.getItem(TOKEN_STORAGE_KEY);
         if (installToken) {
           try {
-            await fetch(workerBaseURL + "/auth/signout", {
+            await fetch(vibeIdBaseURL + "/auth/signout", {
               method: "POST",
               headers: { authorization: "Bearer " + installToken },
             });

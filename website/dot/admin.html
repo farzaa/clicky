@@ -40,9 +40,7 @@
               <th>Email</th>
               <th>Status</th>
               <th>Last seen</th>
-              <th>Chats today</th>
-              <th>TTS chars</th>
-              <th>Voice sessions</th>
+              <th colspan="3">Usage today by project</th>
             </tr>
           </thead>
           <tbody id="usersTableBody"></tbody>
@@ -57,6 +55,7 @@
           <thead>
             <tr>
               <th>Day</th>
+              <th>Project</th>
               <th>Endpoint</th>
               <th>Calls</th>
               <th>Total amount</th>
@@ -77,7 +76,7 @@
   <script>
     (function () {
       var config = window.DOT_CONFIG || {};
-      var workerBaseURL = (config.workerBaseURL || "").replace(/\/$/, "");
+      var vibeIdBaseURL = (config.vibeIdBaseURL || "").replace(/\/$/, "");
 
       var ADMIN_TOKEN_STORAGE_KEY = "dot.adminToken";
 
@@ -111,8 +110,8 @@
 
         try {
           var [usersResponse, usageResponse] = await Promise.all([
-            fetch(workerBaseURL + "/admin/users", { headers: { "x-admin-token": enteredToken } }),
-            fetch(workerBaseURL + "/admin/usage", { headers: { "x-admin-token": enteredToken } }),
+            fetch(vibeIdBaseURL + "/admin/users", { headers: { "x-admin-token": enteredToken } }),
+            fetch(vibeIdBaseURL + "/admin/usage", { headers: { "x-admin-token": enteredToken } }),
           ]);
           if (usersResponse.status === 401 || usageResponse.status === 401) {
             showErrorMessage("Admin token rejected. Check your secret value.");
@@ -128,8 +127,21 @@
           document.getElementById("usersSection").style.display = "";
           document.getElementById("usageSection").style.display = "";
         } catch (networkError) {
-          showErrorMessage("Couldn't reach the Dot server: " + networkError.message);
+          showErrorMessage("Couldn't reach the identity server: " + networkError.message);
         }
+      }
+
+      function summarizeUsageByProject(usageByProject) {
+        // Render as: "dot: chat 3, tts 412 · swarmlab: chat 1"
+        if (!usageByProject || Object.keys(usageByProject).length === 0) return "—";
+        return Object.entries(usageByProject).map(function (projectEntry) {
+          var projectId = projectEntry[0];
+          var endpoints = projectEntry[1] || {};
+          var endpointSummary = Object.entries(endpoints).map(function (endpointEntry) {
+            return endpointEntry[0] + " " + endpointEntry[1];
+          }).join(", ");
+          return projectId + ": " + endpointSummary;
+        }).join(" · ");
       }
 
       function renderUsersTable(userRows) {
@@ -141,9 +153,7 @@
             "<td>" + escapeHtml(userRow.email) + "</td>" +
             "<td>" + escapeHtml(userRow.status) + "</td>" +
             "<td>" + formatUnixSeconds(userRow.last_seen_at) + "</td>" +
-            "<td>" + userRow.chat_today + " / " + userRow.daily_chat_limit + "</td>" +
-            "<td>" + userRow.tts_chars_today + " / " + userRow.daily_tts_chars_limit + "</td>" +
-            "<td>" + userRow.transcribe_today + " / " + userRow.daily_transcribe_session_limit + "</td>";
+            "<td colspan='3'>" + escapeHtml(summarizeUsageByProject(userRow.usage_today_by_project)) + "</td>";
           tableBody.appendChild(rowElement);
         });
         if (userRows.length === 0) {
@@ -158,13 +168,14 @@
           var rowElement = document.createElement("tr");
           rowElement.innerHTML =
             "<td>" + dayBucketToDateLabel(usageRow.day_bucket) + "</td>" +
+            "<td>" + escapeHtml(usageRow.project_id || "—") + "</td>" +
             "<td>" + escapeHtml(usageRow.endpoint) + "</td>" +
             "<td>" + usageRow.event_count + "</td>" +
             "<td>" + usageRow.total_amount + "</td>";
           tableBody.appendChild(rowElement);
         });
         if (usageRows.length === 0) {
-          tableBody.innerHTML = "<tr><td colspan='4' class='muted'>No usage yet.</td></tr>";
+          tableBody.innerHTML = "<tr><td colspan='5' class='muted'>No usage yet.</td></tr>";
         }
       }
 
