@@ -60,6 +60,11 @@ final class CompanionManager: ObservableObject {
     /// BlueCursorView uses this instead of a random pointer phrase.
     @Published var detectedElementBubbleText: String?
 
+    /// Bumped to a fresh UUID every time the buddy performs a click action,
+    /// so BlueCursorView can fire a one-shot squash-and-stretch animation
+    /// in sync with the actual click + sound effect.
+    @Published var clickPulseToken: UUID = UUID()
+
     // MARK: - Onboarding Video State (shared across all screen overlays)
 
     @Published var onboardingVideoPlayer: AVPlayer?
@@ -1488,6 +1493,11 @@ final class CompanionManager: ObservableObject {
                     to: mappedClickLocation.globalLocation
                 )
                 try? await Task.sleep(nanoseconds: blueCursorFlightDelayNanoseconds)
+
+                // Visual + audible feedback fires in sync with the click so
+                // the cursor squash and the "tink" sound land on the impact.
+                clickPulseToken = UUID()
+                NSSound(named: "Tink")?.play()
 
                 CompanionComputerController.click(atAppKitScreenLocation: mappedClickLocation.globalLocation)
                 estimatedBlueCursorStartLocation = mappedClickLocation.globalLocation

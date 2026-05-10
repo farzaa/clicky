@@ -161,6 +161,10 @@ struct BlueCursorView: View {
     /// Starts at 0.5 and springs to 1.0 when the first character appears.
     @State private var navigationBubbleScale: CGFloat = 1.0
 
+    /// One-shot squash-and-stretch multiplier applied to the cursor when the
+    /// buddy performs a click action. Driven by companionManager.clickPulseToken.
+    @State private var clickPulseScale: CGFloat = 1.0
+
     /// True when the buddy is flying BACK to the cursor after pointing.
     /// Only during the return flight can cursor movement cancel the animation.
     @State private var isReturningToCursor: Bool = false
@@ -306,7 +310,7 @@ struct BlueCursorView: View {
                 .fill(DS.Colors.overlayCursorBlue)
                 .frame(width: 14, height: 14)
                 .shadow(color: DS.Colors.overlayCursorBlue, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
-                .scaleEffect(buddyFlightScale)
+                .scaleEffect(buddyFlightScale * clickPulseScale)
                 .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(
@@ -382,6 +386,19 @@ struct BlueCursorView: View {
             }
 
             startNavigatingToElement(screenLocation: screenLocation)
+        }
+        .onChange(of: companionManager.clickPulseToken) { _ in
+            // Squash to 0.65, then bounce back past 1.0 with a low-damping
+            // spring for an overshoot that settles to 1.0 — feels like a
+            // springy button press in sync with the actual click.
+            withAnimation(.easeOut(duration: 0.08)) {
+                clickPulseScale = 0.65
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.4)) {
+                    clickPulseScale = 1.0
+                }
+            }
         }
     }
 
