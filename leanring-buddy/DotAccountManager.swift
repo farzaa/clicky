@@ -219,7 +219,11 @@ final class DotAccountManager: ObservableObject {
 
             let exchangeResponse = try JSONDecoder().decode(AuthExchangeResponse.self, from: data)
 
-            DotInstallTokenStore.saveInstallToken(exchangeResponse.install_token)
+            let savedSuccessfully = DotInstallTokenStore.saveInstallToken(exchangeResponse.install_token)
+            guard savedSuccessfully else {
+                lastErrorMessage = "Couldn't save your sign-in to the macOS Keychain. Try again, and click Always Allow if macOS asks for your password."
+                return
+            }
             applyUserProfile(AuthMeResponse(user: exchangeResponse.user, usage: nil))
             isSignedIn = true
             await refreshCurrentUser()

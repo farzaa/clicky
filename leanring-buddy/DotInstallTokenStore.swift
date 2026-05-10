@@ -12,33 +12,36 @@
 //
 //  Two design notes:
 //
-//  1. We use the modern data-protection keychain (`kSecUseDataProtectionKeychain`).
-//     On macOS that means access is scoped to (Team Identifier + Bundle ID), the
-//     same way iOS works. Without this flag we fall back to the legacy file-based
-//     keychain, which uses a per-app ACL and pops "Dot wants to use your
-//     confidential information stored in net.vibe-research.dot" every time a
-//     differently-signed build reads it (very common during local rebuilds).
+//  1. We use the legacy file-based keychain (the default — no
+//     kSecUseDataProtectionKeychain). The data-protection keychain looks
+//     cleaner because it's scoped by Team Identifier the way iOS is, but on
+//     macOS it requires an explicit keychain-access-groups entitlement that
+//     this app doesn't ship with. Without that entitlement, SecItemAdd with
+//     kSecUseDataProtectionKeychain silently fails (errSecMissingEntitlement,
+//     -34018), the token never lands, and the panel snaps back to "Sign in"
+//     with no visible error.
 //
 //  2. After the first successful read we cache the token in memory. Every
-//     authenticated API call would otherwise issue a SecItemCopyMatching syscall
-//     just to add a header — wasteful, especially during the streaming Claude
-//     and AssemblyAI sessions. The cache is invalidated on save/delete.
+//     authenticated API call would otherwise issue a SecItemCopyMatching
+//     syscall just to add a header — wasteful, especially during the
+//     streaming Claude and AssemblyAI sessions. The cache is invalidated on
+//     save / delete.
+//
+//  The first time the user signs in on a freshly-signed build, macOS will
+//  show the "Dot wants to use your confidential information" prompt once
+//  (because the ACL doesn't yet include the Developer ID identity). Clicking
+//  Always Allow fixes it for good. As long as the signing identity stays
+//  the same across rebuilds, future reads don't prompt.
 //
 
 import Foundation
 import Security
 
-/// Static accessor for the long-lived install token. Stored in the macOS
-/// data-protection Keychain under a service+account that's stable across app
-/// launches and rebuilds (as long as the bundle id and signing team are unchanged).
 enum DotInstallTokenStore {
 
     private static let keychainServiceName = "net.vibe-research.dot"
     private static let keychainAccountName = "install-token"
 
-    // In-memory cache. cachedTokenIsPopulated avoids confusing nil-cache vs
-    // cached-as-nil. NSLock is enough — the keychain syscall happens at most
-    // once per process under contention.
     private static let cacheLock = NSLock()
     private static var cachedInstallToken: String? = nil
     private static var cachedTokenIsPopulated: Bool = false
@@ -65,15 +68,17 @@ enum DotInstallTokenStore {
     }
 
     /// Saves the install token to the Keychain, replacing any prior value.
+    /// Returns true on success, false otherwise. Failures are logged so they
+    /// surface in development; callers should also treat false as "user is
+    /// effectively signed out" and reflect that in the UI.
     @discardableResult
     static func saveInstallToken(_ installToken: String) -> Bool {
         guard let tokenData = installToken.data(using: .utf8) else { return false }
 
-        // Delete any existing entry from BOTH the data-protection keychain and
-        // the legacy keychain. Local dev installs from earlier ad-hoc-signed
-        // builds may have left a stale entry in the legacy keychain that would
-        // otherwise keep prompting for a password. We don't want it.
-        deleteInstallTokenFromAllKeychains()
+        // Always delete first so the ACL on the new entry is clean — we don't
+        // want stale per-app trust lists from prior builds that signed under a
+        // different identity (e.g. ad-hoc local installs).
+        deleteInstallTokenFromKeychain()
 
         var addQuery: [CFString: Any] = baseKeychainQuery()
         addQuery[kSecValueData] = tokenData
@@ -88,7 +93,7 @@ enum DotInstallTokenStore {
         cacheLock.unlock()
 
         if !savedSuccessfully {
-            print("⚠️ Dot Keychain: failed to save install token (status \(status))")
+            print("⚠️ Dot Keychain: failed to save install token (OSStatus \(status))")
         }
         return savedSuccessfully
     }
@@ -96,7 +101,7 @@ enum DotInstallTokenStore {
     /// Removes the install token from the Keychain. Idempotent.
     @discardableResult
     static func deleteInstallToken() -> Bool {
-        let deleted = deleteInstallTokenFromAllKeychains()
+        let deleted = deleteInstallTokenFromKeychain()
         cacheLock.lock()
         cachedInstallToken = nil
         cachedTokenIsPopulated = true
@@ -123,26 +128,10 @@ enum DotInstallTokenStore {
     }
 
     @discardableResult
-    private static func deleteInstallTokenFromAllKeychains() -> Bool {
-        let dataProtectionQuery: [CFString: Any] = baseKeychainQuery()
-        let dataProtectionStatus = SecItemDelete(dataProtectionQuery as CFDictionary)
-        let dataProtectionSucceeded = dataProtectionStatus == errSecSuccess
-            || dataProtectionStatus == errSecItemNotFound
-
-        // Also clear the legacy keychain entry that older ad-hoc builds may
-        // have left behind. Without kSecUseDataProtectionKeychain the API
-        // targets the legacy keychain.
-        var legacyQuery: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: keychainServiceName,
-            kSecAttrAccount: keychainAccountName,
-        ]
-        legacyQuery[kSecUseDataProtectionKeychain] = false
-        let legacyStatus = SecItemDelete(legacyQuery as CFDictionary)
-        let legacySucceeded = legacyStatus == errSecSuccess
-            || legacyStatus == errSecItemNotFound
-
-        return dataProtectionSucceeded && legacySucceeded
+    private static func deleteInstallTokenFromKeychain() -> Bool {
+        let deleteQuery: [CFString: Any] = baseKeychainQuery()
+        let status = SecItemDelete(deleteQuery as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 
     private static func baseKeychainQuery() -> [CFString: Any] {
@@ -150,10 +139,6 @@ enum DotInstallTokenStore {
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: keychainServiceName,
             kSecAttrAccount: keychainAccountName,
-            // Use the modern data-protection keychain. On macOS this scopes
-            // the item to (Team Identifier + Bundle ID), so the OS doesn't
-            // pop a password prompt when a re-signed build reads its own token.
-            kSecUseDataProtectionKeychain: true,
         ]
     }
 }
