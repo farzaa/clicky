@@ -112,6 +112,25 @@ a:hover { text-decoration: underline; }
   color: var(--danger);
   border: 1px solid var(--border);
 }
+.button:disabled { cursor: default; }
+
+.amount-choice {
+  font: inherit;
+  font-weight: 600;
+  padding: 9px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.amount-choice:hover { border-color: var(--accent); }
+.amount-choice.selected {
+  border-color: var(--accent);
+  background: rgba(96, 165, 250, 0.12);
+  color: var(--accent);
+}
 
 .section { margin-top: 56px; }
 .section h2 {

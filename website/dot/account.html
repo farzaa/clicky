@@ -36,6 +36,7 @@
           <div>
             <div class="label">Balance</div>
             <div style="font-size: 24px; font-weight: 700; margin-top: 2px;"><span id="creditsBalance">—</span></div>
+            <button id="addCreditsButton" class="button" style="margin-top: 10px; padding: 7px 14px; font-size: 13px;">Add credits</button>
           </div>
           <div id="dailyCapBlock" style="display: none;">
             <div class="label">Today</div>
@@ -48,6 +49,23 @@
             </div>
           </div>
         </div>
+      </div>
+
+      <div id="addCreditsCard" class="card" style="display: none; margin-top: 16px;">
+        <h2 style="margin-top: 0;">Top up your balance</h2>
+        <p style="color: var(--text-secondary); margin: 0 0 16px; font-size: 14px;">Credits cover Dot and every other Vibe Research product. Pay once, use anywhere.</p>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px;">
+          <button class="amount-choice" data-amount="5">$5</button>
+          <button class="amount-choice" data-amount="10">$10</button>
+          <button class="amount-choice" data-amount="20">$20</button>
+          <button class="amount-choice" data-amount="50">$50</button>
+          <button class="amount-choice" data-amount="100">$100</button>
+        </div>
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <button id="startCheckoutButton" class="button" disabled style="opacity: 0.5;">Continue to checkout</button>
+          <button id="cancelAddCreditsButton" class="button danger">Cancel</button>
+        </div>
+        <p id="addCreditsError" class="error" style="display: none; margin-top: 12px;"></p>
       </div>
     </section>
 
@@ -199,8 +217,97 @@
         showSignedOut();
       }
 
+      // ---------- Add credits flow ----------
+      var selectedAmountDollars = null;
+
+      function showAddCreditsCard() {
+        document.getElementById("addCreditsCard").style.display = "";
+        document.getElementById("addCreditsButton").style.display = "none";
+        document.getElementById("addCreditsError").style.display = "none";
+      }
+
+      function hideAddCreditsCard() {
+        document.getElementById("addCreditsCard").style.display = "none";
+        document.getElementById("addCreditsButton").style.display = "";
+        selectedAmountDollars = null;
+        Array.prototype.forEach.call(document.querySelectorAll(".amount-choice"), function (cell) {
+          cell.classList.remove("selected");
+        });
+        var startButton = document.getElementById("startCheckoutButton");
+        startButton.disabled = true;
+        startButton.style.opacity = "0.5";
+        startButton.textContent = "Continue to checkout";
+      }
+
+      function selectAmountChoice(amountDollars, clickedElement) {
+        selectedAmountDollars = amountDollars;
+        Array.prototype.forEach.call(document.querySelectorAll(".amount-choice"), function (cell) {
+          cell.classList.remove("selected");
+        });
+        clickedElement.classList.add("selected");
+        var startButton = document.getElementById("startCheckoutButton");
+        startButton.disabled = false;
+        startButton.style.opacity = "1";
+        startButton.textContent = "Continue to checkout — $" + amountDollars;
+      }
+
+      async function startStripeCheckout() {
+        if (!selectedAmountDollars) return;
+        var installToken = localStorage.getItem(TOKEN_STORAGE_KEY);
+        if (!installToken) {
+          showSignedOut();
+          return;
+        }
+        var startButton = document.getElementById("startCheckoutButton");
+        startButton.disabled = true;
+        startButton.style.opacity = "0.5";
+        startButton.textContent = "Redirecting…";
+
+        var accountPageUrl = window.location.origin + window.location.pathname;
+        try {
+          var response = await fetch(vibeIdBaseURL + "/credits/topup", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": "Bearer " + installToken,
+            },
+            body: JSON.stringify({
+              amount_dollars: selectedAmountDollars,
+              success_url: accountPageUrl + "?topup=success",
+              cancel_url: accountPageUrl + "?topup=cancel",
+            }),
+          });
+          var responseJson = await response.json();
+          if (!response.ok || !responseJson.checkout_url) {
+            var errorBox = document.getElementById("addCreditsError");
+            errorBox.textContent = "Couldn't start checkout: " + (responseJson.error || ("status " + response.status));
+            errorBox.style.display = "block";
+            startButton.disabled = false;
+            startButton.style.opacity = "1";
+            startButton.textContent = "Continue to checkout — $" + selectedAmountDollars;
+            return;
+          }
+          window.location.href = responseJson.checkout_url;
+        } catch (networkError) {
+          var errorBox = document.getElementById("addCreditsError");
+          errorBox.textContent = "Couldn't reach the identity server: " + networkError.message;
+          errorBox.style.display = "block";
+          startButton.disabled = false;
+          startButton.style.opacity = "1";
+          startButton.textContent = "Continue to checkout — $" + selectedAmountDollars;
+        }
+      }
+
       consumeAuthCallbackFragmentIfPresent();
       document.getElementById("signOutButton").addEventListener("click", handleSignOutClick);
+      document.getElementById("addCreditsButton").addEventListener("click", showAddCreditsCard);
+      document.getElementById("cancelAddCreditsButton").addEventListener("click", hideAddCreditsCard);
+      document.getElementById("startCheckoutButton").addEventListener("click", startStripeCheckout);
+      Array.prototype.forEach.call(document.querySelectorAll(".amount-choice"), function (cell) {
+        cell.addEventListener("click", function () {
+          selectAmountChoice(parseInt(cell.getAttribute("data-amount"), 10), cell);
+        });
+      });
       loadAccount();
     })();
   </script>
