@@ -5,7 +5,7 @@ set -euo pipefail
 export PATH="/opt/homebrew/bin:$PATH"
 
 # =============================================================================
-# release.sh — Automates the full release pipeline for makesomething
+# release.sh — Automates the full release pipeline for Dot
 #
 # What it does (in order):
 #   1. Auto-detects version + build from the latest GitHub Release
@@ -34,7 +34,7 @@ export PATH="/opt/homebrew/bin:$PATH"
 # ── Configuration ────────────────────────────────────────────────────────────
 
 SCHEME="leanring-buddy"
-APP_NAME="makesomething"
+APP_NAME="Dot"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${PROJECT_DIR}/build"
 ARCHIVE_PATH="${BUILD_DIR}/${APP_NAME}.xcarchive"
@@ -43,13 +43,20 @@ DMG_OUTPUT_DIR="${BUILD_DIR}/dmg"
 RELEASES_DIR="${PROJECT_DIR}/releases"  # where generate_appcast reads DMGs from
 DMG_BACKGROUND="${PROJECT_DIR}/dmg-background.png"
 
-GITHUB_REPO="julianjear/makesomething-mac-app"
+GITHUB_REPO="Clamepending/dot"
 
-# Sparkle tools (auto-discovered from Xcode's SPM cache)
-SPARKLE_BIN=$(find ~/Library/Developer/Xcode/DerivedData/leanring-buddy*/SourcePackages/artifacts/sparkle/Sparkle/bin -maxdepth 0 2>/dev/null | head -1)
+# Sparkle tools — prefer the vendored tools/sparkle/bin checkout (survives
+# build/ cleaning), otherwise fall back to whatever Xcode's SPM cache resolved.
+if [ -x "${PROJECT_DIR}/tools/sparkle/bin/sign_update" ]; then
+    SPARKLE_BIN="${PROJECT_DIR}/tools/sparkle/bin"
+else
+    SPARKLE_BIN=$(find ~/Library/Developer/Xcode/DerivedData/leanring-buddy*/SourcePackages/artifacts/sparkle/Sparkle/bin -maxdepth 0 2>/dev/null | head -1)
+fi
 
 if [ -z "$SPARKLE_BIN" ]; then
-    echo "❌ Sparkle tools not found. Build the project in Xcode first so SPM downloads Sparkle."
+    echo "❌ Sparkle tools not found. Either:"
+    echo "   - Download Sparkle 2.9.0 to ${PROJECT_DIR}/tools/sparkle, or"
+    echo "   - Build the project in Xcode first so SPM downloads Sparkle."
     exit 1
 fi
 
@@ -146,9 +153,15 @@ mkdir -p "${BUILD_DIR}" "${EXPORT_DIR}" "${DMG_OUTPUT_DIR}" "${RELEASES_DIR}"
 # ── Step 2: Archive ──────────────────────────────────────────────────────────
 
 echo "📦 Archiving..."
+# -allowProvisioningUpdates lets xcodebuild fetch / create Developer ID profiles
+# from App Store Connect on demand. -allowProvisioningDeviceRegistration lets
+# it self-register this Mac so dev profiles cover it. Both require the user's
+# Apple ID to be signed in to Xcode (Settings → Accounts).
 xcodebuild archive \
     -scheme "${SCHEME}" \
     -archivePath "${ARCHIVE_PATH}" \
+    -allowProvisioningUpdates \
+    -allowProvisioningDeviceRegistration \
     MARKETING_VERSION="${MARKETING_VERSION}" \
     CURRENT_PROJECT_VERSION="${BUILD_NUMBER}" \
     2>&1 | tail -5
@@ -245,7 +258,7 @@ echo "🏷️  Creating GitHub Release ${TAG}..."
 gh release create "${TAG}" "${DMG_PATH}" \
     --repo "${GITHUB_REPO}" \
     --title "v${MARKETING_VERSION}" \
-    --notes "makesomething v${MARKETING_VERSION}" \
+    --notes "Dot v${MARKETING_VERSION}" \
     --latest
 
 # ── Step 9: Push appcast.xml to the releases repo ───────────────────────────

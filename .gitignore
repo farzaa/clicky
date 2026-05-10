@@ -5,6 +5,7 @@ worker/.wrangler/
 *.xcuserstate
 build/
 releases/
+tools/sparkle/
 .claude/
 coding-plans/
 

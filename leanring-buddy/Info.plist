@@ -5,9 +5,9 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>SUFeedURL</key>
-	<string>https://raw.githubusercontent.com/julianjear/makesomething-mac-app/main/appcast.xml</string>
+	<string>https://raw.githubusercontent.com/Clamepending/dot/main/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>/l3d2rw5ZZFRU3AadP/w2Zf8FHfhA6bKv16BQOV5OSk=</string>
+	<string>d85ztKO0MmXaeqnUByMDCg15FEZogYpjDamJU24iJvk=</string>
 	<key>VoiceTranscriptionProvider</key>
 	<string>assemblyai</string>
 	<key>DotProxyBaseURL</key>
