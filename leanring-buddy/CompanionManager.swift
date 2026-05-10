@@ -814,7 +814,16 @@ final class CompanionManager: ObservableObject {
     // MARK: - Companion Prompt
 
     private static let maxAgentStepsPerUserTurn = 10
-    private static let userMouseMoveCancellationThresholdInPoints: CGFloat = 20
+
+    /// Hardware-mouse movement (in points) that we treat as the user
+    /// reclaiming control. 40pt is loose enough to ignore micro-jiggle on
+    /// Retina displays but tight enough to catch a deliberate move.
+    private static let userMouseMoveCancellationThresholdInPoints: CGFloat = 40
+
+    /// Pause between one step's last action and the next step's screen
+    /// capture so animations / page loads can settle. Without this, Claude
+    /// often sees a half-rendered screen and makes the wrong call next.
+    private static let interStepSettlingDelayNanoseconds: UInt64 = 500_000_000  // 500ms
 
     private static let companionVoiceResponseSystemPrompt = """
     you're dot, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
@@ -1048,6 +1057,19 @@ final class CompanionManager: ObservableObject {
                 stepLoop: for stepIndex in 0..<Self.maxAgentStepsPerUserTurn {
                     guard !Task.isCancelled else { return }
 
+                    // Always re-enter processing state at the top of each
+                    // step. Previous-step click/point work may have flipped us
+                    // to .idle so the cursor was visible during animation; on
+                    // the next step we're thinking again, so the spinner
+                    // should come back. Clear the previous step's pointing
+                    // location for the same reason — otherwise the cursor
+                    // visibly hovers at the OLD step's target while Claude
+                    // is processing the new screen.
+                    voiceState = .processing
+                    if stepIndex > 0 {
+                        clearDetectedElementLocation()
+                    }
+
                     // User-mouse-cancel check, skipped on the first step because
                     // that's where we just took the baseline.
                     if stepIndex > 0 {
@@ -1064,6 +1086,13 @@ final class CompanionManager: ObservableObject {
                             didCancelDueToUserMouseMove = true
                             break stepLoop
                         }
+
+                        // Settling delay between step N's last action and
+                        // step N+1's screen capture — gives animations,
+                        // page loads, and focus changes time to land before
+                        // Claude sees the new screen.
+                        try? await Task.sleep(nanoseconds: Self.interStepSettlingDelayNanoseconds)
+                        guard !Task.isCancelled else { return }
                     }
 
                     // Capture current screens. On step 0 this is the screen
