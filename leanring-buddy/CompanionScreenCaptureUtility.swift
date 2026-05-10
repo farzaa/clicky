@@ -21,47 +21,75 @@ struct CompanionScreenCapture {
     let screenshotHeightInPixels: Int
 }
 
-enum CompanionScreenCaptureFallbackPreference {
-    private static let shouldPreferCoreGraphicsCaptureUserDefaultsKey = "com.learningbuddy.shouldPreferCoreGraphicsScreenCapture"
-
-    static var shouldPreferCoreGraphicsCapture: Bool {
-        UserDefaults.standard.bool(forKey: shouldPreferCoreGraphicsCaptureUserDefaultsKey)
-    }
-
-    static func rememberScreenCaptureKitNeedsFallback() {
-        UserDefaults.standard.set(true, forKey: shouldPreferCoreGraphicsCaptureUserDefaultsKey)
-    }
+/// Errors emitted by the screen capture utility. Distinguishing the
+/// "permission denied" case from generic failures lets the caller surface
+/// a relaunch / re-grant UI instead of a vague error.
+enum CompanionScreenCaptureError: Error {
+    case permissionDenied(underlying: Error)
+    case noDisplaysAvailable
+    case captureProducedNoImages
 }
 
 @MainActor
 enum CompanionScreenCaptureUtility {
 
     /// Captures all connected displays as JPEG data, labeling each with
-    /// whether the user's cursor is on that screen. This gives the AI
-    /// full context across multiple monitors.
+    /// whether the user's cursor is on that screen.
+    ///
+    /// Uses ScreenCaptureKit exclusively. The previous CoreGraphics fallback
+    /// has been removed because:
+    ///   1. `CGDisplayCreateImage` is obsoleted on macOS 15.0+ and silently
+    ///      returns the desktop wallpaper layer (instead of the fullscreen
+    ///      app's content) when the active Space is a fullscreen-app Space
+    ///      or when SCK permission is missing.
+    ///   2. macOS 15 (Sequoia) introduced a separate per-app approval state
+    ///      for ScreenCaptureKit that the legacy CG APIs are blind to. A
+    ///      fallback that "succeeds" with bogus pixels masks the real
+    ///      permission problem and prevents the user from being told to
+    ///      re-grant + relaunch.
     static func captureAllScreensAsJPEG() async throws -> [CompanionScreenCapture] {
-        if CompanionScreenCaptureFallbackPreference.shouldPreferCoreGraphicsCapture {
-            DotDebugLogger.log("screen.capture", "using CoreGraphics fallback by preference")
-            return try captureAllScreensWithCoreGraphicsFallback(screenCaptureKitError: nil)
-        }
-
         do {
             return try await captureAllScreensWithScreenCaptureKit()
         } catch {
-            DotDebugLogger.log("screen.capture", "ScreenCaptureKit capture failed; trying CoreGraphics fallback", metadata: [
+            if Self.isPermissionDeniedError(error) {
+                DotDebugLogger.log("screen.capture", "ScreenCaptureKit denied by TCC", metadata: [
+                    "error": error.localizedDescription
+                ])
+                throw CompanionScreenCaptureError.permissionDenied(underlying: error)
+            }
+            DotDebugLogger.log("screen.capture", "ScreenCaptureKit capture failed", metadata: [
                 "error": error.localizedDescription
             ])
-            CompanionScreenCaptureFallbackPreference.rememberScreenCaptureKitNeedsFallback()
-            return try captureAllScreensWithCoreGraphicsFallback(screenCaptureKitError: error)
+            throw error
         }
+    }
+
+    /// Returns true when the error indicates the macOS Screen & System Audio
+    /// Recording permission is not granted to this app. ScreenCaptureKit
+    /// surfaces denial as either an SCStreamError with code .userDeclined or
+    /// a plain NSError whose localized description contains "declined TCCs".
+    /// Both shapes are checked because the wrapper varies by macOS version.
+    static func isPermissionDeniedError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == SCStreamError.errorDomain,
+           let code = SCStreamError.Code(rawValue: nsError.code),
+           code == .userDeclined {
+            return true
+        }
+        let lowercaseDescription = nsError.localizedDescription.lowercased()
+        if lowercaseDescription.contains("declined tccs")
+            || lowercaseDescription.contains("user declined")
+            || lowercaseDescription.contains("not authorized") {
+            return true
+        }
+        return false
     }
 
     private static func captureAllScreensWithScreenCaptureKit() async throws -> [CompanionScreenCapture] {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
 
         guard !content.displays.isEmpty else {
-            throw NSError(domain: "CompanionScreenCapture", code: -1,
-                          userInfo: [NSLocalizedDescriptionKey: "No display available for capture"])
+            throw CompanionScreenCaptureError.noDisplaysAvailable
         }
 
         let mouseLocation = NSEvent.mouseLocation
@@ -152,112 +180,9 @@ enum CompanionScreenCaptureUtility {
         }
 
         guard !capturedScreens.isEmpty else {
-            throw NSError(domain: "CompanionScreenCapture", code: -2,
-                          userInfo: [NSLocalizedDescriptionKey: "Failed to capture any screen"])
+            throw CompanionScreenCaptureError.captureProducedNoImages
         }
 
         return capturedScreens
-    }
-
-    private static func captureAllScreensWithCoreGraphicsFallback(screenCaptureKitError: Error?) throws -> [CompanionScreenCapture] {
-        let mouseLocation = NSEvent.mouseLocation
-        let screensWithDisplayIDs = NSScreen.screens.compactMap { screen -> (screen: NSScreen, displayID: CGDirectDisplayID)? in
-            guard let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
-                return nil
-            }
-            return (screen: screen, displayID: screenNumber)
-        }
-
-        let sortedScreens = screensWithDisplayIDs.sorted { firstScreen, secondScreen in
-            let firstContainsCursor = firstScreen.screen.frame.contains(mouseLocation)
-            let secondContainsCursor = secondScreen.screen.frame.contains(mouseLocation)
-            if firstContainsCursor != secondContainsCursor { return firstContainsCursor }
-            return false
-        }
-
-        var capturedScreens: [CompanionScreenCapture] = []
-        for (screenIndex, screenWithDisplayID) in sortedScreens.enumerated() {
-            guard let fullSizeImage = CGDisplayCreateImage(screenWithDisplayID.displayID),
-                  let resizedJPEG = resizedJPEGData(from: fullSizeImage, maxDimension: 1280) else {
-                continue
-            }
-
-            let displayFrame = screenWithDisplayID.screen.frame
-            let isCursorScreen = displayFrame.contains(mouseLocation)
-            let screenLabel: String
-            if sortedScreens.count == 1 {
-                screenLabel = "user's screen (cursor is here)"
-            } else if isCursorScreen {
-                screenLabel = "screen \(screenIndex + 1) of \(sortedScreens.count) — cursor is on this screen (primary focus)"
-            } else {
-                screenLabel = "screen \(screenIndex + 1) of \(sortedScreens.count) — secondary screen"
-            }
-
-            capturedScreens.append(CompanionScreenCapture(
-                imageData: resizedJPEG.data,
-                label: screenLabel,
-                isCursorScreen: isCursorScreen,
-                displayWidthInPoints: Int(displayFrame.width),
-                displayHeightInPoints: Int(displayFrame.height),
-                displayFrame: displayFrame,
-                screenshotWidthInPixels: resizedJPEG.width,
-                screenshotHeightInPixels: resizedJPEG.height
-            ))
-        }
-
-        guard !capturedScreens.isEmpty else {
-            if let screenCaptureKitError {
-                throw screenCaptureKitError
-            }
-            throw NSError(
-                domain: "CompanionScreenCapture",
-                code: -3,
-                userInfo: [NSLocalizedDescriptionKey: "Failed to capture any screen with CoreGraphics fallback"]
-            )
-        }
-
-        DotDebugLogger.log("screen.capture", "CoreGraphics fallback captured screens", metadata: [
-            "count": capturedScreens.count
-        ])
-        return capturedScreens
-    }
-
-    private static func resizedJPEGData(from image: CGImage, maxDimension: Int) -> (data: Data, width: Int, height: Int)? {
-        let originalWidth = image.width
-        let originalHeight = image.height
-        let largestOriginalDimension = max(originalWidth, originalHeight)
-        let scale = min(1.0, Double(maxDimension) / Double(largestOriginalDimension))
-        let targetWidth = max(1, Int(Double(originalWidth) * scale))
-        let targetHeight = max(1, Int(Double(originalHeight) * scale))
-
-        let resizedImage: CGImage
-        if targetWidth == originalWidth && targetHeight == originalHeight {
-            resizedImage = image
-        } else {
-            guard let context = CGContext(
-                data: nil,
-                width: targetWidth,
-                height: targetHeight,
-                bitsPerComponent: 8,
-                bytesPerRow: 0,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
-            ) else {
-                return nil
-            }
-            context.interpolationQuality = .high
-            context.draw(image, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
-            guard let renderedImage = context.makeImage() else {
-                return nil
-            }
-            resizedImage = renderedImage
-        }
-
-        guard let jpegData = NSBitmapImageRep(cgImage: resizedImage)
-            .representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
-            return nil
-        }
-
-        return (data: jpegData, width: targetWidth, height: targetHeight)
     }
 }
