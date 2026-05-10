@@ -76,11 +76,11 @@
         githubLink.setAttribute("href", config.githubURL);
       }
       var signInButton = document.getElementById("signInButton");
-      if (signInButton && config.workerBaseURL) {
+      if (signInButton && config.vibeIdBaseURL) {
         var websiteOrigin = window.location.origin;
         var returnTo = websiteOrigin.replace(/\/$/, "") + "/account.html";
-        var signInUrl = config.workerBaseURL.replace(/\/$/, "") +
-          "/auth/start?return_to=" + encodeURIComponent(returnTo);
+        var signInUrl = config.vibeIdBaseURL.replace(/\/$/, "") +
+          "/auth/start?project=dot&return_to=" + encodeURIComponent(returnTo);
         signInButton.setAttribute("href", signInUrl);
       }
     })();

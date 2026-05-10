@@ -30,7 +30,6 @@ routes = [
 
 [vars]
 ELEVENLABS_VOICE_ID = "kPzsL2i3teMYv0FxEYQ6"
-VIBE_ID_BASE_URL = "https://api.accounts.vibe-research.net"
 
 # Service binding: calls go in-process to the deployed `vibe-id` worker
 # rather than out over the public network. Same fetch() API.

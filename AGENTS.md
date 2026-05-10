@@ -24,27 +24,35 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **Concurrency**: `@MainActor` isolation, async/await throughout
 - **Analytics**: PostHog via `DotAnalytics.swift`
 
-### Inference Gateway (Cloudflare Worker + D1)
+### Identity (vibe-id) + Inference (dot-proxy)
 
-The app never calls external APIs directly. All requests go through a Cloudflare Worker (`worker/src/index.ts`) that authenticates the caller with a Google-OAuth-minted install token, enforces per-user daily quotas, and proxies to the upstream provider. State lives in a D1 database (`worker/schema.sql`).
+The app never calls external APIs directly. Two Cloudflare Workers sit in front:
+
+**`vibe-id`** (`api.accounts.vibe-research.net`) — central identity service shared across all Vibe Research projects (Dot, future Swarmlab, etc.). Owns Google OAuth, users, install tokens, per-project per-day quotas, admin endpoints, and D1 state. Source lives in a separate worktree; this repo only consumes its API.
+
+**`dot-proxy`** (`api.dot.vibe-research.net`, `worker/src/index.ts`) — stateless inference proxy. Verifies the bearer token by calling vibe-id `/v1/check` (project=dot), proxies to Anthropic / ElevenLabs / AssemblyAI, and reports usage via vibe-id `/v1/record`.
+
+**dot-proxy routes:**
 
 | Route | Auth | Purpose |
 |-------|------|---------|
-| `GET /auth/start` | none | Begins Google OAuth — redirects to Google with state |
-| `GET /auth/callback` | none | Google redirect target — exchanges code, upserts user, redirects to `dot://auth?code=…` (app) or `<website>/account.html#token=…` (web) |
-| `POST /auth/exchange` | none | macOS app trades short-lived code for a long-lived install token |
-| `GET /auth/me` | bearer | Current user + today's usage |
-| `POST /auth/signout` | bearer | Revokes the calling install token |
+| `GET /health` | none | Liveness check |
 | `POST /chat` | bearer + quota | Anthropic Messages (streaming SSE) |
 | `POST /tts` | bearer + quota | ElevenLabs TTS — quota charged in characters |
 | `POST /transcribe-token` | bearer + quota | AssemblyAI temp token — quota charged per session |
-| `GET /admin/users` | `X-Admin-Token` | Per-user usage today + limits |
-| `GET /admin/usage` | `X-Admin-Token` | Aggregate usage by day + endpoint, last 30d |
 
-**D1 tables**: `users`, `oauth_states` (10-min round-trip), `auth_codes` (5-min app-handoff codes), `devices` (one row per (user, device) — stores `sha256(install_token)`), `usage_events` (one row per upstream call, used for quota enforcement and admin reporting).
+The macOS app and web pages call vibe-id directly for sign-in / `/auth/me` / `/auth/signout` / `/admin/*`. dot-proxy doesn't expose those at all.
 
-**Worker secrets**: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`, `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `DOT_ADMIN_TOKEN`
-**Worker vars**: `ELEVENLABS_VOICE_ID`, `WORKER_PUBLIC_URL`, `WEBSITE_PUBLIC_URL`, `APP_URL_SCHEME`
+**dot-proxy latency optimizations** (see `worker/src/index.ts` header):
+1. **Service Binding** to vibe-id (`env.VIBE_ID.fetch(...)`) — calls run in-process on the same edge node, no public-internet hop. Cuts ~25ms per request.
+2. **KV cache** (`env.CHECK_CACHE`) for `/v1/check` decisions on chat / transcribe-token (where amount=1). 30s TTL means revocations propagate within half a minute and the hot path skips vibe-id entirely. Cuts ~50ms on warm tokens. TTS still re-checks every call because amount varies with character count.
+3. **`ctx.waitUntil` for `/v1/record`** — usage metering runs after the response is sent.
+
+**Failure mode**: vibe-id outage causes `/v1/check` to fail closed (503). KV cache hits provide a small grace window for transient blips.
+
+**dot-proxy secrets**: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`, `VIBE_ID_INTERNAL_KEY` (shared with vibe-id, authorizes `/v1/check` and `/v1/record`).
+**dot-proxy vars**: `ELEVENLABS_VOICE_ID`.
+**dot-proxy bindings**: `VIBE_ID` (Service Binding to vibe-id worker), `CHECK_CACHE` (KV namespace for token-check caching).
 
 ### Key Architecture Decisions
 
@@ -58,7 +66,9 @@ The app never calls external APIs directly. All requests go through a Cloudflare
 
 **Transient Cursor Mode**: When "Show Dot" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
 
-**Sign-in handoff via `dot://`**: The macOS app cannot complete an OAuth flow inside its own UI without bouncing through the system browser. `DotAccountManager.signIn()` opens `<proxy>/auth/start?device_id=<uuid>` in the user's browser; the Worker bounces through Google and lands on `dot://auth?code=…`, which macOS routes back to the app via the `CFBundleURLTypes` entry in `Info.plist`. The AppDelegate's `application(_:open:)` forwards that URL to the account manager, which trades the code for an install token via `POST /auth/exchange`. The token is stored in the macOS Keychain (`DotInstallTokenStore`) and never written to disk anywhere else.
+**Sign-in handoff via `dot://`**: The macOS app cannot complete an OAuth flow inside its own UI without bouncing through the system browser. `DotAccountManager.signIn()` opens `<vibe-id>/auth/start?project=dot&device_id=<uuid>` in the user's browser; vibe-id bounces through Google and lands on `dot://auth?code=…`, which macOS routes back to the app via the `CFBundleURLTypes` entry in `Info.plist`. The AppDelegate's `application(_:open:)` forwards that URL to the account manager, which trades the code for an install token via vibe-id `/auth/exchange`. The token is stored in the macOS Keychain (`DotInstallTokenStore`) and never written to disk anywhere else.
+
+**Multi-turn agent loop**: After the user releases push-to-talk, `CompanionManager.sendTranscriptToClaudeWithScreenshot` runs an agent loop of up to `maxAgentStepsPerUserTurn` (10) steps. Each step captures the current screen, sends it to Claude with the conversation history + this-turn step history, parses any `[CLICK]` / `[TYPE]` / `[KEY]` / `[MEDIA]` action tags, executes them, and re-captures for the next step. The loop ends when Claude returns a response with no action tags (task complete), the step budget is exhausted, the user moves the hardware mouse > 40pt (treated as the user reclaiming control), or the task is cancelled by another push-to-talk. Spoken text from every step is concatenated and TTS'd once at the end. A 500ms settling delay between steps lets animations and page loads land before the next screen capture.
 
 ## Key Files
 
@@ -86,13 +96,13 @@ The app never calls external APIs directly. All requests go through a Cloudflare
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
 | `DotAnalytics.swift` | ~125 | PostHog analytics integration. Tracks counts/durations only — never raw transcript or response text. |
 | `DotDebugLogger.swift` | ~116 | Local file-backed development logger. Writes rotated diagnostic logs to `~/Library/Logs/Dot/dot.log` and mirrors concise lines to stdout. |
-| `DotAccountManager.swift` | ~245 | Google sign-in flow + signed-in user state. Opens `<proxy>/auth/start` in the system browser, handles the `dot://auth?code=…` callback, exchanges the code for an install token, fetches `/auth/me` for usage, and exposes `signIn()` / `signOut()` for the panel. |
-| `DotInstallTokenStore.swift` | ~80 | Thread-safe Keychain wrapper for the long-lived install token. API clients call `DotInstallTokenStore.currentInstallToken()` and set `Authorization: Bearer …` on every request. |
+| `DotAccountManager.swift` | ~200 | Google sign-in flow + signed-in user state. Opens `<vibe-id>/auth/start?project=dot` in the system browser, handles the `dot://auth?code=…` callback, exchanges the code for an install token, fetches `/auth/me` for usage, and exposes `signIn()` / `signOut()` for the panel. Talks to vibe-id directly. |
+| `DotInstallTokenStore.swift` | ~140 | Thread-safe Keychain wrapper for the long-lived install token. Uses the legacy file-based keychain (data-protection keychain needs entitlements we don't ship) plus an in-memory cache so non-MainActor API clients don't pay a SecItem syscall on every request. |
 | `WindowPositionManager.swift` | ~320 | Window placement logic, Screen Recording permission flow, Accessibility and Input Monitoring permission helpers, and last-known permission grant caching for local rebuilds. |
-| `AppBundleConfiguration.swift` | ~34 | Runtime configuration reader for keys stored in the app bundle Info.plist, including `DotProxyBaseURL`. |
-| `worker/src/index.ts` | ~720 | Cloudflare Worker inference gateway. Google OAuth (`/auth/*`), bearer-authenticated inference (`/chat`, `/tts`, `/transcribe-token`) with per-user daily quotas, and admin routes (`/admin/users`, `/admin/usage`). State in D1. |
-| `worker/schema.sql` | ~95 | D1 schema: `users`, `oauth_states`, `auth_codes`, `devices`, `usage_events`. |
-| `website/dot/index.html` + `account.html` + `admin.html` | — | Static pages deployed to `dot.vibe-research.net`: landing/download, per-user usage dashboard, admin dashboard. |
+| `AppBundleConfiguration.swift` | ~45 | Runtime configuration reader for keys stored in the app bundle Info.plist, including `DotProxyBaseURL` and `VibeIdBaseURL`. |
+| `worker/src/index.ts` | ~230 | Stateless dot-proxy inference gateway. Bearer-authenticated `/chat`, `/tts`, `/transcribe-token`. Verifies the token with vibe-id `/v1/check` via Service Binding, proxies to upstream APIs, fires `/v1/record` via `ctx.waitUntil`. KV-cached check decisions on the hot path. |
+| `worker/wrangler.toml` | — | Worker config: custom domain (`api.dot.vibe-research.net`), Service Binding to `vibe-id`, KV namespace binding for the token-check cache. |
+| `website/dot/index.html` + `account.html` + `admin.html` | — | Static pages deployed to `dot.vibe-research.net`: landing/download, per-user usage dashboard, admin dashboard. All call vibe-id directly for auth + admin. |
 | `website/research-lab/index.html` | — | Minimal landing page deployed to `vibe-research.net` root with links to `swarmlab.vibe-research.net` and `dot.vibe-research.net`. |
 
 ## Build & Run
@@ -114,7 +124,7 @@ open leanring-buddy.xcodeproj
 
 **Do NOT run `xcodebuild` from the terminal** — it invalidates TCC (Transparency, Consent, and Control) permissions and the app will need to re-request screen recording, accessibility, etc. Prefer Xcode Cmd+R or `scripts/install-local-dev-app.sh`.
 
-## Cloudflare Worker
+## Cloudflare Worker (dot-proxy)
 
 Requires Node.js 20.3+ for the pinned Wrangler 4 local toolchain.
 
@@ -122,19 +132,18 @@ Requires Node.js 20.3+ for the pinned Wrangler 4 local toolchain.
 cd worker
 npm install
 
-# Add secrets
+# Add upstream-API secrets (set once)
 npx wrangler secret put ANTHROPIC_API_KEY
 npx wrangler secret put ASSEMBLYAI_API_KEY
 npx wrangler secret put ELEVENLABS_API_KEY
+# Shared with vibe-id — authorizes /v1/check and /v1/record calls
+npx wrangler secret put VIBE_ID_INTERNAL_KEY
 
 # Deploy
 npx wrangler deploy
-
-# Local dev (create worker/.dev.vars with your keys)
-npx wrangler dev
 ```
 
-Local development defaults to `DotProxyBaseURL=http://127.0.0.1:8787` in `Info.plist`, so the Xcode app talks to `wrangler dev` unless that plist value is changed.
+Identity (users, OAuth, admin, D1) lives in the separate `vibe-id` worker — that's where you put `GOOGLE_OAUTH_CLIENT_*`, the admin token, and run schema migrations. dot-proxy is stateless.
 
 ## Code Style & Conventions
 

@@ -19,10 +19,6 @@ interface Env {
   ASSEMBLYAI_API_KEY: string;
   ELEVENLABS_VOICE_ID: string;
 
-  // Public URL for the browser-facing /auth/start redirect (we redirect the
-  // user's browser to this URL so it has to be reachable from outside CF).
-  VIBE_ID_BASE_URL: string;
-
   // Shared secret for vibe-id's internal endpoints (/v1/check and /v1/record).
   VIBE_ID_INTERNAL_KEY: string;
 
@@ -51,7 +47,6 @@ export default {
       if (method === "GET" && pathname === "/health") {
         return jsonResponse({ ok: true, service: "dot-proxy" });
       }
-      if (method === "GET" && pathname === "/auth/start") return handleAuthStartRedirect(request, env);
       if (method === "POST" && pathname === "/chat") return handleChat(request, env, ctx);
       if (method === "POST" && pathname === "/tts") return handleTextToSpeech(request, env, ctx);
       if (method === "POST" && pathname === "/transcribe-token") return handleTranscribeToken(request, env, ctx);
@@ -62,23 +57,6 @@ export default {
     }
   },
 };
-
-// Forwards to vibe-id with project=dot pre-set so the macOS app can keep
-// pointing /auth/start at the dot proxy URL it already knows about.
-//
-// This is a 302 to vibe-id's PUBLIC URL (the user's browser follows the
-// redirect, so it needs to be a real reachable URL — not a Service Binding).
-function handleAuthStartRedirect(request: Request, env: Env): Response {
-  const requestUrl = new URL(request.url);
-  const targetUrl = new URL(`${env.VIBE_ID_BASE_URL.replace(/\/$/, "")}/auth/start`);
-  targetUrl.searchParams.set("project", PROJECT_ID);
-  for (const [key, value] of requestUrl.searchParams) {
-    if (key === "device_id" || key === "return_to") {
-      targetUrl.searchParams.set(key, value);
-    }
-  }
-  return Response.redirect(targetUrl.toString(), 302);
-}
 
 async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const installToken = readBearerToken(request);
