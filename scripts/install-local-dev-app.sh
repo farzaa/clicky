@@ -8,8 +8,8 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_directory="${project_root}/leanring-buddy"
 build_directory="${project_root}/build"
-app_name="Clicky Dev"
-bundle_identifier="com.mark.clicky-dev"
+app_name="Dot"
+bundle_identifier="net.vibe-research.dot"
 build_app_path="${build_directory}/${app_name}.app"
 install_app_path="/Applications/${app_name}.app"
 contents_directory="${build_app_path}/Contents"
@@ -21,7 +21,7 @@ signing_entitlements_path="${source_entitlements_path}"
 swift_target_architecture="$(uname -m)"
 swift_target_triple="${swift_target_architecture}-apple-macosx14.2"
 should_open_app=true
-codesign_identity="${CLICKY_CODESIGN_IDENTITY:-}"
+codesign_identity="${DOT_CODESIGN_IDENTITY:-}"
 
 if [[ "${1:-}" == "--no-open" ]]; then
     should_open_app=false
@@ -55,7 +55,7 @@ echo "Signing with ${codesign_identity}"
 rm -rf "${build_app_path}"
 mkdir -p "${macos_directory}" "${resources_directory}"
 
-if [[ "${CLICKY_INCLUDE_RESTRICTED_ENTITLEMENTS:-}" != "1" ]]; then
+if [[ "${DOT_INCLUDE_RESTRICTED_ENTITLEMENTS:-}" != "1" ]]; then
     signing_entitlements_path="${build_directory}/${app_name}.local-dev.entitlements"
     cp "${source_entitlements_path}" "${signing_entitlements_path}"
     /usr/libexec/PlistBuddy \

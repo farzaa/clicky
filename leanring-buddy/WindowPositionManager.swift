@@ -34,7 +34,7 @@ class WindowPositionManager {
     // MARK: - Accessibility Permission
 
     /// Returns true only when the current app process has live Accessibility
-    /// permission. A cached grant is not enough here because Clicky's shortcut
+    /// permission. A cached grant is not enough here because Dot's shortcut
     /// and computer-control paths need macOS to deliver events to this exact
     /// running binary.
     static func hasAccessibilityPermission() -> Bool {
@@ -98,8 +98,8 @@ class WindowPositionManager {
 
     // MARK: - Input Monitoring Permission
 
-    /// Returns true when macOS allows Clicky to listen to global keyboard events.
-    /// Accessibility lets Clicky control the computer; Listen Event/Input Monitoring
+    /// Returns true when macOS allows Dot to listen to global keyboard events.
+    /// Accessibility lets Dot control the computer; Listen Event/Input Monitoring
     /// is the separate TCC gate that makes the ctrl+option push-to-talk tap receive
     /// key events from other apps.
     static func hasInputMonitoringPermission() -> Bool {

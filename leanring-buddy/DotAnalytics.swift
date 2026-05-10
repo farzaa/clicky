@@ -1,5 +1,5 @@
 //
-//  ClickyAnalytics.swift
+//  DotAnalytics.swift
 //  leanring-buddy
 //
 //  Centralized PostHog analytics wrapper. All event names and properties
@@ -12,7 +12,7 @@ import Foundation
 import PostHog
 #endif
 
-enum ClickyAnalytics {
+enum DotAnalytics {
 
     // MARK: - Setup
 
@@ -61,7 +61,7 @@ enum ClickyAnalytics {
         #endif
     }
 
-    /// The 40s onboarding demo interaction where Clicky points at something.
+    /// The 40s onboarding demo interaction where Dot points at something.
     static func trackOnboardingDemoTriggered() {
         #if canImport(PostHog)
         PostHogSDK.shared.capture("onboarding_demo_triggered")
@@ -103,20 +103,23 @@ enum ClickyAnalytics {
     }
 
     /// Transcription completed and the user's message is being sent to the AI.
+    /// We deliberately log only the character count, never the transcript text —
+    /// users say sensitive things to Dot and that should not leave their machine
+    /// outside the inference path itself.
     static func trackUserMessageSent(transcript: String) {
         #if canImport(PostHog)
         PostHogSDK.shared.capture("user_message_sent", properties: [
-            "transcript": transcript,
             "character_count": transcript.count
         ])
         #endif
     }
 
     /// Claude responded and the response is being spoken via TTS.
+    /// Logs response length only — the response text itself is never sent to
+    /// analytics for the same privacy reason as transcripts.
     static func trackAIResponseReceived(response: String) {
         #if canImport(PostHog)
         PostHogSDK.shared.capture("ai_response_received", properties: [
-            "response": response,
             "character_count": response.count
         ])
         #endif

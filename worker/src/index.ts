@@ -1,117 +1,489 @@
 /**
- * Clicky Proxy Worker
+ * Dot Inference Gateway
  *
- * Proxies requests to Claude and ElevenLabs APIs so the app never
- * ships with raw API keys. Keys are stored as Cloudflare secrets.
+ * Authenticated proxy for Anthropic, AssemblyAI, and ElevenLabs.
+ * - Google OAuth sign-in mints a long-lived install token bound to (user, device).
+ * - All inference routes require Authorization: Bearer <install_token>.
+ * - Per-user daily quotas enforced from usage_events (rolling 24h window).
+ * - Admin routes summarize users and aggregate usage.
  *
  * Routes:
- *   POST /chat  → Anthropic Messages API (streaming)
- *   POST /tts   → ElevenLabs TTS API
+ *   GET  /health                       — liveness check
+ *   GET  /auth/start                   — kick off Google OAuth
+ *   GET  /auth/callback                — Google redirect target
+ *   POST /auth/exchange                — exchange short-lived code for install token (used by macOS app)
+ *   GET  /auth/me                      — current user info + today's usage
+ *   POST /auth/signout                 — revoke the calling install token
+ *   POST /chat                         — proxy to api.anthropic.com/v1/messages (streaming)
+ *   POST /tts                          — proxy to api.elevenlabs.io text-to-speech
+ *   POST /transcribe-token             — fetch a short-lived AssemblyAI websocket token
+ *   GET  /admin/users                  — list users + today's usage (admin token required)
+ *   GET  /admin/usage                  — aggregate usage by day + endpoint (admin token required)
  */
 
 interface Env {
+  // Upstream API keys
   ANTHROPIC_API_KEY: string;
   ELEVENLABS_API_KEY: string;
-  ELEVENLABS_VOICE_ID: string;
   ASSEMBLYAI_API_KEY: string;
+
+  // Google OAuth
+  GOOGLE_OAUTH_CLIENT_ID: string;
+  GOOGLE_OAUTH_CLIENT_SECRET: string;
+
+  // Admin token for /admin/* routes (set as a Worker secret)
+  DOT_ADMIN_TOKEN: string;
+
+  // Public configuration (vars in wrangler.toml)
+  ELEVENLABS_VOICE_ID: string;
+  WORKER_PUBLIC_URL: string;
+  WEBSITE_PUBLIC_URL: string;
+  APP_URL_SCHEME: string;
+
+  // D1 database binding
+  DB: D1Database;
 }
+
+// ----------------------------------------------------------------------------
+// Constants
+// ----------------------------------------------------------------------------
+
+const SECONDS_IN_DAY = 86400;
+const OAUTH_STATE_LIFETIME_SECONDS = 600;          // 10 min
+const AUTH_CODE_LIFETIME_SECONDS = 300;            // 5 min
+const INSTALL_TOKEN_PREFIX = "dot_v1_";
+const GOOGLE_OAUTH_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const GOOGLE_OAUTH_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo";
+
+// ----------------------------------------------------------------------------
+// Entry point
+// ----------------------------------------------------------------------------
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
-
-    if (request.method !== "POST") {
-      return new Response("Method not allowed", { status: 405 });
-    }
+    const requestUrl = new URL(request.url);
+    const pathname = requestUrl.pathname;
+    const method = request.method;
 
     try {
-      if (url.pathname === "/chat") {
+      // Liveness
+      if (method === "GET" && pathname === "/health") {
+        return jsonResponse({ ok: true });
+      }
+
+      // OAuth flow
+      if (method === "GET" && pathname === "/auth/start") {
+        return await handleAuthStart(request, env);
+      }
+      if (method === "GET" && pathname === "/auth/callback") {
+        return await handleAuthCallback(request, env);
+      }
+      if (method === "POST" && pathname === "/auth/exchange") {
+        return await handleAuthExchange(request, env);
+      }
+      if (method === "GET" && pathname === "/auth/me") {
+        return await handleAuthMe(request, env);
+      }
+      if (method === "POST" && pathname === "/auth/signout") {
+        return await handleAuthSignout(request, env);
+      }
+
+      // Inference (bearer token required)
+      if (method === "POST" && pathname === "/chat") {
         return await handleChat(request, env);
       }
-
-      if (url.pathname === "/tts") {
-        return await handleTTS(request, env);
+      if (method === "POST" && pathname === "/tts") {
+        return await handleTextToSpeech(request, env);
+      }
+      if (method === "POST" && pathname === "/transcribe-token") {
+        return await handleTranscribeToken(request, env);
       }
 
-      if (url.pathname === "/transcribe-token") {
-        return await handleTranscribeToken(env);
+      // Admin
+      if (method === "GET" && pathname === "/admin/users") {
+        return await handleAdminUsers(request, env);
       }
+      if (method === "GET" && pathname === "/admin/usage") {
+        return await handleAdminUsage(request, env);
+      }
+
+      return notFoundResponse();
     } catch (error) {
-      console.error(`[${url.pathname}] Unhandled error:`, error);
-      return new Response(
-        JSON.stringify({ error: String(error) }),
-        { status: 500, headers: { "content-type": "application/json" } }
+      console.error(`[${method} ${pathname}] unhandled:`, error);
+      return jsonResponse(
+        { error: "internal_error", message: String((error as Error)?.message ?? error) },
+        500
       );
     }
-
-    return new Response("Not found", { status: 404 });
   },
 };
 
-async function handleChat(request: Request, env: Env): Promise<Response> {
-  const body = await request.text();
+// ============================================================================
+// OAuth: /auth/start
+// ============================================================================
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+/**
+ * Kick off the Google OAuth flow.
+ *
+ * Query params:
+ *   device_id  (optional) — UUID generated by the macOS app. If present, the
+ *                            callback redirects to the dot:// URL scheme with a
+ *                            single-use auth_code that the app exchanges for
+ *                            an install token.
+ *   return_to  (optional) — Absolute URL to redirect back to (web flow). The
+ *                            install token will be appended as a URL fragment
+ *                            (#token=…). Must be on the configured WEBSITE_PUBLIC_URL.
+ *
+ * Exactly one of device_id or return_to should be supplied. If neither is set
+ * we default to redirecting back to the website's /account page.
+ */
+async function handleAuthStart(request: Request, env: Env): Promise<Response> {
+  const requestUrl = new URL(request.url);
+  const deviceId = requestUrl.searchParams.get("device_id");
+  let returnTo = requestUrl.searchParams.get("return_to");
+
+  if (!deviceId && !returnTo) {
+    returnTo = `${env.WEBSITE_PUBLIC_URL.replace(/\/$/, "")}/account.html`;
+  }
+
+  // Only allow return_to URLs on our own website to prevent open-redirect abuse.
+  if (returnTo) {
+    const websiteOrigin = new URL(env.WEBSITE_PUBLIC_URL).origin;
+    let returnToOrigin: string;
+    try {
+      returnToOrigin = new URL(returnTo).origin;
+    } catch {
+      return jsonResponse({ error: "invalid_return_to" }, 400);
+    }
+    if (returnToOrigin !== websiteOrigin) {
+      return jsonResponse({ error: "return_to_not_allowed" }, 400);
+    }
+  }
+
+  const state = await randomTokenHex(24);
+  const nowSeconds = currentTimeSeconds();
+
+  await env.DB.prepare(
+    "INSERT INTO oauth_states (state, device_id, return_to_url, created_at) VALUES (?, ?, ?, ?)"
+  )
+    .bind(state, deviceId, returnTo, nowSeconds)
+    .run();
+
+  // Best-effort housekeeping — drop expired rows so the table stays small.
+  await env.DB.prepare("DELETE FROM oauth_states WHERE created_at < ?")
+    .bind(nowSeconds - OAUTH_STATE_LIFETIME_SECONDS)
+    .run();
+
+  const redirectUri = `${env.WORKER_PUBLIC_URL.replace(/\/$/, "")}/auth/callback`;
+  const authorizeUrl = new URL(GOOGLE_OAUTH_AUTHORIZE_URL);
+  authorizeUrl.searchParams.set("client_id", env.GOOGLE_OAUTH_CLIENT_ID);
+  authorizeUrl.searchParams.set("redirect_uri", redirectUri);
+  authorizeUrl.searchParams.set("response_type", "code");
+  authorizeUrl.searchParams.set("scope", "openid email profile");
+  authorizeUrl.searchParams.set("state", state);
+  authorizeUrl.searchParams.set("access_type", "online");
+  authorizeUrl.searchParams.set("prompt", "select_account");
+
+  return Response.redirect(authorizeUrl.toString(), 302);
+}
+
+// ============================================================================
+// OAuth: /auth/callback
+// ============================================================================
+
+/**
+ * Google redirects here with ?code=…&state=….
+ *
+ * 1. Look up state in oauth_states; reject if missing or expired.
+ * 2. Exchange the authorization code with Google for an access token.
+ * 3. Call userinfo to get { sub, email, name, picture }.
+ * 4. Upsert into users.
+ * 5a. If state had device_id → mint a single-use auth_code, redirect to dot://auth?code=….
+ * 5b. If state had return_to → mint an install token directly and redirect to <return_to>#token=….
+ */
+async function handleAuthCallback(request: Request, env: Env): Promise<Response> {
+  const requestUrl = new URL(request.url);
+  const code = requestUrl.searchParams.get("code");
+  const state = requestUrl.searchParams.get("state");
+
+  if (!code || !state) {
+    return htmlErrorResponse("Missing OAuth code or state.");
+  }
+
+  const oauthStateRow = await env.DB.prepare(
+    "SELECT state, device_id, return_to_url, created_at FROM oauth_states WHERE state = ?"
+  )
+    .bind(state)
+    .first<{ state: string; device_id: string | null; return_to_url: string | null; created_at: number }>();
+
+  if (!oauthStateRow) {
+    return htmlErrorResponse("Sign-in session not found. Please start sign-in again.");
+  }
+
+  await env.DB.prepare("DELETE FROM oauth_states WHERE state = ?").bind(state).run();
+
+  if (currentTimeSeconds() - oauthStateRow.created_at > OAUTH_STATE_LIFETIME_SECONDS) {
+    return htmlErrorResponse("Sign-in session expired. Please start sign-in again.");
+  }
+
+  // Exchange code for access token
+  const redirectUri = `${env.WORKER_PUBLIC_URL.replace(/\/$/, "")}/auth/callback`;
+  const tokenResponse = await fetch(GOOGLE_OAUTH_TOKEN_URL, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      code,
+      client_id: env.GOOGLE_OAUTH_CLIENT_ID,
+      client_secret: env.GOOGLE_OAUTH_CLIENT_SECRET,
+      redirect_uri: redirectUri,
+      grant_type: "authorization_code",
+    }).toString(),
+  });
+
+  if (!tokenResponse.ok) {
+    const errorText = await tokenResponse.text();
+    console.error(`[/auth/callback] Google token exchange failed: ${tokenResponse.status} ${errorText}`);
+    return htmlErrorResponse("Sign-in failed at the Google token exchange step. Please try again.");
+  }
+
+  const tokenPayload = (await tokenResponse.json()) as { access_token?: string };
+  const accessToken = tokenPayload.access_token;
+  if (!accessToken) {
+    return htmlErrorResponse("Google did not return an access token.");
+  }
+
+  const userinfoResponse = await fetch(GOOGLE_OAUTH_USERINFO_URL, {
+    headers: { authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!userinfoResponse.ok) {
+    return htmlErrorResponse("Failed to read your Google profile. Please try again.");
+  }
+
+  const googleProfile = (await userinfoResponse.json()) as {
+    sub: string;
+    email: string;
+    email_verified?: boolean;
+    name?: string;
+    picture?: string;
+  };
+
+  if (!googleProfile.sub || !googleProfile.email) {
+    return htmlErrorResponse("Google profile missing required fields.");
+  }
+
+  const userRow = await upsertUserByGoogleSubject(env, {
+    googleSubject: googleProfile.sub,
+    email: googleProfile.email,
+    displayName: googleProfile.name ?? null,
+    pictureUrl: googleProfile.picture ?? null,
+  });
+
+  if (userRow.status === "blocked") {
+    return htmlErrorResponse("Your Dot account has been disabled by an administrator.");
+  }
+
+  // App flow: mint an auth_code and redirect to dot://auth?code=…
+  if (oauthStateRow.device_id) {
+    const authCode = await randomTokenHex(24);
+    await env.DB.prepare(
+      "INSERT INTO auth_codes (code, user_id, device_id, created_at) VALUES (?, ?, ?, ?)"
+    )
+      .bind(authCode, userRow.id, oauthStateRow.device_id, currentTimeSeconds())
+      .run();
+    await env.DB.prepare("DELETE FROM auth_codes WHERE created_at < ?")
+      .bind(currentTimeSeconds() - AUTH_CODE_LIFETIME_SECONDS)
+      .run();
+
+    const appRedirectUrl = new URL(`${env.APP_URL_SCHEME}://auth`);
+    appRedirectUrl.searchParams.set("code", authCode);
+    appRedirectUrl.searchParams.set("email", userRow.email);
+
+    return successHandoffResponse(appRedirectUrl.toString(), userRow.email);
+  }
+
+  // Web flow: mint an install token directly, redirect with token in URL fragment
+  const { installToken } = await createInstallTokenForUser(env, {
+    userId: userRow.id,
+    deviceId: `web_${await randomTokenHex(8)}`,
+    deviceLabel: "web",
+  });
+
+  const websiteRedirectUrl = new URL(oauthStateRow.return_to_url ?? `${env.WEBSITE_PUBLIC_URL.replace(/\/$/, "")}/account.html`);
+  websiteRedirectUrl.hash = `token=${encodeURIComponent(installToken)}&email=${encodeURIComponent(userRow.email)}`;
+  return Response.redirect(websiteRedirectUrl.toString(), 302);
+}
+
+// ============================================================================
+// OAuth: /auth/exchange
+// ============================================================================
+
+/**
+ * macOS app posts the auth_code (received via dot://auth?code=…) and its
+ * device_id, gets back a long-lived install token plus user info.
+ */
+async function handleAuthExchange(request: Request, env: Env): Promise<Response> {
+  let body: { code?: string; device_id?: string; device_label?: string };
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse({ error: "invalid_json" }, 400);
+  }
+
+  const code = body.code;
+  const deviceId = body.device_id;
+  const deviceLabel = body.device_label ?? null;
+
+  if (!code || !deviceId) {
+    return jsonResponse({ error: "missing_fields", required: ["code", "device_id"] }, 400);
+  }
+
+  const authCodeRow = await env.DB.prepare(
+    "SELECT code, user_id, device_id, created_at, consumed_at FROM auth_codes WHERE code = ?"
+  )
+    .bind(code)
+    .first<{ code: string; user_id: number; device_id: string | null; created_at: number; consumed_at: number | null }>();
+
+  if (!authCodeRow) {
+    return jsonResponse({ error: "auth_code_invalid" }, 400);
+  }
+  if (authCodeRow.consumed_at) {
+    return jsonResponse({ error: "auth_code_already_used" }, 400);
+  }
+  if (currentTimeSeconds() - authCodeRow.created_at > AUTH_CODE_LIFETIME_SECONDS) {
+    return jsonResponse({ error: "auth_code_expired" }, 400);
+  }
+  if (authCodeRow.device_id && authCodeRow.device_id !== deviceId) {
+    return jsonResponse({ error: "device_id_mismatch" }, 400);
+  }
+
+  await env.DB.prepare("UPDATE auth_codes SET consumed_at = ? WHERE code = ?")
+    .bind(currentTimeSeconds(), code)
+    .run();
+
+  const userRow = await env.DB.prepare(
+    "SELECT id, email, display_name, picture_url, status, daily_chat_limit, daily_tts_chars_limit, daily_transcribe_session_limit FROM users WHERE id = ?"
+  )
+    .bind(authCodeRow.user_id)
+    .first<UserRow>();
+
+  if (!userRow || userRow.status !== "active") {
+    return jsonResponse({ error: "user_not_active" }, 403);
+  }
+
+  const { installToken } = await createInstallTokenForUser(env, {
+    userId: userRow.id,
+    deviceId,
+    deviceLabel,
+  });
+
+  return jsonResponse({
+    install_token: installToken,
+    user: publicUserShape(userRow),
+  });
+}
+
+// ============================================================================
+// /auth/me  + /auth/signout
+// ============================================================================
+
+async function handleAuthMe(request: Request, env: Env): Promise<Response> {
+  const authResult = await authenticateBearerRequest(request, env);
+  if (!authResult.ok) return authResult.response;
+
+  const todayUsage = await readTodayUsage(env, authResult.user.id);
+  return jsonResponse({
+    user: publicUserShape(authResult.user),
+    usage: todayUsage,
+  });
+}
+
+async function handleAuthSignout(request: Request, env: Env): Promise<Response> {
+  const authResult = await authenticateBearerRequest(request, env);
+  if (!authResult.ok) return authResult.response;
+
+  await env.DB.prepare(
+    "UPDATE devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL"
+  )
+    .bind(currentTimeSeconds(), authResult.device.id)
+    .run();
+
+  return jsonResponse({ ok: true });
+}
+
+// ============================================================================
+// Inference: /chat
+// ============================================================================
+
+async function handleChat(request: Request, env: Env): Promise<Response> {
+  const authResult = await authenticateBearerRequest(request, env);
+  if (!authResult.ok) return authResult.response;
+
+  const quotaCheck = await assertQuotaAvailable(env, authResult.user, "chat", 1);
+  if (!quotaCheck.ok) return quotaCheck.response;
+
+  const requestBodyText = await request.text();
+
+  const upstreamResponse = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "x-api-key": env.ANTHROPIC_API_KEY,
       "anthropic-version": "2023-06-01",
       "content-type": "application/json",
     },
-    body,
+    body: requestBodyText,
   });
 
-  if (!response.ok) {
-    const errorBody = await response.text();
-    console.error(`[/chat] Anthropic API error ${response.status}: ${errorBody}`);
+  if (!upstreamResponse.ok) {
+    const errorBody = await upstreamResponse.text();
+    console.error(`[/chat] Anthropic ${upstreamResponse.status}: ${errorBody}`);
     return new Response(errorBody, {
-      status: response.status,
+      status: upstreamResponse.status,
       headers: { "content-type": "application/json" },
     });
   }
 
-  return new Response(response.body, {
-    status: response.status,
+  await recordUsageEvent(env, {
+    userId: authResult.user.id,
+    deviceId: authResult.device.device_id,
+    endpoint: "chat",
+    statusCode: upstreamResponse.status,
+    amount: 1,
+  });
+
+  return new Response(upstreamResponse.body, {
+    status: upstreamResponse.status,
     headers: {
-      "content-type": response.headers.get("content-type") || "text/event-stream",
+      "content-type": upstreamResponse.headers.get("content-type") ?? "text/event-stream",
       "cache-control": "no-cache",
     },
   });
 }
 
-async function handleTranscribeToken(env: Env): Promise<Response> {
-  const response = await fetch(
-    "https://streaming.assemblyai.com/v3/token?expires_in_seconds=480",
-    {
-      method: "GET",
-      headers: {
-        authorization: env.ASSEMBLYAI_API_KEY,
-      },
-    }
-  );
+// ============================================================================
+// Inference: /tts
+// ============================================================================
 
-  if (!response.ok) {
-    const errorBody = await response.text();
-    console.error(`[/transcribe-token] AssemblyAI token error ${response.status}: ${errorBody}`);
-    return new Response(errorBody, {
-      status: response.status,
-      headers: { "content-type": "application/json" },
-    });
+async function handleTextToSpeech(request: Request, env: Env): Promise<Response> {
+  const authResult = await authenticateBearerRequest(request, env);
+  if (!authResult.ok) return authResult.response;
+
+  const requestBodyText = await request.text();
+  const ttsCharCount = extractTextLength(requestBodyText);
+
+  if (ttsCharCount <= 0) {
+    return jsonResponse({ error: "tts_text_required" }, 400);
+  }
+  if (ttsCharCount > 5000) {
+    return jsonResponse({ error: "tts_text_too_long", max_chars: 5000 }, 400);
   }
 
-  const data = await response.text();
-  return new Response(data, {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  });
-}
+  const quotaCheck = await assertQuotaAvailable(env, authResult.user, "tts", ttsCharCount);
+  if (!quotaCheck.ok) return quotaCheck.response;
 
-async function handleTTS(request: Request, env: Env): Promise<Response> {
-  const body = await request.text();
-  const voiceId = env.ELEVENLABS_VOICE_ID;
-
-  const response = await fetch(
-    `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
+  const upstreamResponse = await fetch(
+    `https://api.elevenlabs.io/v1/text-to-speech/${env.ELEVENLABS_VOICE_ID}`,
     {
       method: "POST",
       headers: {
@@ -119,23 +491,482 @@ async function handleTTS(request: Request, env: Env): Promise<Response> {
         "content-type": "application/json",
         accept: "audio/mpeg",
       },
-      body,
+      body: requestBodyText,
     }
   );
 
-  if (!response.ok) {
-    const errorBody = await response.text();
-    console.error(`[/tts] ElevenLabs API error ${response.status}: ${errorBody}`);
+  if (!upstreamResponse.ok) {
+    const errorBody = await upstreamResponse.text();
+    console.error(`[/tts] ElevenLabs ${upstreamResponse.status}: ${errorBody}`);
     return new Response(errorBody, {
-      status: response.status,
+      status: upstreamResponse.status,
       headers: { "content-type": "application/json" },
     });
   }
 
-  return new Response(response.body, {
-    status: response.status,
+  await recordUsageEvent(env, {
+    userId: authResult.user.id,
+    deviceId: authResult.device.device_id,
+    endpoint: "tts",
+    statusCode: upstreamResponse.status,
+    amount: ttsCharCount,
+  });
+
+  return new Response(upstreamResponse.body, {
+    status: upstreamResponse.status,
     headers: {
-      "content-type": response.headers.get("content-type") || "audio/mpeg",
+      "content-type": upstreamResponse.headers.get("content-type") ?? "audio/mpeg",
     },
   });
+}
+
+// ============================================================================
+// Inference: /transcribe-token
+// ============================================================================
+
+async function handleTranscribeToken(request: Request, env: Env): Promise<Response> {
+  const authResult = await authenticateBearerRequest(request, env);
+  if (!authResult.ok) return authResult.response;
+
+  const quotaCheck = await assertQuotaAvailable(env, authResult.user, "transcribe-token", 1);
+  if (!quotaCheck.ok) return quotaCheck.response;
+
+  const upstreamResponse = await fetch(
+    "https://streaming.assemblyai.com/v3/token?expires_in_seconds=480",
+    {
+      method: "GET",
+      headers: { authorization: env.ASSEMBLYAI_API_KEY },
+    }
+  );
+
+  if (!upstreamResponse.ok) {
+    const errorBody = await upstreamResponse.text();
+    console.error(`[/transcribe-token] AssemblyAI ${upstreamResponse.status}: ${errorBody}`);
+    return new Response(errorBody, {
+      status: upstreamResponse.status,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  await recordUsageEvent(env, {
+    userId: authResult.user.id,
+    deviceId: authResult.device.device_id,
+    endpoint: "transcribe-token",
+    statusCode: upstreamResponse.status,
+    amount: 1,
+  });
+
+  const responseBodyText = await upstreamResponse.text();
+  return new Response(responseBodyText, {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+// ============================================================================
+// Admin: /admin/users  + /admin/usage
+// ============================================================================
+
+async function handleAdminUsers(request: Request, env: Env): Promise<Response> {
+  if (!isAdminRequest(request, env)) return jsonResponse({ error: "unauthorized" }, 401);
+
+  const startOfWindow = currentTimeSeconds() - SECONDS_IN_DAY;
+
+  const usersResult = await env.DB.prepare(
+    `
+    SELECT u.id, u.email, u.display_name, u.picture_url, u.created_at, u.last_seen_at, u.status,
+           u.daily_chat_limit, u.daily_tts_chars_limit, u.daily_transcribe_session_limit,
+           COALESCE(SUM(CASE WHEN ue.endpoint = 'chat' THEN ue.amount ELSE 0 END), 0) AS chat_today,
+           COALESCE(SUM(CASE WHEN ue.endpoint = 'tts' THEN ue.amount ELSE 0 END), 0) AS tts_chars_today,
+           COALESCE(SUM(CASE WHEN ue.endpoint = 'transcribe-token' THEN ue.amount ELSE 0 END), 0) AS transcribe_today
+    FROM users u
+    LEFT JOIN usage_events ue ON ue.user_id = u.id AND ue.created_at >= ?
+    GROUP BY u.id
+    ORDER BY COALESCE(u.last_seen_at, 0) DESC, u.id DESC
+    LIMIT 500
+    `
+  )
+    .bind(startOfWindow)
+    .all();
+
+  return jsonResponse({ users: usersResult.results });
+}
+
+async function handleAdminUsage(request: Request, env: Env): Promise<Response> {
+  if (!isAdminRequest(request, env)) return jsonResponse({ error: "unauthorized" }, 401);
+
+  const last30Days = currentTimeSeconds() - 30 * SECONDS_IN_DAY;
+
+  const usageResult = await env.DB.prepare(
+    `
+    SELECT
+      CAST(created_at / 86400 AS INTEGER) AS day_bucket,
+      endpoint,
+      COUNT(*) AS event_count,
+      SUM(amount) AS total_amount
+    FROM usage_events
+    WHERE created_at >= ?
+    GROUP BY day_bucket, endpoint
+    ORDER BY day_bucket DESC, endpoint
+    `
+  )
+    .bind(last30Days)
+    .all();
+
+  return jsonResponse({ usage: usageResult.results });
+}
+
+// ============================================================================
+// Helpers — auth + quotas + database
+// ============================================================================
+
+interface UserRow {
+  id: number;
+  email: string;
+  display_name: string | null;
+  picture_url: string | null;
+  status: string;
+  daily_chat_limit: number;
+  daily_tts_chars_limit: number;
+  daily_transcribe_session_limit: number;
+}
+
+interface DeviceRow {
+  id: number;
+  user_id: number;
+  device_id: string;
+}
+
+type AuthSuccess = { ok: true; user: UserRow; device: DeviceRow };
+type AuthFailure = { ok: false; response: Response };
+
+/**
+ * Read Authorization: Bearer <token>, look up the install token in `devices`,
+ * and load the owning user. Returns the user/device or a 401 response.
+ */
+async function authenticateBearerRequest(request: Request, env: Env): Promise<AuthSuccess | AuthFailure> {
+  const authorizationHeader = request.headers.get("authorization") ?? request.headers.get("Authorization");
+  if (!authorizationHeader || !authorizationHeader.startsWith("Bearer ")) {
+    return { ok: false, response: jsonResponse({ error: "missing_bearer_token" }, 401) };
+  }
+  const installToken = authorizationHeader.slice("Bearer ".length).trim();
+  if (!installToken) {
+    return { ok: false, response: jsonResponse({ error: "empty_bearer_token" }, 401) };
+  }
+
+  const installTokenHash = await sha256Hex(installToken);
+
+  const deviceRow = await env.DB.prepare(
+    "SELECT id, user_id, device_id, revoked_at FROM devices WHERE install_token_hash = ?"
+  )
+    .bind(installTokenHash)
+    .first<{ id: number; user_id: number; device_id: string; revoked_at: number | null }>();
+
+  if (!deviceRow) {
+    return { ok: false, response: jsonResponse({ error: "invalid_token" }, 401) };
+  }
+  if (deviceRow.revoked_at) {
+    return { ok: false, response: jsonResponse({ error: "token_revoked" }, 401) };
+  }
+
+  const userRow = await env.DB.prepare(
+    "SELECT id, email, display_name, picture_url, status, daily_chat_limit, daily_tts_chars_limit, daily_transcribe_session_limit FROM users WHERE id = ?"
+  )
+    .bind(deviceRow.user_id)
+    .first<UserRow>();
+
+  if (!userRow) {
+    return { ok: false, response: jsonResponse({ error: "user_missing" }, 401) };
+  }
+  if (userRow.status === "blocked") {
+    return { ok: false, response: jsonResponse({ error: "user_blocked" }, 403) };
+  }
+
+  await env.DB.prepare("UPDATE devices SET last_seen_at = ? WHERE id = ?")
+    .bind(currentTimeSeconds(), deviceRow.id)
+    .run();
+  await env.DB.prepare("UPDATE users SET last_seen_at = ? WHERE id = ?")
+    .bind(currentTimeSeconds(), userRow.id)
+    .run();
+
+  return {
+    ok: true,
+    user: userRow,
+    device: { id: deviceRow.id, user_id: deviceRow.user_id, device_id: deviceRow.device_id },
+  };
+}
+
+type QuotaSuccess = { ok: true };
+type QuotaFailure = { ok: false; response: Response };
+
+/**
+ * Sums the user's usage_events.amount for the given endpoint over the last 24h
+ * and rejects with 429 if (current + incoming) > limit.
+ */
+async function assertQuotaAvailable(
+  env: Env,
+  user: UserRow,
+  endpoint: "chat" | "tts" | "transcribe-token",
+  incomingAmount: number
+): Promise<QuotaSuccess | QuotaFailure> {
+  const dailyLimit =
+    endpoint === "chat" ? user.daily_chat_limit
+    : endpoint === "tts" ? user.daily_tts_chars_limit
+    : user.daily_transcribe_session_limit;
+
+  const usedToday = await readTodayUsageForEndpoint(env, user.id, endpoint);
+
+  if (usedToday + incomingAmount > dailyLimit) {
+    return {
+      ok: false,
+      response: jsonResponse(
+        {
+          error: "daily_quota_exceeded",
+          endpoint,
+          used_today: usedToday,
+          daily_limit: dailyLimit,
+          retry_after_seconds: SECONDS_IN_DAY,
+        },
+        429
+      ),
+    };
+  }
+  return { ok: true };
+}
+
+async function readTodayUsageForEndpoint(
+  env: Env,
+  userId: number,
+  endpoint: string
+): Promise<number> {
+  const startOfWindow = currentTimeSeconds() - SECONDS_IN_DAY;
+  const result = await env.DB.prepare(
+    "SELECT COALESCE(SUM(amount), 0) AS total FROM usage_events WHERE user_id = ? AND endpoint = ? AND created_at >= ?"
+  )
+    .bind(userId, endpoint, startOfWindow)
+    .first<{ total: number }>();
+  return result?.total ?? 0;
+}
+
+async function readTodayUsage(env: Env, userId: number): Promise<{
+  chat_count: number;
+  tts_chars: number;
+  transcribe_sessions: number;
+}> {
+  const startOfWindow = currentTimeSeconds() - SECONDS_IN_DAY;
+  const result = await env.DB.prepare(
+    `
+    SELECT
+      COALESCE(SUM(CASE WHEN endpoint = 'chat' THEN amount ELSE 0 END), 0) AS chat_count,
+      COALESCE(SUM(CASE WHEN endpoint = 'tts' THEN amount ELSE 0 END), 0) AS tts_chars,
+      COALESCE(SUM(CASE WHEN endpoint = 'transcribe-token' THEN amount ELSE 0 END), 0) AS transcribe_sessions
+    FROM usage_events WHERE user_id = ? AND created_at >= ?
+    `
+  )
+    .bind(userId, startOfWindow)
+    .first<{ chat_count: number; tts_chars: number; transcribe_sessions: number }>();
+
+  return {
+    chat_count: result?.chat_count ?? 0,
+    tts_chars: result?.tts_chars ?? 0,
+    transcribe_sessions: result?.transcribe_sessions ?? 0,
+  };
+}
+
+async function recordUsageEvent(
+  env: Env,
+  fields: {
+    userId: number;
+    deviceId: string | null;
+    endpoint: string;
+    statusCode: number;
+    amount: number;
+  }
+): Promise<void> {
+  await env.DB.prepare(
+    "INSERT INTO usage_events (user_id, device_id, endpoint, status_code, amount, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+  )
+    .bind(
+      fields.userId,
+      fields.deviceId,
+      fields.endpoint,
+      fields.statusCode,
+      fields.amount,
+      currentTimeSeconds()
+    )
+    .run();
+}
+
+async function upsertUserByGoogleSubject(
+  env: Env,
+  fields: {
+    googleSubject: string;
+    email: string;
+    displayName: string | null;
+    pictureUrl: string | null;
+  }
+): Promise<UserRow> {
+  const existingUserRow = await env.DB.prepare(
+    "SELECT id, email, display_name, picture_url, status, daily_chat_limit, daily_tts_chars_limit, daily_transcribe_session_limit FROM users WHERE google_subject = ?"
+  )
+    .bind(fields.googleSubject)
+    .first<UserRow>();
+
+  const nowSeconds = currentTimeSeconds();
+  if (existingUserRow) {
+    await env.DB.prepare(
+      "UPDATE users SET email = ?, display_name = ?, picture_url = ?, last_seen_at = ? WHERE id = ?"
+    )
+      .bind(fields.email, fields.displayName, fields.pictureUrl, nowSeconds, existingUserRow.id)
+      .run();
+    return { ...existingUserRow, email: fields.email, display_name: fields.displayName, picture_url: fields.pictureUrl };
+  }
+
+  const insertResult = await env.DB.prepare(
+    "INSERT INTO users (google_subject, email, display_name, picture_url, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)"
+  )
+    .bind(fields.googleSubject, fields.email, fields.displayName, fields.pictureUrl, nowSeconds, nowSeconds)
+    .run();
+
+  const newUserRow = await env.DB.prepare(
+    "SELECT id, email, display_name, picture_url, status, daily_chat_limit, daily_tts_chars_limit, daily_transcribe_session_limit FROM users WHERE id = ?"
+  )
+    .bind(insertResult.meta.last_row_id)
+    .first<UserRow>();
+  if (!newUserRow) {
+    throw new Error("Failed to read inserted user row");
+  }
+  return newUserRow;
+}
+
+async function createInstallTokenForUser(
+  env: Env,
+  fields: {
+    userId: number;
+    deviceId: string;
+    deviceLabel: string | null;
+  }
+): Promise<{ installToken: string }> {
+  const installToken = `${INSTALL_TOKEN_PREFIX}${await randomTokenHex(32)}`;
+  const installTokenHash = await sha256Hex(installToken);
+  const nowSeconds = currentTimeSeconds();
+
+  // Revoke any existing active row for this (user, device_id) so re-signing in
+  // on the same machine doesn't leave stale tokens behind.
+  await env.DB.prepare(
+    "UPDATE devices SET revoked_at = ? WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL"
+  )
+    .bind(nowSeconds, fields.userId, fields.deviceId)
+    .run();
+
+  await env.DB.prepare(
+    "INSERT INTO devices (user_id, device_id, install_token_hash, device_label, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)"
+  )
+    .bind(fields.userId, fields.deviceId, installTokenHash, fields.deviceLabel, nowSeconds, nowSeconds)
+    .run();
+
+  return { installToken };
+}
+
+function isAdminRequest(request: Request, env: Env): boolean {
+  const headerValue = request.headers.get("x-admin-token") ?? request.headers.get("X-Admin-Token");
+  return Boolean(headerValue) && headerValue === env.DOT_ADMIN_TOKEN;
+}
+
+// ============================================================================
+// Helpers — primitives + responses
+// ============================================================================
+
+function currentTimeSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+async function randomTokenHex(byteLength: number): Promise<string> {
+  const buffer = new Uint8Array(byteLength);
+  crypto.getRandomValues(buffer);
+  return Array.from(buffer, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const encoded = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest("SHA-256", encoded);
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function publicUserShape(user: UserRow) {
+  return {
+    id: user.id,
+    email: user.email,
+    display_name: user.display_name,
+    picture_url: user.picture_url,
+    daily_chat_limit: user.daily_chat_limit,
+    daily_tts_chars_limit: user.daily_tts_chars_limit,
+    daily_transcribe_session_limit: user.daily_transcribe_session_limit,
+  };
+}
+
+function jsonResponse(payload: unknown, status: number = 200): Response {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function notFoundResponse(): Response {
+  return jsonResponse({ error: "not_found" }, 404);
+}
+
+function htmlErrorResponse(message: string): Response {
+  const safeMessage = message.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c] as string));
+  return new Response(
+    `<!doctype html><html><head><meta charset="utf-8"><title>Sign in to Dot</title></head><body style="font-family:system-ui;max-width:480px;margin:64px auto;padding:0 16px"><h1>Sign-in error</h1><p>${safeMessage}</p></body></html>`,
+    { status: 400, headers: { "content-type": "text/html; charset=utf-8" } }
+  );
+}
+
+/**
+ * Renders a small HTML page that auto-redirects to the dot:// URL scheme so
+ * macOS hands control back to the app, and falls back to a clickable link if
+ * the redirect doesn't fire (e.g., user opened the page on a phone).
+ */
+function successHandoffResponse(appRedirectUrl: string, email: string): Response {
+  const safeAppUrl = appRedirectUrl.replace(/[<>"']/g, (c) =>
+    ({ "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c] as string)
+  );
+  const safeEmail = email.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c] as string));
+  return new Response(
+    `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Signed in to Dot</title>
+<meta http-equiv="refresh" content="0;url=${safeAppUrl}">
+<style>
+body{font-family:system-ui;max-width:480px;margin:64px auto;padding:0 16px;color:#111}
+a.button{display:inline-block;background:#111;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;margin-top:16px}
+</style>
+</head>
+<body>
+<h1>You're signed in.</h1>
+<p>Welcome, ${safeEmail}. Sending you back to Dot…</p>
+<p>If nothing happens automatically, <a class="button" href="${safeAppUrl}">Open Dot</a></p>
+<script>window.location.replace(${JSON.stringify(appRedirectUrl)});</script>
+</body>
+</html>`,
+    { status: 200, headers: { "content-type": "text/html; charset=utf-8" } }
+  );
+}
+
+/**
+ * Pull out the "text" field from a TTS request body so we can charge the
+ * caller by character count. Returns 0 if the body is malformed.
+ */
+function extractTextLength(requestBodyText: string): number {
+  try {
+    const parsedBody = JSON.parse(requestBodyText) as { text?: unknown };
+    if (typeof parsedBody.text !== "string") return 0;
+    return parsedBody.text.length;
+  } catch {
+    return 0;
+  }
 }

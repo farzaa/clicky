@@ -41,14 +41,14 @@ enum CompanionScreenCaptureUtility {
     /// full context across multiple monitors.
     static func captureAllScreensAsJPEG() async throws -> [CompanionScreenCapture] {
         if CompanionScreenCaptureFallbackPreference.shouldPreferCoreGraphicsCapture {
-            ClickyDebugLogger.log("screen.capture", "using CoreGraphics fallback by preference")
+            DotDebugLogger.log("screen.capture", "using CoreGraphics fallback by preference")
             return try captureAllScreensWithCoreGraphicsFallback(screenCaptureKitError: nil)
         }
 
         do {
             return try await captureAllScreensWithScreenCaptureKit()
         } catch {
-            ClickyDebugLogger.log("screen.capture", "ScreenCaptureKit capture failed; trying CoreGraphics fallback", metadata: [
+            DotDebugLogger.log("screen.capture", "ScreenCaptureKit capture failed; trying CoreGraphics fallback", metadata: [
                 "error": error.localizedDescription
             ])
             CompanionScreenCaptureFallbackPreference.rememberScreenCaptureKitNeedsFallback()
@@ -216,7 +216,7 @@ enum CompanionScreenCaptureUtility {
             )
         }
 
-        ClickyDebugLogger.log("screen.capture", "CoreGraphics fallback captured screens", metadata: [
+        DotDebugLogger.log("screen.capture", "CoreGraphics fallback captured screens", metadata: [
             "count": capturedScreens.count
         ])
         return capturedScreens

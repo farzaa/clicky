@@ -1,4 +1,4 @@
-# Clicky - Agent Instructions
+# Dot - Agent Instructions
 
 <!-- This is the single source of truth for all AI coding agents. CLAUDE.md is a symlink to this file. -->
 <!-- AGENTS.md spec: https://github.com/agentsmd/agents.md — supported by Claude Code, Cursor, Copilot, Gemini CLI, and others. -->
@@ -22,20 +22,29 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Computer Control**: Claude can emit hidden `[CLICK:x,y:label:screenN]`, `[TYPE:text]`, and `[MEDIA:play_pause|next|previous]` tags when the user asks it to operate the computer. `CompanionComputerController` posts local CGEvents for click/type actions and system-defined media-key events for playback controls. Obvious media-only phrases such as "pause the music" execute locally before the screenshot/model path.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
-- **Analytics**: PostHog via `ClickyAnalytics.swift`
+- **Analytics**: PostHog via `DotAnalytics.swift`
 
-### API Proxy (Cloudflare Worker)
+### Inference Gateway (Cloudflare Worker + D1)
 
-The app never calls external APIs directly. All requests go through a Cloudflare Worker (`worker/src/index.ts`) that holds the real API keys as secrets.
+The app never calls external APIs directly. All requests go through a Cloudflare Worker (`worker/src/index.ts`) that authenticates the caller with a Google-OAuth-minted install token, enforces per-user daily quotas, and proxies to the upstream provider. State lives in a D1 database (`worker/schema.sql`).
 
-| Route | Upstream | Purpose |
-|-------|----------|---------|
-| `POST /chat` | `api.anthropic.com/v1/messages` | Claude vision + streaming chat |
-| `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
-| `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Fetches a short-lived (480s) AssemblyAI websocket token |
+| Route | Auth | Purpose |
+|-------|------|---------|
+| `GET /auth/start` | none | Begins Google OAuth — redirects to Google with state |
+| `GET /auth/callback` | none | Google redirect target — exchanges code, upserts user, redirects to `dot://auth?code=…` (app) or `<website>/account.html#token=…` (web) |
+| `POST /auth/exchange` | none | macOS app trades short-lived code for a long-lived install token |
+| `GET /auth/me` | bearer | Current user + today's usage |
+| `POST /auth/signout` | bearer | Revokes the calling install token |
+| `POST /chat` | bearer + quota | Anthropic Messages (streaming SSE) |
+| `POST /tts` | bearer + quota | ElevenLabs TTS — quota charged in characters |
+| `POST /transcribe-token` | bearer + quota | AssemblyAI temp token — quota charged per session |
+| `GET /admin/users` | `X-Admin-Token` | Per-user usage today + limits |
+| `GET /admin/usage` | `X-Admin-Token` | Aggregate usage by day + endpoint, last 30d |
 
-Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`
-Worker vars: `ELEVENLABS_VOICE_ID`
+**D1 tables**: `users`, `oauth_states` (10-min round-trip), `auth_codes` (5-min app-handoff codes), `devices` (one row per (user, device) — stores `sha256(install_token)`), `usage_events` (one row per upstream call, used for quota enforcement and admin reporting).
+
+**Worker secrets**: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`, `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `DOT_ADMIN_TOKEN`
+**Worker vars**: `ELEVENLABS_VOICE_ID`, `WORKER_PUBLIC_URL`, `WEBSITE_PUBLIC_URL`, `APP_URL_SCHEME`
 
 ### Key Architecture Decisions
 
@@ -47,7 +56,9 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 
 **Shared URLSession for AssemblyAI**: A single long-lived `URLSession` is shared across all AssemblyAI streaming sessions (owned by the provider, not the session). Creating and invalidating a URLSession per session corrupts the OS connection pool and causes "Socket is not connected" errors after a few rapid reconnections.
 
-**Transient Cursor Mode**: When "Show Clicky" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
+**Transient Cursor Mode**: When "Show Dot" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
+
+**Sign-in handoff via `dot://`**: The macOS app cannot complete an OAuth flow inside its own UI without bouncing through the system browser. `DotAccountManager.signIn()` opens `<proxy>/auth/start?device_id=<uuid>` in the user's browser; the Worker bounces through Google and lands on `dot://auth?code=…`, which macOS routes back to the app via the `CFBundleURLTypes` entry in `Info.plist`. The AppDelegate's `application(_:open:)` forwards that URL to the account manager, which trades the code for an install token via `POST /auth/exchange`. The token is stored in the macOS Keychain (`DotInstallTokenStore`) and never written to disk anywhere else.
 
 ## Key Files
 
@@ -73,11 +84,16 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
-| `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
-| `ClickyDebugLogger.swift` | ~116 | Local file-backed development logger. Writes rotated diagnostic logs to `~/Library/Logs/Clicky Dev/clicky-dev.log` and mirrors concise lines to stdout. |
+| `DotAnalytics.swift` | ~125 | PostHog analytics integration. Tracks counts/durations only — never raw transcript or response text. |
+| `DotDebugLogger.swift` | ~116 | Local file-backed development logger. Writes rotated diagnostic logs to `~/Library/Logs/Dot/dot.log` and mirrors concise lines to stdout. |
+| `DotAccountManager.swift` | ~245 | Google sign-in flow + signed-in user state. Opens `<proxy>/auth/start` in the system browser, handles the `dot://auth?code=…` callback, exchanges the code for an install token, fetches `/auth/me` for usage, and exposes `signIn()` / `signOut()` for the panel. |
+| `DotInstallTokenStore.swift` | ~80 | Thread-safe Keychain wrapper for the long-lived install token. API clients call `DotInstallTokenStore.currentInstallToken()` and set `Authorization: Bearer …` on every request. |
 | `WindowPositionManager.swift` | ~320 | Window placement logic, Screen Recording permission flow, Accessibility and Input Monitoring permission helpers, and last-known permission grant caching for local rebuilds. |
-| `AppBundleConfiguration.swift` | ~34 | Runtime configuration reader for keys stored in the app bundle Info.plist, including `ClickyProxyBaseURL`. |
-| `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
+| `AppBundleConfiguration.swift` | ~34 | Runtime configuration reader for keys stored in the app bundle Info.plist, including `DotProxyBaseURL`. |
+| `worker/src/index.ts` | ~720 | Cloudflare Worker inference gateway. Google OAuth (`/auth/*`), bearer-authenticated inference (`/chat`, `/tts`, `/transcribe-token`) with per-user daily quotas, and admin routes (`/admin/users`, `/admin/usage`). State in D1. |
+| `worker/schema.sql` | ~95 | D1 schema: `users`, `oauth_states`, `auth_codes`, `devices`, `usage_events`. |
+| `website/dot/index.html` + `account.html` + `admin.html` | — | Static pages deployed to `dot.vibe-research.net`: landing/download, per-user usage dashboard, admin dashboard. |
+| `website/research-lab/index.html` | — | Minimal landing page deployed to `vibe-research.net` root with links to `swarmlab.vibe-research.net` and `dot.vibe-research.net`. |
 
 ## Build & Run
 
@@ -118,7 +134,7 @@ npx wrangler deploy
 npx wrangler dev
 ```
 
-Local development defaults to `ClickyProxyBaseURL=http://127.0.0.1:8787` in `Info.plist`, so the Xcode app talks to `wrangler dev` unless that plist value is changed.
+Local development defaults to `DotProxyBaseURL=http://127.0.0.1:8787` in `Info.plist`, so the Xcode app talks to `wrangler dev` unless that plist value is changed.
 
 ## Code Style & Conventions
 

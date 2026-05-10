@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dot — admin</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="row between">
+      <a href="index.html" class="brand"><span class="brand-dot"></span> Dot · admin</a>
+      <a href="index.html" class="muted">← Home</a>
+    </header>
+
+    <section class="hero" style="margin-top: 36px;">
+      <h1>Admin</h1>
+      <p>Paste your <code>DOT_ADMIN_TOKEN</code> below — it's stored only in this browser, only as long as the tab is open. The token is sent as <code>X-Admin-Token</code> on every admin call.</p>
+    </section>
+
+    <section class="section">
+      <div class="card">
+        <div class="stack">
+          <input id="adminTokenInput" class="input" type="password" placeholder="DOT_ADMIN_TOKEN" autocomplete="off" />
+          <div class="row" style="gap: 8px;">
+            <button id="loadButton" class="button">Load</button>
+            <button id="clearButton" class="button secondary">Clear</button>
+          </div>
+        </div>
+        <p id="errorBox" class="error" style="display: none;"></p>
+      </div>
+    </section>
+
+    <section class="section" id="usersSection" style="display: none;">
+      <h2>Users</h2>
+      <div class="card" style="padding: 0;">
+        <table>
+          <thead>
+            <tr>
+              <th>Email</th>
+              <th>Status</th>
+              <th>Last seen</th>
+              <th>Chats today</th>
+              <th>TTS chars</th>
+              <th>Voice sessions</th>
+            </tr>
+          </thead>
+          <tbody id="usersTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section" id="usageSection" style="display: none;">
+      <h2>Usage (last 30 days)</h2>
+      <div class="card" style="padding: 0;">
+        <table>
+          <thead>
+            <tr>
+              <th>Day</th>
+              <th>Endpoint</th>
+              <th>Calls</th>
+              <th>Total amount</th>
+            </tr>
+          </thead>
+          <tbody id="usageTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer>
+      <span>© Dot · admin</span>
+      <span><a href="index.html">Home</a></span>
+    </footer>
+  </div>
+
+  <script src="config.js"></script>
+  <script>
+    (function () {
+      var config = window.DOT_CONFIG || {};
+      var workerBaseURL = (config.workerBaseURL || "").replace(/\/$/, "");
+
+      var ADMIN_TOKEN_STORAGE_KEY = "dot.adminToken";
+
+      function showErrorMessage(messageText) {
+        var errorBox = document.getElementById("errorBox");
+        errorBox.textContent = messageText;
+        errorBox.style.display = "block";
+      }
+      function clearErrorMessage() {
+        document.getElementById("errorBox").style.display = "none";
+      }
+
+      function formatUnixSeconds(unixSeconds) {
+        if (!unixSeconds) return "—";
+        var date = new Date(unixSeconds * 1000);
+        return date.toLocaleString();
+      }
+
+      function dayBucketToDateLabel(dayBucket) {
+        // dayBucket = floor(unix_seconds / 86400). Convert back to a readable date.
+        var unixSeconds = dayBucket * 86400;
+        var date = new Date(unixSeconds * 1000);
+        return date.toISOString().slice(0, 10);
+      }
+
+      async function loadAdminData() {
+        clearErrorMessage();
+        var enteredToken = document.getElementById("adminTokenInput").value.trim();
+        if (!enteredToken) { showErrorMessage("Paste an admin token first."); return; }
+        sessionStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, enteredToken);
+
+        try {
+          var [usersResponse, usageResponse] = await Promise.all([
+            fetch(workerBaseURL + "/admin/users", { headers: { "x-admin-token": enteredToken } }),
+            fetch(workerBaseURL + "/admin/usage", { headers: { "x-admin-token": enteredToken } }),
+          ]);
+          if (usersResponse.status === 401 || usageResponse.status === 401) {
+            showErrorMessage("Admin token rejected. Check your secret value.");
+            return;
+          }
+          if (!usersResponse.ok) { showErrorMessage("Failed to load users (" + usersResponse.status + ")"); return; }
+          if (!usageResponse.ok) { showErrorMessage("Failed to load usage (" + usageResponse.status + ")"); return; }
+
+          var usersJson = await usersResponse.json();
+          var usageJson = await usageResponse.json();
+          renderUsersTable(usersJson.users || []);
+          renderUsageTable(usageJson.usage || []);
+          document.getElementById("usersSection").style.display = "";
+          document.getElementById("usageSection").style.display = "";
+        } catch (networkError) {
+          showErrorMessage("Couldn't reach the Dot server: " + networkError.message);
+        }
+      }
+
+      function renderUsersTable(userRows) {
+        var tableBody = document.getElementById("usersTableBody");
+        tableBody.innerHTML = "";
+        userRows.forEach(function (userRow) {
+          var rowElement = document.createElement("tr");
+          rowElement.innerHTML =
+            "<td>" + escapeHtml(userRow.email) + "</td>" +
+            "<td>" + escapeHtml(userRow.status) + "</td>" +
+            "<td>" + formatUnixSeconds(userRow.last_seen_at) + "</td>" +
+            "<td>" + userRow.chat_today + " / " + userRow.daily_chat_limit + "</td>" +
+            "<td>" + userRow.tts_chars_today + " / " + userRow.daily_tts_chars_limit + "</td>" +
+            "<td>" + userRow.transcribe_today + " / " + userRow.daily_transcribe_session_limit + "</td>";
+          tableBody.appendChild(rowElement);
+        });
+        if (userRows.length === 0) {
+          tableBody.innerHTML = "<tr><td colspan='6' class='muted'>No users yet.</td></tr>";
+        }
+      }
+
+      function renderUsageTable(usageRows) {
+        var tableBody = document.getElementById("usageTableBody");
+        tableBody.innerHTML = "";
+        usageRows.forEach(function (usageRow) {
+          var rowElement = document.createElement("tr");
+          rowElement.innerHTML =
+            "<td>" + dayBucketToDateLabel(usageRow.day_bucket) + "</td>" +
+            "<td>" + escapeHtml(usageRow.endpoint) + "</td>" +
+            "<td>" + usageRow.event_count + "</td>" +
+            "<td>" + usageRow.total_amount + "</td>";
+          tableBody.appendChild(rowElement);
+        });
+        if (usageRows.length === 0) {
+          tableBody.innerHTML = "<tr><td colspan='4' class='muted'>No usage yet.</td></tr>";
+        }
+      }
+
+      function escapeHtml(unsafeText) {
+        return String(unsafeText == null ? "" : unsafeText).replace(/[&<>"']/g, function (singleChar) {
+          return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[singleChar];
+        });
+      }
+
+      // Restore the admin token from sessionStorage so a refresh doesn't lose it.
+      var rememberedToken = sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY);
+      if (rememberedToken) {
+        document.getElementById("adminTokenInput").value = rememberedToken;
+      }
+      document.getElementById("loadButton").addEventListener("click", loadAdminData);
+      document.getElementById("clearButton").addEventListener("click", function () {
+        sessionStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+        document.getElementById("adminTokenInput").value = "";
+        document.getElementById("usersSection").style.display = "none";
+        document.getElementById("usageSection").style.display = "none";
+        clearErrorMessage();
+      });
+    })();
+  </script>
+</body>
+</html>

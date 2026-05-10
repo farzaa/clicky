@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dot — your AI buddy on the Mac menu bar</title>
+  <meta name="description" content="A small AI buddy that lives in the Mac menu bar. Push-to-talk to ask anything — sees your screen, talks back, and points at the thing it means." />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="row between">
+      <div class="brand"><span class="brand-dot"></span> Dot</div>
+      <a href="account.html" class="muted">Your account →</a>
+    </header>
+
+    <section class="hero" style="margin-top: 48px;">
+      <h1>An AI buddy that lives next to your cursor.</h1>
+      <p>Hold <strong>Control + Option</strong>, ask anything, and Dot answers out loud — it sees your screen, points at the thing it means, and can even click around for you when you ask. Inference is on us; you just need a Google account.</p>
+
+      <div class="cta-row">
+        <a id="downloadButton" href="#" class="button">↓ Download for macOS</a>
+        <a id="signInButton" href="#" class="button secondary">Sign in with Google</a>
+      </div>
+      <p class="muted" style="margin-top: 16px;">macOS 14.2 or later. After downloading, open the app and sign in.</p>
+    </section>
+
+    <section class="section">
+      <h2>How it works</h2>
+      <div class="card">
+        <ol style="margin: 0; padding-left: 20px;">
+          <li>Download the macOS app and drag it to Applications.</li>
+          <li>Open it from the menu bar (small dot icon, top right of the screen).</li>
+          <li>Click <em>Sign in with Google</em>. Your browser opens; pick your account.</li>
+          <li>You're in. Hold Control + Option and start talking.</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>What's included</h2>
+      <div class="card">
+        <ul style="margin: 0; padding-left: 20px;">
+          <li>Claude (Sonnet 4.6 default, Opus 4.6 optional) for the brain</li>
+          <li>AssemblyAI streaming transcription for fast voice → text</li>
+          <li>ElevenLabs voice for the spoken replies</li>
+          <li>A blue cursor overlay that flies to whatever Dot is talking about</li>
+          <li>Daily usage limits per account so nobody can drain the shared bill — your own quota is shown on your <a href="account.html">account page</a>.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Privacy</h2>
+      <div class="card">
+        <p style="margin: 0;">Audio is transcribed by AssemblyAI, sent to Claude with your screenshot, and the response is read back through ElevenLabs. None of that text is stored on our server beyond the immediate request — only counts (per call, per day) for quota and usage views.</p>
+      </div>
+    </section>
+
+    <footer>
+      <span>© Dot — built on top of <a id="githubLink" href="#">open source</a></span>
+      <span><a href="account.html">Your account</a></span>
+    </footer>
+  </div>
+
+  <script src="config.js"></script>
+  <script>
+    (function () {
+      var config = window.DOT_CONFIG || {};
+      var downloadButton = document.getElementById("downloadButton");
+      if (downloadButton && config.downloadDmgURL) {
+        downloadButton.setAttribute("href", config.downloadDmgURL);
+      }
+      var githubLink = document.getElementById("githubLink");
+      if (githubLink && config.githubURL) {
+        githubLink.setAttribute("href", config.githubURL);
+      }
+      var signInButton = document.getElementById("signInButton");
+      if (signInButton && config.workerBaseURL) {
+        var websiteOrigin = window.location.origin;
+        var returnTo = websiteOrigin.replace(/\/$/, "") + "/account.html";
+        var signInUrl = config.workerBaseURL.replace(/\/$/, "") +
+          "/auth/start?return_to=" + encodeURIComponent(returnTo);
+        signInButton.setAttribute("href", signInUrl);
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -12,9 +12,20 @@ import SwiftUI
 
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
+    @ObservedObject var accountManager: DotAccountManager
     @State private var emailInput: String = ""
 
     var body: some View {
+        if accountManager.isSignedIn {
+            signedInBody
+        } else {
+            signedOutBody
+        }
+    }
+
+    // MARK: - Signed-in body (existing flow)
+
+    private var signedInBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             panelHeader
             Divider()
@@ -49,12 +60,12 @@ struct CompanionPanelView: View {
                     .padding(.horizontal, 16)
             }
 
-            // Show Clicky toggle — hidden for now
+            // Show Dot toggle — hidden for now
             // if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
             //     Spacer()
             //         .frame(height: 16)
             //
-            //     showClickyCursorToggleRow
+            //     showDotCursorToggleRow
             //         .padding(.horizontal, 16)
             // }
 
@@ -69,6 +80,10 @@ struct CompanionPanelView: View {
             Spacer()
                 .frame(height: 12)
 
+            signedInAccountRow
+                .padding(.horizontal, 16)
+                .padding(.bottom, 10)
+
             Divider()
                 .background(DS.Colors.borderSubtle)
                 .padding(.horizontal, 16)
@@ -79,6 +94,123 @@ struct CompanionPanelView: View {
         }
         .frame(width: 320)
         .background(panelBackground)
+    }
+
+    // MARK: - Signed-out body (sign-in gate)
+
+    private var signedOutBody: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            panelHeader
+            Divider()
+                .background(DS.Colors.borderSubtle)
+                .padding(.horizontal, 16)
+
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Sign in to use Dot")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(DS.Colors.textPrimary)
+
+                Text("Inference is on the house — Anthropic, ElevenLabs, and AssemblyAI all run through Dot's server. We just need a Google account so we can show you your own usage and avoid abuse.")
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Button(action: {
+                    accountManager.signIn()
+                }) {
+                    HStack(spacing: 8) {
+                        if accountManager.isSigningIn {
+                            ProgressView()
+                                .scaleEffect(0.6)
+                                .progressViewStyle(.circular)
+                        } else {
+                            Image(systemName: "person.crop.circle.badge.plus")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        Text(accountManager.isSigningIn ? "Waiting for browser…" : "Sign in with Google")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                            .fill(DS.Colors.blue400)
+                    )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .disabled(accountManager.isSigningIn)
+
+                if let errorMessage = accountManager.lastErrorMessage {
+                    Text(errorMessage)
+                        .font(.system(size: 11))
+                        .foregroundColor(DS.Colors.destructiveText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+            .padding(.bottom, 16)
+
+            Divider()
+                .background(DS.Colors.borderSubtle)
+                .padding(.horizontal, 16)
+
+            HStack {
+                Button(action: { NSApp.terminate(nil) }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "power")
+                            .font(.system(size: 11, weight: .medium))
+                        Text("Quit Dot")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .foregroundColor(DS.Colors.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+        .frame(width: 320)
+        .background(panelBackground)
+    }
+
+    // MARK: - Signed-in account row (above footer)
+
+    private var signedInAccountRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.success)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(accountManager.userEmail ?? "Signed in")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                if let chatLimit = accountManager.dailyChatLimit {
+                    Text("\(accountManager.todayChatCount) / \(chatLimit) chats today")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+            }
+
+            Spacer()
+
+            Button(action: {
+                accountManager.signOut()
+            }) {
+                Text("Sign out")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+        }
     }
 
     // MARK: - Header
@@ -92,7 +224,7 @@ struct CompanionPanelView: View {
                     .frame(width: 8, height: 8)
                     .shadow(color: statusDotColor.opacity(0.6), radius: 4)
 
-                Text("Clicky")
+                Text("Dot")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(DS.Colors.textPrimary)
             }
@@ -104,7 +236,7 @@ struct CompanionPanelView: View {
                 .foregroundColor(DS.Colors.textTertiary)
 
             Button(action: {
-                NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+                NotificationCenter.default.post(name: .dotDismissPanel, object: nil)
             }) {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .semibold))
@@ -142,7 +274,7 @@ struct CompanionPanelView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } else if companionManager.allPermissionsGranted {
-            Text("You're all set. Hit Start to meet Clicky.")
+            Text("You're all set. Hit Start to meet Dot.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(DS.Colors.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -153,7 +285,7 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(DS.Colors.textSecondary)
 
-                Text("Some permissions were revoked. Grant the permissions below to keep using Clicky.")
+                Text("Some permissions were revoked. Grant the permissions below to keep using Dot.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -161,7 +293,7 @@ struct CompanionPanelView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Hi, I'm Farza. This is Clicky.")
+                Text("Hi, I'm Farza. This is Dot.")
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(DS.Colors.textSecondary)
 
@@ -170,7 +302,7 @@ struct CompanionPanelView: View {
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("Nothing runs in the background. Clicky will only take a screenshot when you press the hot key. So, you can give that permission in peace. If you are still sus, eh, I can't do much there champ.")
+                Text("Nothing runs in the background. Dot will only take a screenshot when you press the hot key. So, you can give that permission in peace. If you are still sus, eh, I can't do much there champ.")
                     .font(.system(size: 11))
                     .foregroundColor(Color(red: 0.9, green: 0.4, blue: 0.4))
                     .fixedSize(horizontal: false, vertical: true)
@@ -608,9 +740,9 @@ struct CompanionPanelView: View {
 
 
 
-    // MARK: - Show Clicky Cursor Toggle
+    // MARK: - Show Dot Cursor Toggle
 
-    private var showClickyCursorToggleRow: some View {
+    private var showDotCursorToggleRow: some View {
         HStack {
             HStack(spacing: 8) {
                 Image(systemName: "cursorarrow")
@@ -618,7 +750,7 @@ struct CompanionPanelView: View {
                     .foregroundColor(DS.Colors.textTertiary)
                     .frame(width: 16)
 
-                Text("Show Clicky")
+                Text("Show Dot")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
             }
@@ -626,8 +758,8 @@ struct CompanionPanelView: View {
             Spacer()
 
             Toggle("", isOn: Binding(
-                get: { companionManager.isClickyCursorEnabled },
-                set: { companionManager.setClickyCursorEnabled($0) }
+                get: { companionManager.isDotCursorEnabled },
+                set: { companionManager.setDotCursorEnabled($0) }
             ))
             .toggleStyle(.switch)
             .labelsHidden()
@@ -751,7 +883,7 @@ struct CompanionPanelView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "power")
                         .font(.system(size: 11, weight: .medium))
-                    Text("Quit Clicky")
+                    Text("Quit Dot")
                         .font(.system(size: 12, weight: .medium))
                 }
                 .foregroundColor(DS.Colors.textTertiary)

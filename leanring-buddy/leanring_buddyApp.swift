@@ -34,24 +34,28 @@ struct leanring_buddyApp: App {
 final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
     private let companionManager = CompanionManager()
+    private let accountManager = DotAccountManager()
     #if canImport(Sparkle)
     private var sparkleUpdaterController: SPUStandardUpdaterController?
     #endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        print("🎯 Clicky: Starting...")
-        print("🎯 Clicky: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
+        print("🎯 Dot: Starting...")
+        print("🎯 Dot: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
 
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
 
-        ClickyAnalytics.configure()
-        ClickyAnalytics.trackAppOpened()
+        DotAnalytics.configure()
+        DotAnalytics.trackAppOpened()
 
-        menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
+        menuBarPanelManager = MenuBarPanelManager(
+            companionManager: companionManager,
+            accountManager: accountManager
+        )
         companionManager.start()
-        // Auto-open the panel if the user still needs to do something:
-        // either they haven't onboarded yet, or permissions were revoked.
-        if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
+        // Auto-open the panel if the user has work to do — sign-in is the
+        // top-priority gate, then onboarding/permissions.
+        if !accountManager.isSignedIn || !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
             menuBarPanelManager?.showPanelOnLaunch()
         }
         registerAsLoginItemIfNeeded()
@@ -62,6 +66,18 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         companionManager.stop()
     }
 
+    /// Receives `dot://` URLs that macOS routes back to the app after the user
+    /// finishes Google sign-in in the browser. Forwards them to the account
+    /// manager which exchanges the code for an install token.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for incomingURL in urls {
+            let wasHandled = accountManager.handleIncomingAuthURL(incomingURL)
+            if wasHandled {
+                menuBarPanelManager?.showPanelOnLaunch()
+            }
+        }
+    }
+
     /// Registers the app as a login item so it launches automatically on
     /// startup. Uses SMAppService which shows the app in System Settings >
     /// General > Login Items, letting the user toggle it off if they want.
@@ -70,9 +86,9 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         if loginItemService.status != .enabled {
             do {
                 try loginItemService.register()
-                print("🎯 Clicky: Registered as login item")
+                print("🎯 Dot: Registered as login item")
             } catch {
-                print("⚠️ Clicky: Failed to register as login item: \(error)")
+                print("⚠️ Dot: Failed to register as login item: \(error)")
             }
         }
     }
@@ -89,7 +105,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         do {
             try updaterController.updater.start()
         } catch {
-            print("⚠️ Clicky: Sparkle updater failed to start: \(error)")
+            print("⚠️ Dot: Sparkle updater failed to start: \(error)")
         }
     }
     #endif

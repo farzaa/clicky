@@ -72,7 +72,7 @@ enum CompanionComputerController {
 
     static func click(atAppKitScreenLocation appKitScreenLocation: CGPoint) {
         let eventLocation = quartzEventLocation(forAppKitScreenLocation: appKitScreenLocation)
-        ClickyDebugLogger.log("computer.controller", "click requested", metadata: [
+        DotDebugLogger.log("computer.controller", "click requested", metadata: [
             "appKitX": Int(appKitScreenLocation.x),
             "appKitY": Int(appKitScreenLocation.y),
             "quartzX": Int(eventLocation.x),
@@ -83,7 +83,7 @@ enum CompanionComputerController {
         if AXIsProcessTrusted(),
            performAccessibilityPress(atQuartzEventLocation: eventLocation) {
             print("🖱️ Computer control: performed AXPress without moving the hardware cursor.")
-            ClickyDebugLogger.log("computer.controller", "click completed with AXPress", metadata: [
+            DotDebugLogger.log("computer.controller", "click completed with AXPress", metadata: [
                 "quartzX": Int(eventLocation.x),
                 "quartzY": Int(eventLocation.y)
             ])
@@ -92,7 +92,7 @@ enum CompanionComputerController {
 
         postCoordinateClickPreservingHardwareCursor(atQuartzEventLocation: eventLocation)
         print("🖱️ Computer control: posted coordinate click without leaving the hardware cursor at the target.")
-        ClickyDebugLogger.log("computer.controller", "click completed with coordinate events", metadata: [
+        DotDebugLogger.log("computer.controller", "click completed with coordinate events", metadata: [
             "quartzX": Int(eventLocation.x),
             "quartzY": Int(eventLocation.y)
         ])
@@ -179,7 +179,7 @@ enum CompanionComputerController {
     }
 
     static func pressMediaControl(_ mediaControlCommand: CompanionMediaControlCommand) {
-        ClickyDebugLogger.log("computer.controller", "media key requested", metadata: [
+        DotDebugLogger.log("computer.controller", "media key requested", metadata: [
             "command": mediaControlCommand.rawValue
         ])
         postMediaKey(
@@ -191,7 +191,7 @@ enum CompanionComputerController {
             keyStateRawValue: mediaKeyUpStateRawValue
         )
         print("🎛️ Computer control: pressed \(mediaControlCommand.logDescription) media key.")
-        ClickyDebugLogger.log("computer.controller", "media key posted", metadata: [
+        DotDebugLogger.log("computer.controller", "media key posted", metadata: [
             "command": mediaControlCommand.rawValue,
             "mediaKeyRawValue": mediaControlCommand.mediaKeyRawValue
         ])
@@ -220,7 +220,7 @@ enum CompanionComputerController {
     }
 
     static func typeText(_ text: String) {
-        ClickyDebugLogger.log("computer.controller", "typing requested", metadata: [
+        DotDebugLogger.log("computer.controller", "typing requested", metadata: [
             "characterCount": text.count
         ])
         let eventSource = CGEventSource(stateID: .combinedSessionState)
@@ -237,7 +237,7 @@ enum CompanionComputerController {
                 eventSource: eventSource
             )
         }
-        ClickyDebugLogger.log("computer.controller", "typing completed", metadata: [
+        DotDebugLogger.log("computer.controller", "typing completed", metadata: [
             "characterCount": text.count
         ])
     }

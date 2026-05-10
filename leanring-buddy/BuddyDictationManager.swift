@@ -333,13 +333,13 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         pendingStartRequestIdentifier = UUID()
 
         guard isDictationInProgress else {
-            ClickyDebugLogger.log("dictation.cancel", "ignored because no dictation is in progress", metadata: [
+            DotDebugLogger.log("dictation.cancel", "ignored because no dictation is in progress", metadata: [
                 "preserveDraftText": preserveDraftText
             ])
             return
         }
 
-        ClickyDebugLogger.log("dictation.cancel", "cancelling current dictation", metadata: stateLogMetadata(extra: [
+        DotDebugLogger.log("dictation.cancel", "cancelling current dictation", metadata: stateLogMetadata(extra: [
             "preserveDraftText": preserveDraftText
         ]))
 
@@ -391,14 +391,14 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         shouldAutomaticallySubmitFinalDraftOnStop: Bool
     ) async {
         guard !isDictationInProgress else {
-            ClickyDebugLogger.log("dictation.start", "ignored because dictation is already in progress", metadata: stateLogMetadata(extra: [
+            DotDebugLogger.log("dictation.start", "ignored because dictation is already in progress", metadata: stateLogMetadata(extra: [
                 "requestedSource": startSource.rawValue
             ]))
             return
         }
 
         print("🎙️ BuddyDictationManager: start requested (\(startSource))")
-        ClickyDebugLogger.log("dictation.start", "requested", metadata: stateLogMetadata(extra: [
+        DotDebugLogger.log("dictation.start", "requested", metadata: stateLogMetadata(extra: [
             "source": startSource.rawValue,
             "provider": transcriptionProvider.displayName,
             "autoSubmitOnStop": shouldAutomaticallySubmitFinalDraftOnStop
@@ -406,7 +406,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         if needsInitialPermissionPrompt {
             print("🎙️ BuddyDictationManager: requesting initial permissions")
-            ClickyDebugLogger.log("dictation.permission", "initial prompt needed", metadata: [
+            DotDebugLogger.log("dictation.permission", "initial prompt needed", metadata: [
                 "microphoneStatus": Self.microphoneAuthorizationStatusLogDescription(),
                 "speechStatus": Self.speechAuthorizationStatusLogDescription(),
                 "provider": transcriptionProvider.displayName
@@ -430,7 +430,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         guard await requestMicrophoneAndSpeechPermissionsWithoutDuplicatePrompts() else {
             print("🎙️ BuddyDictationManager: permissions missing or denied")
-            ClickyDebugLogger.log("dictation.permission", "missing or denied", metadata: stateLogMetadata(extra: [
+            DotDebugLogger.log("dictation.permission", "missing or denied", metadata: stateLogMetadata(extra: [
                 "microphoneStatus": Self.microphoneAuthorizationStatusLogDescription(),
                 "speechStatus": Self.speechAuthorizationStatusLogDescription(),
                 "permissionProblem": String(describing: currentPermissionProblem)
@@ -438,14 +438,14 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             isPreparingToRecord = false
             return
         }
-        ClickyDebugLogger.log("dictation.permission", "granted", metadata: [
+        DotDebugLogger.log("dictation.permission", "granted", metadata: [
             "microphoneStatus": Self.microphoneAuthorizationStatusLogDescription(),
             "speechStatus": Self.speechAuthorizationStatusLogDescription(),
             "provider": transcriptionProvider.displayName
         ])
         guard !Task.isCancelled else {
             print("🎙️ BuddyDictationManager: start cancelled (shortcut released during permission check)")
-            ClickyDebugLogger.log("dictation.start", "cancelled during permission check", metadata: stateLogMetadata(extra: [
+            DotDebugLogger.log("dictation.start", "cancelled during permission check", metadata: stateLogMetadata(extra: [
                 "source": startSource.rawValue
             ]))
             isPreparingToRecord = false
@@ -453,7 +453,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         }
         guard pendingStartRequestIdentifier == startRequestIdentifier else {
             print("🎙️ BuddyDictationManager: start request superseded")
-            ClickyDebugLogger.log("dictation.start", "superseded before session setup", metadata: stateLogMetadata(extra: [
+            DotDebugLogger.log("dictation.start", "superseded before session setup", metadata: stateLogMetadata(extra: [
                 "source": startSource.rawValue
             ]))
             isPreparingToRecord = false
@@ -483,7 +483,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         guard !Task.isCancelled else {
             print("🎙️ BuddyDictationManager: start cancelled (shortcut released before recording began)")
-            ClickyDebugLogger.log("dictation.start", "cancelled before recording began", metadata: stateLogMetadata(extra: [
+            DotDebugLogger.log("dictation.start", "cancelled before recording began", metadata: stateLogMetadata(extra: [
                 "source": startSource.rawValue
             ]))
             resetSessionState()
@@ -491,14 +491,14 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         }
 
         do {
-            ClickyDebugLogger.log("dictation.session", "starting recognition session", metadata: stateLogMetadata(extra: [
+            DotDebugLogger.log("dictation.session", "starting recognition session", metadata: stateLogMetadata(extra: [
                 "source": startSource.rawValue,
                 "provider": transcriptionProvider.displayName
             ]))
             try await startRecognitionSession()
             guard !Task.isCancelled else {
                 print("🎙️ BuddyDictationManager: start cancelled (shortcut released during session start)")
-                ClickyDebugLogger.log("dictation.start", "cancelled during recognition session start", metadata: stateLogMetadata(extra: [
+                DotDebugLogger.log("dictation.start", "cancelled during recognition session start", metadata: stateLogMetadata(extra: [
                     "source": startSource.rawValue
                 ]))
                 audioEngine.stop()
@@ -512,7 +512,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             }
             isPreparingToRecord = false
             print("🎙️ BuddyDictationManager: recognition session started")
-            ClickyDebugLogger.log("dictation.session", "recognition session started", metadata: stateLogMetadata(extra: [
+            DotDebugLogger.log("dictation.session", "recognition session started", metadata: stateLogMetadata(extra: [
                 "source": startSource.rawValue,
                 "provider": transcriptionProvider.displayName
             ]))
@@ -523,7 +523,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
                 fallback: "couldn't start voice input. try again."
             )
             print("❌ BuddyDictationManager: failed to start recognition session (\(transcriptionProvider.displayName)): \(error)")
-            ClickyDebugLogger.log("dictation.session", "failed to start recognition session", metadata: stateLogMetadata(extra: [
+            DotDebugLogger.log("dictation.session", "failed to start recognition session", metadata: stateLogMetadata(extra: [
                 "source": startSource.rawValue,
                 "provider": transcriptionProvider.displayName,
                 "error": error.localizedDescription
@@ -534,12 +534,12 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
     private func stopPushToTalk(expectedStartSource: BuddyDictationStartSource) {
         pendingStartRequestIdentifier = UUID()
-        ClickyDebugLogger.log("dictation.stop", "requested", metadata: stateLogMetadata(extra: [
+        DotDebugLogger.log("dictation.stop", "requested", metadata: stateLogMetadata(extra: [
             "expectedSource": expectedStartSource.rawValue
         ]))
 
         guard activeStartSource == expectedStartSource else {
-            ClickyDebugLogger.log("dictation.stop", "ignored because active source did not match", metadata: stateLogMetadata(extra: [
+            DotDebugLogger.log("dictation.stop", "ignored because active source did not match", metadata: stateLogMetadata(extra: [
                 "expectedSource": expectedStartSource.rawValue,
                 "activeSource": activeStartSource?.rawValue ?? "none"
             ]))
@@ -547,7 +547,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             return
         }
         guard !isFinalizingTranscript else {
-            ClickyDebugLogger.log("dictation.stop", "ignored because finalization is already in progress", metadata: stateLogMetadata(extra: [
+            DotDebugLogger.log("dictation.stop", "ignored because finalization is already in progress", metadata: stateLogMetadata(extra: [
                 "expectedSource": expectedStartSource.rawValue
             ]))
             return
@@ -561,7 +561,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         let finalTranscriptFallbackDelaySeconds = activeTranscriptionSession?.finalTranscriptFallbackDelaySeconds
             ?? Self.defaultFinalTranscriptFallbackDelaySeconds
-        ClickyDebugLogger.log("dictation.stop", "requesting final transcript", metadata: stateLogMetadata(extra: [
+        DotDebugLogger.log("dictation.stop", "requesting final transcript", metadata: stateLogMetadata(extra: [
             "expectedSource": expectedStartSource.rawValue,
             "fallbackDelaySeconds": finalTranscriptFallbackDelaySeconds,
             "latestTranscriptLength": latestRecognizedText.count
@@ -585,7 +585,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             deadline: .now() + finalTranscriptFallbackDelaySeconds,
             execute: fallbackWorkItem
         )
-        ClickyDebugLogger.log("dictation.stop", "scheduled final transcript fallback", metadata: [
+        DotDebugLogger.log("dictation.stop", "scheduled final transcript fallback", metadata: [
             "fallbackDelaySeconds": finalTranscriptFallbackDelaySeconds
         ])
     }
@@ -595,7 +595,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         activeTranscriptionSession = nil
 
         print("🎙️ BuddyDictationManager: opening transcription provider \(transcriptionProvider.displayName)")
-        ClickyDebugLogger.log("dictation.provider", "opening transcription provider", metadata: [
+        DotDebugLogger.log("dictation.provider", "opening transcription provider", metadata: [
             "provider": transcriptionProvider.displayName,
             "keytermCount": buildTranscriptionKeyterms().count
         ])
@@ -611,7 +611,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
                 Task { @MainActor in
                     guard let self else { return }
                     self.latestRecognizedText = transcriptText
-                    ClickyDebugLogger.log("dictation.final", "provider delivered final transcript", metadata: self.stateLogMetadata(extra: [
+                    DotDebugLogger.log("dictation.final", "provider delivered final transcript", metadata: self.stateLogMetadata(extra: [
                         "transcriptLength": transcriptText.count,
                         "isFinalizing": self.isFinalizingTranscript
                     ]))
@@ -632,7 +632,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         self.activeTranscriptionSession = activeTranscriptionSession
         print("🎙️ BuddyDictationManager: provider ready, starting audio engine")
-        ClickyDebugLogger.log("dictation.provider", "provider ready; starting audio engine", metadata: [
+        DotDebugLogger.log("dictation.provider", "provider ready; starting audio engine", metadata: [
             "provider": transcriptionProvider.displayName
         ])
 
@@ -647,7 +647,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         audioEngine.prepare()
         try audioEngine.start()
-        ClickyDebugLogger.log("dictation.audio", "audio engine started", metadata: [
+        DotDebugLogger.log("dictation.audio", "audio engine started", metadata: [
             "sampleRate": inputFormat.sampleRate,
             "channelCount": inputFormat.channelCount
         ])
@@ -655,7 +655,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
     private func handleRecognitionError(_ error: Error) {
         if hasFinishedCurrentDictationSession {
-            ClickyDebugLogger.log("dictation.error", "ignored error after session already finished", metadata: [
+            DotDebugLogger.log("dictation.error", "ignored error after session already finished", metadata: [
                 "provider": transcriptionProvider.displayName,
                 "error": error.localizedDescription
             ])
@@ -663,7 +663,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         }
 
         if isFinalizingTranscript && !latestRecognizedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            ClickyDebugLogger.log("dictation.error", "provider error during finalization; using latest transcript", metadata: stateLogMetadata(extra: [
+            DotDebugLogger.log("dictation.error", "provider error during finalization; using latest transcript", metadata: stateLogMetadata(extra: [
                 "provider": transcriptionProvider.displayName,
                 "error": error.localizedDescription,
                 "latestTranscriptLength": latestRecognizedText.count
@@ -673,7 +673,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             )
         } else {
             print("❌ Buddy dictation error (\(transcriptionProvider.displayName)): \(error)")
-            ClickyDebugLogger.log("dictation.error", "provider error", metadata: stateLogMetadata(extra: [
+            DotDebugLogger.log("dictation.error", "provider error", metadata: stateLogMetadata(extra: [
                 "provider": transcriptionProvider.displayName,
                 "error": error.localizedDescription
             ]))
@@ -687,7 +687,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
     private func finishCurrentDictationSessionIfNeeded(shouldSubmitFinalDraft: Bool) {
         guard !hasFinishedCurrentDictationSession else {
-            ClickyDebugLogger.log("dictation.final", "ignored duplicate finish request", metadata: stateLogMetadata())
+            DotDebugLogger.log("dictation.final", "ignored duplicate finish request", metadata: stateLogMetadata())
             return
         }
         hasFinishedCurrentDictationSession = true
@@ -698,7 +698,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         let finalDraftText = composeDraftText(withTranscribedText: latestRecognizedText)
         let finalTranscriptText = latestRecognizedText.trimmingCharacters(in: .whitespacesAndNewlines)
         let currentDraftCallbacks = draftCallbacks
-        ClickyDebugLogger.log("dictation.final", "finishing session", metadata: stateLogMetadata(extra: [
+        DotDebugLogger.log("dictation.final", "finishing session", metadata: stateLogMetadata(extra: [
             "shouldSubmitFinalDraft": shouldSubmitFinalDraft,
             "finalDraftLength": finalDraftText.count,
             "finalTranscriptLength": finalTranscriptText.count
@@ -716,11 +716,11 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         guard shouldSubmitFinalDraft else { return }
         guard !finalTranscriptText.isEmpty else {
-            ClickyDebugLogger.log("dictation.final", "not submitting empty transcript")
+            DotDebugLogger.log("dictation.final", "not submitting empty transcript")
             return
         }
 
-        ClickyDebugLogger.log("dictation.final", "submitting final draft", metadata: [
+        DotDebugLogger.log("dictation.final", "submitting final draft", metadata: [
             "finalDraftLength": finalDraftText.count
         ])
         currentDraftCallbacks?.submitDraftText(finalDraftText)
@@ -748,7 +748,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     }
 
     private func resetSessionState() {
-        ClickyDebugLogger.log("dictation.state", "resetting session state", metadata: stateLogMetadata())
+        DotDebugLogger.log("dictation.state", "resetting session state", metadata: stateLogMetadata())
         pendingStartRequestIdentifier = UUID()
         activeTranscriptionSession = nil
         draftCallbacks = nil
@@ -934,7 +934,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     private func requestMicrophoneAndSpeechPermissionsWithoutDuplicatePrompts() async -> Bool {
         // If a permission request is already in-flight, reuse it.
         if let activePermissionRequestTask {
-            ClickyDebugLogger.log("dictation.permission", "reusing active permission request")
+            DotDebugLogger.log("dictation.permission", "reusing active permission request")
             return await activePermissionRequestTask.value
         }
 
@@ -945,7 +945,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
            Date().timeIntervalSince(lastPermissionRequestCompletedAt) < 1.0 {
             let hasRecentlyConfirmedPermissions = AVCaptureDevice.authorizationStatus(for: .audio) != .denied
                 && AVCaptureDevice.authorizationStatus(for: .audio) != .restricted
-            ClickyDebugLogger.log("dictation.permission", "using recent permission result", metadata: [
+            DotDebugLogger.log("dictation.permission", "using recent permission result", metadata: [
                 "hasPermissions": hasRecentlyConfirmedPermissions,
                 "microphoneStatus": Self.microphoneAuthorizationStatusLogDescription(),
                 "speechStatus": Self.speechAuthorizationStatusLogDescription()
@@ -962,7 +962,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         let hasPermissions = await permissionRequestTask.value
         activePermissionRequestTask = nil
         lastPermissionRequestCompletedAt = Date()
-        ClickyDebugLogger.log("dictation.permission", "permission request completed", metadata: [
+        DotDebugLogger.log("dictation.permission", "permission request completed", metadata: [
             "hasPermissions": hasPermissions,
             "microphoneStatus": Self.microphoneAuthorizationStatusLogDescription(),
             "speechStatus": Self.speechAuthorizationStatusLogDescription(),

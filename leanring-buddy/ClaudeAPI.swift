@@ -41,6 +41,12 @@ class ClaudeAPI {
         request.httpMethod = "POST"
         request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // The Dot inference gateway authenticates every request with the
+        // user's install token. Reading it lazily here means a freshly issued
+        // token (right after sign-in) is picked up without recreating clients.
+        if let installToken = DotInstallTokenStore.currentInstallToken() {
+            request.setValue("Bearer \(installToken)", forHTTPHeaderField: "Authorization")
+        }
         return request
     }
 

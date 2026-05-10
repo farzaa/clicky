@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Your Dot account</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="row between">
+      <a href="index.html" class="brand"><span class="brand-dot"></span> Dot</a>
+      <a href="index.html" class="muted">← Home</a>
+    </header>
+
+    <section class="hero" style="margin-top: 36px;">
+      <h1 id="greeting">Your account</h1>
+      <p id="subtitle">Sign in to see your daily usage and limits.</p>
+    </section>
+
+    <section id="signedOutSection" class="section" style="display: none;">
+      <div class="card">
+        <p style="margin-top: 0;">You're not signed in yet. Click below to sign in with Google. We use Google so we can track usage per account and you can avoid the password handling.</p>
+        <a id="signInButton" href="#" class="button">Sign in with Google</a>
+      </div>
+    </section>
+
+    <section id="signedInSection" class="section" style="display: none;">
+      <div class="card">
+        <div class="row between">
+          <div>
+            <div class="label">Signed in as</div>
+            <div id="emailLabel" style="font-size: 17px; font-weight: 600;"></div>
+          </div>
+          <button id="signOutButton" class="button danger">Sign out</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 style="margin-top: 0; margin-bottom: 4px; font-size: 16px;">Today (rolling 24h)</h2>
+        <div class="usage-grid">
+          <div class="usage-cell">
+            <div class="name">Chats</div>
+            <div class="num"><span id="chatToday">—</span></div>
+            <div class="limit">of <span id="chatLimit">—</span></div>
+          </div>
+          <div class="usage-cell">
+            <div class="name">TTS chars</div>
+            <div class="num"><span id="ttsToday">—</span></div>
+            <div class="limit">of <span id="ttsLimit">—</span></div>
+          </div>
+          <div class="usage-cell">
+            <div class="name">Voice sessions</div>
+            <div class="num"><span id="transcribeToday">—</span></div>
+            <div class="limit">of <span id="transcribeLimit">—</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <p style="margin-top: 0;">Limits reset on a rolling 24-hour window — once enough time has passed, your numbers go back down on their own. If you're hitting the limit and want it raised, send Mark a note.</p>
+      </div>
+    </section>
+
+    <p id="errorBox" class="error" style="display: none;"></p>
+
+    <footer>
+      <span>© Dot</span>
+      <span><a href="index.html">Home</a></span>
+    </footer>
+  </div>
+
+  <script src="config.js"></script>
+  <script>
+    (function () {
+      var config = window.DOT_CONFIG || {};
+      var workerBaseURL = (config.workerBaseURL || "").replace(/\/$/, "");
+
+      // Storage keys for the install token + cached email so we can show the
+      // signed-in state on subsequent visits without round-tripping the worker.
+      var TOKEN_STORAGE_KEY = "dot.installToken";
+      var EMAIL_STORAGE_KEY = "dot.email";
+
+      // Pull token + email out of the URL fragment (set by /auth/callback) on
+      // first arrival, then strip them so they don't sit in the address bar.
+      function consumeAuthCallbackFragmentIfPresent() {
+        if (!window.location.hash) return;
+        var fragmentParameters = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+        var receivedToken = fragmentParameters.get("token");
+        var receivedEmail = fragmentParameters.get("email");
+        if (receivedToken) {
+          localStorage.setItem(TOKEN_STORAGE_KEY, receivedToken);
+          if (receivedEmail) localStorage.setItem(EMAIL_STORAGE_KEY, receivedEmail);
+          history.replaceState(null, "", window.location.pathname);
+        }
+      }
+
+      function showErrorMessage(messageText) {
+        var errorBox = document.getElementById("errorBox");
+        errorBox.textContent = messageText;
+        errorBox.style.display = "block";
+      }
+
+      function setVisibility(elementId, visible) {
+        document.getElementById(elementId).style.display = visible ? "" : "none";
+      }
+
+      function buildSignInUrl() {
+        var websiteOrigin = window.location.origin;
+        var returnTo = websiteOrigin.replace(/\/$/, "") + window.location.pathname;
+        return workerBaseURL + "/auth/start?return_to=" + encodeURIComponent(returnTo);
+      }
+
+      function showSignedOut() {
+        setVisibility("signedInSection", false);
+        setVisibility("signedOutSection", true);
+        document.getElementById("greeting").textContent = "Your account";
+        document.getElementById("subtitle").textContent = "Sign in to see your daily usage and limits.";
+        var signInButton = document.getElementById("signInButton");
+        if (signInButton && workerBaseURL) {
+          signInButton.setAttribute("href", buildSignInUrl());
+        }
+      }
+
+      function showSignedInWithMe(meResponse) {
+        setVisibility("signedOutSection", false);
+        setVisibility("signedInSection", true);
+        var displayName = meResponse.user.display_name || meResponse.user.email;
+        document.getElementById("greeting").textContent = "Hi, " + displayName;
+        document.getElementById("subtitle").textContent = "Here's how much of today's quota you've used.";
+        document.getElementById("emailLabel").textContent = meResponse.user.email;
+        document.getElementById("chatToday").textContent = meResponse.usage.chat_count;
+        document.getElementById("chatLimit").textContent = meResponse.user.daily_chat_limit;
+        document.getElementById("ttsToday").textContent = meResponse.usage.tts_chars;
+        document.getElementById("ttsLimit").textContent = meResponse.user.daily_tts_chars_limit;
+        document.getElementById("transcribeToday").textContent = meResponse.usage.transcribe_sessions;
+        document.getElementById("transcribeLimit").textContent = meResponse.user.daily_transcribe_session_limit;
+      }
+
+      async function loadAccount() {
+        var installToken = localStorage.getItem(TOKEN_STORAGE_KEY);
+        if (!installToken) {
+          showSignedOut();
+          return;
+        }
+
+        try {
+          var meResponse = await fetch(workerBaseURL + "/auth/me", {
+            headers: { authorization: "Bearer " + installToken },
+          });
+          if (meResponse.status === 401) {
+            // Token revoked or invalid — clear it and show sign-in.
+            localStorage.removeItem(TOKEN_STORAGE_KEY);
+            showSignedOut();
+            return;
+          }
+          if (!meResponse.ok) {
+            showErrorMessage("Couldn't load your account (status " + meResponse.status + ").");
+            return;
+          }
+          var responseJson = await meResponse.json();
+          showSignedInWithMe(responseJson);
+        } catch (networkError) {
+          showErrorMessage("Couldn't reach the Dot server: " + networkError.message);
+        }
+      }
+
+      async function handleSignOutClick() {
+        var installToken = localStorage.getItem(TOKEN_STORAGE_KEY);
+        if (installToken) {
+          try {
+            await fetch(workerBaseURL + "/auth/signout", {
+              method: "POST",
+              headers: { authorization: "Bearer " + installToken },
+            });
+          } catch (_ignored) { /* best-effort */ }
+        }
+        localStorage.removeItem(TOKEN_STORAGE_KEY);
+        localStorage.removeItem(EMAIL_STORAGE_KEY);
+        showSignedOut();
+      }
+
+      consumeAuthCallbackFragmentIfPresent();
+      document.getElementById("signOutButton").addEventListener("click", handleSignOutClick);
+      loadAccount();
+    })();
+  </script>
+</body>
+</html>

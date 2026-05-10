@@ -32,7 +32,7 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle {
         didSet {
             if oldValue != voiceState {
-                ClickyDebugLogger.log("voice.state", "changed", metadata: [
+                DotDebugLogger.log("voice.state", "changed", metadata: [
                     "from": String(describing: oldValue),
                     "to": String(describing: voiceState)
                 ])
@@ -144,16 +144,16 @@ final class CompanionManager: ObservableObject {
         claudeAPI.model = model
     }
 
-    /// User preference for whether the Clicky cursor should be shown.
+    /// User preference for whether the Dot cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
-    @Published var isClickyCursorEnabled: Bool = UserDefaults.standard.object(forKey: "isClickyCursorEnabled") == nil
+    @Published var isDotCursorEnabled: Bool = UserDefaults.standard.object(forKey: "isDotCursorEnabled") == nil
         ? true
-        : UserDefaults.standard.bool(forKey: "isClickyCursorEnabled")
+        : UserDefaults.standard.bool(forKey: "isDotCursorEnabled")
 
-    func setClickyCursorEnabled(_ enabled: Bool) {
-        isClickyCursorEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "isClickyCursorEnabled")
+    func setDotCursorEnabled(_ enabled: Bool) {
+        isDotCursorEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isDotCursorEnabled")
         transientHideTask?.cancel()
         transientHideTask = nil
 
@@ -202,12 +202,12 @@ final class CompanionManager: ObservableObject {
     }
 
     func start() {
-        ClickyDebugLogger.markLaunch()
+        DotDebugLogger.markLaunch()
         refreshAllPermissions()
         validatePersistedScreenContentPermissionIfNeeded()
         let hasPersistentContentCaptureEntitlement = Self.hasPersistentContentCaptureEntitlement()
-        print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), inputMonitoring: \(hasInputMonitoringPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), persistentCaptureEntitlement: \(hasPersistentContentCaptureEntitlement), onboarded: \(hasCompletedOnboarding)")
-        ClickyDebugLogger.log("app.start", "starting companion manager", metadata: [
+        print("🔑 Dot start — accessibility: \(hasAccessibilityPermission), inputMonitoring: \(hasInputMonitoringPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), persistentCaptureEntitlement: \(hasPersistentContentCaptureEntitlement), onboarded: \(hasCompletedOnboarding)")
+        DotDebugLogger.log("app.start", "starting companion manager", metadata: [
             "accessibility": hasAccessibilityPermission,
             "inputMonitoring": hasInputMonitoringPermission,
             "screenRecording": hasScreenRecordingPermission,
@@ -216,7 +216,7 @@ final class CompanionManager: ObservableObject {
             "persistentContentCaptureEntitlement": hasPersistentContentCaptureEntitlement,
             "allPermissionsGranted": allPermissionsGranted,
             "hasCompletedOnboarding": hasCompletedOnboarding,
-            "isClickyCursorEnabled": isClickyCursorEnabled,
+            "isDotCursorEnabled": isDotCursorEnabled,
             "workerBaseURL": Self.workerBaseURL
         ])
         startPermissionPolling()
@@ -231,7 +231,7 @@ final class CompanionManager: ObservableObject {
         // still granted, show the cursor overlay immediately. If permissions
         // were revoked (e.g. signing change), don't show the cursor — the
         // panel will show the permissions UI instead.
-        if hasCompletedOnboarding && allPermissionsGranted && isClickyCursorEnabled {
+        if hasCompletedOnboarding && allPermissionsGranted && isDotCursorEnabled {
             overlayWindowManager.hasShownOverlayBefore = true
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
@@ -244,13 +244,13 @@ final class CompanionManager: ObservableObject {
     /// the overlay so the welcome animation and intro video play.
     func triggerOnboarding() {
         // Post notification so the panel manager can dismiss the panel
-        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+        NotificationCenter.default.post(name: .dotDismissPanel, object: nil)
 
         // Mark onboarding as completed so the Start button won't appear
         // again on future launches — the cursor will auto-show instead
         hasCompletedOnboarding = true
 
-        ClickyAnalytics.trackOnboardingStarted()
+        DotAnalytics.trackOnboardingStarted()
 
         // Play Besaid theme at 60% volume, fade out after 1m 30s
         startOnboardingMusic()
@@ -265,8 +265,8 @@ final class CompanionManager: ObservableObject {
     /// footer link. Same flow as triggerOnboarding but the cursor overlay
     /// is already visible so we just restart the welcome animation and video.
     func replayOnboarding() {
-        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
-        ClickyAnalytics.trackOnboardingReplayed()
+        NotificationCenter.default.post(name: .dotDismissPanel, object: nil)
+        DotAnalytics.trackOnboardingReplayed()
         startOnboardingMusic()
         // Tear down any existing overlays and recreate with isFirstAppearance = true
         overlayWindowManager.hasShownOverlayBefore = false
@@ -284,7 +284,7 @@ final class CompanionManager: ObservableObject {
     private func startOnboardingMusic() {
         stopOnboardingMusic()
         guard let musicURL = Bundle.main.url(forResource: "ff", withExtension: "mp3") else {
-            print("⚠️ Clicky: ff.mp3 not found in bundle")
+            print("⚠️ Dot: ff.mp3 not found in bundle")
             return
         }
 
@@ -299,7 +299,7 @@ final class CompanionManager: ObservableObject {
                 self?.fadeOutOnboardingMusic()
             }
         } catch {
-            print("⚠️ Clicky: Failed to play onboarding music: \(error)")
+            print("⚠️ Dot: Failed to play onboarding music: \(error)")
         }
     }
 
@@ -332,7 +332,7 @@ final class CompanionManager: ObservableObject {
     }
 
     func stop() {
-        ClickyDebugLogger.log("app.stop", "stopping companion manager", metadata: interactionStateLogMetadata())
+        DotDebugLogger.log("app.stop", "stopping companion manager", metadata: interactionStateLogMetadata())
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
@@ -375,16 +375,16 @@ final class CompanionManager: ObservableObject {
 
         // Track individual permission grants as they happen
         if !previouslyHadAccessibility && hasAccessibilityPermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "accessibility")
+            DotAnalytics.trackPermissionGranted(permission: "accessibility")
         }
         if !previouslyHadInputMonitoring && hasInputMonitoringPermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "input_monitoring")
+            DotAnalytics.trackPermissionGranted(permission: "input_monitoring")
         }
         if !previouslyHadScreenRecording && hasScreenRecordingPermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "screen_recording")
+            DotAnalytics.trackPermissionGranted(permission: "screen_recording")
         }
         if !previouslyHadMicrophone && hasMicrophonePermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "microphone")
+            DotAnalytics.trackPermissionGranted(permission: "microphone")
         }
         // Screen content permission has no cheap public preflight API. We keep a
         // persisted grant for UI responsiveness, then validate it once per launch
@@ -400,7 +400,7 @@ final class CompanionManager: ObservableObject {
             || previouslyHadMicrophone != hasMicrophonePermission
             || previouslyHadAll != allPermissionsGranted {
             print("🔑 Permissions — accessibility: \(hasAccessibilityPermission), inputMonitoring: \(hasInputMonitoringPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
-            ClickyDebugLogger.log("permissions.refresh", "permission state changed", metadata: [
+            DotDebugLogger.log("permissions.refresh", "permission state changed", metadata: [
                 "accessibility.previous": previouslyHadAccessibility,
                 "accessibility.current": hasAccessibilityPermission,
                 "accessibility.live": currentlyHasLiveAccessibility,
@@ -419,13 +419,13 @@ final class CompanionManager: ObservableObject {
         }
 
         if !previouslyHadAll && allPermissionsGranted {
-            ClickyAnalytics.trackAllPermissionsGranted()
+            DotAnalytics.trackAllPermissionsGranted()
 
-            if hasCompletedOnboarding && isClickyCursorEnabled && !isOverlayVisible {
+            if hasCompletedOnboarding && isDotCursorEnabled && !isOverlayVisible {
                 overlayWindowManager.hasShownOverlayBefore = true
                 overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                 isOverlayVisible = true
-                ClickyDebugLogger.log("overlay", "shown after permissions became granted")
+                DotDebugLogger.log("overlay", "shown after permissions became granted")
             }
         }
     }
@@ -442,7 +442,7 @@ final class CompanionManager: ObservableObject {
             do {
                 let probeResult = try await Self.probeScreenContentPermission()
                 print("🔑 Screen content capture result — width: \(probeResult.width), height: \(probeResult.height), didCapture: \(probeResult.didCapture)")
-                ClickyDebugLogger.log("permissions.screenContent", "capture permission probe completed", metadata: [
+                DotDebugLogger.log("permissions.screenContent", "capture permission probe completed", metadata: [
                     "width": probeResult.width,
                     "height": probeResult.height,
                     "didCapture": probeResult.didCapture
@@ -456,10 +456,10 @@ final class CompanionManager: ObservableObject {
                     hasScreenContentPermission = true
                     screenContentPermissionProblem = nil
                     UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
-                    ClickyAnalytics.trackPermissionGranted(permission: "screen_content")
+                    DotAnalytics.trackPermissionGranted(permission: "screen_content")
 
                     // If onboarding was already completed, show the cursor overlay now
-                    if hasCompletedOnboarding && allPermissionsGranted && !isOverlayVisible && isClickyCursorEnabled {
+                    if hasCompletedOnboarding && allPermissionsGranted && !isOverlayVisible && isDotCursorEnabled {
                         overlayWindowManager.hasShownOverlayBefore = true
                         overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                         isOverlayVisible = true
@@ -467,7 +467,7 @@ final class CompanionManager: ObservableObject {
                 }
             } catch {
                 print("⚠️ Screen content permission request failed: \(error)")
-                ClickyDebugLogger.log("permissions.screenContent", "capture permission probe failed", metadata: [
+                DotDebugLogger.log("permissions.screenContent", "capture permission probe failed", metadata: [
                     "error": error.localizedDescription
                 ])
                 await MainActor.run {
@@ -598,7 +598,7 @@ final class CompanionManager: ObservableObject {
 
         hasValidatedPersistedScreenContentPermissionDuringLaunch = true
         isValidatingPersistedScreenContentPermission = true
-        ClickyDebugLogger.log("permissions.screenContent", "validating persisted screen content permission")
+        DotDebugLogger.log("permissions.screenContent", "validating persisted screen content permission")
 
         Task {
             do {
@@ -606,7 +606,7 @@ final class CompanionManager: ObservableObject {
                 await MainActor.run {
                     isValidatingPersistedScreenContentPermission = false
                     if probeResult.didCapture {
-                        ClickyDebugLogger.log("permissions.screenContent", "persisted permission validated", metadata: [
+                        DotDebugLogger.log("permissions.screenContent", "persisted permission validated", metadata: [
                             "width": probeResult.width,
                             "height": probeResult.height
                         ])
@@ -633,7 +633,7 @@ final class CompanionManager: ObservableObject {
             reason: reason,
             errorDescription: errorDescription
         )
-        ClickyDebugLogger.log("permissions.screenContent", "marked revoked", metadata: [
+        DotDebugLogger.log("permissions.screenContent", "marked revoked", metadata: [
             "reason": reason,
             "error": errorDescription ?? "none"
         ])
@@ -656,11 +656,11 @@ final class CompanionManager: ObservableObject {
     /// Once granted/denied the status sticks and polling picks it up.
     private func promptForMicrophoneIfNotDetermined() {
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined else { return }
-        ClickyDebugLogger.log("permissions.microphone", "requesting microphone access")
+        DotDebugLogger.log("permissions.microphone", "requesting microphone access")
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
             Task { @MainActor [weak self] in
                 self?.hasMicrophonePermission = granted
-                ClickyDebugLogger.log("permissions.microphone", "microphone access prompt completed", metadata: [
+                DotDebugLogger.log("permissions.microphone", "microphone access prompt completed", metadata: [
                     "granted": granted
                 ])
             }
@@ -695,7 +695,7 @@ final class CompanionManager: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isRecording, isFinalizing, isPreparing in
                 guard let self else { return }
-                ClickyDebugLogger.log("dictation.observable", "recording state update", metadata: [
+                DotDebugLogger.log("dictation.observable", "recording state update", metadata: [
                     "isRecordingKeyboard": isRecording,
                     "isFinalizing": isFinalizing,
                     "isPreparing": isPreparing,
@@ -736,7 +736,7 @@ final class CompanionManager: ObservableObject {
     }
 
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
-        ClickyDebugLogger.log("shortcut.transition", "received", metadata: interactionStateLogMetadata(extra: [
+        DotDebugLogger.log("shortcut.transition", "received", metadata: interactionStateLogMetadata(extra: [
             "transition": String(describing: transition)
         ]))
 
@@ -744,14 +744,14 @@ final class CompanionManager: ObservableObject {
         case .pressed:
             if buddyDictationManager.isDictationInProgress {
                 print("⚠️ Companion: clearing stale dictation session before starting a new one.")
-                ClickyDebugLogger.log("shortcut.transition", "clearing stale dictation before new press", metadata: interactionStateLogMetadata())
+                DotDebugLogger.log("shortcut.transition", "clearing stale dictation before new press", metadata: interactionStateLogMetadata())
                 buddyDictationManager.cancelCurrentDictation(preserveDraftText: false)
                 voiceState = .idle
             }
 
             // Don't register push-to-talk while the onboarding video is playing
             guard !showOnboardingVideo else {
-                ClickyDebugLogger.log("shortcut.transition", "ignored press during onboarding video")
+                DotDebugLogger.log("shortcut.transition", "ignored press during onboarding video")
                 return
             }
 
@@ -760,20 +760,20 @@ final class CompanionManager: ObservableObject {
             transientHideTask = nil
 
             // If the cursor is hidden, bring it back transiently for this interaction
-            if !isClickyCursorEnabled && !isOverlayVisible {
+            if !isDotCursorEnabled && !isOverlayVisible {
                 overlayWindowManager.hasShownOverlayBefore = true
                 overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                 isOverlayVisible = true
             }
 
             // Dismiss the menu bar panel so it doesn't cover the screen
-            NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+            NotificationCenter.default.post(name: .dotDismissPanel, object: nil)
 
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
             elevenLabsTTSClient.stopPlayback()
             clearDetectedElementLocation()
-            ClickyDebugLogger.log("shortcut.transition", "prepared for new push-to-talk session", metadata: interactionStateLogMetadata())
+            DotDebugLogger.log("shortcut.transition", "prepared for new push-to-talk session", metadata: interactionStateLogMetadata())
 
             // Dismiss the onboarding prompt if it's showing
             if showOnboardingPrompt {
@@ -787,10 +787,10 @@ final class CompanionManager: ObservableObject {
             }
     
 
-            ClickyAnalytics.trackPushToTalkStarted()
+            DotAnalytics.trackPushToTalkStarted()
 
             pendingKeyboardShortcutStartTask?.cancel()
-            ClickyDebugLogger.log("shortcut.transition", "starting keyboard dictation task")
+            DotDebugLogger.log("shortcut.transition", "starting keyboard dictation task")
             pendingKeyboardShortcutStartTask = Task {
                 await buddyDictationManager.startPushToTalkFromKeyboardShortcut(
                     currentDraftText: "",
@@ -800,28 +800,28 @@ final class CompanionManager: ObservableObject {
                     submitDraftText: { [weak self] finalTranscript in
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
-                        ClickyDebugLogger.log("dictation.final", "companion received transcript", metadata: [
+                        DotDebugLogger.log("dictation.final", "companion received transcript", metadata: [
                             "transcriptLength": finalTranscript.count
                         ])
-                        ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
+                        DotAnalytics.trackUserMessageSent(transcript: finalTranscript)
                         if self?.handleDirectLocalMediaCommandIfRecognized(transcript: finalTranscript) != true {
                             self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
                         }
                     }
                 )
-                ClickyDebugLogger.log("shortcut.transition", "keyboard dictation task returned")
+                DotDebugLogger.log("shortcut.transition", "keyboard dictation task returned")
             }
         case .released:
             // Cancel the pending start task in case the user released the shortcut
             // before the async startPushToTalk had a chance to begin recording.
             // Without this, a quick press-and-release drops the release event and
             // leaves the waveform overlay stuck on screen indefinitely.
-            ClickyAnalytics.trackPushToTalkReleased()
-            ClickyDebugLogger.log("shortcut.transition", "release handling started", metadata: interactionStateLogMetadata())
+            DotAnalytics.trackPushToTalkReleased()
+            DotDebugLogger.log("shortcut.transition", "release handling started", metadata: interactionStateLogMetadata())
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
-            ClickyDebugLogger.log("shortcut.transition", "release handling finished", metadata: interactionStateLogMetadata())
+            DotDebugLogger.log("shortcut.transition", "release handling finished", metadata: interactionStateLogMetadata())
         case .none:
             break
         }
@@ -849,7 +849,7 @@ final class CompanionManager: ObservableObject {
     // MARK: - Companion Prompt
 
     private static let companionVoiceResponseSystemPrompt = """
-    you're clicky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
+    you're dot, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
 
     rules:
     - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
@@ -900,7 +900,7 @@ final class CompanionManager: ObservableObject {
     - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
     - user asks you to click the search field: "i'll click the search field. [POINT:520,80:search field][CLICK:520,80:search field]"
     - user says open the settings tab: "opening settings. [POINT:940,74:settings][CLICK:940,74:settings]"
-    - user asks you to type a phrase into the focused field: "i'll type that in. [POINT:none][TYPE:hello from clicky]"
+    - user asks you to type a phrase into the focused field: "i'll type that in. [POINT:none][TYPE:hello from dot]"
     - user asks you to stop the music: "done. [POINT:none][MEDIA:play_pause]"
     - user asks you to skip the song: "skipping. [POINT:none][MEDIA:next]"
     - user asks you to go back a track: "going back. [POINT:none][MEDIA:previous]"
@@ -908,13 +908,13 @@ final class CompanionManager: ObservableObject {
 
     private func handleDirectLocalMediaCommandIfRecognized(transcript: String) -> Bool {
         guard let mediaControlCommand = Self.parseDirectLocalMediaCommand(from: transcript) else {
-            ClickyDebugLogger.log("media.direct", "no direct local media command matched", metadata: [
+            DotDebugLogger.log("media.direct", "no direct local media command matched", metadata: [
                 "transcriptLength": transcript.count
             ])
             return false
         }
 
-        ClickyDebugLogger.log("media.direct", "matched direct local media command", metadata: [
+        DotDebugLogger.log("media.direct", "matched direct local media command", metadata: [
             "command": mediaControlCommand.rawValue,
             "transcriptLength": transcript.count
         ])
@@ -1031,7 +1031,7 @@ final class CompanionManager: ObservableObject {
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
-        ClickyDebugLogger.log("response.pipeline", "starting Claude screenshot response", metadata: [
+        DotDebugLogger.log("response.pipeline", "starting Claude screenshot response", metadata: [
             "transcriptLength": transcript.count,
             "conversationHistoryCount": conversationHistory.count
         ])
@@ -1043,7 +1043,7 @@ final class CompanionManager: ObservableObject {
             do {
                 // Capture all connected screens so the AI has full context
                 let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
-                ClickyDebugLogger.log("response.pipeline", "captured screens", metadata: [
+                DotDebugLogger.log("response.pipeline", "captured screens", metadata: [
                     "screenCount": screenCaptures.count,
                     "labels": screenCaptures.map(\.label).joined(separator: ",")
                 ])
@@ -1072,7 +1072,7 @@ final class CompanionManager: ObservableObject {
                         // No streaming text display — spinner stays until TTS plays
                     }
                 )
-                ClickyDebugLogger.log("response.pipeline", "Claude response received", metadata: [
+                DotDebugLogger.log("response.pipeline", "Claude response received", metadata: [
                     "responseLength": fullResponseText.count
                 ])
 
@@ -1083,7 +1083,7 @@ final class CompanionManager: ObservableObject {
                 let computerControlParseResult = Self.parseComputerControlActions(from: fullResponseText)
                 let parseResult = Self.parsePointingCoordinates(from: computerControlParseResult.spokenText)
                 let spokenText = parseResult.spokenText
-                ClickyDebugLogger.log("response.pipeline", "parsed control tags", metadata: [
+                DotDebugLogger.log("response.pipeline", "parsed control tags", metadata: [
                     "spokenTextLength": spokenText.count,
                     "actionCount": computerControlParseResult.actions.count,
                     "hasPointCoordinate": parseResult.coordinate != nil,
@@ -1114,9 +1114,9 @@ final class CompanionManager: ObservableObject {
                    ) {
                     detectedElementScreenLocation = mappedPointLocation.globalLocation
                     detectedElementDisplayFrame = mappedPointLocation.displayFrame
-                    ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
+                    DotAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
                     print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
-                    ClickyDebugLogger.log("response.pipeline", "mapped point coordinate", metadata: [
+                    DotDebugLogger.log("response.pipeline", "mapped point coordinate", metadata: [
                         "x": Int(pointCoordinate.x),
                         "y": Int(pointCoordinate.y),
                         "label": parseResult.elementLabel ?? "element",
@@ -1126,7 +1126,7 @@ final class CompanionManager: ObservableObject {
                     ])
                 } else {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
-                    ClickyDebugLogger.log("response.pipeline", "no mapped point coordinate", metadata: [
+                    DotDebugLogger.log("response.pipeline", "no mapped point coordinate", metadata: [
                         "label": parseResult.elementLabel ?? "none"
                     ])
                 }
@@ -1142,11 +1142,11 @@ final class CompanionManager: ObservableObject {
                 )
             } catch is CancellationError {
                 // User spoke again — response was interrupted
-                ClickyDebugLogger.log("response.pipeline", "cancelled")
+                DotDebugLogger.log("response.pipeline", "cancelled")
             } catch {
-                ClickyAnalytics.trackResponseError(error: error.localizedDescription)
+                DotAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
-                ClickyDebugLogger.log("response.pipeline", "failed", metadata: [
+                DotDebugLogger.log("response.pipeline", "failed", metadata: [
                     "error": error.localizedDescription
                 ])
                 speakResponsePipelineErrorFallback(for: error)
@@ -1155,7 +1155,7 @@ final class CompanionManager: ObservableObject {
             if !Task.isCancelled {
                 voiceState = .idle
                 scheduleTransientHideIfNeeded()
-                ClickyDebugLogger.log("response.pipeline", "finished", metadata: interactionStateLogMetadata())
+                DotDebugLogger.log("response.pipeline", "finished", metadata: interactionStateLogMetadata())
             }
         }
     }
@@ -1174,29 +1174,29 @@ final class CompanionManager: ObservableObject {
         }
 
         print("🧠 Conversation history: \(conversationHistory.count) exchanges")
-        ClickyDebugLogger.log("response.history", "saved conversation exchange", metadata: [
+        DotDebugLogger.log("response.history", "saved conversation exchange", metadata: [
             "conversationHistoryCount": conversationHistory.count,
             "spokenTextLength": spokenText.count,
             "transcriptLength": transcript.count
         ])
 
-        ClickyAnalytics.trackAIResponseReceived(response: spokenText)
+        DotAnalytics.trackAIResponseReceived(response: spokenText)
 
         // Play the response via TTS. Keep the spinner (processing state)
         // until the audio actually starts playing, then switch to responding.
         if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             do {
-                ClickyDebugLogger.log("tts", "starting ElevenLabs playback", metadata: [
+                DotDebugLogger.log("tts", "starting ElevenLabs playback", metadata: [
                     "spokenTextLength": spokenText.count
                 ])
                 try await elevenLabsTTSClient.speakText(spokenText)
                 // speakText returns after player.play() — audio is now playing
                 voiceState = .responding
-                ClickyDebugLogger.log("tts", "playback started")
+                DotDebugLogger.log("tts", "playback started")
             } catch {
-                ClickyAnalytics.trackTTSError(error: error.localizedDescription)
+                DotAnalytics.trackTTSError(error: error.localizedDescription)
                 print("⚠️ ElevenLabs TTS error: \(error)")
-                ClickyDebugLogger.log("tts", "playback failed", metadata: [
+                DotDebugLogger.log("tts", "playback failed", metadata: [
                     "error": error.localizedDescription
                 ])
                 speakSystemVoiceFallback(spokenText)
@@ -1222,7 +1222,7 @@ final class CompanionManager: ObservableObject {
 
         guard let timeoutNanoseconds else { return }
         let voiceStateWhenTimerStarted = voiceState
-        ClickyDebugLogger.log("voice.safety", "scheduled safety reset", metadata: [
+        DotDebugLogger.log("voice.safety", "scheduled safety reset", metadata: [
             "voiceState": String(describing: voiceStateWhenTimerStarted),
             "timeoutSeconds": Double(timeoutNanoseconds) / 1_000_000_000
         ])
@@ -1237,7 +1237,7 @@ final class CompanionManager: ObservableObject {
 
     private func resetStuckInteractionAfterSafetyTimeout(stuckVoiceState: CompanionVoiceState) {
         print("⚠️ Companion: resetting stuck \(stuckVoiceState) state after safety timeout.")
-        ClickyDebugLogger.log("voice.safety", "resetting stuck interaction", metadata: interactionStateLogMetadata(extra: [
+        DotDebugLogger.log("voice.safety", "resetting stuck interaction", metadata: interactionStateLogMetadata(extra: [
             "stuckVoiceState": String(describing: stuckVoiceState)
         ]))
 
@@ -1252,15 +1252,15 @@ final class CompanionManager: ObservableObject {
         scheduleTransientHideIfNeeded()
     }
 
-    /// If the cursor is in transient mode (user toggled "Show Clicky" off),
+    /// If the cursor is in transient mode (user toggled "Show Dot" off),
     /// waits for TTS playback and any pointing animation to finish, then
     /// fades out the overlay after a 1-second pause. Cancelled automatically
     /// if the user starts another push-to-talk interaction.
     private func scheduleTransientHideIfNeeded() {
-        guard !isClickyCursorEnabled && isOverlayVisible else { return }
+        guard !isDotCursorEnabled && isOverlayVisible else { return }
 
         transientHideTask?.cancel()
-        ClickyDebugLogger.log("overlay.transient", "scheduled transient hide")
+        DotDebugLogger.log("overlay.transient", "scheduled transient hide")
         transientHideTask = Task {
             // Wait for TTS audio to finish playing
             while elevenLabsTTSClient.isPlaying {
@@ -1280,7 +1280,7 @@ final class CompanionManager: ObservableObject {
             guard !Task.isCancelled else { return }
             overlayWindowManager.fadeOutAndHideOverlay()
             isOverlayVisible = false
-            ClickyDebugLogger.log("overlay.transient", "transient overlay hidden")
+            DotDebugLogger.log("overlay.transient", "transient overlay hidden")
         }
     }
 
@@ -1303,14 +1303,14 @@ final class CompanionManager: ObservableObject {
             )
 
             if Self.hasPersistentContentCaptureEntitlement() {
-                speakSystemVoiceFallback("macOS blocked me from seeing your screen. Confirm Screen Recording is enabled for Clicky, then quit and reopen Clicky.")
+                speakSystemVoiceFallback("macOS blocked me from seeing your screen. Confirm Screen Recording is enabled for Dot, then quit and reopen Dot.")
             } else {
-                speakSystemVoiceFallback("This Clicky build is missing Apple's persistent screen capture entitlement.")
+                speakSystemVoiceFallback("This Dot build is missing Apple's persistent screen capture entitlement.")
             }
             return
         }
 
-        speakSystemVoiceFallback("I hit an app error before I could answer. Check the Clicky development log for the exact failure.")
+        speakSystemVoiceFallback("I hit an app error before I could answer. Check the Dot development log for the exact failure.")
     }
 
     private static func isScreenCaptureTCCError(_ error: Error) -> Bool {
@@ -1350,7 +1350,7 @@ final class CompanionManager: ObservableObject {
         screenCaptures: [CompanionScreenCapture]
     ) async {
         guard !actions.isEmpty else { return }
-        ClickyDebugLogger.log("computer.actions", "executing actions", metadata: [
+        DotDebugLogger.log("computer.actions", "executing actions", metadata: [
             "actionCount": actions.count
         ])
         var estimatedBlueCursorStartLocation = NSEvent.mouseLocation
@@ -1360,7 +1360,7 @@ final class CompanionManager: ObservableObject {
 
             switch action {
             case .click(let coordinate, let elementLabel, let screenNumber):
-                ClickyDebugLogger.log("computer.actions", "click action requested", metadata: [
+                DotDebugLogger.log("computer.actions", "click action requested", metadata: [
                     "x": Int(coordinate.x),
                     "y": Int(coordinate.y),
                     "label": elementLabel ?? "element",
@@ -1372,7 +1372,7 @@ final class CompanionManager: ObservableObject {
                     screenCaptures: screenCaptures
                 ) else {
                     print("⚠️ Computer control: could not map click coordinate.")
-                    ClickyDebugLogger.log("computer.actions", "could not map click coordinate", metadata: [
+                    DotDebugLogger.log("computer.actions", "could not map click coordinate", metadata: [
                         "x": Int(coordinate.x),
                         "y": Int(coordinate.y),
                         "screen": screenNumber ?? -1
@@ -1393,7 +1393,7 @@ final class CompanionManager: ObservableObject {
                 CompanionComputerController.click(atAppKitScreenLocation: mappedClickLocation.globalLocation)
                 estimatedBlueCursorStartLocation = mappedClickLocation.globalLocation
                 print("🖱️ Computer control: clicked \"\(elementLabel ?? "element")\" at (\(Int(coordinate.x)), \(Int(coordinate.y)))")
-                ClickyDebugLogger.log("computer.actions", "click action completed", metadata: [
+                DotDebugLogger.log("computer.actions", "click action completed", metadata: [
                     "x": Int(coordinate.x),
                     "y": Int(coordinate.y),
                     "label": elementLabel ?? "element",
@@ -1404,29 +1404,29 @@ final class CompanionManager: ObservableObject {
                 try? await Task.sleep(nanoseconds: 180_000_000)
 
             case .mediaControl(let mediaControlCommand):
-                ClickyDebugLogger.log("computer.actions", "media action requested", metadata: [
+                DotDebugLogger.log("computer.actions", "media action requested", metadata: [
                     "command": mediaControlCommand.rawValue
                 ])
                 CompanionComputerController.pressMediaControl(mediaControlCommand)
                 print("🎛️ Computer control: executed \(mediaControlCommand.logDescription)")
-                ClickyDebugLogger.log("computer.actions", "media action completed", metadata: [
+                DotDebugLogger.log("computer.actions", "media action completed", metadata: [
                     "command": mediaControlCommand.rawValue
                 ])
                 try? await Task.sleep(nanoseconds: 120_000_000)
 
             case .typeText(let text):
-                ClickyDebugLogger.log("computer.actions", "type action requested", metadata: [
+                DotDebugLogger.log("computer.actions", "type action requested", metadata: [
                     "characterCount": text.count
                 ])
                 CompanionComputerController.typeText(text)
                 print("⌨️ Computer control: typed \(text.count) character(s)")
-                ClickyDebugLogger.log("computer.actions", "type action completed", metadata: [
+                DotDebugLogger.log("computer.actions", "type action completed", metadata: [
                     "characterCount": text.count
                 ])
                 try? await Task.sleep(nanoseconds: 80_000_000)
             }
         }
-        ClickyDebugLogger.log("computer.actions", "finished actions", metadata: [
+        DotDebugLogger.log("computer.actions", "finished actions", metadata: [
             "actionCount": actions.count
         ])
     }
@@ -1676,13 +1676,13 @@ final class CompanionManager: ObservableObject {
         }
 
         // At 40 seconds into the video, trigger the onboarding demo where
-        // Clicky flies to something interesting on screen and comments on it
+        // Dot flies to something interesting on screen and comments on it
         let demoTriggerTime = CMTime(seconds: 40, preferredTimescale: 600)
         onboardingDemoTimeObserver = player.addBoundaryTimeObserver(
             forTimes: [NSValue(time: demoTriggerTime)],
             queue: .main
         ) { [weak self] in
-            ClickyAnalytics.trackOnboardingDemoTriggered()
+            DotAnalytics.trackOnboardingDemoTriggered()
             self?.performOnboardingDemoInteraction()
         }
 
@@ -1693,7 +1693,7 @@ final class CompanionManager: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
-            ClickyAnalytics.trackOnboardingVideoCompleted()
+            DotAnalytics.trackOnboardingVideoCompleted()
             self.onboardingVideoOpacity = 0.0
             // Wait for the 2s fade-out animation to complete before tearing down
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
@@ -1775,7 +1775,7 @@ final class CompanionManager: ObservableObject {
     // MARK: - Onboarding Demo Interaction
 
     private static let onboardingDemoSystemPrompt = """
-    you're clicky, a small blue cursor buddy living on the user's screen. you're showing off during onboarding — look at their screen and find ONE specific, concrete thing to point at. pick something with a clear name or identity: a specific app icon (say its name), a specific word or phrase of text you can read, a specific filename, a specific button label, a specific tab title, a specific image you can describe. do NOT point at vague things like "a window" or "some text" — be specific about exactly what you see.
+    you're dot, a small blue cursor buddy living on the user's screen. you're showing off during onboarding — look at their screen and find ONE specific, concrete thing to point at. pick something with a clear name or identity: a specific app icon (say its name), a specific word or phrase of text you can read, a specific filename, a specific button label, a specific tab title, a specific image you can describe. do NOT point at vague things like "a window" or "some text" — be specific about exactly what you see.
 
     make a short quirky 3-6 word observation about the specific thing you picked — something fun, playful, or curious that shows you actually read/recognized it. no emojis ever. NEVER quote or repeat text you see on screen — just react to it. keep it to 6 words max, no exceptions.
 

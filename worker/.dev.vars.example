@@ -1,4 +1,17 @@
-ANTHROPIC_API_KEY=replace_me
-ASSEMBLYAI_API_KEY=replace_me
-ELEVENLABS_API_KEY=replace_me
-ELEVENLABS_VOICE_ID=replace_me
+# Copy this file to .dev.vars (which is gitignored) and fill in your real values.
+#
+#   cp .dev.vars.example .dev.vars
+#
+# `wrangler dev` will load these into the Worker environment automatically.
+
+ANTHROPIC_API_KEY="sk-ant-..."
+ASSEMBLYAI_API_KEY="..."
+ELEVENLABS_API_KEY="..."
+
+# Create at https://console.cloud.google.com/apis/credentials
+# Authorized redirect URI must match WORKER_PUBLIC_URL/auth/callback.
+GOOGLE_OAUTH_CLIENT_ID="...apps.googleusercontent.com"
+GOOGLE_OAUTH_CLIENT_SECRET="..."
+
+# Any random string. Used as X-Admin-Token on /admin/* routes.
+DOT_ADMIN_TOKEN="dev-admin-token-change-me"

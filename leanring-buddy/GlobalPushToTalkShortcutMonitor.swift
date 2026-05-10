@@ -63,7 +63,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
             print("⚠️ Global push-to-talk: couldn't create CGEvent tap")
-            ClickyDebugLogger.log("shortcut.tap", "failed to create CGEvent tap")
+            DotDebugLogger.log("shortcut.tap", "failed to create CGEvent tap")
             return
         }
 
@@ -74,7 +74,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         ) else {
             CFMachPortInvalidate(globalEventTap)
             print("⚠️ Global push-to-talk: couldn't create event tap run loop source")
-            ClickyDebugLogger.log("shortcut.tap", "failed to create run loop source")
+            DotDebugLogger.log("shortcut.tap", "failed to create run loop source")
             return
         }
 
@@ -83,7 +83,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
         CFRunLoopAddSource(CFRunLoopGetMain(), globalEventTapRunLoopSource, .commonModes)
         CGEvent.tapEnable(tap: globalEventTap, enable: true)
-        ClickyDebugLogger.log("shortcut.tap", "started")
+        DotDebugLogger.log("shortcut.tap", "started")
     }
 
     func stop() {
@@ -101,7 +101,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         }
 
         if hadGlobalEventTap {
-            ClickyDebugLogger.log("shortcut.tap", "stopped")
+            DotDebugLogger.log("shortcut.tap", "stopped")
         }
     }
 
@@ -110,7 +110,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         event: CGEvent
     ) -> Unmanaged<CGEvent>? {
         if eventType == .tapDisabledByTimeout || eventType == .tapDisabledByUserInput {
-            ClickyDebugLogger.log("shortcut.tap", "tap disabled; re-enabling", metadata: [
+            DotDebugLogger.log("shortcut.tap", "tap disabled; re-enabling", metadata: [
                 "eventType": eventType.rawValue
             ])
             if let globalEventTap {
@@ -166,7 +166,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
         guard shouldLog else { return }
 
-        ClickyDebugLogger.log("shortcut.raw", "event", metadata: [
+        DotDebugLogger.log("shortcut.raw", "event", metadata: [
             "eventType": Self.logDescription(for: eventType),
             "keyCode": keyCode,
             "flagsRaw": modifierFlagsRawValue,

@@ -27,7 +27,7 @@ enum AppBundleConfiguration {
     }
 
     static func proxyBaseURLString() -> String {
-        let configuredProxyBaseURL = stringValue(forKey: "ClickyProxyBaseURL")
+        let configuredProxyBaseURL = stringValue(forKey: "DotProxyBaseURL")
             ?? "http://127.0.0.1:8787"
         return configuredProxyBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }

@@ -35,6 +35,9 @@ final class ElevenLabsTTSClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
+        if let installToken = DotInstallTokenStore.currentInstallToken() {
+            request.setValue("Bearer \(installToken)", forHTTPHeaderField: "Authorization")
+        }
 
         let body: [String: Any] = [
             "text": text,

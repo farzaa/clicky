@@ -2,7 +2,7 @@
 set -euo pipefail
 
 line_count="${1:-200}"
-log_file="${HOME}/Library/Logs/Clicky Dev/clicky-dev.log"
+log_file="${HOME}/Library/Logs/Dot/dot.log"
 
 mkdir -p "$(dirname "${log_file}")"
 touch "${log_file}"

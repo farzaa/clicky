@@ -15,7 +15,7 @@ import AppKit
 import SwiftUI
 
 extension Notification.Name {
-    static let clickyDismissPanel = Notification.Name("clickyDismissPanel")
+    static let dotDismissPanel = Notification.Name("dotDismissPanel")
 }
 
 /// Custom NSPanel subclass that can become the key window even with
@@ -32,16 +32,18 @@ final class MenuBarPanelManager: NSObject {
     private var dismissPanelObserver: NSObjectProtocol?
 
     private let companionManager: CompanionManager
+    private let accountManager: DotAccountManager
     private let panelWidth: CGFloat = 320
     private let panelHeight: CGFloat = 380
 
-    init(companionManager: CompanionManager) {
+    init(companionManager: CompanionManager, accountManager: DotAccountManager) {
         self.companionManager = companionManager
+        self.accountManager = accountManager
         super.init()
         createStatusItem()
 
         dismissPanelObserver = NotificationCenter.default.addObserver(
-            forName: .clickyDismissPanel,
+            forName: .dotDismissPanel,
             object: nil,
             queue: .main
         ) { [weak self] _ in
@@ -65,15 +67,15 @@ final class MenuBarPanelManager: NSObject {
 
         guard let button = statusItem?.button else { return }
 
-        button.image = makeClickyMenuBarIcon()
+        button.image = makeDotMenuBarIcon()
         button.image?.isTemplate = true
         button.action = #selector(statusItemClicked)
         button.target = self
     }
 
-    /// Draws the clicky triangle as a menu bar icon. Uses the same shape
+    /// Draws the dot triangle as a menu bar icon. Uses the same shape
     /// and rotation as the in-app cursor so the menu bar icon matches.
-    private func makeClickyMenuBarIcon() -> NSImage {
+    private func makeDotMenuBarIcon() -> NSImage {
         let iconSize: CGFloat = 18
         let image = NSImage(size: NSSize(width: iconSize, height: iconSize))
         image.lockFocus()
@@ -144,7 +146,10 @@ final class MenuBarPanelManager: NSObject {
     }
 
     private func createPanel() {
-        let companionPanelView = CompanionPanelView(companionManager: companionManager)
+        let companionPanelView = CompanionPanelView(
+            companionManager: companionManager,
+            accountManager: accountManager
+        )
             .frame(width: panelWidth)
 
         let hostingView = NSHostingView(rootView: companionPanelView)

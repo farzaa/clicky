@@ -1,6 +1,35 @@
-name = "clicky-proxy"
+name = "dot-proxy"
 main = "src/index.ts"
-compatibility_date = "2024-01-01"
+compatibility_date = "2024-09-23"
+
+# ----------------------------------------------------------------------------
+# Public, non-secret configuration. Update these to match your deployed setup.
+# ----------------------------------------------------------------------------
 
 [vars]
 ELEVENLABS_VOICE_ID = "kPzsL2i3teMYv0FxEYQ6"
+WORKER_PUBLIC_URL = "https://api.dot.vibe-research.net"
+WEBSITE_PUBLIC_URL = "https://dot.vibe-research.net"
+APP_URL_SCHEME = "dot"
+
+# ----------------------------------------------------------------------------
+# Secrets are NOT defined here. Set them with `wrangler secret put`:
+#   ANTHROPIC_API_KEY
+#   ASSEMBLYAI_API_KEY
+#   ELEVENLABS_API_KEY
+#   GOOGLE_OAUTH_CLIENT_ID
+#   GOOGLE_OAUTH_CLIENT_SECRET
+#   DOT_ADMIN_TOKEN
+# ----------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------
+# D1 database binding. Create the DB once with:
+#   npx wrangler d1 create dot-proxy
+# Then paste the printed `database_id` below and apply schema.sql:
+#   npx wrangler d1 execute dot-proxy --file=schema.sql
+# ----------------------------------------------------------------------------
+
+[[d1_databases]]
+binding = "DB"
+database_name = "dot-proxy"
+database_id = "REPLACE_WITH_REAL_D1_DATABASE_ID"

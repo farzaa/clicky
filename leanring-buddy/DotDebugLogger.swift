@@ -1,5 +1,5 @@
 //
-//  ClickyDebugLogger.swift
+//  DotDebugLogger.swift
 //  leanring-buddy
 //
 //  Lightweight file-backed logging for local development diagnostics.
@@ -7,14 +7,14 @@
 
 import Foundation
 
-enum ClickyDebugLogger {
+enum DotDebugLogger {
     private static let logDirectoryURL = FileManager.default
         .homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Logs/Clicky Dev", isDirectory: true)
-    private static let logFileURL = logDirectoryURL.appendingPathComponent("clicky-dev.log")
-    private static let rotatedLogFileURL = logDirectoryURL.appendingPathComponent("clicky-dev.log.1")
+        .appendingPathComponent("Library/Logs/Dot", isDirectory: true)
+    private static let logFileURL = logDirectoryURL.appendingPathComponent("dot.log")
+    private static let rotatedLogFileURL = logDirectoryURL.appendingPathComponent("dot.log.1")
     private static let maximumLogFileSizeInBytes: UInt64 = 5 * 1024 * 1024
-    private static let writeQueue = DispatchQueue(label: "com.mark.clicky-dev.debug-log")
+    private static let writeQueue = DispatchQueue(label: "net.vibe-research.dot.debug-log")
 
     static var currentLogFilePath: String {
         logFileURL.path
@@ -30,7 +30,7 @@ enum ClickyDebugLogger {
         let metadataText = Self.metadataText(from: metadata)
         let line = "\(timestampText) pid=\(processIdentifier) [\(category)] \(message)\(metadataText)\n"
 
-        print("ClickyDebug [\(category)] \(message)\(metadataText)")
+        print("DotDebug [\(category)] \(message)\(metadataText)")
 
         writeQueue.async {
             writeLineToLogFile(line)
@@ -68,7 +68,7 @@ enum ClickyDebugLogger {
                 try fileHandle.write(contentsOf: data)
             }
         } catch {
-            print("ClickyDebug [logger] failed to write log: \(error.localizedDescription)")
+            print("DotDebug [logger] failed to write log: \(error.localizedDescription)")
         }
     }
 
