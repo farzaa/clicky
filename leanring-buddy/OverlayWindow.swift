@@ -157,6 +157,12 @@ struct BlueCursorView: View {
     /// an energetic "swooping" feel.
     @State private var buddyFlightScale: CGFloat = 1.0
 
+    /// Transient offset applied to the cursor when the agent loop fires a
+    /// scroll tool. Animated from .zero → ~18pt in the scroll direction →
+    /// back, mirroring the apparent direction of the scroll. Driven by
+    /// `companionManager.scrollAnimationHintUnitVector`.
+    @State private var scrollVisualOffset: CGSize = .zero
+
     /// Scale factor for the navigation speech bubble's pop-in entrance.
     /// Starts at 0.5 and springs to 1.0 when the first character appears.
     @State private var navigationBubbleScale: CGFloat = 1.0
@@ -311,6 +317,7 @@ struct BlueCursorView: View {
                 .frame(width: 14, height: 14)
                 .shadow(color: DS.Colors.overlayCursorBlue, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
                 .scaleEffect(buddyFlightScale * clickPulseScale)
+                .offset(scrollVisualOffset)
                 .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(
@@ -324,6 +331,7 @@ struct BlueCursorView: View {
                     buddyNavigationMode == .navigatingToTarget ? nil : .easeInOut(duration: 0.3),
                     value: triangleRotationDegrees
                 )
+                .animation(.easeInOut(duration: 0.18), value: scrollVisualOffset)
 
             // Blue waveform — replaces the triangle while listening
             BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel)
