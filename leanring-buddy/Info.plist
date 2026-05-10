@@ -11,7 +11,7 @@
 	<key>VoiceTranscriptionProvider</key>
 	<string>assemblyai</string>
 	<key>DotProxyBaseURL</key>
-	<string>https://api.dot.vibe-research.net</string>
+	<string>https://api.accounts.vibe-research.net</string>
 	<key>VibeIdBaseURL</key>
 	<string>https://api.accounts.vibe-research.net</string>
 	<key>NSMicrophoneUsageDescription</key>
