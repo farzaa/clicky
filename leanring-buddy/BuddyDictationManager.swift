@@ -594,63 +594,116 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         activeTranscriptionSession?.cancel()
         activeTranscriptionSession = nil
 
+        // Start the microphone IMMEDIATELY, before we await the transcription
+        // provider's session setup. Opening the AssemblyAI websocket requires
+        // a token fetch from the Cloudflare Worker plus a websocket handshake
+        // and a "begin" ack — typically 300–1000ms total. If we waited for
+        // that before starting the audio engine, the start of the user's
+        // utterance would be dropped on the floor every press.
+        //
+        // Instead, we capture audio into a local buffer the instant ctrl+option
+        // is pressed, and flush those frames into the streaming session as
+        // soon as it's ready.
+        let inputNode = audioEngine.inputNode
+        let inputFormat = inputNode.outputFormat(forBus: 0)
+
+        let pendingPreSessionAudioBuffersLock = NSLock()
+        var pendingPreSessionAudioBuffers: [AVAudioPCMBuffer] = []
+
+        inputNode.removeTap(onBus: 0)
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] audioBuffer, _ in
+            guard let self else { return }
+
+            // The lock both serialises access to the pending buffer list and
+            // gives us an atomic "session became ready" handoff: every buffer
+            // captured before the swap goes to the pending list, every buffer
+            // captured after goes directly to the session, and no buffer is
+            // ever sent out of order relative to its capture time.
+            pendingPreSessionAudioBuffersLock.lock()
+            if let activeTranscriptionSession = self.activeTranscriptionSession {
+                pendingPreSessionAudioBuffersLock.unlock()
+                activeTranscriptionSession.appendAudioBuffer(audioBuffer)
+            } else {
+                pendingPreSessionAudioBuffers.append(audioBuffer)
+                pendingPreSessionAudioBuffersLock.unlock()
+            }
+            self.updateAudioPowerLevel(from: audioBuffer)
+        }
+
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+        } catch {
+            inputNode.removeTap(onBus: 0)
+            throw error
+        }
+        DotDebugLogger.log("dictation.audio", "audio engine started early; awaiting transcription session", metadata: [
+            "sampleRate": inputFormat.sampleRate,
+            "channelCount": inputFormat.channelCount
+        ])
+
         print("🎙️ BuddyDictationManager: opening transcription provider \(transcriptionProvider.displayName)")
         DotDebugLogger.log("dictation.provider", "opening transcription provider", metadata: [
             "provider": transcriptionProvider.displayName,
             "keytermCount": buildTranscriptionKeyterms().count
         ])
 
-        let activeTranscriptionSession = try await transcriptionProvider.startStreamingSession(
-            keyterms: buildTranscriptionKeyterms(),
-            onTranscriptUpdate: { [weak self] transcriptText in
-                Task { @MainActor in
-                    self?.latestRecognizedText = transcriptText
-                }
-            },
-            onFinalTranscriptReady: { [weak self] transcriptText in
-                Task { @MainActor in
-                    guard let self else { return }
-                    self.latestRecognizedText = transcriptText
-                    DotDebugLogger.log("dictation.final", "provider delivered final transcript", metadata: self.stateLogMetadata(extra: [
-                        "transcriptLength": transcriptText.count,
-                        "isFinalizing": self.isFinalizingTranscript
-                    ]))
+        let activeTranscriptionSession: any BuddyStreamingTranscriptionSession
+        do {
+            activeTranscriptionSession = try await transcriptionProvider.startStreamingSession(
+                keyterms: buildTranscriptionKeyterms(),
+                onTranscriptUpdate: { [weak self] transcriptText in
+                    Task { @MainActor in
+                        self?.latestRecognizedText = transcriptText
+                    }
+                },
+                onFinalTranscriptReady: { [weak self] transcriptText in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        self.latestRecognizedText = transcriptText
+                        DotDebugLogger.log("dictation.final", "provider delivered final transcript", metadata: self.stateLogMetadata(extra: [
+                            "transcriptLength": transcriptText.count,
+                            "isFinalizing": self.isFinalizingTranscript
+                        ]))
 
-                    if self.isFinalizingTranscript {
-                        self.finishCurrentDictationSessionIfNeeded(
-                            shouldSubmitFinalDraft: self.shouldAutomaticallySubmitFinalDraft
-                        )
+                        if self.isFinalizingTranscript {
+                            self.finishCurrentDictationSessionIfNeeded(
+                                shouldSubmitFinalDraft: self.shouldAutomaticallySubmitFinalDraft
+                            )
+                        }
+                    }
+                },
+                onError: { [weak self] error in
+                    Task { @MainActor in
+                        self?.handleRecognitionError(error)
                     }
                 }
-            },
-            onError: { [weak self] error in
-                Task { @MainActor in
-                    self?.handleRecognitionError(error)
-                }
-            }
-        )
-
-        self.activeTranscriptionSession = activeTranscriptionSession
-        print("🎙️ BuddyDictationManager: provider ready, starting audio engine")
-        DotDebugLogger.log("dictation.provider", "provider ready; starting audio engine", metadata: [
-            "provider": transcriptionProvider.displayName
-        ])
-
-        let inputNode = audioEngine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
-
-        inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-            self?.activeTranscriptionSession?.appendAudioBuffer(buffer)
-            self?.updateAudioPowerLevel(from: buffer)
+            )
+        } catch {
+            // Tear down the audio engine we started early so the system is
+            // left in a clean state if the provider failed to open.
+            audioEngine.stop()
+            inputNode.removeTap(onBus: 0)
+            throw error
         }
 
-        audioEngine.prepare()
-        try audioEngine.start()
-        DotDebugLogger.log("dictation.audio", "audio engine started", metadata: [
-            "sampleRate": inputFormat.sampleRate,
-            "channelCount": inputFormat.channelCount
+        // Atomically swap to the new session and capture any frames that were
+        // collected while the websocket was opening, then flush them in order.
+        pendingPreSessionAudioBuffersLock.lock()
+        let pendingPreSessionAudioBuffersToFlush = pendingPreSessionAudioBuffers
+        pendingPreSessionAudioBuffers = []
+        self.activeTranscriptionSession = activeTranscriptionSession
+        pendingPreSessionAudioBuffersLock.unlock()
+
+        print("🎙️ BuddyDictationManager: provider ready, flushing \(pendingPreSessionAudioBuffersToFlush.count) buffered frames")
+        DotDebugLogger.log("dictation.provider", "provider ready; flushing pre-session audio", metadata: [
+            "provider": transcriptionProvider.displayName,
+            "pendingBufferCount": pendingPreSessionAudioBuffersToFlush.count
         ])
+
+        for pendingAudioBuffer in pendingPreSessionAudioBuffersToFlush {
+            activeTranscriptionSession.appendAudioBuffer(pendingAudioBuffer)
+        }
     }
 
     private func handleRecognitionError(_ error: Error) {
