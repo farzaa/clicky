@@ -12,16 +12,38 @@ routes = [
 
 # ----------------------------------------------------------------------------
 # Dot inference proxy. Identity (users, OAuth, install tokens, quotas, admin)
-# lives in the central `vibe-id` worker. This worker is stateless: it just
+# lives in the central `vibe-id` worker. This worker is stateless: it
 # verifies the bearer token with vibe-id, proxies to upstream APIs, and
-# reports usage back to vibe-id.
+# reports usage back to vibe-id (fire-and-forget via ctx.waitUntil).
 #
-# Local dev runs on port 8787; vibe-id runs on 8790.
+# Latency optimizations vs the naive design:
+#   1. Service Binding to vibe-id — calls run in-process on the same edge
+#      node instead of going out over HTTPS, removing ~25ms per request.
+#   2. KV-backed cache of /v1/check results for chat / transcribe-token
+#      (amount=1) — the hot path skips the vibe-id round-trip entirely
+#      when a recent successful check exists.
+#   3. /v1/record runs in ctx.waitUntil so the user gets their response
+#      before usage metering completes.
+#
+# Local dev: this worker on 8787, vibe-id on 8790.
 # ----------------------------------------------------------------------------
 
 [vars]
 ELEVENLABS_VOICE_ID = "kPzsL2i3teMYv0FxEYQ6"
 VIBE_ID_BASE_URL = "https://api.accounts.vibe-research.net"
+
+# Service binding: calls go in-process to the deployed `vibe-id` worker
+# rather than out over the public network. Same fetch() API.
+[[services]]
+binding = "VIBE_ID"
+service = "vibe-id"
+
+# KV cache for /v1/check decisions on the hot path. 30s TTL gives
+# the gateway a way to revoke a token and have it stop working within
+# half a minute, while saving ~50ms per hit.
+[[kv_namespaces]]
+binding = "CHECK_CACHE"
+id = "db3e9e02dae048c0b01fb55ff9af7320"
 
 # ----------------------------------------------------------------------------
 # Secrets are NOT defined here. Set them with `wrangler secret put`:
