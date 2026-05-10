@@ -59,7 +59,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
             menuBarPanelManager?.showPanelOnLaunch()
         }
         registerAsLoginItemIfNeeded()
-        // startSparkleUpdater()
+        startSparkleUpdater()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
