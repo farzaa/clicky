@@ -813,8 +813,13 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Companion Prompt
 
+    private static let maxAgentStepsPerUserTurn = 10
+    private static let userMouseMoveCancellationThresholdInPoints: CGFloat = 20
+
     private static let companionVoiceResponseSystemPrompt = """
     you're dot, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
+
+    you operate in steps. when your reply contains an action tag ([CLICK], [TYPE], [KEY], [MEDIA]) the action runs, the screen is re-captured, and you're called again with the new screen so you can continue. when the task is fully complete and there's nothing more to do, reply with just spoken text and NO action tags — that ends the turn. you have at most \(maxAgentStepsPerUserTurn) steps per user request, so be efficient. if you can finish in one step, do.
 
     rules:
     - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
@@ -1005,130 +1010,207 @@ final class CompanionManager: ObservableObject {
     // MARK: - AI Response Pipeline
 
     /// Captures a screenshot, sends it along with the transcript to Claude,
-    /// and plays the response aloud via ElevenLabs TTS. The cursor stays in
-    /// the spinner/processing state until TTS audio begins playing.
-    /// Claude's response may include a [POINT:x,y:label] tag which triggers
-    /// the buddy to fly to that element on screen.
+    /// and runs an agent loop: Claude can take actions, see the updated screen,
+    /// and take more actions, up to `maxAgentStepsPerUserTurn`. The loop ends
+    /// when Claude responds with no action tags (task complete), the step
+    /// budget is exhausted, the user moves the hardware mouse (taking control
+    /// back), or the task gets cancelled. The accumulated spoken text from
+    /// every step is concatenated and spoken aloud once at the end.
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
-        DotDebugLogger.log("response.pipeline", "starting Claude screenshot response", metadata: [
+        DotDebugLogger.log("response.pipeline", "starting agent loop", metadata: [
             "transcriptLength": transcript.count,
-            "conversationHistoryCount": conversationHistory.count
+            "conversationHistoryCount": conversationHistory.count,
+            "maxSteps": Self.maxAgentStepsPerUserTurn
         ])
 
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
             voiceState = .processing
 
+            // Baseline mouse position. Each computer-control click restores the
+            // hardware cursor to where the user left it (see
+            // CompanionComputerController.postCoordinateClickPreservingHardwareCursor),
+            // so between agent steps the cursor SHOULD still be within a few
+            // points of this baseline. If it isn't, the user grabbed the mouse
+            // back — we treat that as an explicit "stop" signal and abort the
+            // loop without performing any further actions.
+            let baselineUserMouseLocation = NSEvent.mouseLocation
+
+            // Per-turn working state across the agent loop.
+            var accumulatedSpokenText = ""
+            var perTurnStepHistory: [(userPlaceholder: String, assistantResponse: String)] = []
+            var didCancelDueToUserMouseMove = false
+            var stepsExecuted = 0
+
             do {
-                // Capture all connected screens so the AI has full context
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
-                DotDebugLogger.log("response.pipeline", "captured screens", metadata: [
-                    "screenCount": screenCaptures.count,
-                    "labels": screenCaptures.map(\.label).joined(separator: ",")
-                ])
+                stepLoop: for stepIndex in 0..<Self.maxAgentStepsPerUserTurn {
+                    guard !Task.isCancelled else { return }
 
-                guard !Task.isCancelled else { return }
-
-                // Build image labels with the actual screenshot pixel dimensions
-                // so Claude's coordinate space matches the image it sees. We
-                // scale from screenshot pixels to display points ourselves.
-                let labeledImages = screenCaptures.map { capture in
-                    let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
-                    return (data: capture.imageData, label: capture.label + dimensionInfo)
-                }
-
-                // Pass conversation history so Claude remembers prior exchanges
-                let historyForAPI = conversationHistory.map { entry in
-                    (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
-                }
-
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
-                    conversationHistory: historyForAPI,
-                    userPrompt: transcript,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
+                    // User-mouse-cancel check, skipped on the first step because
+                    // that's where we just took the baseline.
+                    if stepIndex > 0 {
+                        let currentMouseLocation = NSEvent.mouseLocation
+                        let mouseDelta = hypot(
+                            currentMouseLocation.x - baselineUserMouseLocation.x,
+                            currentMouseLocation.y - baselineUserMouseLocation.y
+                        )
+                        if mouseDelta > Self.userMouseMoveCancellationThresholdInPoints {
+                            DotDebugLogger.log("agent.loop", "stopping — user moved hardware mouse", metadata: [
+                                "step": stepIndex,
+                                "mouseDelta": Double(mouseDelta)
+                            ])
+                            didCancelDueToUserMouseMove = true
+                            break stepLoop
+                        }
                     }
-                )
-                DotDebugLogger.log("response.pipeline", "Claude response received", metadata: [
-                    "responseLength": fullResponseText.count
-                ])
 
-                guard !Task.isCancelled else { return }
+                    // Capture current screens. On step 0 this is the screen
+                    // when the user finished talking; on step N>0 this is the
+                    // screen AFTER the actions from step N-1 executed.
+                    let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                    DotDebugLogger.log("agent.loop", "captured screens for step", metadata: [
+                        "step": stepIndex,
+                        "screenCount": screenCaptures.count
+                    ])
 
-                // Parse hidden computer-control tags before the point tag so
-                // [POINT:...] can still be the last remaining control directive.
-                let computerControlParseResult = Self.parseComputerControlActions(from: fullResponseText)
-                let parseResult = Self.parsePointingCoordinates(from: computerControlParseResult.spokenText)
-                let spokenText = parseResult.spokenText
-                DotDebugLogger.log("response.pipeline", "parsed control tags", metadata: [
-                    "spokenTextLength": spokenText.count,
-                    "actionCount": computerControlParseResult.actions.count,
-                    "hasPointCoordinate": parseResult.coordinate != nil,
-                    "pointLabel": parseResult.elementLabel ?? "none",
-                    "pointScreen": parseResult.screenNumber ?? -1
-                ])
+                    guard !Task.isCancelled else { return }
 
-                // Handle element pointing if Claude returned coordinates.
-                // Switch to idle BEFORE setting the location so the triangle
-                // becomes visible and can fly to the target. Without this, the
-                // spinner hides the triangle and the flight animation is invisible.
-                let hasPointCoordinate = parseResult.coordinate != nil
-                let hasClickAction = computerControlParseResult.actions.contains { action in
-                    if case .click = action {
-                        return true
+                    let labeledImages = screenCaptures.map { capture in
+                        let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
+                        return (data: capture.imageData, label: capture.label + dimensionInfo)
                     }
-                    return false
-                }
-                if hasPointCoordinate || hasClickAction {
-                    voiceState = .idle
+
+                    // Persistent cross-turn history (prior user turns) +
+                    // this-turn step history (prior steps within this turn).
+                    let persistentConversationHistoryForAPI = conversationHistory.map { entry in
+                        (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
+                    }
+                    let combinedHistoryForAPI = persistentConversationHistoryForAPI + perTurnStepHistory
+
+                    // The first step uses the actual user transcript. Subsequent
+                    // steps use a continuation marker — Claude already has the
+                    // user's intent from the conversation history, and the new
+                    // screenshot tells it what changed.
+                    let userPromptForThisStep = stepIndex == 0
+                        ? transcript
+                        : "[continuing — the screen has been updated after your previous actions]"
+
+                    let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                        images: labeledImages,
+                        systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                        conversationHistory: combinedHistoryForAPI,
+                        userPrompt: userPromptForThisStep,
+                        onTextChunk: { _ in
+                            // No streaming text display — spinner stays until TTS plays
+                        }
+                    )
+                    DotDebugLogger.log("agent.loop", "Claude response received for step", metadata: [
+                        "step": stepIndex,
+                        "responseLength": fullResponseText.count
+                    ])
+
+                    guard !Task.isCancelled else { return }
+
+                    // Parse hidden computer-control tags before the point tag so
+                    // [POINT:...] can still be the last remaining control directive.
+                    let computerControlParseResult = Self.parseComputerControlActions(from: fullResponseText)
+                    let parseResult = Self.parsePointingCoordinates(from: computerControlParseResult.spokenText)
+                    let stepSpokenText = parseResult.spokenText
+                    DotDebugLogger.log("agent.loop", "parsed step", metadata: [
+                        "step": stepIndex,
+                        "spokenTextLength": stepSpokenText.count,
+                        "actionCount": computerControlParseResult.actions.count,
+                        "hasPointCoordinate": parseResult.coordinate != nil
+                    ])
+
+                    // Switch to idle BEFORE setting the location so the
+                    // triangle is visible and can fly to the target.
+                    let hasPointCoordinate = parseResult.coordinate != nil
+                    let hasClickAction = computerControlParseResult.actions.contains { action in
+                        if case .click = action {
+                            return true
+                        }
+                        return false
+                    }
+                    if hasPointCoordinate || hasClickAction {
+                        voiceState = .idle
+                    }
+
+                    if let pointCoordinate = parseResult.coordinate,
+                       let mappedPointLocation = Self.mapScreenshotCoordinateToGlobalScreenLocation(
+                        pointCoordinate,
+                        screenNumber: parseResult.screenNumber,
+                        screenCaptures: screenCaptures
+                       ) {
+                        detectedElementScreenLocation = mappedPointLocation.globalLocation
+                        detectedElementDisplayFrame = mappedPointLocation.displayFrame
+                        DotAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
+                    }
+
+                    await performComputerControlActions(
+                        computerControlParseResult.actions,
+                        screenCaptures: screenCaptures
+                    )
+
+                    // Accumulate text for end-of-turn TTS.
+                    let trimmedStepSpokenText = stepSpokenText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmedStepSpokenText.isEmpty {
+                        if accumulatedSpokenText.isEmpty {
+                            accumulatedSpokenText = trimmedStepSpokenText
+                        } else {
+                            accumulatedSpokenText += " " + trimmedStepSpokenText
+                        }
+                    }
+
+                    // Append this step's exchange to the per-turn history so
+                    // the next iteration's Claude call can see what already
+                    // happened.
+                    perTurnStepHistory.append((
+                        userPlaceholder: userPromptForThisStep,
+                        assistantResponse: fullResponseText
+                    ))
+                    stepsExecuted = stepIndex + 1
+
+                    // If Claude returned no action tags, the agent has decided
+                    // the task is complete. Exit the loop.
+                    if computerControlParseResult.actions.isEmpty {
+                        DotDebugLogger.log("agent.loop", "stopping — no actions returned", metadata: [
+                            "stepsExecuted": stepsExecuted
+                        ])
+                        break stepLoop
+                    }
                 }
 
-                if let pointCoordinate = parseResult.coordinate,
-                   let mappedPointLocation = Self.mapScreenshotCoordinateToGlobalScreenLocation(
-                    pointCoordinate,
-                    screenNumber: parseResult.screenNumber,
-                    screenCaptures: screenCaptures
-                   ) {
-                    detectedElementScreenLocation = mappedPointLocation.globalLocation
-                    detectedElementDisplayFrame = mappedPointLocation.displayFrame
-                    DotAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
-                    print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
-                    DotDebugLogger.log("response.pipeline", "mapped point coordinate", metadata: [
-                        "x": Int(pointCoordinate.x),
-                        "y": Int(pointCoordinate.y),
-                        "label": parseResult.elementLabel ?? "element",
-                        "screen": parseResult.screenNumber ?? -1,
-                        "globalX": Int(mappedPointLocation.globalLocation.x),
-                        "globalY": Int(mappedPointLocation.globalLocation.y)
-                    ])
-                } else {
-                    print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
-                    DotDebugLogger.log("response.pipeline", "no mapped point coordinate", metadata: [
-                        "label": parseResult.elementLabel ?? "none"
-                    ])
+                if didCancelDueToUserMouseMove {
+                    let cancellationNote = "let me know when you want me to take over again."
+                    accumulatedSpokenText = accumulatedSpokenText.isEmpty
+                        ? "okay, you took the mouse back. \(cancellationNote)"
+                        : accumulatedSpokenText + " " + cancellationNote
                 }
-
-                await performComputerControlActions(
-                    computerControlParseResult.actions,
-                    screenCaptures: screenCaptures
-                )
 
                 await saveConversationAndSpeakResponse(
                     transcript: transcript,
-                    spokenText: spokenText
+                    spokenText: accumulatedSpokenText
                 )
+
+                DotDebugLogger.log("agent.loop", "finished", metadata: [
+                    "stepsExecuted": stepsExecuted,
+                    "cancelledByMouseMove": didCancelDueToUserMouseMove,
+                    "finalSpokenTextLength": accumulatedSpokenText.count
+                ])
             } catch is CancellationError {
                 // User spoke again — response was interrupted
-                DotDebugLogger.log("response.pipeline", "cancelled")
+                DotDebugLogger.log("agent.loop", "cancelled mid-step", metadata: [
+                    "stepsExecuted": stepsExecuted
+                ])
             } catch {
                 DotAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
-                DotDebugLogger.log("response.pipeline", "failed", metadata: [
-                    "error": error.localizedDescription
+                DotDebugLogger.log("agent.loop", "failed", metadata: [
+                    "error": error.localizedDescription,
+                    "stepsExecuted": stepsExecuted
                 ])
                 speakResponsePipelineErrorFallback(for: error)
             }
@@ -1136,7 +1218,7 @@ final class CompanionManager: ObservableObject {
             if !Task.isCancelled {
                 voiceState = .idle
                 scheduleTransientHideIfNeeded()
-                DotDebugLogger.log("response.pipeline", "finished", metadata: interactionStateLogMetadata())
+                DotDebugLogger.log("agent.loop", "voice state reset", metadata: interactionStateLogMetadata())
             }
         }
     }
