@@ -21,7 +21,6 @@
 
       <div class="cta-row">
         <a id="downloadButton" href="#" class="button">↓ Download for macOS</a>
-        <a id="signInButton" href="#" class="button secondary">Sign in with Google</a>
       </div>
       <p class="muted" style="margin-top: 16px;">macOS 14.2 or later. After downloading, open the app and sign in.</p>
     </section>
@@ -62,13 +61,6 @@
       var githubLink = document.getElementById("githubLink");
       if (githubLink && config.githubURL) {
         githubLink.setAttribute("href", config.githubURL);
-      }
-      var signInButton = document.getElementById("signInButton");
-      if (signInButton && config.vibeIdBaseURL) {
-        var returnTo = "https://vibe-research.net/account.html";
-        var signInUrl = config.vibeIdBaseURL.replace(/\/$/, "") +
-          "/auth/start?project=dot&return_to=" + encodeURIComponent(returnTo);
-        signInButton.setAttribute("href", signInUrl);
       }
     })();
   </script>
