@@ -54,6 +54,15 @@ a:hover { text-decoration: underline; }
   background: var(--accent);
   box-shadow: 0 0 12px rgba(96, 165, 250, 0.6);
 }
+.brand-large {
+  font-size: 28px;
+  margin: 32px 0 0;
+}
+.brand-large .brand-dot {
+  width: 22px;
+  height: 22px;
+  box-shadow: 0 0 18px rgba(96, 165, 250, 0.7);
+}
 
 .hero h1 {
   margin: 24px 0 14px;
