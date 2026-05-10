@@ -3,15 +3,10 @@
 #   cp .dev.vars.example .dev.vars
 #
 # `wrangler dev` will load these into the Worker environment automatically.
-
-# Upstream inference APIs
-ANTHROPIC_API_KEY="sk-ant-..."
-ASSEMBLYAI_API_KEY="..."
-ELEVENLABS_API_KEY="..."
+# This worker is a stateless forwarder; all upstream API keys live in vibe-id.
 
 # Shared secret used to authenticate calls from this worker to vibe-id's
-# /v1/check and /v1/record. Must match VIBE_ID_INTERNAL_KEY in the vibe-id
-# worker's secrets.
+# /v1/* endpoints. Must match VIBE_ID_INTERNAL_KEY in the vibe-id worker.
 VIBE_ID_INTERNAL_KEY="dev-internal-key-change-me"
 
 # Override the public vibe-id base URL for local dev so requests go to the
