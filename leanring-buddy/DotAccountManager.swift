@@ -19,6 +19,7 @@ final class DotAccountManager: ObservableObject {
     @Published private(set) var userPictureURL: URL? = nil
     @Published private(set) var dailyChatLimit: Int? = nil
     @Published private(set) var todayChatCount: Int = 0
+    @Published private(set) var creditsBalance: Int? = nil
     @Published private(set) var lastErrorMessage: String? = nil
 
     private static let projectId = "dot"
@@ -128,7 +129,7 @@ final class DotAccountManager: ObservableObject {
             }
 
             let parsed = try JSONDecoder().decode(AuthMeResponse.self, from: data)
-            applyAccountSnapshot(user: parsed.user, quotas: parsed.quotas, usageForCurrentProject: parsed.usage_today_by_project[Self.projectId] ?? [:])
+            applyAccountSnapshot(user: parsed.user, quotas: parsed.quotas, usageForCurrentProject: parsed.usage_today_by_project[Self.projectId] ?? [:], creditsBalance: parsed.credits_balance)
         } catch {
             lastErrorMessage = "Couldn't reach the identity server: \(error.localizedDescription)"
         }
@@ -169,7 +170,7 @@ final class DotAccountManager: ObservableObject {
                 lastErrorMessage = "Couldn't save your sign-in to the macOS Keychain. Try again, and click Always Allow if macOS asks for your password."
                 return
             }
-            applyAccountSnapshot(user: parsed.user, quotas: parsed.quotas, usageForCurrentProject: [:])
+            applyAccountSnapshot(user: parsed.user, quotas: parsed.quotas, usageForCurrentProject: [:], creditsBalance: nil)
             isSignedIn = true
             await refreshCurrentUser()
         } catch {
@@ -186,7 +187,7 @@ final class DotAccountManager: ObservableObject {
         _ = try? await urlSession.data(for: request)
     }
 
-    private func applyAccountSnapshot(user: VibeIdUser, quotas: [String: Int], usageForCurrentProject: [String: Int]) {
+    private func applyAccountSnapshot(user: VibeIdUser, quotas: [String: Int], usageForCurrentProject: [String: Int], creditsBalance: Int?) {
         userEmail = user.email
         userDisplayName = user.display_name
         if let pictureURLString = user.picture_url, let pictureURL = URL(string: pictureURLString) {
@@ -196,6 +197,11 @@ final class DotAccountManager: ObservableObject {
         }
         dailyChatLimit = quotas["chat"]
         todayChatCount = usageForCurrentProject["chat"] ?? 0
+        // Only update if we got a value — /auth/exchange doesn't return one,
+        // so a fresh sign-in shouldn't clobber what /auth/me already loaded.
+        if let creditsBalance {
+            self.creditsBalance = creditsBalance
+        }
     }
 }
 
@@ -209,6 +215,7 @@ private struct AuthMeResponse: Decodable {
     let user: VibeIdUser
     let quotas: [String: Int]
     let usage_today_by_project: [String: [String: Int]]
+    let credits_balance: Int?
 }
 
 private struct VibeIdUser: Decodable {
