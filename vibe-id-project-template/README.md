@@ -4,71 +4,40 @@ Drop-in starter for a new product that uses [vibe-id](https://api.accounts.vibe-
 
 ## What you get
 
-- **`worker/`** — A 75-line Cloudflare Worker that forwards `/chat`, `/tts`, `/transcribe-token` to vibe-id's `/v1/proxy/*` endpoints. Holds zero secrets beyond a shared internal key.
-- **`swift/`** — A Swift SDK (`VibeIdAccount.swift` + `VibeIdInstallTokenStore.swift`) for macOS apps. ~250 LOC total, single file each, no SPM dependencies.
-- **`web/`** — A JS SDK (`vibeid.js`) and a starter account page that anyone signed in to vibe-id can use across all your projects.
+- **`swift/`** — Swift SDK (`VibeIdAccount.swift` + `VibeIdInstallTokenStore.swift`) for macOS apps. ~250 LOC total, single file each, no SPM dependencies.
+- **`web/`** — JS SDK (`vibeid.js`) and a starter cross-project account page.
+
+There's no worker template anymore. vibe-id serves `/chat`, `/tts`, and `/transcribe-token` directly — your project just points its client at `https://api.accounts.vibe-research.net` and passes its `project=X` parameter on sign-in. The install token is project-scoped at mint time, so vibe-id derives the project from the token alone on subsequent calls.
 
 ## Architecture
 
 ```
-your app  ─── Bearer install_token ───►  api.<project>.<your domain>
-                                              │ env.VIBE_ID.fetch
-                                              │ (in-process, ~0ms)
-                                              ▼
-                                         api.accounts.vibe-research.net (vibe-id)
+your app ── Bearer install_token ──►  api.accounts.vibe-research.net (vibe-id)
                                               │
                                               ▼
-                                         Anthropic / ElevenLabs / DALL-E / etc.
+                                         Anthropic / ElevenLabs / AssemblyAI / etc.
 ```
 
-Your worker is stateless and 75 LOC. All upstream API keys, user accounts, OAuth, quotas, and usage data live on vibe-id. To add a new endpoint type, you register it in vibe-id's `project_endpoints` table — no code change to your worker.
+vibe-id does auth + quota + upstream + record in a single round trip. You don't need to deploy any infra for a new project — just register the project row.
 
 ## Bootstrap a new project
 
 ### 1. Register the project in vibe-id (one row)
 
-```sql
-INSERT INTO projects (id, display_name, url_scheme) VALUES
-  ('myproject', 'My Project', 'myproject');
-
-INSERT INTO project_endpoints (project_id, endpoint, upstream_url, upstream_secret_name, amount_extractor) VALUES
-  ('myproject', 'chat',             'https://api.anthropic.com/v1/messages',                'ANTHROPIC_API_KEY',  'fixed:1'),
-  ('myproject', 'tts',              'https://api.elevenlabs.io/v1/text-to-speech/{voice}',  'ELEVENLABS_API_KEY', 'json:text.length'),
-  ('myproject', 'transcribe-token', 'https://streaming.assemblyai.com/v3/token',            'ASSEMBLYAI_API_KEY', 'fixed:1');
-```
-
-Then set per-user defaults in `quotas` (or rely on the global default).
-
-### 2. Copy this template
+In the vibe-id worker dir:
 
 ```bash
-cp -r vibe-id-project-template ~/projects/my-new-project
-cd ~/projects/my-new-project
+npx wrangler d1 execute vibe-id --remote --command "
+INSERT INTO projects (id, display_name, url_scheme, website_origin, created_at)
+VALUES ('myproject', 'My Project', 'myproject', 'https://myproject.example', strftime('%s', 'now'));
+"
 ```
 
-### 3. Replace placeholders
+If your project needs custom upstream endpoints (different model, different provider), also add `project_endpoints` rows — see `VIBE_ID_HANDOFF.md` for the schema.
 
-In `worker/wrangler.toml`:
-- `name = "myproject-proxy"`
-- `routes` → `api.myproject.<your-domain>`
+### 2. Wire your client
 
-In `swift/VibeIdAccount.swift`:
-- The `init` takes `projectId` and `urlScheme` — pass `"myproject"` and `"myproject"` from your app.
-
-In `web/vibeid.js`:
-- The default config object's `projectId`.
-
-### 4. Deploy
-
-```bash
-cd worker
-npx wrangler secret put VIBE_ID_INTERNAL_KEY  # share with vibe-id
-npx wrangler deploy
-```
-
-### 5. Wire your app
-
-**macOS / Swift:**
+**macOS / Swift** — copy `swift/VibeIdAccount.swift` and `swift/VibeIdInstallTokenStore.swift` into your project, then:
 
 ```swift
 import Foundation
@@ -92,6 +61,7 @@ func application(_ application: NSApplication, open urls: [URL]) {
 // On every authenticated request:
 let token = VibeIdInstallTokenStore.currentInstallToken(forProjectId: "myproject")
 request.setValue("Bearer \(token!)", forHTTPHeaderField: "Authorization")
+// POST to https://api.accounts.vibe-research.net/chat (or /tts, /transcribe-token)
 ```
 
 Plus add to `Info.plist`:
@@ -109,31 +79,47 @@ Plus add to `Info.plist`:
 </array>
 ```
 
-**Web:**
+**Web** — copy `web/vibeid.js`, then:
 
 ```html
 <script src="vibeid.js"></script>
 <script>
-  VibeId.configure({ projectId: "myproject" });
-  document.getElementById("signin").onclick = () => VibeId.signIn();
-  VibeId.onSignedIn((user) => console.log("hello", user.email));
+  VibeId.configure({
+    projectId: "myproject",
+    vibeIdBaseURL: "https://api.accounts.vibe-research.net",
+  });
+  VibeId.bootstrap().then((state) => {
+    if (state.signedIn) renderSignedIn(state);
+    else renderSignedOut();
+  });
 </script>
 ```
+
+That's it. No worker deploy, no D1 of your own, no per-project Cloudflare zone.
 
 ## Forking — using your own auth instead
 
 The contract any vibe-id-replacement must implement:
 
 ```
-GET  /auth/start?project=X&device_id=Y&return_to=Z   → 302 to OAuth, eventually 302 to <scheme>://auth?code=...
-POST /auth/exchange { code, device_id, device_label } → { install_token, user, quotas, usage_today_by_project }
-GET  /auth/me  Bearer install_token                  → { user, quotas, usage_today_by_project }
-POST /auth/signout  Bearer install_token             → { ok: true }
-POST /v1/proxy/{endpoint}  Bearer + x-internal-key + x-project + body  → upstream response
+GET  /auth/start?project=X&device_id=Y&return_to=Z
+     → 302 to OAuth → eventually 302 to <scheme>://auth?code=...
+
+POST /auth/exchange { code, device_id, device_label }
+     → { install_token, user, quotas, usage_today_by_project }
+
+GET  /auth/me  Bearer install_token
+     → { user, quotas, usage_today_by_project }
+
+POST /auth/signout  Bearer install_token  → { ok: true }
+
+POST /chat  Bearer install_token  → upstream chat response (streaming SSE)
+POST /tts   Bearer install_token  → upstream TTS audio
+POST /transcribe-token  Bearer install_token  → AssemblyAI session token
 ```
 
-Implement those five endpoints with your auth provider of choice and point the SDK's `vibeIdBaseURL` at it. No other changes needed.
+Implement those endpoints with your auth provider of choice and point the SDK's `vibeIdBaseURL` at it. No other changes needed.
 
 ## License
 
-Pick whatever fits your project. The template itself is MIT.
+The template itself is MIT.
