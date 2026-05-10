@@ -498,7 +498,7 @@ final class CompanionManager: ObservableObject {
     /// re-bind a freshly granted permission within a running process on
     /// macOS 14.2+ / 15.x.
     func relaunchAppAfterPermissionChange() {
-        ClickyDebugLogger.log("permissions.screenContent", "relaunching to pick up freshly granted permission")
+        DotDebugLogger.log("permissions.screenContent", "relaunching to pick up freshly granted permission")
         let appBundleURL = Bundle.main.bundleURL
         let openConfiguration = NSWorkspace.OpenConfiguration()
         openConfiguration.createsNewApplicationInstance = true
@@ -871,6 +871,18 @@ final class CompanionManager: ObservableObject {
 
     when you type text into the currently focused field, append: [TYPE:text to type]. for newlines in typed text, write \\n. don't put a closing square bracket inside typed text.
 
+    when you need to press a special key or a keyboard shortcut (anything that isn't just typing characters), append: [KEY:keyname]. supported names are case-insensitive:
+    - editing keys: backspace (also accepts delete), forwarddelete, return (also accepts enter), tab, space, escape
+    - arrow keys: up, down, left, right
+    - navigation: home, end, pageup, pagedown
+    - letters a–z, digits 0–9
+    - function keys f1 through f12
+    - combine with modifiers using +: cmd, shift, ctrl, option (also accepts alt or opt). examples: [KEY:cmd+a], [KEY:cmd+shift+z], [KEY:ctrl+space]
+
+    use [KEY:...] for ANY non-character keystroke. never try to express a special key as part of [TYPE:...] (TYPE only types literal characters and cannot send backspace, modifier shortcuts, or function keys).
+
+    to clear all the text in a focused input, use this exact pattern: [KEY:cmd+a][KEY:backspace]. to clear and replace text in an input you can see: [CLICK:x,y:input field][KEY:cmd+a][KEY:backspace][TYPE:new content].
+
     if the task needs multiple actions, append all action tags in execution order, for example: [CLICK:430,220:name field][TYPE:hello].
 
     action tags and point tags are hidden control tags. write normal spoken text first, then append the tags. never read or explain the tags.
@@ -883,6 +895,10 @@ final class CompanionManager: ObservableObject {
     - user asks you to click the search field: "i'll click the search field. [POINT:520,80:search field][CLICK:520,80:search field]"
     - user says open the settings tab: "opening settings. [POINT:940,74:settings][CLICK:940,74:settings]"
     - user asks you to type a phrase into the focused field: "i'll type that in. [POINT:none][TYPE:hello from dot]"
+    - user asks you to delete or clear what they typed in the chat box at (430,520): "clearing it. [POINT:none][CLICK:430,520:chat box][KEY:cmd+a][KEY:backspace]"
+    - user asks you to send the message currently in the focused input: "sending. [POINT:none][KEY:return]"
+    - user asks you to undo the last thing: "undoing. [POINT:none][KEY:cmd+z]"
+    - user asks you to close the current tab: "closing the tab. [POINT:none][KEY:cmd+w]"
     - user asks you to stop the music: "done. [POINT:none][MEDIA:play_pause]"
     - user asks you to skip the song: "skipping. [POINT:none][MEDIA:next]"
     - user asks you to go back a track: "going back. [POINT:none][MEDIA:previous]"
@@ -1316,6 +1332,7 @@ final class CompanionManager: ObservableObject {
         case click(coordinate: CGPoint, elementLabel: String?, screenNumber: Int?)
         case mediaControl(CompanionMediaControlCommand)
         case typeText(String)
+        case keyPress(CompanionKeystroke)
     }
 
     private struct ComputerControlActionParseResult {
@@ -1412,6 +1429,17 @@ final class CompanionManager: ObservableObject {
                     "characterCount": text.count
                 ])
                 try? await Task.sleep(nanoseconds: 80_000_000)
+
+            case .keyPress(let keystroke):
+                DotDebugLogger.log("computer.actions", "key action requested", metadata: [
+                    "keystroke": keystroke.humanReadableDescription
+                ])
+                CompanionComputerController.pressKeystroke(keystroke)
+                print("⌨️ Computer control: pressed \(keystroke.humanReadableDescription)")
+                DotDebugLogger.log("computer.actions", "key action completed", metadata: [
+                    "keystroke": keystroke.humanReadableDescription
+                ])
+                try? await Task.sleep(nanoseconds: 80_000_000)
             }
         }
         DotDebugLogger.log("computer.actions", "finished actions", metadata: [
@@ -1436,10 +1464,12 @@ final class CompanionManager: ObservableObject {
         let clickPattern = #"\[CLICK:(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?\]"#
         let mediaPattern = #"\[MEDIA:([a-zA-Z_\- ]+)\]"#
         let typePattern = #"\[TYPE:([^\]]*)\]"#
+        let keyPattern = #"\[KEY:([^\]]+)\]"#
         let nonePatterns = [
             #"\[CLICK:none\]"#,
             #"\[MEDIA:none\]"#,
-            #"\[TYPE:none\]"#
+            #"\[TYPE:none\]"#,
+            #"\[KEY:none\]"#
         ]
         var actionMatches: [ComputerControlActionMatch] = []
 
@@ -1520,8 +1550,34 @@ final class CompanionManager: ObservableObject {
             }
         }
 
+        if let keyRegex = try? NSRegularExpression(pattern: keyPattern, options: [.caseInsensitive]) {
+            let matches = keyRegex.matches(
+                in: responseText,
+                range: NSRange(responseText.startIndex..., in: responseText)
+            )
+
+            for match in matches {
+                guard let keySpecRange = Range(match.range(at: 1), in: responseText) else {
+                    continue
+                }
+
+                let rawKeySpec = String(responseText[keySpecRange])
+                guard let parsedKeystroke = CompanionComputerController.parseKeystroke(fromKeySpec: rawKeySpec) else {
+                    DotDebugLogger.log("computer.actions", "ignoring unparseable KEY tag", metadata: [
+                        "rawKeySpec": rawKeySpec
+                    ])
+                    continue
+                }
+
+                actionMatches.append(ComputerControlActionMatch(
+                    utf16Location: match.range.location,
+                    action: .keyPress(parsedKeystroke)
+                ))
+            }
+        }
+
         var spokenText = responseText
-        for pattern in [clickPattern, mediaPattern, typePattern] + nonePatterns {
+        for pattern in [clickPattern, mediaPattern, typePattern, keyPattern] + nonePatterns {
             guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
                 continue
             }
