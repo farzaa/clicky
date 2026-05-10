@@ -160,6 +160,7 @@ echo "📦 Archiving..."
 xcodebuild archive \
     -scheme "${SCHEME}" \
     -archivePath "${ARCHIVE_PATH}" \
+    -destination "generic/platform=macOS" \
     -allowProvisioningUpdates \
     -allowProvisioningDeviceRegistration \
     MARKETING_VERSION="${MARKETING_VERSION}" \
