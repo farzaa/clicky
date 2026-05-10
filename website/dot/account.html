@@ -39,7 +39,18 @@
       <div class="card">
         <div class="label">Credits</div>
         <div style="font-size: 28px; font-weight: 700; margin-top: 4px;"><span id="creditsBalance">—</span></div>
-        <div class="muted" style="margin-top: 4px;">Spendable across every Vibe Research project that charges credits (today: ottoauth).</div>
+        <div class="muted" style="margin-top: 4px;">Spendable across every Vibe Research project that charges credits.</div>
+      </div>
+
+      <div class="card" id="dailyCapCard" style="display: none;">
+        <div class="row between" style="align-items: baseline;">
+          <div class="label">Today's spend</div>
+          <div class="muted"><span id="spentTodayLabel">—</span> of <span id="dailyCapLabel">—</span></div>
+        </div>
+        <div style="margin-top: 10px; height: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 999px; overflow: hidden;">
+          <div id="spentTodayBar" style="height: 100%; width: 0%; background: var(--accent); transition: width 0.3s ease;"></div>
+        </div>
+        <div class="muted" style="margin-top: 8px;">Resets on a rolling 24-hour window. Bar turns red as you approach the cap.</div>
       </div>
 
       <div id="projectCardsContainer"></div>
@@ -128,46 +139,74 @@
         var container = document.getElementById("projectCardsContainer");
         container.innerHTML = "";
 
-        var quotas = meResponse.quotas || {};
         var usageByProject = meResponse.usage_today_by_project || {};
-        var projectIds = Object.keys(usageByProject).sort();
-
-        // Make sure the project the user just signed into is shown even if
-        // they haven't used it yet today (zero-state card with limits).
-        if (projectIds.indexOf(PROJECT_ID) === -1) {
-          projectIds.unshift(PROJECT_ID);
-        }
+        var spentByProject = meResponse.spent_today_by_project_cents || {};
+        // Show every project the user has either spent on or used today,
+        // plus the project they just signed into (zero-state).
+        var projectIdSet = {};
+        Object.keys(usageByProject).forEach(function (id) { projectIdSet[id] = true; });
+        Object.keys(spentByProject).forEach(function (id) { projectIdSet[id] = true; });
+        projectIdSet[PROJECT_ID] = true;
+        var projectIds = Object.keys(projectIdSet).sort();
 
         projectIds.forEach(function (projectId) {
           var endpointUsage = usageByProject[projectId] || {};
-          // Show every endpoint we have a quota for (so a brand-new user
-          // sees the full set of limits even with all zeroes), plus any
-          // endpoint that's actually been used.
-          var endpointNamesShown = Object.keys(quotas).concat(Object.keys(endpointUsage))
-            .filter(function (value, index, array) { return array.indexOf(value) === index; })
-            .sort();
+          var spentCents = spentByProject[projectId] || 0;
+          var endpointNamesShown = Object.keys(endpointUsage).sort();
 
           var endpointCellsHtml = endpointNamesShown.map(function (endpointName) {
             var usedAmount = endpointUsage[endpointName] || 0;
-            var limit = quotas[endpointName];
             var displayName = ENDPOINT_DISPLAY_NAMES[endpointName] || endpointName;
             return '<div class="usage-cell">' +
                    '<div class="name">' + escapeHtml(displayName) + '</div>' +
                    '<div class="num">' + usedAmount + '</div>' +
-                   (limit != null ? '<div class="limit">of ' + limit + '</div>' : '') +
                    '</div>';
           }).join("");
+
+          var emptyStateHtml = endpointNamesShown.length === 0
+            ? '<p class="muted" style="margin: 6px 0 0;">No activity yet today.</p>'
+            : '';
 
           var projectCardElement = document.createElement("div");
           projectCardElement.className = "card";
           projectCardElement.innerHTML =
-            '<h2 style="margin-top: 0; margin-bottom: 4px; font-size: 16px;">' +
-              escapeHtml(projectId) +
-              ' <span class="muted" style="font-weight: 400;">— today (rolling 24h)</span>' +
-            '</h2>' +
-            '<div class="usage-grid">' + endpointCellsHtml + '</div>';
+            '<div class="row between" style="align-items: baseline;">' +
+              '<h2 style="margin: 0; font-size: 16px;">' + escapeHtml(projectId) + '</h2>' +
+              '<div class="muted">spent today: <strong style="color: var(--text-secondary);">' + formatCents(spentCents) + '</strong></div>' +
+            '</div>' +
+            '<div class="usage-grid" style="margin-top: 12px;">' + endpointCellsHtml + '</div>' +
+            emptyStateHtml;
           container.appendChild(projectCardElement);
         });
+      }
+
+      function formatCents(cents) {
+        return "$" + (cents / 100).toFixed(2);
+      }
+
+      function renderDailyCapBar(meResponse) {
+        var capCents = meResponse.daily_cap_cents;
+        var spentCents = meResponse.spent_today_cents;
+        var dailyCapCard = document.getElementById("dailyCapCard");
+        if (typeof capCents !== "number" || typeof spentCents !== "number" || capCents <= 0) {
+          dailyCapCard.style.display = "none";
+          return;
+        }
+        dailyCapCard.style.display = "";
+        document.getElementById("spentTodayLabel").textContent = formatCents(spentCents);
+        document.getElementById("dailyCapLabel").textContent = formatCents(capCents);
+
+        var fillPercent = Math.min(100, Math.max(0, (spentCents / capCents) * 100));
+        var barElement = document.getElementById("spentTodayBar");
+        barElement.style.width = fillPercent + "%";
+        // Bar color: blue under 70%, amber 70-90%, red 90%+
+        if (fillPercent >= 90) {
+          barElement.style.background = "var(--danger)";
+        } else if (fillPercent >= 70) {
+          barElement.style.background = "#f59e0b";
+        } else {
+          barElement.style.background = "var(--accent)";
+        }
       }
 
       function showSignedInWithMe(meResponse) {
@@ -179,11 +218,11 @@
         document.getElementById("emailLabel").textContent = meResponse.user.email;
         var creditsBalanceElement = document.getElementById("creditsBalance");
         if (creditsBalanceElement) {
-          // Credits are stored as integer cents; display as dollars.
           creditsBalanceElement.textContent = (typeof meResponse.credits_balance === "number")
-            ? "$" + (meResponse.credits_balance / 100).toFixed(2)
+            ? formatCents(meResponse.credits_balance)
             : "—";
         }
+        renderDailyCapBar(meResponse);
         renderProjectCards(meResponse);
       }
 
