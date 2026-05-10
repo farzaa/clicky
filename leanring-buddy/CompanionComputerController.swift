@@ -65,10 +65,168 @@ enum CompanionMediaControlCommand: String {
     }
 }
 
+/// A keystroke described as a virtual key + modifier flags.
+/// Used by the [KEY:...] action tag so Claude can press special keys
+/// (Backspace, Return, Escape, arrow keys) and modifier shortcuts
+/// (Cmd+A, Cmd+Shift+Z) instead of being limited to typing literal
+/// characters via the [TYPE:...] tag.
+struct CompanionKeystroke {
+    let virtualKey: CGKeyCode
+    let modifierFlags: CGEventFlags
+    /// Canonical form like "cmd+a" or "backspace" for logging.
+    let humanReadableDescription: String
+}
+
 enum CompanionComputerController {
     private static let mediaKeySystemDefinedSubtype: Int16 = 8
     private static let mediaKeyDownStateRawValue = 0xA
     private static let mediaKeyUpStateRawValue = 0xB
+
+    /// Mapping from key names the model is allowed to use to macOS virtual
+    /// key codes (kVK_* constants from <HIToolbox/Events.h>). Keep this list
+    /// curated: every name here is part of the public surface the model is
+    /// taught about in the system prompt. Do not add aliases that aren't
+    /// documented in the prompt — Claude will only use what it's told about.
+    private static let virtualKeyCodeByLowercaseKeyName: [String: CGKeyCode] = [
+        // Letters
+        "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3, "g": 5, "h": 4,
+        "i": 34, "j": 38, "k": 40, "l": 37, "m": 46, "n": 45, "o": 31, "p": 35,
+        "q": 12, "r": 15, "s": 1, "t": 17, "u": 32, "v": 9, "w": 13, "x": 7,
+        "y": 16, "z": 6,
+        // Digits
+        "0": 29, "1": 18, "2": 19, "3": 20, "4": 21, "5": 23,
+        "6": 22, "7": 26, "8": 28, "9": 25,
+        // Whitespace and editing keys. macOS calls Backspace "Delete" and
+        // Forward-Delete "Forward Delete"; we accept both spellings of each
+        // because Claude tends to think of the big key as "backspace".
+        "return": 36, "enter": 36,
+        "tab": 48,
+        "space": 49, "spacebar": 49,
+        "backspace": 51, "delete": 51,
+        "forwarddelete": 117, "fwddelete": 117, "delete-forward": 117,
+        "escape": 53, "esc": 53,
+        // Arrow keys
+        "up": 126, "uparrow": 126,
+        "down": 125, "downarrow": 125,
+        "left": 123, "leftarrow": 123,
+        "right": 124, "rightarrow": 124,
+        // Navigation
+        "home": 115,
+        "end": 119,
+        "pageup": 116, "pgup": 116,
+        "pagedown": 121, "pgdown": 121, "pgdn": 121,
+        // Function keys
+        "f1": 122, "f2": 120, "f3": 99, "f4": 118,
+        "f5": 96, "f6": 97, "f7": 98, "f8": 100,
+        "f9": 101, "f10": 109, "f11": 103, "f12": 111
+    ]
+
+    private static let modifierFlagByLowercaseModifierName: [String: CGEventFlags] = [
+        "cmd": .maskCommand, "command": .maskCommand, "meta": .maskCommand, "win": .maskCommand,
+        "ctrl": .maskControl, "control": .maskControl,
+        "shift": .maskShift,
+        "alt": .maskAlternate, "opt": .maskAlternate, "option": .maskAlternate
+    ]
+
+    /// Parses a key spec like "cmd+a", "backspace", or "cmd+shift+z" into
+    /// a CompanionKeystroke. Returns nil if the spec is empty, unknown, or
+    /// names more than one non-modifier key.
+    ///
+    /// Accepts "+", "-", and whitespace as separators because Claude's output
+    /// varies. Names are case-insensitive.
+    static func parseKeystroke(fromKeySpec rawKeySpec: String) -> CompanionKeystroke? {
+        let normalizedKeySpec = rawKeySpec
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalizedKeySpec.isEmpty else { return nil }
+
+        let separatorCharacterSet = CharacterSet(charactersIn: "+- \t")
+        let tokens = normalizedKeySpec
+            .components(separatedBy: separatorCharacterSet)
+            .filter { !$0.isEmpty }
+        guard !tokens.isEmpty else { return nil }
+
+        var combinedModifierFlags: CGEventFlags = []
+        var resolvedVirtualKey: CGKeyCode?
+        var resolvedKeyName: String?
+
+        for token in tokens {
+            if let modifierFlag = modifierFlagByLowercaseModifierName[token] {
+                combinedModifierFlags.insert(modifierFlag)
+                continue
+            }
+
+            if let virtualKey = virtualKeyCodeByLowercaseKeyName[token] {
+                // Reject specs that name more than one non-modifier key.
+                // E.g. "a+b" is ambiguous and almost certainly a model mistake.
+                guard resolvedVirtualKey == nil else { return nil }
+                resolvedVirtualKey = virtualKey
+                resolvedKeyName = token
+                continue
+            }
+
+            return nil
+        }
+
+        guard let virtualKey = resolvedVirtualKey, let keyName = resolvedKeyName else {
+            return nil
+        }
+
+        let humanReadableDescription = canonicalKeystrokeDescription(
+            modifierFlags: combinedModifierFlags,
+            keyName: keyName
+        )
+
+        return CompanionKeystroke(
+            virtualKey: virtualKey,
+            modifierFlags: combinedModifierFlags,
+            humanReadableDescription: humanReadableDescription
+        )
+    }
+
+    private static func canonicalKeystrokeDescription(
+        modifierFlags: CGEventFlags,
+        keyName: String
+    ) -> String {
+        var modifierTokens: [String] = []
+        if modifierFlags.contains(.maskControl) { modifierTokens.append("ctrl") }
+        if modifierFlags.contains(.maskAlternate) { modifierTokens.append("opt") }
+        if modifierFlags.contains(.maskShift) { modifierTokens.append("shift") }
+        if modifierFlags.contains(.maskCommand) { modifierTokens.append("cmd") }
+        return (modifierTokens + [keyName]).joined(separator: "+")
+    }
+
+    /// Posts a real keyboard event with virtualKey set, so receiving apps see
+    /// it as a genuine keypress (unlike typeText which uses Unicode payloads
+    /// that can't represent special keys or modifier shortcuts).
+    static func pressKeystroke(_ keystroke: CompanionKeystroke) {
+        DotDebugLogger.log("computer.controller", "key requested", metadata: [
+            "keystroke": keystroke.humanReadableDescription,
+            "virtualKey": Int(keystroke.virtualKey),
+            "modifierFlagsRaw": keystroke.modifierFlags.rawValue
+        ])
+        let eventSource = CGEventSource(stateID: .combinedSessionState)
+
+        let keyDownEvent = CGEvent(
+            keyboardEventSource: eventSource,
+            virtualKey: keystroke.virtualKey,
+            keyDown: true
+        )
+        keyDownEvent?.flags = keystroke.modifierFlags
+        keyDownEvent?.post(tap: .cghidEventTap)
+
+        let keyUpEvent = CGEvent(
+            keyboardEventSource: eventSource,
+            virtualKey: keystroke.virtualKey,
+            keyDown: false
+        )
+        keyUpEvent?.flags = keystroke.modifierFlags
+        keyUpEvent?.post(tap: .cghidEventTap)
+
+        DotDebugLogger.log("computer.controller", "key posted", metadata: [
+            "keystroke": keystroke.humanReadableDescription
+        ])
+    }
 
     static func click(atAppKitScreenLocation appKitScreenLocation: CGPoint) {
         let eventLocation = quartzEventLocation(forAppKitScreenLocation: appKitScreenLocation)
