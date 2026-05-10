@@ -11,7 +11,7 @@
   <div class="page">
     <header class="row between">
       <a href="https://vibe-research.net" class="muted">← Vibe Research</a>
-      <a href="account.html" class="muted">Your account →</a>
+      <a href="https://vibe-research.net/account.html" class="muted">Your account →</a>
     </header>
     <div class="brand brand-large"><span class="brand-dot"></span> Dot</div>
 
@@ -47,7 +47,7 @@
 
     <footer>
       <span>© Dot — built on top of <a id="githubLink" href="#">open source</a></span>
-      <span><a href="account.html">Your account</a></span>
+      <span><a href="https://vibe-research.net/account.html">Your account</a></span>
     </footer>
   </div>
 
@@ -65,8 +65,7 @@
       }
       var signInButton = document.getElementById("signInButton");
       if (signInButton && config.vibeIdBaseURL) {
-        var websiteOrigin = window.location.origin;
-        var returnTo = websiteOrigin.replace(/\/$/, "") + "/account.html";
+        var returnTo = "https://vibe-research.net/account.html";
         var signInUrl = config.vibeIdBaseURL.replace(/\/$/, "") +
           "/auth/start?project=dot&return_to=" + encodeURIComponent(returnTo);
         signInButton.setAttribute("href", signInUrl);
