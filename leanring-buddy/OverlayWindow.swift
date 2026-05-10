@@ -408,7 +408,27 @@ struct BlueCursorView: View {
                 }
             }
         }
+        .onChange(of: companionManager.scrollAnimationHintUnitVector) { newHintUnitVector in
+            // Mirror the agent's scroll in the cursor: nudge it ~18pt in the
+            // scroll direction, then animate back when the hint clears.
+            // (CompanionManager sets the hint just before posting the wheel
+            // event and clears it ~220ms later — see the .scroll case in
+            // executeAgentToolCall.)
+            if let hintUnitVector = newHintUnitVector {
+                scrollVisualOffset = CGSize(
+                    width: hintUnitVector.dx * Self.scrollCursorNudgeMagnitudeInPoints,
+                    height: hintUnitVector.dy * Self.scrollCursorNudgeMagnitudeInPoints
+                )
+            } else {
+                scrollVisualOffset = .zero
+            }
+        }
     }
+
+    /// How far (in points) the blue cursor nudges in the scroll direction
+    /// when the agent fires the scroll tool. Big enough to be visible at a
+    /// glance, small enough not to feel jumpy.
+    private static let scrollCursorNudgeMagnitudeInPoints: CGFloat = 18
 
     /// Whether the buddy triangle should be visible on this screen.
     /// True when cursor is on this screen during normal following, or
