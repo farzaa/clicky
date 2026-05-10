@@ -24,35 +24,28 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **Concurrency**: `@MainActor` isolation, async/await throughout
 - **Analytics**: PostHog via `DotAnalytics.swift`
 
-### Identity (vibe-id) + Inference (dot-proxy)
+### Backend (vibe-id)
 
-The app never calls external APIs directly. Two Cloudflare Workers sit in front:
+The app never calls external APIs directly. One Cloudflare Worker sits in front:
 
-**`vibe-id`** (`api.accounts.vibe-research.net`) — central identity service shared across all Vibe Research projects (Dot, future Swarmlab, etc.). Owns Google OAuth, users, install tokens, per-project per-day quotas, admin endpoints, and D1 state. Source lives in a separate worktree; this repo only consumes its API.
+**`vibe-id`** (`api.accounts.vibe-research.net`) — central service shared across all Vibe Research projects. Owns Google OAuth, users, install tokens, per-project per-day quotas, admin endpoints, D1 state, AND the upstream API keys (Anthropic, ElevenLabs, AssemblyAI). Inference endpoints are public, bearer-authed; the install token is project-scoped at mint time so vibe-id derives the project from the token alone.
 
-**`dot-proxy`** (`api.dot.vibe-research.net`, `worker/src/index.ts`) — stateless inference proxy. Verifies the bearer token by calling vibe-id `/v1/check` (project=dot), proxies to Anthropic / ElevenLabs / AssemblyAI, and reports usage via vibe-id `/v1/record`.
+Source lives in a separate repo (`~/Desktop/projects/vibe-id/`, `github.com/Clamepending/vibe-id`); this repo only consumes its API.
 
-**dot-proxy routes:**
+**Routes the macOS app uses:**
 
 | Route | Auth | Purpose |
 |-------|------|---------|
 | `GET /health` | none | Liveness check |
+| `GET /auth/start?project=dot&device_id=…` | none | Begin Google sign-in |
+| `POST /auth/exchange` | none | Trade one-time code for install token |
+| `GET /auth/me` | bearer | Current user + per-project usage today |
+| `POST /auth/signout` | bearer | Revoke the calling install token |
 | `POST /chat` | bearer + quota | Anthropic Messages (streaming SSE) |
 | `POST /tts` | bearer + quota | ElevenLabs TTS — quota charged in characters |
 | `POST /transcribe-token` | bearer + quota | AssemblyAI temp token — quota charged per session |
 
-The macOS app and web pages call vibe-id directly for sign-in / `/auth/me` / `/auth/signout` / `/admin/*`. dot-proxy doesn't expose those at all.
-
-**dot-proxy latency optimizations** (see `worker/src/index.ts` header):
-1. **Service Binding** to vibe-id (`env.VIBE_ID.fetch(...)`) — calls run in-process on the same edge node, no public-internet hop. Cuts ~25ms per request.
-2. **KV cache** (`env.CHECK_CACHE`) for `/v1/check` decisions on chat / transcribe-token (where amount=1). 30s TTL means revocations propagate within half a minute and the hot path skips vibe-id entirely. Cuts ~50ms on warm tokens. TTS still re-checks every call because amount varies with character count.
-3. **`ctx.waitUntil` for `/v1/record`** — usage metering runs after the response is sent.
-
-**Failure mode**: vibe-id outage causes `/v1/check` to fail closed (503). KV cache hits provide a small grace window for transient blips.
-
-**dot-proxy secrets**: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`, `VIBE_ID_INTERNAL_KEY` (shared with vibe-id, authorizes `/v1/check` and `/v1/record`).
-**dot-proxy vars**: `ELEVENLABS_VOICE_ID`.
-**dot-proxy bindings**: `VIBE_ID` (Service Binding to vibe-id worker), `CHECK_CACHE` (KV namespace for token-check caching).
+There is no per-project worker. The macOS app's `DotProxyBaseURL` and `VibeIdBaseURL` both point at `https://api.accounts.vibe-research.net`. Adding a new project (Swarmlab next) is one INSERT into vibe-id's `projects` table and a `project=…` parameter from that project's client.
 
 ### Key Architecture Decisions
 
@@ -100,9 +93,7 @@ The macOS app and web pages call vibe-id directly for sign-in / `/auth/me` / `/a
 | `DotInstallTokenStore.swift` | ~140 | Thread-safe Keychain wrapper for the long-lived install token. Uses the legacy file-based keychain (data-protection keychain needs entitlements we don't ship) plus an in-memory cache so non-MainActor API clients don't pay a SecItem syscall on every request. |
 | `WindowPositionManager.swift` | ~320 | Window placement logic, Screen Recording permission flow, Accessibility and Input Monitoring permission helpers, and last-known permission grant caching for local rebuilds. |
 | `AppBundleConfiguration.swift` | ~45 | Runtime configuration reader for keys stored in the app bundle Info.plist, including `DotProxyBaseURL` and `VibeIdBaseURL`. |
-| `worker/src/index.ts` | ~230 | Stateless dot-proxy inference gateway. Bearer-authenticated `/chat`, `/tts`, `/transcribe-token`. Verifies the token with vibe-id `/v1/check` via Service Binding, proxies to upstream APIs, fires `/v1/record` via `ctx.waitUntil`. KV-cached check decisions on the hot path. |
-| `worker/wrangler.toml` | — | Worker config: custom domain (`api.dot.vibe-research.net`), Service Binding to `vibe-id`, KV namespace binding for the token-check cache. |
-| `website/dot/index.html` + `account.html` + `admin.html` | — | Static pages deployed to `dot.vibe-research.net`: landing/download, per-user usage dashboard, admin dashboard. All call vibe-id directly for auth + admin. |
+| `website/dot/index.html` + `account.html` + `admin.html` | — | Static pages deployed to `dot.vibe-research.net`: landing/download, per-user usage dashboard, admin dashboard. All call vibe-id directly for auth + inference + admin. |
 | `website/research-lab/index.html` | — | Minimal landing page deployed to `vibe-research.net` root with links to `swarmlab.vibe-research.net` and `dot.vibe-research.net`. |
 | `vibe-id-project-template/` | — | Drop-in starter for any new vibe-id-powered product. Holds the 75-line forwarder, a project-agnostic Swift SDK (`VibeIdAccount` + `VibeIdInstallTokenStore`), a JS SDK (`vibeid.js`), a cross-project account page, and a README. Copy + change `PROJECT_ID` + deploy = new project online. |
 | `VIBE_ID_HANDOFF.md` | — | Schema + handler changes that need to land in the vibe-id repo for the multi-project story (per-project URL schemes, per-project upstream routing in a `project_endpoints` table). Apply once; future projects then bootstrap from the template with no vibe-id-side changes. |
@@ -126,26 +117,9 @@ open leanring-buddy.xcodeproj
 
 **Do NOT run `xcodebuild` from the terminal** — it invalidates TCC (Transparency, Consent, and Control) permissions and the app will need to re-request screen recording, accessibility, etc. Prefer Xcode Cmd+R or `scripts/install-local-dev-app.sh`.
 
-## Cloudflare Worker (dot-proxy)
+## Backend
 
-Requires Node.js 20.3+ for the pinned Wrangler 4 local toolchain.
-
-```bash
-cd worker
-npm install
-
-# Add upstream-API secrets (set once)
-npx wrangler secret put ANTHROPIC_API_KEY
-npx wrangler secret put ASSEMBLYAI_API_KEY
-npx wrangler secret put ELEVENLABS_API_KEY
-# Shared with vibe-id — authorizes /v1/check and /v1/record calls
-npx wrangler secret put VIBE_ID_INTERNAL_KEY
-
-# Deploy
-npx wrangler deploy
-```
-
-Identity (users, OAuth, admin, D1) lives in the separate `vibe-id` worker — that's where you put `GOOGLE_OAUTH_CLIENT_*`, the admin token, and run schema migrations. dot-proxy is stateless.
+There is no per-project worker in this repo. All API calls go to `vibe-id` (`api.accounts.vibe-research.net`). To work on the backend, clone `github.com/Clamepending/vibe-id` and follow its README.
 
 ## Code Style & Conventions
 
