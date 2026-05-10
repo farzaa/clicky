@@ -270,8 +270,8 @@ final class CompanionManager: ObservableObject {
             player.play()
             self.onboardingMusicPlayer = player
 
-            // After 1m 30s, fade the music out over 3s
-            onboardingMusicFadeTimer = Timer.scheduledTimer(withTimeInterval: 90.0, repeats: false) { [weak self] _ in
+            // After 20s (matching the dialogue display duration), fade the music out over 3s
+            onboardingMusicFadeTimer = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: false) { [weak self] _ in
                 self?.fadeOutOnboardingMusic()
             }
         } catch {
@@ -1824,8 +1824,8 @@ final class CompanionManager: ObservableObject {
         Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { timer in
             guard currentIndex < message.count else {
                 timer.invalidate()
-                // Auto-dismiss after 10 seconds
-                DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) {
+                // Auto-dismiss after 20 seconds
+                DispatchQueue.main.asyncAfter(deadline: .now() + 20.0) {
                     guard self.showOnboardingPrompt else { return }
                     withAnimation(.easeOut(duration: 0.3)) {
                         self.onboardingPromptOpacity = 0.0

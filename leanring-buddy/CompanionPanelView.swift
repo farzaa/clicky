@@ -873,7 +873,14 @@ struct CompanionPanelView: View {
                 }
                 .buttonStyle(.plain)
                 .pointerCursor()
+            } else {
+                Spacer()
             }
+
+            Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
+                .font(.system(size: 10, weight: .regular))
+                .foregroundColor(DS.Colors.textTertiary.opacity(0.5))
+                .padding(.leading, 8)
         }
     }
 
