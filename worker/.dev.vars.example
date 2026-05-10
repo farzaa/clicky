@@ -4,14 +4,16 @@
 #
 # `wrangler dev` will load these into the Worker environment automatically.
 
+# Upstream inference APIs
 ANTHROPIC_API_KEY="sk-ant-..."
 ASSEMBLYAI_API_KEY="..."
 ELEVENLABS_API_KEY="..."
 
-# Create at https://console.cloud.google.com/apis/credentials
-# Authorized redirect URI must match WORKER_PUBLIC_URL/auth/callback.
-GOOGLE_OAUTH_CLIENT_ID="...apps.googleusercontent.com"
-GOOGLE_OAUTH_CLIENT_SECRET="..."
+# Shared secret used to authenticate calls from this worker to vibe-id's
+# /v1/check and /v1/record. Must match VIBE_ID_INTERNAL_KEY in the vibe-id
+# worker's secrets.
+VIBE_ID_INTERNAL_KEY="dev-internal-key-change-me"
 
-# Any random string. Used as X-Admin-Token on /admin/* routes.
-DOT_ADMIN_TOKEN="dev-admin-token-change-me"
+# Override the public vibe-id base URL for local dev so requests go to the
+# locally-running vibe-id wrangler dev process.
+VIBE_ID_BASE_URL="http://127.0.0.1:8790"

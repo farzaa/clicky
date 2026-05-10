@@ -31,4 +31,13 @@ enum AppBundleConfiguration {
             ?? "http://127.0.0.1:8787"
         return configuredProxyBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
+
+    /// Base URL for the central identity service (vibe-id). Used by
+    /// DotAccountManager for sign-in, /auth/me, and sign-out — distinct from
+    /// the per-project Dot inference proxy returned by `proxyBaseURLString()`.
+    static func vibeIdBaseURLString() -> String {
+        let configured = stringValue(forKey: "VibeIdBaseURL")
+            ?? "http://127.0.0.1:8790"
+        return configured.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
 }
