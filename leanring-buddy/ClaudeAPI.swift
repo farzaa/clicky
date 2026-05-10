@@ -217,6 +217,137 @@ class ClaudeAPI {
         return (text: accumulatedResponseText, duration: duration)
     }
 
+    /// Result of one tool-use agent turn: any text blocks Claude wrote (to be
+    /// fed to the per-step narration queue) and any tool_use blocks (to be
+    /// executed). The raw assistant content blocks are also returned so the
+    /// agent loop can echo them back in the next request's messages array.
+    struct ToolUseTurnResponse {
+        let textBlocks: [String]
+        let toolUseBlocks: [AgentToolUseBlock]
+        let rawAssistantContentBlocks: [[String: Any]]
+        let stopReason: String?
+    }
+
+    /// One turn of the tool-use agent loop. Sends `messages` + `tools` to
+    /// Anthropic Messages API (non-streaming), parses the response, and
+    /// returns the structured result. The caller (CompanionManager's agent
+    /// loop) owns the messages list and appends the assistant response +
+    /// next user message (with tool_results + new screenshot) for the next
+    /// call. See docs/agent-loop-tool-use-migration.md.
+    func runAgentTurnWithToolUse(
+        systemPrompt: String,
+        messages: [[String: Any]],
+        tools: [[String: Any]]
+    ) async throws -> ToolUseTurnResponse {
+        var request = makeAPIRequest()
+        // Mark system + tools as a single cacheable prefix via cache_control
+        // on the last tool. Anthropic's prompt cache (~5min TTL) then lets
+        // every step after the first in a turn (and turns in quick
+        // succession) hit cache for the ~2KB static prefix instead of
+        // paying full price. Per-step images and tool_results stay
+        // uncached because they change every call.
+        let systemBlocks: [[String: Any]] = [[
+            "type": "text",
+            "text": systemPrompt,
+            "cache_control": ["type": "ephemeral"]
+        ]]
+        var toolsWithCacheBreakpoint = tools
+        if !toolsWithCacheBreakpoint.isEmpty {
+            var lastTool = toolsWithCacheBreakpoint[toolsWithCacheBreakpoint.count - 1]
+            lastTool["cache_control"] = ["type": "ephemeral"]
+            toolsWithCacheBreakpoint[toolsWithCacheBreakpoint.count - 1] = lastTool
+        }
+        let body: [String: Any] = [
+            "model": model,
+            "max_tokens": 1024,
+            "system": systemBlocks,
+            "messages": messages,
+            "tools": toolsWithCacheBreakpoint
+        ]
+
+        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        request.httpBody = bodyData
+        let payloadMB = Double(bodyData.count) / 1_048_576.0
+        print("🌐 Claude tool-use request: \(String(format: "%.1f", payloadMB))MB, messages=\(messages.count), tools=\(tools.count)")
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(
+                domain: "ClaudeAPI",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid HTTP response"]
+            )
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            let responseString = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw NSError(
+                domain: "ClaudeAPI",
+                code: httpResponse.statusCode,
+                userInfo: [NSLocalizedDescriptionKey: "API Error (\(httpResponse.statusCode)): \(responseString)"]
+            )
+        }
+
+        guard let parsedJSON = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let contentArray = parsedJSON["content"] as? [[String: Any]] else {
+            throw NSError(
+                domain: "ClaudeAPI",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Tool-use response had no content array"]
+            )
+        }
+
+        // Surface cache stats so we can confirm the system+tools prefix is
+        // actually being read from cache on subsequent steps within a turn.
+        let usageStats = parsedJSON["usage"] as? [String: Any] ?? [:]
+        let inputTokens = usageStats["input_tokens"] as? Int ?? 0
+        let outputTokens = usageStats["output_tokens"] as? Int ?? 0
+        let cacheCreationTokens = usageStats["cache_creation_input_tokens"] as? Int ?? 0
+        let cacheReadTokens = usageStats["cache_read_input_tokens"] as? Int ?? 0
+        DotDebugLogger.log("claude.api", "tool-use response usage", metadata: [
+            "inputTokens": inputTokens,
+            "outputTokens": outputTokens,
+            "cacheCreationInputTokens": cacheCreationTokens,
+            "cacheReadInputTokens": cacheReadTokens
+        ])
+
+        var collectedTextBlocks: [String] = []
+        var collectedToolUseBlocks: [AgentToolUseBlock] = []
+        for block in contentArray {
+            guard let blockType = block["type"] as? String else { continue }
+            switch blockType {
+            case "text":
+                if let textValue = block["text"] as? String {
+                    let trimmedText = textValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmedText.isEmpty {
+                        collectedTextBlocks.append(trimmedText)
+                    }
+                }
+            case "tool_use":
+                guard let blockID = block["id"] as? String,
+                      let blockName = block["name"] as? String,
+                      let blockInput = block["input"] as? [String: Any] else {
+                    continue
+                }
+                collectedToolUseBlocks.append(AgentToolUseBlock(
+                    toolUseID: blockID,
+                    toolName: blockName,
+                    inputArguments: blockInput
+                ))
+            default:
+                continue
+            }
+        }
+
+        return ToolUseTurnResponse(
+            textBlocks: collectedTextBlocks,
+            toolUseBlocks: collectedToolUseBlocks,
+            rawAssistantContentBlocks: contentArray,
+            stopReason: parsedJSON["stop_reason"] as? String
+        )
+    }
+
     /// Non-streaming fallback for validation requests where we don't need progressive display.
     func analyzeImage(
         images: [(data: Data, label: String)],

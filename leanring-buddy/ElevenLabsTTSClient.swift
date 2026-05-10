@@ -76,6 +76,16 @@ final class ElevenLabsTTSClient {
         audioPlayer?.isPlaying ?? false
     }
 
+    /// Awaits until the current playback finishes (or cancellation fires).
+    /// Returns immediately if nothing is playing. Used by per-step narration
+    /// to play chunks back-to-back without overlapping.
+    func awaitPlaybackCompletion() async {
+        while audioPlayer?.isPlaying == true {
+            if Task.isCancelled { return }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+
     /// Stops any in-progress playback immediately.
     func stopPlayback() {
         audioPlayer?.stop()

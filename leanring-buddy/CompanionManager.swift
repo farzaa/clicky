@@ -124,6 +124,14 @@ final class CompanionManager: ObservableObject {
     private var transientHideTask: Task<Void, Never>?
     private var voiceStateSafetyResetTask: Task<Void, Never>?
 
+    /// FIFO queue of per-step spoken-text chunks. Each agent-loop step
+    /// appends its parsed spoken text here right before its actions execute,
+    /// so the user hears narration in real time instead of one big block at
+    /// the end of the turn. The consumer task plays chunks back-to-back.
+    private var perStepNarrationChunks: [String] = []
+    private var perStepNarrationProcessingTask: Task<Void, Never>?
+    private var didEnqueueAnyPerStepNarrationForCurrentTurn = false
+
     /// True when all required permissions are granted. Used by the panel to show
     /// a single "all good" state.
     var allPermissionsGranted: Bool {
@@ -328,6 +336,24 @@ final class CompanionManager: ObservableObject {
         accessibilityCheckTimer = nil
         voiceStateSafetyResetTask?.cancel()
         voiceStateSafetyResetTask = nil
+    }
+
+    /// Feeds a transcript through the same dispatch as a real push-to-talk
+    /// release would (media-command short-circuit, then the agent loop with
+    /// screenshot). Wired to the `dot://debug?transcript=…` URL so the agent
+    /// loop can be exercised end-to-end without voice input. Local-dev only —
+    /// gate or remove before shipping production.
+    func runTranscriptThroughAgentLoopForDebug(transcript: String) {
+        let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTranscript.isEmpty else { return }
+        DotDebugLogger.log("debug.url", "received debug transcript", metadata: [
+            "transcriptLength": trimmedTranscript.count
+        ])
+        lastTranscript = trimmedTranscript
+        if handleDirectLocalMediaCommandIfRecognized(transcript: trimmedTranscript) {
+            return
+        }
+        sendTranscriptToClaudeWithScreenshot(transcript: trimmedTranscript)
     }
 
     func refreshAllPermissions() {
@@ -741,7 +767,7 @@ final class CompanionManager: ObservableObject {
 
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
-            elevenLabsTTSClient.stopPlayback()
+            cancelPerStepNarrationQueue()
             clearDetectedElementLocation()
             DotDebugLogger.log("shortcut.transition", "prepared for new push-to-talk session", metadata: interactionStateLogMetadata())
 
@@ -830,80 +856,43 @@ final class CompanionManager: ObservableObject {
     /// often sees a half-rendered screen and makes the wrong call next.
     private static let interStepSettlingDelayNanoseconds: UInt64 = 500_000_000  // 500ms
 
+
+    /// System prompt for the tool-use agent loop. Tool descriptions live in
+    /// the tool schemas (see AgentToolDefinitions) — this prompt covers
+    /// multi-step framing, style rules, and tool-selection guidance.
     private static let companionVoiceResponseSystemPrompt = """
     you're dot, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
 
-    you operate in steps. when your reply contains an action tag ([CLICK], [TYPE], [KEY], [MEDIA]) the action runs, the screen is re-captured, and you're called again with the new screen so you can continue. when the task is fully complete and there's nothing more to do, reply with just spoken text and NO action tags — that ends the turn. you have at most \(maxAgentStepsPerUserTurn) steps per user request, so be efficient. if you can finish in one step, do.
+    you operate in a multi-step agent loop. each turn you may emit one or more tool calls. the tools run, the screen is re-captured, and you're called again with the tool results + new screenshot to continue. you have up to \(maxAgentStepsPerUserTurn) steps per user request.
 
-    rules:
-    - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
-    - all lowercase, casual, warm. no emojis.
-    - write for the ear, not the eye. short sentences. no lists, bullet points, markdown, or formatting — just natural speech.
-    - don't use abbreviations or symbols that sound weird read aloud. write "for example" not "e.g.", spell out small numbers.
-    - if the user's question relates to what's on their screen, reference specific things you see.
-    - if the screenshot doesn't seem relevant to their question, just answer the question directly.
-    - you can help with anything — coding, writing, general knowledge, brainstorming.
+    most desktop tasks need multiple steps in a row — navigate somewhere, then click a button, then type, then confirm. chain steps until the user's original request is FULLY done. don't stop after the first action just because you made some progress. before ending the turn, re-read the user's original request and honestly ask "is THAT actually done now?" — if not, emit more tool calls.
+
+    end the turn (no tool calls in your response, just text) only when (a) the original request is fully complete and the screen reflects that, OR (b) you call the bail_out tool because you genuinely need the user to clarify or the next action would be destructive.
+
+    style:
+    - emit ONE short sentence of spoken narration per turn — the user hears it via TTS while your tools execute. examples: "going to drive", "clicking the new button", "all yours".
+    - if the user explicitly asks for a long explanation, go deeper — no length limit. otherwise keep it tight.
+    - all lowercase, casual, warm. no emojis, no lists, no bullets, no markdown — write for the ear.
     - never say "simply" or "just".
-    - don't read out code verbatim. describe what the code does or what needs to change conversationally.
-    - focus on giving a thorough, useful explanation. don't end with simple yes/no questions like "want me to explain more?" or "should i show you?" — those are dead ends that force the user to just say yes.
-    - instead, when it fits naturally, end by planting a seed — mention something bigger or more ambitious they could try, a related concept that goes deeper, or a next-level technique that builds on what you just explained. make it something worth coming back for, not a question they'd just nod to. it's okay to not end with anything extra if the answer is complete on its own.
-    - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
+    - don't read the user's screen verbatim — describe what you're doing or what you see conversationally.
 
-    element pointing:
-    you have a small blue triangle cursor that can fly to and point at things on screen. use it whenever pointing would genuinely help the user — if they're asking how to do something, looking for a menu, trying to find a button, or need help navigating an app, point at the relevant element. err on the side of pointing rather than not pointing, because it makes your help way more useful and concrete.
+    choosing tools:
+    - if the user asks where something is, how to do something, or wants guidance, call point_at_element to draw the blue cursor companion to the relevant UI element. err on the side of pointing rather than not pointing — it makes help concrete.
+    - if the user asks you to operate the computer — open, click, navigate, type, search, create, switch — call action tools. usually multiple in sequence: e.g. open_url then click_element.
+    - for opening a URL or going to a website, ALWAYS use open_url. it routes through macOS's default-browser handler so it works no matter which app is focused, including when no browser is open yet. NEVER simulate cmd+L + typing for URL navigation — that silently fails when focus isn't already on a browser.
+    - for launching or activating a native app (Spotify, Slack, VS Code, Notion, Mail, etc.), use open_app. it's atomic and reliable — don't try to click dock icons or drive Spotlight via cmd+space + typing.
+    - if you can encode a search/destination into a URL (youtube.com/results?search_query=lo-fi+beats, google.com/search?q=swift+arrays, drive.google.com), prefer open_url with that direct URL over open_url + click + type — fewer steps and zero focus dependencies.
+    - for other browser-chrome operations (opening a new tab, closing a tab, switching tabs, history), use the dedicated browser tools (open_new_tab, close_tab, switch_tab, browser_back, browser_forward). only use these when a browser is the frontmost app — they send keyboard shortcuts that would go to the wrong app otherwise.
+    - for media (pause/play/skip), use media_control — works even if the music app is hidden.
+    - safe to auto-execute end-to-end: opening URLs, opening apps, focusing fields, scrolling, switching tabs, typing into drafts, creating new docs/files. just do them.
+    - needs explicit user confirmation: sending a message or email, paying or buying, deleting data, closing unsaved work, changing account / security settings. don't auto-execute those — call bail_out and explain.
+    - if a target is genuinely ambiguous and you can't tell which element to click, call bail_out and explain.
 
-    don't point at things when it would be pointless — like if the user asks a general knowledge question, or the conversation has nothing to do with what's on screen, or you'd just be pointing at something obvious they're already looking at. but if there's a specific UI element, menu, button, or area on screen that's relevant to what you're helping with, point at it.
+    if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
 
-    when you point, append a coordinate tag after your spoken text. the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. the origin (0,0) is the top-left corner of the image. x increases rightward, y increases downward.
+    screenshots have a pixel coordinate space — origin (0,0) is top-left, x increases rightward, y increases downward. when you use coordinate tools (point_at_element, click_element), use the exact pixel coordinates from the LATEST screenshot. don't reuse coordinates from a previous step's screen — the layout may have shifted.
 
-    format: [POINT:x,y:label] where x,y are integer pixel coordinates in the screenshot's coordinate space, and label is a short 1-3 word description of the element (like "search bar" or "save button"). if the element is on the cursor's screen you can omit the screen number. if the element is on a DIFFERENT screen, append :screenN where N is the screen number from the image label (e.g. :screen2). this is important — without the screen number, the cursor will point at the wrong place.
-
-    if pointing wouldn't help, append [POINT:none].
-
-    computer control:
-    you can also actually click, type, or send global media controls. choose between pointing and acting based on the user's intent:
-    - if the user asks where something is, how to do something, what something means, or asks for guidance, point at the relevant UI element and explain.
-    - if the user asks you to operate the computer — click, open, press, select, choose, go to, focus, type, fill in, search for, pause media, skip music, or similar command language — perform the action.
-    - if the action would submit, buy, send, delete, close unsaved work, change account/security settings, or trigger an externally visible side effect, do not perform it automatically. point and explain what would happen instead.
-    - if the target is ambiguous or you cannot identify it confidently from the screenshot, point to the most likely target and explain the uncertainty instead of clicking.
-
-    for media controls, prefer the global media command over clicking a music app. use [MEDIA:play_pause] for pause, play, resume, stop the music, or toggle playback. use [MEDIA:next] for skip or next track. use [MEDIA:previous] for previous track or go back. these send the mac's media keys, so they work even if the music app is hidden or on another space.
-
-    when you click, append a click tag after the spoken text using the same screenshot coordinate space as pointing: [CLICK:x,y:label] or [CLICK:x,y:label:screenN].
-
-    when you type text into the currently focused field, append: [TYPE:text to type]. for newlines in typed text, write \\n. don't put a closing square bracket inside typed text.
-
-    when you need to press a special key or a keyboard shortcut (anything that isn't just typing characters), append: [KEY:keyname]. supported names are case-insensitive:
-    - editing keys: backspace (also accepts delete), forwarddelete, return (also accepts enter), tab, space, escape
-    - arrow keys: up, down, left, right
-    - navigation: home, end, pageup, pagedown
-    - letters a–z, digits 0–9
-    - function keys f1 through f12
-    - combine with modifiers using +: cmd, shift, ctrl, option (also accepts alt or opt). examples: [KEY:cmd+a], [KEY:cmd+shift+z], [KEY:ctrl+space]
-
-    use [KEY:...] for ANY non-character keystroke. never try to express a special key as part of [TYPE:...] (TYPE only types literal characters and cannot send backspace, modifier shortcuts, or function keys).
-
-    to clear all the text in a focused input, use this exact pattern: [KEY:cmd+a][KEY:backspace]. to clear and replace text in an input you can see: [CLICK:x,y:input field][KEY:cmd+a][KEY:backspace][TYPE:new content].
-
-    if the task needs multiple actions, append all action tags in execution order, for example: [CLICK:430,220:name field][TYPE:hello].
-
-    action tags and point tags are hidden control tags. write normal spoken text first, then append the tags. never read or explain the tags.
-
-    examples:
-    - user asks how to color grade in final cut: "you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector]"
-    - user asks what html is: "html stands for hypertext markup language, it's basically the skeleton of every web page. curious how it connects to the css you're looking at? [POINT:none]"
-    - user asks how to commit in xcode: "see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control]"
-    - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
-    - user asks you to click the search field: "i'll click the search field. [POINT:520,80:search field][CLICK:520,80:search field]"
-    - user says open the settings tab: "opening settings. [POINT:940,74:settings][CLICK:940,74:settings]"
-    - user asks you to type a phrase into the focused field: "i'll type that in. [POINT:none][TYPE:hello from dot]"
-    - user asks you to delete or clear what they typed in the chat box at (430,520): "clearing it. [POINT:none][CLICK:430,520:chat box][KEY:cmd+a][KEY:backspace]"
-    - user asks you to send the message currently in the focused input: "sending. [POINT:none][KEY:return]"
-    - user asks you to undo the last thing: "undoing. [POINT:none][KEY:cmd+z]"
-    - user asks you to close the current tab: "closing the tab. [POINT:none][KEY:cmd+w]"
-    - user asks you to stop the music: "done. [POINT:none][MEDIA:play_pause]"
-    - user asks you to skip the song: "skipping. [POINT:none][MEDIA:next]"
-    - user asks you to go back a track: "going back. [POINT:none][MEDIA:previous]"
+    when calling tools alongside narration, write the narration text first, then the tool calls.
     """
 
     private func handleDirectLocalMediaCommandIfRecognized(transcript: String) -> Bool {
@@ -919,7 +908,7 @@ final class CompanionManager: ObservableObject {
             "transcriptLength": transcript.count
         ])
         currentResponseTask?.cancel()
-        elevenLabsTTSClient.stopPlayback()
+        cancelPerStepNarrationQueue()
 
         currentResponseTask = Task {
             voiceState = .processing
@@ -1024,204 +1013,206 @@ final class CompanionManager: ObservableObject {
     // MARK: - AI Response Pipeline
 
     /// Captures a screenshot, sends it along with the transcript to Claude,
-    /// and runs an agent loop: Claude can take actions, see the updated screen,
-    /// and take more actions, up to `maxAgentStepsPerUserTurn`. The loop ends
-    /// when Claude responds with no action tags (task complete), the step
-    /// budget is exhausted, the user moves the hardware mouse (taking control
-    /// back), or the task gets cancelled. The accumulated spoken text from
-    /// every step is concatenated and spoken aloud once at the end.
+    /// and runs the multi-step tool-use agent loop. Claude returns structured
+    /// `content_block`s (text + tool_use) per turn; we execute each tool_use,
+    /// capture a fresh screen, and send `tool_result` blocks back for the
+    /// next turn. Terminates when the model returns a turn with no tool_use
+    /// blocks, bail_out is called, the user moves the hardware mouse, or the
+    /// step budget is exhausted. The accumulated spoken text from every step
+    /// is fed into the per-step TTS narration queue in real time.
+    /// See docs/agent-loop-tool-use-migration.md.
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
-        elevenLabsTTSClient.stopPlayback()
-        DotDebugLogger.log("response.pipeline", "starting agent loop", metadata: [
+        cancelPerStepNarrationQueue()
+        DotDebugLogger.log("response.pipeline", "starting tool-use agent loop", metadata: [
             "transcriptLength": transcript.count,
             "conversationHistoryCount": conversationHistory.count,
             "maxSteps": Self.maxAgentStepsPerUserTurn
         ])
 
         currentResponseTask = Task {
-            // Stay in processing (spinner) state — no streaming text displayed
             voiceState = .processing
 
-            // Baseline mouse position. Each computer-control click restores the
-            // hardware cursor to where the user left it (see
-            // CompanionComputerController.postCoordinateClickPreservingHardwareCursor),
-            // so between agent steps the cursor SHOULD still be within a few
-            // points of this baseline. If it isn't, the user grabbed the mouse
-            // back — we treat that as an explicit "stop" signal and abort the
-            // loop without performing any further actions.
-            let baselineUserMouseLocation = NSEvent.mouseLocation
-
-            // Per-turn working state across the agent loop.
+            var baselineUserMouseLocation = NSEvent.mouseLocation
             var accumulatedSpokenText = ""
-            var perTurnStepHistory: [(userPlaceholder: String, assistantResponse: String)] = []
-            var didCancelDueToUserMouseMove = false
             var stepsExecuted = 0
+            var didCancelDueToUserMouseMove = false
+            var didBailOutEarly = false
 
             do {
-                stepLoop: for stepIndex in 0..<Self.maxAgentStepsPerUserTurn {
+                var apiMessages: [[String: Any]] = []
+
+                // Prior cross-turn history (text-only — same as the legacy
+                // path's `conversationHistory` plumbing).
+                for historyEntry in conversationHistory {
+                    apiMessages.append(["role": "user", "content": historyEntry.userTranscript])
+                    apiMessages.append(["role": "assistant", "content": historyEntry.assistantResponse])
+                }
+
+                // Initial user message: screen(s) + transcript.
+                var currentScreenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                DotDebugLogger.log("agent.loop", "captured screens for initial step", metadata: [
+                    "step": 0,
+                    "screenCount": currentScreenCaptures.count
+                ])
+                guard !Task.isCancelled else { return }
+
+                apiMessages.append([
+                    "role": "user",
+                    "content": Self.buildUserMessageContentBlocks(
+                        screenCaptures: currentScreenCaptures,
+                        toolResults: [],
+                        trailingText: transcript
+                    )
+                ])
+
+                stepLoop: while stepsExecuted < Self.maxAgentStepsPerUserTurn {
                     guard !Task.isCancelled else { return }
 
-                    // Always re-enter processing state at the top of each
-                    // step. Previous-step click/point work may have flipped us
-                    // to .idle so the cursor was visible during animation; on
-                    // the next step we're thinking again, so the spinner
-                    // should come back. Clear the previous step's pointing
-                    // location for the same reason — otherwise the cursor
-                    // visibly hovers at the OLD step's target while Claude
-                    // is processing the new screen.
                     voiceState = .processing
-                    if stepIndex > 0 {
+                    if stepsExecuted > 0 {
                         clearDetectedElementLocation()
                     }
 
-                    // User-mouse-cancel check, skipped on the first step because
-                    // that's where we just took the baseline.
-                    if stepIndex > 0 {
-                        let currentMouseLocation = NSEvent.mouseLocation
-                        let mouseDelta = hypot(
-                            currentMouseLocation.x - baselineUserMouseLocation.x,
-                            currentMouseLocation.y - baselineUserMouseLocation.y
-                        )
-                        if mouseDelta > Self.userMouseMoveCancellationThresholdInPoints {
-                            DotDebugLogger.log("agent.loop", "stopping — user moved hardware mouse", metadata: [
-                                "step": stepIndex,
-                                "mouseDelta": Double(mouseDelta)
-                            ])
-                            didCancelDueToUserMouseMove = true
-                            break stepLoop
-                        }
-
-                        // Settling delay between step N's last action and
-                        // step N+1's screen capture — gives animations,
-                        // page loads, and focus changes time to land before
-                        // Claude sees the new screen.
-                        try? await Task.sleep(nanoseconds: Self.interStepSettlingDelayNanoseconds)
-                        guard !Task.isCancelled else { return }
-                    }
-
-                    // Capture current screens. On step 0 this is the screen
-                    // when the user finished talking; on step N>0 this is the
-                    // screen AFTER the actions from step N-1 executed.
-                    let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
-                    DotDebugLogger.log("agent.loop", "captured screens for step", metadata: [
-                        "step": stepIndex,
-                        "screenCount": screenCaptures.count
-                    ])
-
-                    guard !Task.isCancelled else { return }
-
-                    let labeledImages = screenCaptures.map { capture in
-                        let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
-                        return (data: capture.imageData, label: capture.label + dimensionInfo)
-                    }
-
-                    // Persistent cross-turn history (prior user turns) +
-                    // this-turn step history (prior steps within this turn).
-                    let persistentConversationHistoryForAPI = conversationHistory.map { entry in
-                        (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
-                    }
-                    let combinedHistoryForAPI = persistentConversationHistoryForAPI + perTurnStepHistory
-
-                    // The first step uses the actual user transcript. Subsequent
-                    // steps use a continuation marker — Claude already has the
-                    // user's intent from the conversation history, and the new
-                    // screenshot tells it what changed.
-                    let userPromptForThisStep = stepIndex == 0
-                        ? transcript
-                        : "[continuing — the screen has been updated after your previous actions]"
-
-                    let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                        images: labeledImages,
+                    let turnResponse = try await claudeAPI.runAgentTurnWithToolUse(
                         systemPrompt: Self.companionVoiceResponseSystemPrompt,
-                        conversationHistory: combinedHistoryForAPI,
-                        userPrompt: userPromptForThisStep,
-                        onTextChunk: { _ in
-                            // No streaming text display — spinner stays until TTS plays
-                        }
+                        messages: apiMessages,
+                        tools: AgentToolDefinitions.apiPayloadList
                     )
-                    DotDebugLogger.log("agent.loop", "Claude response received for step", metadata: [
-                        "step": stepIndex,
-                        "responseLength": fullResponseText.count
+                    stepsExecuted += 1
+                    DotDebugLogger.log("agent.loop", "tool-use response received", metadata: [
+                        "step": stepsExecuted - 1,
+                        "textBlockCount": turnResponse.textBlocks.count,
+                        "toolUseBlockCount": turnResponse.toolUseBlocks.count,
+                        "stopReason": turnResponse.stopReason ?? "unknown"
                     ])
 
                     guard !Task.isCancelled else { return }
 
-                    // Parse hidden computer-control tags before the point tag so
-                    // [POINT:...] can still be the last remaining control directive.
-                    let computerControlParseResult = Self.parseComputerControlActions(from: fullResponseText)
-                    let parseResult = Self.parsePointingCoordinates(from: computerControlParseResult.spokenText)
-                    let stepSpokenText = parseResult.spokenText
-                    DotDebugLogger.log("agent.loop", "parsed step", metadata: [
-                        "step": stepIndex,
-                        "spokenTextLength": stepSpokenText.count,
-                        "actionCount": computerControlParseResult.actions.count,
-                        "hasPointCoordinate": parseResult.coordinate != nil
+                    // Echo the assistant response into the message list so the
+                    // next API call sees what it already said + called.
+                    apiMessages.append([
+                        "role": "assistant",
+                        "content": turnResponse.rawAssistantContentBlocks
                     ])
 
-                    // Switch to idle BEFORE setting the location so the
-                    // triangle is visible and can fly to the target.
-                    let hasPointCoordinate = parseResult.coordinate != nil
-                    let hasClickAction = computerControlParseResult.actions.contains { action in
-                        if case .click = action {
-                            return true
-                        }
-                        return false
-                    }
-                    if hasPointCoordinate || hasClickAction {
-                        voiceState = .idle
-                    }
-
-                    if let pointCoordinate = parseResult.coordinate,
-                       let mappedPointLocation = Self.mapScreenshotCoordinateToGlobalScreenLocation(
-                        pointCoordinate,
-                        screenNumber: parseResult.screenNumber,
-                        screenCaptures: screenCaptures
-                       ) {
-                        detectedElementScreenLocation = mappedPointLocation.globalLocation
-                        detectedElementDisplayFrame = mappedPointLocation.displayFrame
-                        DotAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
-                    }
-
-                    await performComputerControlActions(
-                        computerControlParseResult.actions,
-                        screenCaptures: screenCaptures
-                    )
-
-                    // Accumulate text for end-of-turn TTS.
-                    let trimmedStepSpokenText = stepSpokenText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmedStepSpokenText.isEmpty {
+                    // Speak any text blocks via the per-step narration queue.
+                    let combinedStepNarration = turnResponse.textBlocks
+                        .joined(separator: " ")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !combinedStepNarration.isEmpty {
+                        enqueueStepNarrationChunk(combinedStepNarration)
                         if accumulatedSpokenText.isEmpty {
-                            accumulatedSpokenText = trimmedStepSpokenText
+                            accumulatedSpokenText = combinedStepNarration
                         } else {
-                            accumulatedSpokenText += " " + trimmedStepSpokenText
+                            accumulatedSpokenText += " " + combinedStepNarration
                         }
                     }
 
-                    // Append this step's exchange to the per-turn history so
-                    // the next iteration's Claude call can see what already
-                    // happened.
-                    perTurnStepHistory.append((
-                        userPlaceholder: userPromptForThisStep,
-                        assistantResponse: fullResponseText
-                    ))
-                    stepsExecuted = stepIndex + 1
-
-                    // If Claude returned no action tags, the agent has decided
-                    // the task is complete. Exit the loop.
-                    if computerControlParseResult.actions.isEmpty {
-                        DotDebugLogger.log("agent.loop", "stopping — no actions returned", metadata: [
+                    // No tool_use blocks → task complete.
+                    if turnResponse.toolUseBlocks.isEmpty {
+                        DotDebugLogger.log("agent.loop", "stopping — no tool_use returned", metadata: [
                             "stepsExecuted": stepsExecuted
                         ])
                         break stepLoop
                     }
+
+                    // Execute each tool call and collect tool_result blocks.
+                    var toolResultBlocks: [[String: Any]] = []
+                    for toolUseBlock in turnResponse.toolUseBlocks {
+                        guard !Task.isCancelled else { return }
+
+                        guard let decodedToolCall = AgentToolDefinitions.decodeToolCall(from: toolUseBlock) else {
+                            DotDebugLogger.log("agent.loop", "tool_use decode failed", metadata: [
+                                "tool": toolUseBlock.toolName
+                            ])
+                            toolResultBlocks.append([
+                                "type": "tool_result",
+                                "tool_use_id": toolUseBlock.toolUseID,
+                                "content": "error: unrecognized or malformed tool call (\(toolUseBlock.toolName)). check the tool's schema and try again.",
+                                "is_error": true
+                            ])
+                            continue
+                        }
+
+                        let executionResult = await executeAgentToolCall(
+                            decodedToolCall,
+                            originatingScreenCaptures: currentScreenCaptures
+                        )
+                        toolResultBlocks.append([
+                            "type": "tool_result",
+                            "tool_use_id": toolUseBlock.toolUseID,
+                            "content": executionResult.toolResultContent
+                        ])
+                        if executionResult.didTriggerBailOut {
+                            didBailOutEarly = true
+                        }
+                    }
+
+                    if didBailOutEarly {
+                        DotDebugLogger.log("agent.loop", "stopping — bail_out invoked", metadata: [
+                            "stepsExecuted": stepsExecuted
+                        ])
+                        break stepLoop
+                    }
+
+                    // Re-baseline mouse and run the settling + mouse-move
+                    // check before the next API call. AXPress doesn't move
+                    // the cursor; coordinate-click fallback warps it back.
+                    // Either way, the current cursor position right after
+                    // actions is the post-action baseline against which we
+                    // measure user-driven movement during the settling
+                    // window.
+                    baselineUserMouseLocation = NSEvent.mouseLocation
+                    try? await Task.sleep(nanoseconds: Self.interStepSettlingDelayNanoseconds)
+                    guard !Task.isCancelled else { return }
+
+                    let currentMouseLocation = NSEvent.mouseLocation
+                    let mouseDelta = hypot(
+                        currentMouseLocation.x - baselineUserMouseLocation.x,
+                        currentMouseLocation.y - baselineUserMouseLocation.y
+                    )
+                    if mouseDelta > Self.userMouseMoveCancellationThresholdInPoints {
+                        DotDebugLogger.log("agent.loop", "stopping — user moved hardware mouse", metadata: [
+                            "step": stepsExecuted,
+                            "mouseDelta": Double(mouseDelta),
+                            "baselineX": Double(baselineUserMouseLocation.x),
+                            "baselineY": Double(baselineUserMouseLocation.y),
+                            "currentX": Double(currentMouseLocation.x),
+                            "currentY": Double(currentMouseLocation.y)
+                        ])
+                        didCancelDueToUserMouseMove = true
+                        break stepLoop
+                    }
+
+                    // Capture the post-action screen and build the next user
+                    // message (tool_results + image).
+                    currentScreenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                    DotDebugLogger.log("agent.loop", "captured screens for next step", metadata: [
+                        "step": stepsExecuted,
+                        "screenCount": currentScreenCaptures.count
+                    ])
+                    guard !Task.isCancelled else { return }
+
+                    apiMessages.append([
+                        "role": "user",
+                        "content": Self.buildUserMessageContentBlocks(
+                            screenCaptures: currentScreenCaptures,
+                            toolResults: toolResultBlocks,
+                            trailingText: nil
+                        )
+                    ])
                 }
 
                 if didCancelDueToUserMouseMove {
                     let cancellationNote = "let me know when you want me to take over again."
-                    accumulatedSpokenText = accumulatedSpokenText.isEmpty
+                    let spokenCancellationNote = accumulatedSpokenText.isEmpty
                         ? "okay, you took the mouse back. \(cancellationNote)"
-                        : accumulatedSpokenText + " " + cancellationNote
+                        : cancellationNote
+                    accumulatedSpokenText = accumulatedSpokenText.isEmpty
+                        ? spokenCancellationNote
+                        : accumulatedSpokenText + " " + spokenCancellationNote
+                    enqueueStepNarrationChunk(spokenCancellationNote)
                 }
 
                 await saveConversationAndSpeakResponse(
@@ -1232,19 +1223,22 @@ final class CompanionManager: ObservableObject {
                 DotDebugLogger.log("agent.loop", "finished", metadata: [
                     "stepsExecuted": stepsExecuted,
                     "cancelledByMouseMove": didCancelDueToUserMouseMove,
-                    "finalSpokenTextLength": accumulatedSpokenText.count
+                    "bailedOut": didBailOutEarly,
+                    "finalSpokenTextLength": accumulatedSpokenText.count,
+                    "protocol": "tool_use"
                 ])
             } catch is CancellationError {
-                // User spoke again — response was interrupted
                 DotDebugLogger.log("agent.loop", "cancelled mid-step", metadata: [
-                    "stepsExecuted": stepsExecuted
+                    "stepsExecuted": stepsExecuted,
+                    "protocol": "tool_use"
                 ])
             } catch {
                 DotAnalytics.trackResponseError(error: error.localizedDescription)
-                print("⚠️ Companion response error: \(error)")
+                print("⚠️ Tool-use agent loop error: \(error)")
                 DotDebugLogger.log("agent.loop", "failed", metadata: [
                     "error": error.localizedDescription,
-                    "stepsExecuted": stepsExecuted
+                    "stepsExecuted": stepsExecuted,
+                    "protocol": "tool_use"
                 ])
                 speakResponsePipelineErrorFallback(for: error)
             }
@@ -1254,6 +1248,260 @@ final class CompanionManager: ObservableObject {
                 scheduleTransientHideIfNeeded()
                 DotDebugLogger.log("agent.loop", "voice state reset", metadata: interactionStateLogMetadata())
             }
+        }
+    }
+
+    /// Builds a `user`-role content-block list: any tool_result blocks first
+    /// (matches Anthropic's "tool_result must precede subsequent content"
+    /// convention), then one image+label pair per screen capture, then an
+    /// optional trailing text block (used for the very first user turn to
+    /// attach the transcript).
+    private static func buildUserMessageContentBlocks(
+        screenCaptures: [CompanionScreenCapture],
+        toolResults: [[String: Any]],
+        trailingText: String?
+    ) -> [[String: Any]] {
+        var contentBlocks: [[String: Any]] = []
+        for toolResultBlock in toolResults {
+            contentBlocks.append(toolResultBlock)
+        }
+        for screenCapture in screenCaptures {
+            let imageDimensionInfo = " (image dimensions: \(screenCapture.screenshotWidthInPixels)x\(screenCapture.screenshotHeightInPixels) pixels)"
+            contentBlocks.append([
+                "type": "image",
+                "source": [
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": screenCapture.imageData.base64EncodedString()
+                ]
+            ])
+            contentBlocks.append([
+                "type": "text",
+                "text": screenCapture.label + imageDimensionInfo
+            ])
+        }
+        if let trailingText, !trailingText.isEmpty {
+            contentBlocks.append([
+                "type": "text",
+                "text": trailingText
+            ])
+        }
+        return contentBlocks
+    }
+
+    /// Returned by `executeAgentToolCall(_:originatingScreenCaptures:)`. The
+    /// `toolResultContent` is what we send back to Claude in the tool_result
+    /// block; `didTriggerBailOut` signals the agent loop to terminate early.
+    private struct AgentToolExecutionResult {
+        let toolResultContent: String
+        let didTriggerBailOut: Bool
+    }
+
+    /// Dispatches one decoded tool call. point_at_element and bail_out are
+    /// handled inline; everything else converts to a
+    /// `CompanionComputerControlAction` and routes through the existing
+    /// executor so we don't duplicate the click/keystroke/navigate plumbing.
+    private func executeAgentToolCall(
+        _ agentToolCall: AgentToolCall,
+        originatingScreenCaptures: [CompanionScreenCapture]
+    ) async -> AgentToolExecutionResult {
+        switch agentToolCall {
+        case .pointAtElement(let coordinate, let label, let screen):
+            guard let mappedPointLocation = Self.mapScreenshotCoordinateToGlobalScreenLocation(
+                coordinate,
+                screenNumber: screen,
+                screenCaptures: originatingScreenCaptures
+            ) else {
+                return AgentToolExecutionResult(
+                    toolResultContent: "error: could not map (\(Int(coordinate.x)), \(Int(coordinate.y))) to a screen position",
+                    didTriggerBailOut: false
+                )
+            }
+            // Switching to .idle makes the blue cursor visible so it can fly
+            // to the target.
+            voiceState = .idle
+            detectedElementScreenLocation = mappedPointLocation.globalLocation
+            detectedElementDisplayFrame = mappedPointLocation.displayFrame
+            DotAnalytics.trackElementPointed(elementLabel: label)
+            return AgentToolExecutionResult(
+                toolResultContent: "pointed at \(label ?? "element")",
+                didTriggerBailOut: false
+            )
+
+        case .bailOut(let reason):
+            DotDebugLogger.log("agent.loop", "bail_out tool invoked", metadata: [
+                "reason": reason
+            ])
+            return AgentToolExecutionResult(
+                toolResultContent: "bail_out acknowledged: \(reason)",
+                didTriggerBailOut: true
+            )
+
+        case .clickElement(let coordinate, let label, let screen):
+            await performComputerControlActions(
+                [.click(coordinate: coordinate, elementLabel: label, screenNumber: screen)],
+                screenCaptures: originatingScreenCaptures
+            )
+            return AgentToolExecutionResult(
+                toolResultContent: "clicked \(label ?? "element") at (\(Int(coordinate.x)), \(Int(coordinate.y)))",
+                didTriggerBailOut: false
+            )
+
+        case .typeText(let text):
+            await performComputerControlActions(
+                [.typeText(text)],
+                screenCaptures: originatingScreenCaptures
+            )
+            return AgentToolExecutionResult(
+                toolResultContent: "typed \(text.count) character(s)",
+                didTriggerBailOut: false
+            )
+
+        case .pressKeystroke(let spec):
+            guard let parsedKeystroke = CompanionComputerController.parseKeystroke(fromKeySpec: spec) else {
+                return AgentToolExecutionResult(
+                    toolResultContent: "error: unrecognized keystroke spec \"\(spec)\"",
+                    didTriggerBailOut: false
+                )
+            }
+            await performComputerControlActions(
+                [.keyPress(parsedKeystroke)],
+                screenCaptures: originatingScreenCaptures
+            )
+            return AgentToolExecutionResult(
+                toolResultContent: "pressed \(parsedKeystroke.humanReadableDescription)",
+                didTriggerBailOut: false
+            )
+
+        case .openURL(let url):
+            await performComputerControlActions(
+                [.openURL(url)],
+                screenCaptures: originatingScreenCaptures
+            )
+            return AgentToolExecutionResult(
+                toolResultContent: "opened url \(url)",
+                didTriggerBailOut: false
+            )
+
+        case .openApplication(let nameOrBundleIdentifier):
+            await performComputerControlActions(
+                [.openApplication(nameOrBundleIdentifier: nameOrBundleIdentifier)],
+                screenCaptures: originatingScreenCaptures
+            )
+            return AgentToolExecutionResult(
+                toolResultContent: "opened app \(nameOrBundleIdentifier)",
+                didTriggerBailOut: false
+            )
+
+        case .navigateBrowserToURL(let url):
+            await performComputerControlActions(
+                [.navigateBrowserToURL(url)],
+                screenCaptures: originatingScreenCaptures
+            )
+            return AgentToolExecutionResult(
+                toolResultContent: "navigated to \(url)",
+                didTriggerBailOut: false
+            )
+
+        case .openNewBrowserTab(let initialURL):
+            await performComputerControlActions(
+                [.openNewBrowserTab(initialURL: initialURL)],
+                screenCaptures: originatingScreenCaptures
+            )
+            return AgentToolExecutionResult(
+                toolResultContent: initialURL.map { "opened new tab to \($0)" } ?? "opened new tab",
+                didTriggerBailOut: false
+            )
+
+        case .closeCurrentBrowserTab:
+            await performComputerControlActions(
+                [.closeCurrentBrowserTab],
+                screenCaptures: originatingScreenCaptures
+            )
+            return AgentToolExecutionResult(
+                toolResultContent: "closed current tab",
+                didTriggerBailOut: false
+            )
+
+        case .switchBrowserTab(let index):
+            await performComputerControlActions(
+                [.switchBrowserTab(index)],
+                screenCaptures: originatingScreenCaptures
+            )
+            return AgentToolExecutionResult(
+                toolResultContent: "switched to tab \(index)",
+                didTriggerBailOut: false
+            )
+
+        case .browserHistoryBack:
+            await performComputerControlActions(
+                [.browserHistoryBack],
+                screenCaptures: originatingScreenCaptures
+            )
+            return AgentToolExecutionResult(
+                toolResultContent: "went back",
+                didTriggerBailOut: false
+            )
+
+        case .browserHistoryForward:
+            await performComputerControlActions(
+                [.browserHistoryForward],
+                screenCaptures: originatingScreenCaptures
+            )
+            return AgentToolExecutionResult(
+                toolResultContent: "went forward",
+                didTriggerBailOut: false
+            )
+
+        case .mediaControl(let mediaCommand):
+            await performComputerControlActions(
+                [.mediaControl(mediaCommand)],
+                screenCaptures: originatingScreenCaptures
+            )
+            return AgentToolExecutionResult(
+                toolResultContent: "executed \(mediaCommand.rawValue)",
+                didTriggerBailOut: false
+            )
+
+        case .openURL(let urlString):
+            DotDebugLogger.log("computer.actions", "open_url action requested", metadata: [
+                "urlLength": urlString.count
+            ])
+            let didOpen = CompanionComputerController.openURL(rawURLString: urlString)
+            // Let the system browser come to front and start the page load
+            // before the next agent step captures the screen.
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            DotDebugLogger.log("computer.actions", "open_url action completed", metadata: [
+                "didOpen": didOpen
+            ])
+            return AgentToolExecutionResult(
+                toolResultContent: didOpen ? "opened \(urlString)" : "error: could not open URL \"\(urlString)\"",
+                didTriggerBailOut: false
+            )
+
+        case .openApplication(let nameOrBundleIdentifier):
+            DotDebugLogger.log("computer.actions", "open_app action requested", metadata: [
+                "name": nameOrBundleIdentifier
+            ])
+            let openAppResult = await CompanionComputerController.openApplication(
+                nameOrBundleIdentifier: nameOrBundleIdentifier
+            )
+            // Brief settle for app activation/launch before next screenshot.
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            DotDebugLogger.log("computer.actions", "open_app action completed", metadata: [
+                "didOpen": openAppResult.didOpen,
+                "resolvedName": openAppResult.resolvedApplicationName
+            ])
+            if openAppResult.didOpen {
+                return AgentToolExecutionResult(
+                    toolResultContent: "opened \(openAppResult.resolvedApplicationName)",
+                    didTriggerBailOut: false
+                )
+            }
+            return AgentToolExecutionResult(
+                toolResultContent: "error: \(openAppResult.errorDescription ?? "could not open application \(nameOrBundleIdentifier)")",
+                didTriggerBailOut: false
+            )
         }
     }
 
@@ -1279,15 +1527,27 @@ final class CompanionManager: ObservableObject {
 
         DotAnalytics.trackAIResponseReceived(response: spokenText)
 
-        // Play the response via TTS. Keep the spinner (processing state)
-        // until the audio actually starts playing, then switch to responding.
+        // If per-step narration was used during this turn, every chunk is
+        // already playing in order via perStepNarrationProcessingTask. Just
+        // wait for the queue to drain so we don't return while audio is still
+        // playing (which would cut the last chunk off if a new turn starts).
+        if didEnqueueAnyPerStepNarrationForCurrentTurn {
+            DotDebugLogger.log("tts", "awaiting per-step narration completion")
+            await perStepNarrationProcessingTask?.value
+            voiceState = .responding
+            DotDebugLogger.log("tts", "per-step narration completed")
+            didEnqueueAnyPerStepNarrationForCurrentTurn = false
+            return
+        }
+
+        // One-shot TTS path — used by the media-command short-circuit which
+        // doesn't run through the agent loop.
         if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             do {
                 DotDebugLogger.log("tts", "starting ElevenLabs playback", metadata: [
                     "spokenTextLength": spokenText.count
                 ])
                 try await elevenLabsTTSClient.speakText(spokenText)
-                // speakText returns after player.play() — audio is now playing
                 voiceState = .responding
                 DotDebugLogger.log("tts", "playback started")
             } catch {
@@ -1299,6 +1559,64 @@ final class CompanionManager: ObservableObject {
                 speakSystemVoiceFallback(spokenText)
             }
         }
+    }
+
+    /// Appends a step's spoken text to the per-step narration queue. The
+    /// processor task plays chunks in order via ElevenLabs TTS so the user
+    /// hears narration in real time as actions execute. Empty/whitespace
+    /// chunks are ignored.
+    private func enqueueStepNarrationChunk(_ stepSpokenText: String) {
+        let trimmedChunk = stepSpokenText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedChunk.isEmpty else { return }
+        perStepNarrationChunks.append(trimmedChunk)
+        didEnqueueAnyPerStepNarrationForCurrentTurn = true
+        DotDebugLogger.log("tts.step", "enqueued chunk", metadata: [
+            "chunkLength": trimmedChunk.count,
+            "queueDepth": perStepNarrationChunks.count
+        ])
+        startStepNarrationProcessorIfNotRunning()
+    }
+
+    private func startStepNarrationProcessorIfNotRunning() {
+        guard perStepNarrationProcessingTask == nil else { return }
+        perStepNarrationProcessingTask = Task { @MainActor [weak self] in
+            while let nextChunk = self?.dequeueNextStepNarrationChunk() {
+                if Task.isCancelled { break }
+                guard let strongSelf = self else { break }
+                do {
+                    DotDebugLogger.log("tts.step", "playing chunk", metadata: [
+                        "chunkLength": nextChunk.count
+                    ])
+                    try await strongSelf.elevenLabsTTSClient.speakText(nextChunk)
+                    if Task.isCancelled { break }
+                    await strongSelf.elevenLabsTTSClient.awaitPlaybackCompletion()
+                } catch is CancellationError {
+                    break
+                } catch {
+                    print("⚠️ Per-step TTS error: \(error)")
+                    DotDebugLogger.log("tts.step", "playback failed", metadata: [
+                        "error": error.localizedDescription
+                    ])
+                }
+            }
+            self?.perStepNarrationProcessingTask = nil
+        }
+    }
+
+    private func dequeueNextStepNarrationChunk() -> String? {
+        guard !perStepNarrationChunks.isEmpty else { return nil }
+        return perStepNarrationChunks.removeFirst()
+    }
+
+    /// Cancels any queued or in-flight per-step narration. Called whenever
+    /// a new turn begins (push-to-talk, debug URL, media short-circuit) so
+    /// stale audio from the previous turn doesn't bleed into the new one.
+    private func cancelPerStepNarrationQueue() {
+        elevenLabsTTSClient.stopPlayback()
+        perStepNarrationChunks.removeAll()
+        perStepNarrationProcessingTask?.cancel()
+        perStepNarrationProcessingTask = nil
+        didEnqueueAnyPerStepNarrationForCurrentTurn = false
     }
 
     private func scheduleVoiceStateSafetyResetIfNeeded() {
@@ -1343,7 +1661,7 @@ final class CompanionManager: ObservableObject {
         pendingKeyboardShortcutStartTask?.cancel()
         pendingKeyboardShortcutStartTask = nil
         buddyDictationManager.cancelCurrentDictation(preserveDraftText: false)
-        elevenLabsTTSClient.stopPlayback()
+        cancelPerStepNarrationQueue()
         clearDetectedElementLocation()
         voiceState = .idle
         scheduleTransientHideIfNeeded()
@@ -1432,16 +1750,23 @@ final class CompanionManager: ObservableObject {
         case mediaControl(CompanionMediaControlCommand)
         case typeText(String)
         case keyPress(CompanionKeystroke)
-    }
-
-    private struct ComputerControlActionParseResult {
-        let spokenText: String
-        let actions: [CompanionComputerControlAction]
-    }
-
-    private struct ComputerControlActionMatch {
-        let utf16Location: Int
-        let action: CompanionComputerControlAction
+        // High-level open primitives that route through NSWorkspace instead
+        // of synthesising keyboard shortcuts. These are reliable regardless
+        // of which app is currently focused — the key reason they exist is
+        // that the legacy cmd+L → type → return path silently failed when
+        // a non-browser app was focused, leaving the macOS funk sound and
+        // no actual navigation.
+        case openURL(String)
+        case openApplication(nameOrBundleIdentifier: String)
+        // High-level browser navigation macros that wrap a known-reliable
+        // keystroke sequence so Claude doesn't have to reconstruct it from
+        // primitives and risk hitting the wrong target.
+        case navigateBrowserToURL(String)
+        case openNewBrowserTab(initialURL: String?)
+        case closeCurrentBrowserTab
+        case switchBrowserTab(Int)
+        case browserHistoryBack
+        case browserHistoryForward
     }
 
     private struct MappedScreenLocation {
@@ -1544,10 +1869,148 @@ final class CompanionManager: ObservableObject {
                     "keystroke": keystroke.humanReadableDescription
                 ])
                 try? await Task.sleep(nanoseconds: 80_000_000)
+
+            case .openURL(let urlString):
+                await executeOpenURL(urlString: urlString)
+
+            case .openApplication(let nameOrBundleIdentifier):
+                await executeOpenApplication(nameOrBundleIdentifier: nameOrBundleIdentifier)
+
+            case .navigateBrowserToURL(let targetURL):
+                await executeBrowserNavigation(targetURL: targetURL)
+
+            case .openNewBrowserTab(let initialURL):
+                await executeOpenNewBrowserTab(initialURL: initialURL)
+
+            case .closeCurrentBrowserTab:
+                await executeBrowserKeystrokeMacro(keySpec: "cmd+w", logTag: "close_tab")
+
+            case .switchBrowserTab(let tabIndex):
+                await executeBrowserKeystrokeMacro(keySpec: "cmd+\(tabIndex)", logTag: "switch_tab")
+
+            case .browserHistoryBack:
+                // Use cmd+leftarrow rather than cmd+[ — both work in Chrome/Safari/Firefox/Arc,
+                // but cmd+leftarrow is also bound to "go back" in cursor-driven text editing
+                // contexts so it's a clearer keystroke for "history back".
+                await executeBrowserKeystrokeMacro(keySpec: "cmd+left", logTag: "history_back")
+
+            case .browserHistoryForward:
+                await executeBrowserKeystrokeMacro(keySpec: "cmd+right", logTag: "history_forward")
             }
         }
         DotDebugLogger.log("computer.actions", "finished actions", metadata: [
             "actionCount": actions.count
+        ])
+    }
+
+    /// Opens a URL via NSWorkspace, which routes it through the user's default
+    /// browser regardless of which app is currently focused. Replaces the
+    /// previous cmd+L → type → return approach: that path silently failed
+    /// whenever a non-browser app was frontmost (VS Code, Finder, the
+    /// desktop), since cmd+L isn't bound there — macOS plays the funk
+    /// sound and the URL never loads. NSWorkspace.shared.open handles
+    /// activation, focus, and tab creation atomically.
+    private func executeOpenURL(urlString: String) async {
+        DotDebugLogger.log("computer.actions", "open_url action requested", metadata: [
+            "urlLength": urlString.count
+        ])
+        let didOpenURL = CompanionComputerController.openURL(rawURLString: urlString)
+        // The page needs time to start loading before the next agent step
+        // captures the screen — without this, Claude sees the previous
+        // screen and assumes the open failed, triggering wasteful retries.
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        DotDebugLogger.log("computer.actions", "open_url action completed", metadata: [
+            "urlLength": urlString.count,
+            "didOpen": didOpenURL
+        ])
+    }
+
+    /// Launches or activates a native app via NSWorkspace.openApplication.
+    /// Reliable replacement for "click the dock icon" or "Spotlight + type +
+    /// return" sequences, which depend on visual layout and keyboard focus.
+    private func executeOpenApplication(nameOrBundleIdentifier: String) async {
+        DotDebugLogger.log("computer.actions", "open_app action requested", metadata: [
+            "nameLength": nameOrBundleIdentifier.count
+        ])
+        let openApplicationResult = await CompanionComputerController.openApplication(
+            nameOrBundleIdentifier: nameOrBundleIdentifier
+        )
+        // Apps need time to come to the foreground (or finish launching)
+        // before the next agent step captures the screen. 1.5s covers the
+        // common case of activating an already-running app; cold launches
+        // may need a follow-up step but 1.5s is enough for the launching
+        // window to appear.
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        DotDebugLogger.log("computer.actions", "open_app action completed", metadata: [
+            "nameLength": nameOrBundleIdentifier.count,
+            "didOpen": openApplicationResult.didOpen,
+            "resolvedName": openApplicationResult.resolvedApplicationName,
+            "errorDescription": openApplicationResult.errorDescription ?? ""
+        ])
+    }
+
+    /// High-level browser navigation: routes through NSWorkspace.shared.open
+    /// like `executeOpenURL` does. The legacy cmd+L → type → return path was
+    /// removed because it silently failed whenever a non-browser app was
+    /// frontmost, which was the dominant cause of the "I hear typing but
+    /// nothing happens" funk-sound bug.
+    private func executeBrowserNavigation(targetURL: String) async {
+        DotDebugLogger.log("computer.actions", "navigate action requested", metadata: [
+            "urlLength": targetURL.count
+        ])
+        let didOpenURL = CompanionComputerController.openURL(rawURLString: targetURL)
+        // Longer post-open wait so the page actually starts loading before
+        // the next agent step captures the screen. Without this, Claude sees
+        // the old screen in step N+1 and assumes the navigation failed,
+        // triggering wasteful retry actions.
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        DotDebugLogger.log("computer.actions", "navigate action completed", metadata: [
+            "urlLength": targetURL.count,
+            "didOpen": didOpenURL
+        ])
+    }
+
+    /// Cmd+T opens a new tab. If an initial URL was provided, type it and press
+    /// return so the new tab actually loads that page instead of leaving the
+    /// user on a blank new-tab page.
+    private func executeOpenNewBrowserTab(initialURL: String?) async {
+        DotDebugLogger.log("computer.actions", "new_tab action requested", metadata: [
+            "hasInitialURL": initialURL != nil
+        ])
+        guard let openNewTabKeystroke = CompanionComputerController.parseKeystroke(fromKeySpec: "cmd+t") else {
+            DotDebugLogger.log("computer.actions", "new_tab action skipped — keystroke parse failed")
+            return
+        }
+        CompanionComputerController.pressKeystroke(openNewTabKeystroke)
+        try? await Task.sleep(nanoseconds: 180_000_000)
+        if let initialURL, !initialURL.isEmpty {
+            CompanionComputerController.typeText(initialURL)
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            if let returnKeystroke = CompanionComputerController.parseKeystroke(fromKeySpec: "return") {
+                CompanionComputerController.pressKeystroke(returnKeystroke)
+                // Long wait for the new tab's page to start loading — same
+                // reason as executeBrowserNavigation.
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+            }
+        }
+        DotDebugLogger.log("computer.actions", "new_tab action completed")
+    }
+
+    /// Generic single-keystroke browser macro (close tab, switch tab, history).
+    private func executeBrowserKeystrokeMacro(keySpec: String, logTag: String) async {
+        DotDebugLogger.log("computer.actions", "\(logTag) action requested", metadata: [
+            "keySpec": keySpec
+        ])
+        guard let keystroke = CompanionComputerController.parseKeystroke(fromKeySpec: keySpec) else {
+            DotDebugLogger.log("computer.actions", "\(logTag) action skipped — keystroke parse failed", metadata: [
+                "keySpec": keySpec
+            ])
+            return
+        }
+        CompanionComputerController.pressKeystroke(keystroke)
+        try? await Task.sleep(nanoseconds: 120_000_000)
+        DotDebugLogger.log("computer.actions", "\(logTag) action completed", metadata: [
+            "keySpec": keySpec
         ])
     }
 
@@ -1562,144 +2025,6 @@ final class CompanionManager: ObservableObject {
         let flightDurationSeconds = min(max(distance / 800.0, 0.6), 1.4)
         let clickAfterArrivalPaddingSeconds = 0.08
         return UInt64((flightDurationSeconds + clickAfterArrivalPaddingSeconds) * 1_000_000_000)
-    }
-
-    private static func parseComputerControlActions(from responseText: String) -> ComputerControlActionParseResult {
-        let clickPattern = #"\[CLICK:(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?\]"#
-        let mediaPattern = #"\[MEDIA:([a-zA-Z_\- ]+)\]"#
-        let typePattern = #"\[TYPE:([^\]]*)\]"#
-        let keyPattern = #"\[KEY:([^\]]+)\]"#
-        let nonePatterns = [
-            #"\[CLICK:none\]"#,
-            #"\[MEDIA:none\]"#,
-            #"\[TYPE:none\]"#,
-            #"\[KEY:none\]"#
-        ]
-        var actionMatches: [ComputerControlActionMatch] = []
-
-        if let clickRegex = try? NSRegularExpression(pattern: clickPattern, options: [.caseInsensitive]) {
-            let matches = clickRegex.matches(
-                in: responseText,
-                range: NSRange(responseText.startIndex..., in: responseText)
-            )
-
-            for match in matches {
-                guard let xRange = Range(match.range(at: 1), in: responseText),
-                      let yRange = Range(match.range(at: 2), in: responseText),
-                      let x = Double(responseText[xRange]),
-                      let y = Double(responseText[yRange]) else {
-                    continue
-                }
-
-                var elementLabel: String?
-                if let labelRange = Range(match.range(at: 3), in: responseText) {
-                    elementLabel = String(responseText[labelRange]).trimmingCharacters(in: .whitespaces)
-                }
-
-                var screenNumber: Int?
-                if let screenRange = Range(match.range(at: 4), in: responseText) {
-                    screenNumber = Int(responseText[screenRange])
-                }
-
-                actionMatches.append(ComputerControlActionMatch(
-                    utf16Location: match.range.location,
-                    action: .click(
-                        coordinate: CGPoint(x: x, y: y),
-                        elementLabel: elementLabel,
-                        screenNumber: screenNumber
-                    )
-                ))
-            }
-        }
-
-        if let mediaRegex = try? NSRegularExpression(pattern: mediaPattern, options: [.caseInsensitive]) {
-            let matches = mediaRegex.matches(
-                in: responseText,
-                range: NSRange(responseText.startIndex..., in: responseText)
-            )
-
-            for match in matches {
-                guard let mediaControlRange = Range(match.range(at: 1), in: responseText),
-                      let mediaControlCommand = CompanionMediaControlCommand(
-                        controlTagValue: String(responseText[mediaControlRange])
-                      ) else {
-                    continue
-                }
-
-                actionMatches.append(ComputerControlActionMatch(
-                    utf16Location: match.range.location,
-                    action: .mediaControl(mediaControlCommand)
-                ))
-            }
-        }
-
-        if let typeRegex = try? NSRegularExpression(pattern: typePattern, options: [.caseInsensitive]) {
-            let matches = typeRegex.matches(
-                in: responseText,
-                range: NSRange(responseText.startIndex..., in: responseText)
-            )
-
-            for match in matches {
-                guard let textRange = Range(match.range(at: 1), in: responseText) else {
-                    continue
-                }
-
-                let typedText = String(responseText[textRange])
-                    .replacingOccurrences(of: "\\n", with: "\n")
-
-                actionMatches.append(ComputerControlActionMatch(
-                    utf16Location: match.range.location,
-                    action: .typeText(typedText)
-                ))
-            }
-        }
-
-        if let keyRegex = try? NSRegularExpression(pattern: keyPattern, options: [.caseInsensitive]) {
-            let matches = keyRegex.matches(
-                in: responseText,
-                range: NSRange(responseText.startIndex..., in: responseText)
-            )
-
-            for match in matches {
-                guard let keySpecRange = Range(match.range(at: 1), in: responseText) else {
-                    continue
-                }
-
-                let rawKeySpec = String(responseText[keySpecRange])
-                guard let parsedKeystroke = CompanionComputerController.parseKeystroke(fromKeySpec: rawKeySpec) else {
-                    DotDebugLogger.log("computer.actions", "ignoring unparseable KEY tag", metadata: [
-                        "rawKeySpec": rawKeySpec
-                    ])
-                    continue
-                }
-
-                actionMatches.append(ComputerControlActionMatch(
-                    utf16Location: match.range.location,
-                    action: .keyPress(parsedKeystroke)
-                ))
-            }
-        }
-
-        var spokenText = responseText
-        for pattern in [clickPattern, mediaPattern, typePattern, keyPattern] + nonePatterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
-                continue
-            }
-            spokenText = regex.stringByReplacingMatches(
-                in: spokenText,
-                range: NSRange(spokenText.startIndex..., in: spokenText),
-                withTemplate: ""
-            )
-        }
-
-        let actions = actionMatches
-            .sorted { $0.utf16Location < $1.utf16Location }
-            .map(\.action)
-
-        return ComputerControlActionParseResult(
-            spokenText: spokenText.trimmingCharacters(in: .whitespacesAndNewlines),
-            actions: actions
-        )
     }
 
     private static func mapScreenshotCoordinateToGlobalScreenLocation(

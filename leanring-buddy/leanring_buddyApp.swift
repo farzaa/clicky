@@ -68,14 +68,35 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
     /// Receives `dot://` URLs that macOS routes back to the app after the user
     /// finishes Google sign-in in the browser. Forwards them to the account
-    /// manager which exchanges the code for an install token.
+    /// manager which exchanges the code for an install token. Also routes
+    /// `dot://debug?transcript=…` URLs into the agent loop for local testing.
     func application(_ application: NSApplication, open urls: [URL]) {
         for incomingURL in urls {
+            if handleDebugTranscriptURLIfMatch(incomingURL) {
+                continue
+            }
             let wasHandled = accountManager.handleIncomingAuthURL(incomingURL)
             if wasHandled {
                 menuBarPanelManager?.showPanelOnLaunch()
             }
         }
+    }
+
+    /// Recognizes `dot://debug?transcript=…` URLs and feeds the decoded
+    /// transcript through the same dispatch path as a real push-to-talk
+    /// release. Returns true if the URL was a debug URL (handled or empty),
+    /// false otherwise so the caller falls through to other URL handlers.
+    /// Local-dev surface — unauthenticated; gate or remove before shipping.
+    private func handleDebugTranscriptURLIfMatch(_ incomingURL: URL) -> Bool {
+        guard incomingURL.scheme?.lowercased() == "dot" else { return false }
+        guard incomingURL.host?.lowercased() == "debug" else { return false }
+        let urlComponents = URLComponents(url: incomingURL, resolvingAgainstBaseURL: false)
+        let transcriptQueryValue = urlComponents?.queryItems?.first(where: { $0.name == "transcript" })?.value ?? ""
+        let trimmedTranscript = transcriptQueryValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTranscript.isEmpty else { return true }
+        print("🧪 Dot: debug URL fired transcript \"\(trimmedTranscript)\"")
+        companionManager.runTranscriptThroughAgentLoopForDebug(transcript: trimmedTranscript)
+        return true
     }
 
     /// Registers the app as a login item so it launches automatically on
