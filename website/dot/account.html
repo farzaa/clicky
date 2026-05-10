@@ -27,36 +27,27 @@
 
     <section id="signedInSection" class="section" style="display: none;">
       <div class="card">
-        <div class="row between">
-          <div>
-            <div class="label">Signed in as</div>
-            <div id="emailLabel" style="font-size: 17px; font-weight: 600;"></div>
-          </div>
+        <div class="row between" style="align-items: center;">
+          <div id="emailLabel" style="font-size: 14px; color: var(--text-secondary);"></div>
           <button id="signOutButton" class="button danger">Sign out</button>
         </div>
-      </div>
 
-      <div class="card">
-        <div class="label">Credits</div>
-        <div style="font-size: 28px; font-weight: 700; margin-top: 4px;"><span id="creditsBalance">—</span></div>
-        <div class="muted" style="margin-top: 4px;">Spendable across every Vibe Research project that charges credits.</div>
-      </div>
-
-      <div class="card" id="dailyCapCard" style="display: none;">
-        <div class="row between" style="align-items: baseline;">
-          <div class="label">Today's spend</div>
-          <div class="muted"><span id="spentTodayLabel">—</span> of <span id="dailyCapLabel">—</span></div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 20px;">
+          <div>
+            <div class="label">Balance</div>
+            <div style="font-size: 24px; font-weight: 700; margin-top: 2px;"><span id="creditsBalance">—</span></div>
+          </div>
+          <div id="dailyCapBlock" style="display: none;">
+            <div class="label">Today</div>
+            <div style="font-size: 24px; font-weight: 700; margin-top: 2px;">
+              <span id="spentTodayLabel">—</span>
+              <span style="font-size: 14px; color: var(--text-tertiary); font-weight: 400;"> / <span id="dailyCapLabel">—</span></span>
+            </div>
+            <div style="margin-top: 8px; height: 6px; background: var(--bg); border: 1px solid var(--border); border-radius: 999px; overflow: hidden;">
+              <div id="spentTodayBar" style="height: 100%; width: 0%; background: var(--accent); transition: width 0.3s ease;"></div>
+            </div>
+          </div>
         </div>
-        <div style="margin-top: 10px; height: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 999px; overflow: hidden;">
-          <div id="spentTodayBar" style="height: 100%; width: 0%; background: var(--accent); transition: width 0.3s ease;"></div>
-        </div>
-        <div class="muted" style="margin-top: 8px;">Resets on a rolling 24-hour window. Bar turns red as you approach the cap.</div>
-      </div>
-
-      <div id="projectCardsContainer"></div>
-
-      <div class="card">
-        <p style="margin-top: 0;">Limits reset on a rolling 24-hour window — once enough time has passed, your numbers go back down on their own. If you're hitting the limit and want it raised, send Mark a note.</p>
       </div>
     </section>
 
@@ -121,65 +112,6 @@
         }
       }
 
-      function escapeHtml(text) {
-        return String(text == null ? "" : text).replace(/[&<>"']/g, function (singleChar) {
-          return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[singleChar];
-        });
-      }
-
-      // Endpoint name → friendly heading shown on the card. Anything not
-      // listed here falls back to the raw endpoint name.
-      var ENDPOINT_DISPLAY_NAMES = {
-        "chat": "Chats",
-        "tts": "TTS chars",
-        "transcribe-token": "Voice sessions"
-      };
-
-      function renderProjectCards(meResponse) {
-        var container = document.getElementById("projectCardsContainer");
-        container.innerHTML = "";
-
-        var usageByProject = meResponse.usage_today_by_project || {};
-        var spentByProject = meResponse.spent_today_by_project_cents || {};
-        // Show every project the user has either spent on or used today,
-        // plus the project they just signed into (zero-state).
-        var projectIdSet = {};
-        Object.keys(usageByProject).forEach(function (id) { projectIdSet[id] = true; });
-        Object.keys(spentByProject).forEach(function (id) { projectIdSet[id] = true; });
-        projectIdSet[PROJECT_ID] = true;
-        var projectIds = Object.keys(projectIdSet).sort();
-
-        projectIds.forEach(function (projectId) {
-          var endpointUsage = usageByProject[projectId] || {};
-          var spentCents = spentByProject[projectId] || 0;
-          var endpointNamesShown = Object.keys(endpointUsage).sort();
-
-          var endpointCellsHtml = endpointNamesShown.map(function (endpointName) {
-            var usedAmount = endpointUsage[endpointName] || 0;
-            var displayName = ENDPOINT_DISPLAY_NAMES[endpointName] || endpointName;
-            return '<div class="usage-cell">' +
-                   '<div class="name">' + escapeHtml(displayName) + '</div>' +
-                   '<div class="num">' + usedAmount + '</div>' +
-                   '</div>';
-          }).join("");
-
-          var emptyStateHtml = endpointNamesShown.length === 0
-            ? '<p class="muted" style="margin: 6px 0 0;">No activity yet today.</p>'
-            : '';
-
-          var projectCardElement = document.createElement("div");
-          projectCardElement.className = "card";
-          projectCardElement.innerHTML =
-            '<div class="row between" style="align-items: baseline;">' +
-              '<h2 style="margin: 0; font-size: 16px;">' + escapeHtml(projectId) + '</h2>' +
-              '<div class="muted">spent today: <strong style="color: var(--text-secondary);">' + formatCents(spentCents) + '</strong></div>' +
-            '</div>' +
-            '<div class="usage-grid" style="margin-top: 12px;">' + endpointCellsHtml + '</div>' +
-            emptyStateHtml;
-          container.appendChild(projectCardElement);
-        });
-      }
-
       function formatCents(cents) {
         return "$" + (cents / 100).toFixed(2);
       }
@@ -187,19 +119,18 @@
       function renderDailyCapBar(meResponse) {
         var capCents = meResponse.daily_cap_cents;
         var spentCents = meResponse.spent_today_cents;
-        var dailyCapCard = document.getElementById("dailyCapCard");
+        var block = document.getElementById("dailyCapBlock");
         if (typeof capCents !== "number" || typeof spentCents !== "number" || capCents <= 0) {
-          dailyCapCard.style.display = "none";
+          block.style.display = "none";
           return;
         }
-        dailyCapCard.style.display = "";
+        block.style.display = "";
         document.getElementById("spentTodayLabel").textContent = formatCents(spentCents);
         document.getElementById("dailyCapLabel").textContent = formatCents(capCents);
 
         var fillPercent = Math.min(100, Math.max(0, (spentCents / capCents) * 100));
         var barElement = document.getElementById("spentTodayBar");
         barElement.style.width = fillPercent + "%";
-        // Bar color: blue under 70%, amber 70-90%, red 90%+
         if (fillPercent >= 90) {
           barElement.style.background = "var(--danger)";
         } else if (fillPercent >= 70) {
@@ -214,7 +145,7 @@
         setVisibility("signedInSection", true);
         var displayName = meResponse.user.display_name || meResponse.user.email;
         document.getElementById("greeting").textContent = "Hi, " + displayName;
-        document.getElementById("subtitle").textContent = "Here's your usage across every Vibe Research project today.";
+        document.getElementById("subtitle").textContent = "Your Vibe Research account.";
         document.getElementById("emailLabel").textContent = meResponse.user.email;
         var creditsBalanceElement = document.getElementById("creditsBalance");
         if (creditsBalanceElement) {
@@ -223,8 +154,8 @@
             : "—";
         }
         renderDailyCapBar(meResponse);
-        renderProjectCards(meResponse);
       }
+
 
       async function loadAccount() {
         var installToken = localStorage.getItem(TOKEN_STORAGE_KEY);
