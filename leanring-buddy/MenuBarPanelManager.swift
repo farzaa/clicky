@@ -73,35 +73,25 @@ final class MenuBarPanelManager: NSObject {
         button.target = self
     }
 
-    /// Draws the dot triangle as a menu bar icon. Uses the same shape
-    /// and rotation as the in-app cursor so the menu bar icon matches.
+    /// Draws a solid filled circle as the menu bar icon. Sized to roughly
+    /// match the visual weight of the previous triangle icon so the menu
+    /// bar layout doesn't shift.
     private func makeDotMenuBarIcon() -> NSImage {
         let iconSize: CGFloat = 18
         let image = NSImage(size: NSSize(width: iconSize, height: iconSize))
         image.lockFocus()
 
-        let triangleSize = iconSize * 0.7
-        let cx = iconSize * 0.50
-        let cy = iconSize * 0.50
-        let height = triangleSize * sqrt(3.0) / 2.0
+        let circleDiameter = iconSize * 0.7
+        let circleOriginX = (iconSize - circleDiameter) / 2
+        let circleOriginY = (iconSize - circleDiameter) / 2
+        let circleRect = NSRect(
+            x: circleOriginX,
+            y: circleOriginY,
+            width: circleDiameter,
+            height: circleDiameter
+        )
 
-        let top = CGPoint(x: cx, y: cy + height / 1.5)
-        let bottomLeft = CGPoint(x: cx - triangleSize / 2, y: cy - height / 3)
-        let bottomRight = CGPoint(x: cx + triangleSize / 2, y: cy - height / 3)
-
-        let angle = 35.0 * .pi / 180.0
-        func rotate(_ point: CGPoint) -> CGPoint {
-            let dx = point.x - cx, dy = point.y - cy
-            let cosA = CGFloat(cos(angle)), sinA = CGFloat(sin(angle))
-            return CGPoint(x: cx + cosA * dx - sinA * dy, y: cy + sinA * dx + cosA * dy)
-        }
-
-        let path = NSBezierPath()
-        path.move(to: rotate(top))
-        path.line(to: rotate(bottomLeft))
-        path.line(to: rotate(bottomRight))
-        path.close()
-
+        let path = NSBezierPath(ovalIn: circleRect)
         NSColor.black.setFill()
         path.fill()
 
