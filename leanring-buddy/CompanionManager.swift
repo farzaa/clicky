@@ -118,8 +118,6 @@ final class CompanionManager: ObservableObject {
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
     private var voiceStateSafetyResetTask: Task<Void, Never>?
-    private var hasValidatedPersistedScreenContentPermissionDuringLaunch = false
-    private var isValidatingPersistedScreenContentPermission = false
 
     /// True when all required permissions are granted. Used by the panel to show
     /// a single "all good" state.
@@ -204,7 +202,12 @@ final class CompanionManager: ObservableObject {
     func start() {
         ClickyDebugLogger.markLaunch()
         refreshAllPermissions()
-        validatePersistedScreenContentPermissionIfNeeded()
+        // Intentionally NOT validating SCK permission on launch. macOS has no
+        // documented preflight for SCK, so any validation requires actually
+        // calling SCShareableContent / SCScreenshotManager — which pops the
+        // system "Open Settings" dialog if permission is missing. Doing that
+        // on every launch led to dialog spam. Instead, the first real capture
+        // attempt detects denial and updates the UI accordingly.
         let hasPersistentContentCaptureEntitlement = Self.hasPersistentContentCaptureEntitlement()
         print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), inputMonitoring: \(hasInputMonitoringPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), persistentCaptureEntitlement: \(hasPersistentContentCaptureEntitlement), onboarded: \(hasCompletedOnboarding)")
         ClickyDebugLogger.log("app.start", "starting companion manager", metadata: [
@@ -390,7 +393,7 @@ final class CompanionManager: ObservableObject {
         // persisted grant for UI responsiveness, then validate it once per launch
         // with a real low-resolution capture probe.
         if !hasScreenContentPermission {
-            hasScreenContentPermission = UserDefaults.standard.bool(forKey: "hasScreenContentPermission")
+            hasScreenContentPermission = UserDefaults.standard.bool(forKey: "hasScreenContentPermissionV2")
         }
         // Debug: log permission state after all live and persisted permission
         // sources have been reconciled.
@@ -455,7 +458,7 @@ final class CompanionManager: ObservableObject {
                     }
                     hasScreenContentPermission = true
                     screenContentPermissionProblem = nil
-                    UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
+                    UserDefaults.standard.set(true, forKey: "hasScreenContentPermissionV2")
                     ClickyAnalytics.trackPermissionGranted(permission: "screen_content")
 
                     // If onboarding was already completed, show the cursor overlay now
@@ -477,6 +480,31 @@ final class CompanionManager: ObservableObject {
                     )
                     isRequestingScreenContent = false
                 }
+            }
+        }
+    }
+
+    /// Opens the System Settings pane where the user grants Screen & System
+    /// Audio Recording. The URL has remained stable across the macOS 14 → 15
+    /// rename of the pane label.
+    func openScreenRecordingSystemSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Quits and relaunches the running app. Required after the user grants
+    /// Screen & System Audio Recording, because ScreenCaptureKit binds the TCC
+    /// decision to the process's audit token at launch — there is no API to
+    /// re-bind a freshly granted permission within a running process on
+    /// macOS 14.2+ / 15.x.
+    func relaunchAppAfterPermissionChange() {
+        ClickyDebugLogger.log("permissions.screenContent", "relaunching to pick up freshly granted permission")
+        let appBundleURL = Bundle.main.bundleURL
+        let openConfiguration = NSWorkspace.OpenConfiguration()
+        openConfiguration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: appBundleURL, configuration: openConfiguration) { _, _ in
+            DispatchQueue.main.async {
+                NSApp.terminate(nil)
             }
         }
     }
@@ -552,83 +580,34 @@ final class CompanionManager: ObservableObject {
         return error.localizedDescription
     }
 
+    /// Performs a real ScreenCaptureKit capture as a permission probe.
+    /// macOS does not expose a documented preflight for SCK, so calling the
+    /// real API and observing whether it throws is the only reliable signal.
+    /// CoreGraphics is intentionally not used as a fallback here because it
+    /// "succeeds" with a wallpaper-only image when SCK permission is missing,
+    /// which would mark the permission as granted when it isn't.
     private nonisolated static func probeScreenContentPermission() async throws -> ScreenContentPermissionProbeResult {
-        if CompanionScreenCaptureFallbackPreference.shouldPreferCoreGraphicsCapture,
-           let fallbackProbeResult = probeScreenContentPermissionWithCoreGraphicsFallback() {
-            return fallbackProbeResult
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        guard let display = content.displays.first else {
+            throw NSError(
+                domain: "CompanionScreenContentPermission",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "No display available for screen content permission probe"]
+            )
         }
 
-        do {
-            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-            guard let display = content.displays.first else {
-                throw NSError(
-                    domain: "CompanionScreenContentPermission",
-                    code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "No display available for screen content permission probe"]
-                )
-            }
+        let filter = SCContentFilter(display: display, excludingWindows: [])
+        let configuration = SCStreamConfiguration()
+        configuration.width = 320
+        configuration.height = 240
 
-            let filter = SCContentFilter(display: display, excludingWindows: [])
-            let configuration = SCStreamConfiguration()
-            configuration.width = 320
-            configuration.height = 240
-
-            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
-            return ScreenContentPermissionProbeResult(width: image.width, height: image.height)
-        } catch {
-            if let fallbackProbeResult = probeScreenContentPermissionWithCoreGraphicsFallback() {
-                CompanionScreenCaptureFallbackPreference.rememberScreenCaptureKitNeedsFallback()
-                return fallbackProbeResult
-            }
-            throw error
-        }
-    }
-
-    private nonisolated static func probeScreenContentPermissionWithCoreGraphicsFallback() -> ScreenContentPermissionProbeResult? {
-        guard let image = CGDisplayCreateImage(CGMainDisplayID()) else {
-            return nil
-        }
+        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
         return ScreenContentPermissionProbeResult(width: image.width, height: image.height)
-    }
-
-    private func validatePersistedScreenContentPermissionIfNeeded() {
-        guard hasScreenContentPermission else { return }
-        guard !hasValidatedPersistedScreenContentPermissionDuringLaunch else { return }
-        guard !isValidatingPersistedScreenContentPermission else { return }
-
-        hasValidatedPersistedScreenContentPermissionDuringLaunch = true
-        isValidatingPersistedScreenContentPermission = true
-        ClickyDebugLogger.log("permissions.screenContent", "validating persisted screen content permission")
-
-        Task {
-            do {
-                let probeResult = try await Self.probeScreenContentPermission()
-                await MainActor.run {
-                    isValidatingPersistedScreenContentPermission = false
-                    if probeResult.didCapture {
-                        ClickyDebugLogger.log("permissions.screenContent", "persisted permission validated", metadata: [
-                            "width": probeResult.width,
-                            "height": probeResult.height
-                        ])
-                    } else {
-                        markScreenContentCaptureUnavailable(reason: "persisted permission validation returned empty capture")
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    isValidatingPersistedScreenContentPermission = false
-                    markScreenContentCaptureUnavailable(
-                        reason: "persisted permission validation failed",
-                        errorDescription: Self.diagnosticDescription(forScreenCaptureError: error)
-                    )
-                }
-            }
-        }
     }
 
     private func markScreenContentCaptureUnavailable(reason: String, errorDescription: String? = nil) {
         hasScreenContentPermission = false
-        UserDefaults.standard.set(false, forKey: "hasScreenContentPermission")
+        UserDefaults.standard.set(false, forKey: "hasScreenContentPermissionV2")
         screenContentPermissionProblem = Self.screenContentProblemDescription(
             reason: reason,
             errorDescription: errorDescription
@@ -647,7 +626,10 @@ final class CompanionManager: ObservableObject {
             return "Install a production-signed build with persistent capture."
         }
         if combinedDescription.contains("declined") || combinedDescription.contains("denied") {
-            return "macOS denied direct display capture; relaunch after Screen Recording is on."
+            // Sequoia (macOS 15) renamed the relevant pane to "Screen & System Audio Recording".
+            // SCK can't pick up a freshly-granted permission until the process restarts, so the
+            // recovery flow is always: enable in Settings, then relaunch Clicky.
+            return "Enable Screen & System Audio Recording for Clicky in System Settings, then relaunch."
         }
         return "Screen capture check failed; see log."
     }
@@ -1314,6 +1296,12 @@ final class CompanionManager: ObservableObject {
     }
 
     private static func isScreenCaptureTCCError(_ error: Error) -> Bool {
+        // The capture utility now throws a typed permissionDenied case when SCK
+        // reports the user has not granted Screen & System Audio Recording.
+        // Fall back to substring matching for any older / wrapped error shapes.
+        if case CompanionScreenCaptureError.permissionDenied = error {
+            return true
+        }
         let errorDescription = error.localizedDescription.lowercased()
         return errorDescription.contains("tcc")
             || errorDescription.contains("display capture")

@@ -447,8 +447,14 @@ struct CompanionPanelView: View {
     private var screenContentPermissionRow: some View {
         let isGranted = companionManager.hasScreenContentPermission
         let isChecking = companionManager.isRequestingScreenContent
-        return HStack {
-            HStack(spacing: 8) {
+        // Once a probe or real capture has detected denial, we show recovery
+        // controls (Open Settings + Relaunch) instead of the initial "Verify"
+        // button — because re-running Verify on a denied app just pops the
+        // system dialog again without making forward progress, and the actual
+        // fix requires the user to flip the toggle in Settings then relaunch.
+        let hasKnownPermissionProblem = companionManager.screenContentPermissionProblem != nil
+        return HStack(alignment: .top) {
+            HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "eye")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
@@ -462,7 +468,8 @@ struct CompanionPanelView: View {
                     Text(companionManager.screenContentPermissionProblem ?? "Verifies production capture access")
                         .font(.system(size: 10))
                         .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
-                        .lineLimit(2)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
@@ -476,6 +483,34 @@ struct CompanionPanelView: View {
                     Text("Granted")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(DS.Colors.success)
+                }
+            } else if hasKnownPermissionProblem {
+                VStack(alignment: .trailing, spacing: 4) {
+                    Button(action: {
+                        companionManager.openScreenRecordingSystemSettings()
+                    }) {
+                        Text("Open Settings")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(DS.Colors.textOnAccent)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(DS.Colors.accent))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+
+                    Button(action: {
+                        companionManager.relaunchAppAfterPermissionChange()
+                    }) {
+                        Text("Relaunch")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(DS.Colors.textOnAccent)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(DS.Colors.accent))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
                 }
             } else {
                 Button(action: {
