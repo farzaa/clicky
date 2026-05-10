@@ -33,6 +33,24 @@
     .button { font: inherit; font-weight: 600; padding: 11px 18px; border: 0; border-radius: 10px; background: var(--accent-strong); color: #fff; cursor: pointer; text-decoration: none; display: inline-block; }
     .button:hover { background: var(--accent); text-decoration: none; }
     .button.danger { background: transparent; color: var(--danger); border: 1px solid var(--border); }
+    .button:disabled { cursor: default; }
+    .amount-choice {
+      font: inherit;
+      font-weight: 600;
+      padding: 9px 14px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--bg);
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    .amount-choice:hover { border-color: var(--accent); }
+    .amount-choice.selected {
+      border-color: var(--accent);
+      background: rgba(96, 165, 250, 0.12);
+      color: var(--accent);
+    }
     h2 { font-size: 18px; margin: 0 0 6px; }
     .project-id { color: var(--text-tertiary); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 10px; font-weight: 600; }
     .endpoints { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
@@ -70,7 +88,15 @@
         <div style="margin-top: 24px;">
           <div class="label">Credits remaining</div>
           <div style="font-size: 40px; font-weight: 700; margin-top: 4px; letter-spacing: -0.02em;"><span id="creditsBalance">—</span></div>
-          <p style="color: var(--text-tertiary); font-size: 13px; margin: 14px 0 0;">Need more? <a href="https://x.com/clamepending" target="_blank" rel="noopener">DM me on X</a> and I'll top you up.</p>
+          <div style="margin-top: 18px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+            <button class="amount-choice" data-amount="5">+$5</button>
+            <button class="amount-choice" data-amount="10">+$10</button>
+            <button class="amount-choice" data-amount="20">+$20</button>
+            <button class="amount-choice" data-amount="50">+$50</button>
+            <button id="startCheckoutButton" class="button" disabled style="opacity: 0.5; padding: 9px 16px; font-size: 13px;">Pick an amount</button>
+          </div>
+          <p id="addCreditsError" class="error" style="display: none; margin-top: 12px; margin-bottom: 0;"></p>
+          <p style="color: var(--text-tertiary); font-size: 13px; margin: 14px 0 0;">Or <a href="https://x.com/clamepending" target="_blank" rel="noopener">DM me on X</a> if you'd rather not put your card down.</p>
         </div>
       </div>
     </section>
@@ -193,8 +219,73 @@
       showSignedOut();
     }
 
+    // ---------- Stripe top-up ----------
+    var selectedAmountDollars = null;
+
+    function selectAmountChoice(amountDollars, clickedElement) {
+      selectedAmountDollars = amountDollars;
+      Array.prototype.forEach.call(document.querySelectorAll(".amount-choice"), function (cell) {
+        cell.classList.remove("selected");
+      });
+      clickedElement.classList.add("selected");
+      var startButton = document.getElementById("startCheckoutButton");
+      startButton.disabled = false;
+      startButton.style.opacity = "1";
+      startButton.textContent = "Pay $" + amountDollars + " →";
+    }
+
+    async function startStripeCheckout() {
+      if (!selectedAmountDollars) return;
+      var installToken = localStorage.getItem(TOKEN_STORAGE_KEY);
+      if (!installToken) { showSignedOut(); return; }
+      var startButton = document.getElementById("startCheckoutButton");
+      var errorBox = document.getElementById("addCreditsError");
+      errorBox.style.display = "none";
+      startButton.disabled = true;
+      startButton.style.opacity = "0.5";
+      startButton.textContent = "Redirecting…";
+
+      var accountPageUrl = window.location.origin + window.location.pathname;
+      try {
+        var response = await fetch(VIBE_ID_BASE_URL + "/credits/topup", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + installToken,
+          },
+          body: JSON.stringify({
+            amount_dollars: selectedAmountDollars,
+            success_url: accountPageUrl + "?topup=success",
+            cancel_url: accountPageUrl + "?topup=cancel",
+          }),
+        });
+        var responseJson = await response.json();
+        if (!response.ok || !responseJson.checkout_url) {
+          errorBox.textContent = "Couldn't start checkout: " + (responseJson.error || ("status " + response.status));
+          errorBox.style.display = "block";
+          startButton.disabled = false;
+          startButton.style.opacity = "1";
+          startButton.textContent = "Pay $" + selectedAmountDollars + " →";
+          return;
+        }
+        window.location.href = responseJson.checkout_url;
+      } catch (networkError) {
+        errorBox.textContent = "Couldn't reach the identity server: " + networkError.message;
+        errorBox.style.display = "block";
+        startButton.disabled = false;
+        startButton.style.opacity = "1";
+        startButton.textContent = "Pay $" + selectedAmountDollars + " →";
+      }
+    }
+
     consumeAuthCallbackFragmentIfPresent();
     document.getElementById("signOutButton").addEventListener("click", handleSignOutClick);
+    document.getElementById("startCheckoutButton").addEventListener("click", startStripeCheckout);
+    Array.prototype.forEach.call(document.querySelectorAll(".amount-choice"), function (cell) {
+      cell.addEventListener("click", function () {
+        selectAmountChoice(parseInt(cell.getAttribute("data-amount"), 10), cell);
+      });
+    });
     loadAccount();
   </script>
 </body>
