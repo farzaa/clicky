@@ -63,6 +63,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
             print("⚠️ Global push-to-talk: couldn't create CGEvent tap")
+            ClickyDebugLogger.log("shortcut.tap", "failed to create CGEvent tap")
             return
         }
 
@@ -73,6 +74,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         ) else {
             CFMachPortInvalidate(globalEventTap)
             print("⚠️ Global push-to-talk: couldn't create event tap run loop source")
+            ClickyDebugLogger.log("shortcut.tap", "failed to create run loop source")
             return
         }
 
@@ -81,9 +83,11 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
         CFRunLoopAddSource(CFRunLoopGetMain(), globalEventTapRunLoopSource, .commonModes)
         CGEvent.tapEnable(tap: globalEventTap, enable: true)
+        ClickyDebugLogger.log("shortcut.tap", "started")
     }
 
     func stop() {
+        let hadGlobalEventTap = globalEventTap != nil
         isShortcutCurrentlyPressed = false
 
         if let globalEventTapRunLoopSource {
@@ -95,6 +99,10 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             CFMachPortInvalidate(globalEventTap)
             self.globalEventTap = nil
         }
+
+        if hadGlobalEventTap {
+            ClickyDebugLogger.log("shortcut.tap", "stopped")
+        }
     }
 
     private func handleGlobalEventTap(
@@ -102,6 +110,9 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         event: CGEvent
     ) -> Unmanaged<CGEvent>? {
         if eventType == .tapDisabledByTimeout || eventType == .tapDisabledByUserInput {
+            ClickyDebugLogger.log("shortcut.tap", "tap disabled; re-enabling", metadata: [
+                "eventType": eventType.rawValue
+            ])
             if let globalEventTap {
                 CGEvent.tapEnable(tap: globalEventTap, enable: true)
             }
@@ -116,6 +127,13 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             wasShortcutPreviouslyPressed: isShortcutCurrentlyPressed
         )
 
+        logRawShortcutEventIfRelevant(
+            eventType: eventType,
+            keyCode: eventKeyCode,
+            modifierFlagsRawValue: event.flags.rawValue,
+            shortcutTransition: shortcutTransition
+        )
+
         switch shortcutTransition {
         case .none:
             break
@@ -128,5 +146,54 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         }
 
         return Unmanaged.passUnretained(event)
+    }
+
+    private func logRawShortcutEventIfRelevant(
+        eventType: CGEventType,
+        keyCode: UInt16,
+        modifierFlagsRawValue: UInt64,
+        shortcutTransition: BuddyPushToTalkShortcut.ShortcutTransition
+    ) {
+        let modifierFlags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlagsRawValue))
+            .intersection(.deviceIndependentFlagsMask)
+        let includesRelevantModifier = modifierFlags.contains(.control)
+            || modifierFlags.contains(.option)
+            || modifierFlags.contains(.shift)
+            || modifierFlags.contains(.function)
+        let shouldLog = shortcutTransition != .none
+            || isShortcutCurrentlyPressed
+            || (eventType == .flagsChanged && includesRelevantModifier)
+
+        guard shouldLog else { return }
+
+        ClickyDebugLogger.log("shortcut.raw", "event", metadata: [
+            "eventType": Self.logDescription(for: eventType),
+            "keyCode": keyCode,
+            "flagsRaw": modifierFlagsRawValue,
+            "control": modifierFlags.contains(.control),
+            "option": modifierFlags.contains(.option),
+            "shift": modifierFlags.contains(.shift),
+            "command": modifierFlags.contains(.command),
+            "function": modifierFlags.contains(.function),
+            "wasPressed": isShortcutCurrentlyPressed,
+            "transition": String(describing: shortcutTransition)
+        ])
+    }
+
+    private static func logDescription(for eventType: CGEventType) -> String {
+        switch eventType {
+        case .flagsChanged:
+            return "flagsChanged"
+        case .keyDown:
+            return "keyDown"
+        case .keyUp:
+            return "keyUp"
+        case .tapDisabledByTimeout:
+            return "tapDisabledByTimeout"
+        case .tapDisabledByUserInput:
+            return "tapDisabledByUserInput"
+        default:
+            return "type\(eventType.rawValue)"
+        }
     }
 }

@@ -19,7 +19,9 @@ struct AssemblyAIStreamingTranscriptionProviderError: LocalizedError {
 final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider {
     /// URL for the Cloudflare Worker endpoint that returns a short-lived
     /// AssemblyAI streaming token. The real API key never leaves the server.
-    private static let tokenProxyURL = "https://your-worker-name.your-subdomain.workers.dev/transcribe-token"
+    private static var tokenProxyURL: String {
+        "\(AppBundleConfiguration.proxyBaseURLString())/transcribe-token"
+    }
 
     let displayName = "AssemblyAI"
     let requiresSpeechRecognitionPermission = false
@@ -40,8 +42,15 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
         onError: @escaping (Error) -> Void
     ) async throws -> any BuddyStreamingTranscriptionSession {
         // Fetch a fresh temporary token from the proxy before each session
+        ClickyDebugLogger.log("assemblyai.provider", "fetching temporary token", metadata: [
+            "tokenProxyURL": Self.tokenProxyURL,
+            "keytermCount": keyterms.count
+        ])
         let temporaryToken = try await fetchTemporaryToken()
-        print("🎙️ AssemblyAI: fetched temporary token (\(temporaryToken.prefix(20))...)")
+        print("🎙️ AssemblyAI: fetched temporary token")
+        ClickyDebugLogger.log("assemblyai.provider", "fetched temporary token", metadata: [
+            "keytermCount": keyterms.count
+        ])
 
         let session = AssemblyAIStreamingTranscriptionSession(
             apiKey: nil,
@@ -54,6 +63,7 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
         )
 
         try await session.open()
+        ClickyDebugLogger.log("assemblyai.provider", "streaming session opened")
         return session
     }
 
@@ -68,6 +78,10 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
               (200...299).contains(httpResponse.statusCode) else {
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
             let body = String(data: data, encoding: .utf8) ?? "unknown"
+            ClickyDebugLogger.log("assemblyai.provider", "temporary token request failed", metadata: [
+                "statusCode": statusCode,
+                "bodyLength": body.count
+            ])
             throw AssemblyAIStreamingTranscriptionProviderError(
                 message: "Failed to fetch AssemblyAI token (HTTP \(statusCode)): \(body)"
             )
@@ -75,6 +89,9 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
 
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let token = json["token"] as? String else {
+            ClickyDebugLogger.log("assemblyai.provider", "temporary token response was invalid", metadata: [
+                "bodyLength": data.count
+            ])
             throw AssemblyAIStreamingTranscriptionProviderError(
                 message: "Invalid token response from proxy."
             )
@@ -160,6 +177,12 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
             temporaryToken: temporaryToken,
             keyterms: keyterms
         )
+        ClickyDebugLogger.log("assemblyai.session", "opening websocket", metadata: [
+            "host": websocketURL.host ?? "unknown",
+            "keytermCount": keyterms.count,
+            "hasTemporaryToken": temporaryToken != nil,
+            "hasAPIKey": apiKey != nil
+        ])
 
         var websocketRequest = URLRequest(url: websocketURL)
         if let apiKey {
@@ -177,6 +200,7 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
                 self.readyContinuation = continuation
             }
         }
+        ClickyDebugLogger.log("assemblyai.session", "websocket ready")
     }
 
     func appendAudioBuffer(_ audioBuffer: AVAudioPCMBuffer) {
@@ -196,6 +220,7 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
     }
 
     func requestFinalTranscript() {
+        ClickyDebugLogger.log("assemblyai.session", "requesting final transcript")
         stateQueue.async {
             guard !self.hasDeliveredFinalTranscript else { return }
             self.isAwaitingExplicitFinalTranscript = true
@@ -206,6 +231,7 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
     }
 
     func cancel() {
+        ClickyDebugLogger.log("assemblyai.session", "cancelling session")
         stateQueue.async {
             self.explicitFinalTranscriptDeadlineWorkItem?.cancel()
             self.explicitFinalTranscriptDeadlineWorkItem = nil
@@ -234,6 +260,9 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
 
                 self.receiveNextMessage()
             case .failure(let error):
+                ClickyDebugLogger.log("assemblyai.session", "receive failed", metadata: [
+                    "error": error.localizedDescription
+                ])
                 self.failSession(with: error)
             }
         }
@@ -247,11 +276,13 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
 
             switch envelope.type.lowercased() {
             case "begin":
+                ClickyDebugLogger.log("assemblyai.session", "received begin")
                 resolveReadyContinuationIfNeeded(with: .success(()))
             case "turn":
                 let turnMessage = try JSONDecoder().decode(TurnMessage.self, from: messageData)
                 handleTurnMessage(turnMessage)
             case "termination":
+                ClickyDebugLogger.log("assemblyai.session", "received termination")
                 resolveReadyContinuationIfNeeded(with: .success(()))
                 stateQueue.async {
                     if self.isAwaitingExplicitFinalTranscript && !self.hasDeliveredFinalTranscript {
@@ -261,6 +292,9 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
             case "error":
                 let errorMessage = try JSONDecoder().decode(ErrorMessage.self, from: messageData)
                 let messageText = errorMessage.error ?? errorMessage.message ?? "AssemblyAI returned an error."
+                ClickyDebugLogger.log("assemblyai.session", "received error message", metadata: [
+                    "message": messageText
+                ])
                 failSession(with: AssemblyAIStreamingTranscriptionProviderError(message: messageText))
             default:
                 break
@@ -302,6 +336,11 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
             guard self.isAwaitingExplicitFinalTranscript else { return }
 
             if turnMessage.end_of_turn == true || turnMessage.turn_is_formatted == true {
+                ClickyDebugLogger.log("assemblyai.session", "received final turn after endpoint request", metadata: [
+                    "turnOrder": turnOrder,
+                    "transcriptLength": self.bestAvailableTranscriptText().count,
+                    "isFormatted": turnMessage.turn_is_formatted == true
+                ])
                 self.explicitFinalTranscriptDeadlineWorkItem?.cancel()
                 self.explicitFinalTranscriptDeadlineWorkItem = nil
                 self.deliverFinalTranscriptIfNeeded(self.bestAvailableTranscriptText())
@@ -352,6 +391,9 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
         let deadlineWorkItem = DispatchWorkItem { [weak self] in
             self?.stateQueue.async {
                 guard let self else { return }
+                ClickyDebugLogger.log("assemblyai.session", "final transcript deadline reached", metadata: [
+                    "transcriptLength": self.bestAvailableTranscriptText().count
+                ])
                 self.deliverFinalTranscriptIfNeeded(self.bestAvailableTranscriptText())
             }
         }
@@ -369,6 +411,9 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
         hasDeliveredFinalTranscript = true
         explicitFinalTranscriptDeadlineWorkItem?.cancel()
         explicitFinalTranscriptDeadlineWorkItem = nil
+        ClickyDebugLogger.log("assemblyai.session", "delivering final transcript", metadata: [
+            "transcriptLength": transcriptText.count
+        ])
         onFinalTranscriptReady(transcriptText)
         sendJSONMessage(["type": "Terminate"])
     }
@@ -398,10 +443,20 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
                 && !self.hasDeliveredFinalTranscript
                 && !latestTranscriptText.isEmpty {
                 print("[AssemblyAI] ⚠️ WebSocket error during active session, delivering partial transcript as fallback: \(error.localizedDescription)")
+                ClickyDebugLogger.log("assemblyai.session", "error during finalization; delivering partial transcript", metadata: [
+                    "error": error.localizedDescription,
+                    "transcriptLength": latestTranscriptText.count
+                ])
                 self.deliverFinalTranscriptIfNeeded(latestTranscriptText)
                 return
             }
             print("[AssemblyAI] ❌ Session failed with error: \(error.localizedDescription)")
+            ClickyDebugLogger.log("assemblyai.session", "session failed", metadata: [
+                "error": error.localizedDescription,
+                "isAwaitingExplicitFinalTranscript": self.isAwaitingExplicitFinalTranscript,
+                "hasDeliveredFinalTranscript": self.hasDeliveredFinalTranscript,
+                "latestTranscriptLength": latestTranscriptText.count
+            ])
 
             self.onError(error)
         }
@@ -425,8 +480,15 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
 
             switch result {
             case .success:
+                ClickyDebugLogger.log("assemblyai.session", "ready continuation resolved", metadata: [
+                    "result": "success"
+                ])
                 self.readyContinuation?.resume()
             case .failure(let error):
+                ClickyDebugLogger.log("assemblyai.session", "ready continuation resolved", metadata: [
+                    "result": "failure",
+                    "error": error.localizedDescription
+                ])
                 self.readyContinuation?.resume(throwing: error)
             }
 

@@ -10,8 +10,12 @@
 	<string>/l3d2rw5ZZFRU3AadP/w2Zf8FHfhA6bKv16BQOV5OSk=</string>
 	<key>VoiceTranscriptionProvider</key>
 	<string>assemblyai</string>
+	<key>ClickyProxyBaseURL</key>
+	<string>http://127.0.0.1:8787</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Clicky uses your microphone so you can talk to it</string>
+	<key>NSInputMonitoringUsageDescription</key>
+	<string>Clicky uses input monitoring to detect the Control+Option push-to-talk shortcut.</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>Clicky needs screen recording access to see your screen and help you.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

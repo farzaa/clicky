@@ -25,4 +25,10 @@ enum AppBundleConfiguration {
         let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmedValue.isEmpty ? nil : trimmedValue
     }
+
+    static func proxyBaseURLString() -> String {
+        let configuredProxyBaseURL = stringValue(forKey: "ClickyProxyBaseURL")
+            ?? "http://127.0.0.1:8787"
+        return configuredProxyBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
 }

@@ -6,13 +6,11 @@
 	<false/>
 	<key>com.apple.security.network.client</key>
 	<true/>
+	<key>com.apple.developer.persistent-content-capture</key>
+	<true/>
 	<key>com.apple.security.device.camera</key>
 	<true/>
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
-	<key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
-	<array>
-		<string>com.apple.screencapturekit.picker</string>
-	</array>
 </dict>
 </plist>

@@ -9,9 +9,15 @@
 
 import AVFoundation
 import Combine
+import CoreGraphics
 import Foundation
+
+#if canImport(PostHog)
 import PostHog
+#endif
+
 import ScreenCaptureKit
+import Security
 import SwiftUI
 
 enum CompanionVoiceState {
@@ -23,13 +29,25 @@ enum CompanionVoiceState {
 
 @MainActor
 final class CompanionManager: ObservableObject {
-    @Published private(set) var voiceState: CompanionVoiceState = .idle
+    @Published private(set) var voiceState: CompanionVoiceState = .idle {
+        didSet {
+            if oldValue != voiceState {
+                ClickyDebugLogger.log("voice.state", "changed", metadata: [
+                    "from": String(describing: oldValue),
+                    "to": String(describing: voiceState)
+                ])
+            }
+            scheduleVoiceStateSafetyResetIfNeeded()
+        }
+    }
     @Published private(set) var lastTranscript: String?
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
     @Published private(set) var hasAccessibilityPermission = false
+    @Published private(set) var hasInputMonitoringPermission = false
     @Published private(set) var hasScreenRecordingPermission = false
     @Published private(set) var hasMicrophonePermission = false
     @Published private(set) var hasScreenContentPermission = false
+    @Published private(set) var screenContentPermissionProblem: String?
 
     /// Screen location (global AppKit coords) of a detected UI element the
     /// buddy should fly to and point at. Parsed from Claude's response;
@@ -70,7 +88,10 @@ final class CompanionManager: ObservableObject {
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
+    private static var workerBaseURL: String {
+        AppBundleConfiguration.proxyBaseURLString()
+    }
+    private nonisolated static let persistentContentCaptureEntitlementKey = "com.apple.developer.persistent-content-capture"
 
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
@@ -96,11 +117,18 @@ final class CompanionManager: ObservableObject {
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
+    private var voiceStateSafetyResetTask: Task<Void, Never>?
+    private var hasValidatedPersistedScreenContentPermissionDuringLaunch = false
+    private var isValidatingPersistedScreenContentPermission = false
 
-    /// True when all three required permissions (accessibility, screen recording,
-    /// microphone) are granted. Used by the panel to show a single "all good" state.
+    /// True when all required permissions are granted. Used by the panel to show
+    /// a single "all good" state.
     var allPermissionsGranted: Bool {
-        hasAccessibilityPermission && hasScreenRecordingPermission && hasMicrophonePermission && hasScreenContentPermission
+        hasAccessibilityPermission
+            && hasInputMonitoringPermission
+            && hasScreenRecordingPermission
+            && hasMicrophonePermission
+            && hasScreenContentPermission
     }
 
     /// Whether the blue cursor overlay is currently visible on screen.
@@ -157,10 +185,11 @@ final class CompanionManager: ObservableObject {
         hasSubmittedEmail = true
         UserDefaults.standard.set(true, forKey: "hasSubmittedEmail")
 
-        // Identify user in PostHog
+        #if canImport(PostHog)
         PostHogSDK.shared.identify(trimmedEmail, userProperties: [
             "email": trimmedEmail
         ])
+        #endif
 
         // Submit to FormSpark
         Task {
@@ -173,8 +202,23 @@ final class CompanionManager: ObservableObject {
     }
 
     func start() {
+        ClickyDebugLogger.markLaunch()
         refreshAllPermissions()
-        print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
+        validatePersistedScreenContentPermissionIfNeeded()
+        let hasPersistentContentCaptureEntitlement = Self.hasPersistentContentCaptureEntitlement()
+        print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), inputMonitoring: \(hasInputMonitoringPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), persistentCaptureEntitlement: \(hasPersistentContentCaptureEntitlement), onboarded: \(hasCompletedOnboarding)")
+        ClickyDebugLogger.log("app.start", "starting companion manager", metadata: [
+            "accessibility": hasAccessibilityPermission,
+            "inputMonitoring": hasInputMonitoringPermission,
+            "screenRecording": hasScreenRecordingPermission,
+            "microphone": hasMicrophonePermission,
+            "screenContent": hasScreenContentPermission,
+            "persistentContentCaptureEntitlement": hasPersistentContentCaptureEntitlement,
+            "allPermissionsGranted": allPermissionsGranted,
+            "hasCompletedOnboarding": hasCompletedOnboarding,
+            "isClickyCursorEnabled": isClickyCursorEnabled,
+            "workerBaseURL": Self.workerBaseURL
+        ])
         startPermissionPolling()
         bindVoiceStateObservation()
         bindAudioPowerLevel()
@@ -288,6 +332,7 @@ final class CompanionManager: ObservableObject {
     }
 
     func stop() {
+        ClickyDebugLogger.log("app.stop", "stopping companion manager", metadata: interactionStateLogMetadata())
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
@@ -300,38 +345,40 @@ final class CompanionManager: ObservableObject {
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
+        voiceStateSafetyResetTask?.cancel()
+        voiceStateSafetyResetTask = nil
     }
 
     func refreshAllPermissions() {
         let previouslyHadAccessibility = hasAccessibilityPermission
+        let previouslyHadInputMonitoring = hasInputMonitoringPermission
         let previouslyHadScreenRecording = hasScreenRecordingPermission
         let previouslyHadMicrophone = hasMicrophonePermission
         let previouslyHadAll = allPermissionsGranted
 
-        let currentlyHasAccessibility = WindowPositionManager.hasAccessibilityPermission()
-        hasAccessibilityPermission = currentlyHasAccessibility
+        let currentlyHasLiveAccessibility = WindowPositionManager.hasLiveAccessibilityPermission()
+        let currentlyHasInputMonitoring = WindowPositionManager.hasInputMonitoringPermission()
+        let currentlyHasPersistentContentCaptureEntitlement = Self.hasPersistentContentCaptureEntitlement()
+        hasAccessibilityPermission = currentlyHasLiveAccessibility
+        hasInputMonitoringPermission = currentlyHasInputMonitoring
 
-        if currentlyHasAccessibility {
+        if currentlyHasLiveAccessibility && currentlyHasInputMonitoring {
             globalPushToTalkShortcutMonitor.start()
         } else {
             globalPushToTalkShortcutMonitor.stop()
         }
 
-        hasScreenRecordingPermission = WindowPositionManager.hasScreenRecordingPermission()
+        hasScreenRecordingPermission = WindowPositionManager.shouldTreatScreenRecordingPermissionAsGrantedForSessionLaunch()
 
         let micAuthStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         hasMicrophonePermission = micAuthStatus == .authorized
 
-        // Debug: log permission state on changes
-        if previouslyHadAccessibility != hasAccessibilityPermission
-            || previouslyHadScreenRecording != hasScreenRecordingPermission
-            || previouslyHadMicrophone != hasMicrophonePermission {
-            print("🔑 Permissions — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
-        }
-
         // Track individual permission grants as they happen
         if !previouslyHadAccessibility && hasAccessibilityPermission {
             ClickyAnalytics.trackPermissionGranted(permission: "accessibility")
+        }
+        if !previouslyHadInputMonitoring && hasInputMonitoringPermission {
+            ClickyAnalytics.trackPermissionGranted(permission: "input_monitoring")
         }
         if !previouslyHadScreenRecording && hasScreenRecordingPermission {
             ClickyAnalytics.trackPermissionGranted(permission: "screen_recording")
@@ -339,14 +386,47 @@ final class CompanionManager: ObservableObject {
         if !previouslyHadMicrophone && hasMicrophonePermission {
             ClickyAnalytics.trackPermissionGranted(permission: "microphone")
         }
-        // Screen content permission is persisted — once the user has approved the
-        // SCShareableContent picker, we don't need to re-check it.
+        // Screen content permission has no cheap public preflight API. We keep a
+        // persisted grant for UI responsiveness, then validate it once per launch
+        // with a real low-resolution capture probe.
         if !hasScreenContentPermission {
             hasScreenContentPermission = UserDefaults.standard.bool(forKey: "hasScreenContentPermission")
+        }
+        // Debug: log permission state after all live and persisted permission
+        // sources have been reconciled.
+        if previouslyHadAccessibility != hasAccessibilityPermission
+            || previouslyHadInputMonitoring != hasInputMonitoringPermission
+            || previouslyHadScreenRecording != hasScreenRecordingPermission
+            || previouslyHadMicrophone != hasMicrophonePermission
+            || previouslyHadAll != allPermissionsGranted {
+            print("🔑 Permissions — accessibility: \(hasAccessibilityPermission), inputMonitoring: \(hasInputMonitoringPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
+            ClickyDebugLogger.log("permissions.refresh", "permission state changed", metadata: [
+                "accessibility.previous": previouslyHadAccessibility,
+                "accessibility.current": hasAccessibilityPermission,
+                "accessibility.live": currentlyHasLiveAccessibility,
+                "inputMonitoring.previous": previouslyHadInputMonitoring,
+                "inputMonitoring.current": hasInputMonitoringPermission,
+                "screenRecording.previous": previouslyHadScreenRecording,
+                "screenRecording.current": hasScreenRecordingPermission,
+                "microphone.previous": previouslyHadMicrophone,
+                "microphone.current": hasMicrophonePermission,
+                "screenContent.current": hasScreenContentPermission,
+                "persistentContentCaptureEntitlement": currentlyHasPersistentContentCaptureEntitlement,
+                "screenContentProblem": screenContentPermissionProblem ?? "none",
+                "all.previous": previouslyHadAll,
+                "all.current": allPermissionsGranted
+            ])
         }
 
         if !previouslyHadAll && allPermissionsGranted {
             ClickyAnalytics.trackAllPermissionsGranted()
+
+            if hasCompletedOnboarding && isClickyCursorEnabled && !isOverlayVisible {
+                overlayWindowManager.hasShownOverlayBefore = true
+                overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+                isOverlayVisible = true
+                ClickyDebugLogger.log("overlay", "shown after permissions became granted")
+            }
         }
     }
 
@@ -360,24 +440,21 @@ final class CompanionManager: ObservableObject {
         isRequestingScreenContent = true
         Task {
             do {
-                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-                guard let display = content.displays.first else {
-                    await MainActor.run { isRequestingScreenContent = false }
-                    return
-                }
-                let filter = SCContentFilter(display: display, excludingWindows: [])
-                let config = SCStreamConfiguration()
-                config.width = 320
-                config.height = 240
-                let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-                // Verify the capture actually returned real content — a 0x0 or
-                // fully-empty image means the user denied the prompt.
-                let didCapture = image.width > 0 && image.height > 0
-                print("🔑 Screen content capture result — width: \(image.width), height: \(image.height), didCapture: \(didCapture)")
+                let probeResult = try await Self.probeScreenContentPermission()
+                print("🔑 Screen content capture result — width: \(probeResult.width), height: \(probeResult.height), didCapture: \(probeResult.didCapture)")
+                ClickyDebugLogger.log("permissions.screenContent", "capture permission probe completed", metadata: [
+                    "width": probeResult.width,
+                    "height": probeResult.height,
+                    "didCapture": probeResult.didCapture
+                ])
                 await MainActor.run {
                     isRequestingScreenContent = false
-                    guard didCapture else { return }
+                    guard probeResult.didCapture else {
+                        markScreenContentCaptureUnavailable(reason: "permission probe returned empty capture")
+                        return
+                    }
                     hasScreenContentPermission = true
+                    screenContentPermissionProblem = nil
                     UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
                     ClickyAnalytics.trackPermissionGranted(permission: "screen_content")
 
@@ -390,20 +467,202 @@ final class CompanionManager: ObservableObject {
                 }
             } catch {
                 print("⚠️ Screen content permission request failed: \(error)")
-                await MainActor.run { isRequestingScreenContent = false }
+                ClickyDebugLogger.log("permissions.screenContent", "capture permission probe failed", metadata: [
+                    "error": error.localizedDescription
+                ])
+                await MainActor.run {
+                    markScreenContentCaptureUnavailable(
+                        reason: "capture permission probe failed",
+                        errorDescription: Self.diagnosticDescription(forScreenCaptureError: error)
+                    )
+                    isRequestingScreenContent = false
+                }
             }
         }
     }
 
     // MARK: - Private
 
+    private enum ScreenContentCaptureAccessError: LocalizedError {
+        case missingPersistentContentCaptureEntitlement
+
+        var errorDescription: String? {
+            switch self {
+            case .missingPersistentContentCaptureEntitlement:
+                return CompanionManager.missingPersistentContentCaptureEntitlementDescription
+            }
+        }
+    }
+
+    private struct ScreenContentPermissionProbeResult {
+        let width: Int
+        let height: Int
+
+        var didCapture: Bool {
+            width > 0 && height > 0
+        }
+    }
+
+    private nonisolated static var missingPersistentContentCaptureEntitlementDescription: String {
+        "This build is not signed with Apple's \(persistentContentCaptureEntitlementKey) entitlement."
+    }
+
+    private nonisolated static func hasPersistentContentCaptureEntitlement() -> Bool {
+        var currentCode: SecCode?
+        let copySelfStatus = SecCodeCopySelf(SecCSFlags(rawValue: 0), &currentCode)
+        guard copySelfStatus == errSecSuccess, let currentCode else {
+            return false
+        }
+
+        var staticCode: SecStaticCode?
+        let copyStaticCodeStatus = SecCodeCopyStaticCode(currentCode, SecCSFlags(rawValue: 0), &staticCode)
+        guard copyStaticCodeStatus == errSecSuccess, let staticCode else {
+            return false
+        }
+
+        var signingInformation: CFDictionary?
+        let signingInformationStatus = SecCodeCopySigningInformation(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &signingInformation
+        )
+        guard signingInformationStatus == errSecSuccess,
+              let signingInformationDictionary = signingInformation as? [String: Any],
+              let entitlements = signingInformationDictionary[kSecCodeInfoEntitlementsDict as String] as? [String: Any] else {
+            return false
+        }
+
+        return entitlements[persistentContentCaptureEntitlementKey] as? Bool == true
+    }
+
+    private nonisolated static func diagnosticDescription(forScreenCaptureError error: Error) -> String {
+        let nsError = error as NSError
+        if nsError.domain == SCStreamError.errorDomain,
+           let screenCaptureErrorCode = SCStreamError.Code(rawValue: nsError.code) {
+            switch screenCaptureErrorCode {
+            case .missingEntitlements:
+                return missingPersistentContentCaptureEntitlementDescription
+            case .userDeclined:
+                return "macOS denied ScreenCaptureKit display capture even though Screen Recording may appear enabled."
+            default:
+                return "\(screenCaptureErrorCode): \(error.localizedDescription)"
+            }
+        }
+
+        return error.localizedDescription
+    }
+
+    private nonisolated static func probeScreenContentPermission() async throws -> ScreenContentPermissionProbeResult {
+        if CompanionScreenCaptureFallbackPreference.shouldPreferCoreGraphicsCapture,
+           let fallbackProbeResult = probeScreenContentPermissionWithCoreGraphicsFallback() {
+            return fallbackProbeResult
+        }
+
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            guard let display = content.displays.first else {
+                throw NSError(
+                    domain: "CompanionScreenContentPermission",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "No display available for screen content permission probe"]
+                )
+            }
+
+            let filter = SCContentFilter(display: display, excludingWindows: [])
+            let configuration = SCStreamConfiguration()
+            configuration.width = 320
+            configuration.height = 240
+
+            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+            return ScreenContentPermissionProbeResult(width: image.width, height: image.height)
+        } catch {
+            if let fallbackProbeResult = probeScreenContentPermissionWithCoreGraphicsFallback() {
+                CompanionScreenCaptureFallbackPreference.rememberScreenCaptureKitNeedsFallback()
+                return fallbackProbeResult
+            }
+            throw error
+        }
+    }
+
+    private nonisolated static func probeScreenContentPermissionWithCoreGraphicsFallback() -> ScreenContentPermissionProbeResult? {
+        guard let image = CGDisplayCreateImage(CGMainDisplayID()) else {
+            return nil
+        }
+        return ScreenContentPermissionProbeResult(width: image.width, height: image.height)
+    }
+
+    private func validatePersistedScreenContentPermissionIfNeeded() {
+        guard hasScreenContentPermission else { return }
+        guard !hasValidatedPersistedScreenContentPermissionDuringLaunch else { return }
+        guard !isValidatingPersistedScreenContentPermission else { return }
+
+        hasValidatedPersistedScreenContentPermissionDuringLaunch = true
+        isValidatingPersistedScreenContentPermission = true
+        ClickyDebugLogger.log("permissions.screenContent", "validating persisted screen content permission")
+
+        Task {
+            do {
+                let probeResult = try await Self.probeScreenContentPermission()
+                await MainActor.run {
+                    isValidatingPersistedScreenContentPermission = false
+                    if probeResult.didCapture {
+                        ClickyDebugLogger.log("permissions.screenContent", "persisted permission validated", metadata: [
+                            "width": probeResult.width,
+                            "height": probeResult.height
+                        ])
+                    } else {
+                        markScreenContentCaptureUnavailable(reason: "persisted permission validation returned empty capture")
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    isValidatingPersistedScreenContentPermission = false
+                    markScreenContentCaptureUnavailable(
+                        reason: "persisted permission validation failed",
+                        errorDescription: Self.diagnosticDescription(forScreenCaptureError: error)
+                    )
+                }
+            }
+        }
+    }
+
+    private func markScreenContentCaptureUnavailable(reason: String, errorDescription: String? = nil) {
+        hasScreenContentPermission = false
+        UserDefaults.standard.set(false, forKey: "hasScreenContentPermission")
+        screenContentPermissionProblem = Self.screenContentProblemDescription(
+            reason: reason,
+            errorDescription: errorDescription
+        )
+        ClickyDebugLogger.log("permissions.screenContent", "marked revoked", metadata: [
+            "reason": reason,
+            "error": errorDescription ?? "none"
+        ])
+    }
+
+    private static func screenContentProblemDescription(reason: String, errorDescription: String? = nil) -> String {
+        let combinedDescription = "\(reason) \(errorDescription ?? "")".lowercased()
+        if combinedDescription.contains("persistent-content-capture")
+            || combinedDescription.contains("persistent content capture")
+            || combinedDescription.contains("missing entitlement") {
+            return "Install a production-signed build with persistent capture."
+        }
+        if combinedDescription.contains("declined") || combinedDescription.contains("denied") {
+            return "macOS denied direct display capture; relaunch after Screen Recording is on."
+        }
+        return "Screen capture check failed; see log."
+    }
+
     /// Triggers the system microphone prompt if the user has never been asked.
     /// Once granted/denied the status sticks and polling picks it up.
     private func promptForMicrophoneIfNotDetermined() {
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined else { return }
+        ClickyDebugLogger.log("permissions.microphone", "requesting microphone access")
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
             Task { @MainActor [weak self] in
                 self?.hasMicrophonePermission = granted
+                ClickyDebugLogger.log("permissions.microphone", "microphone access prompt completed", metadata: [
+                    "granted": granted
+                ])
             }
         }
     }
@@ -436,6 +695,12 @@ final class CompanionManager: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isRecording, isFinalizing, isPreparing in
                 guard let self else { return }
+                ClickyDebugLogger.log("dictation.observable", "recording state update", metadata: [
+                    "isRecordingKeyboard": isRecording,
+                    "isFinalizing": isFinalizing,
+                    "isPreparing": isPreparing,
+                    "voiceState": String(describing: self.voiceState)
+                ])
                 // Don't override .responding — the AI response pipeline
                 // manages that state directly until streaming finishes.
                 guard self.voiceState != .responding else { return }
@@ -471,11 +736,24 @@ final class CompanionManager: ObservableObject {
     }
 
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
+        ClickyDebugLogger.log("shortcut.transition", "received", metadata: interactionStateLogMetadata(extra: [
+            "transition": String(describing: transition)
+        ]))
+
         switch transition {
         case .pressed:
-            guard !buddyDictationManager.isDictationInProgress else { return }
+            if buddyDictationManager.isDictationInProgress {
+                print("⚠️ Companion: clearing stale dictation session before starting a new one.")
+                ClickyDebugLogger.log("shortcut.transition", "clearing stale dictation before new press", metadata: interactionStateLogMetadata())
+                buddyDictationManager.cancelCurrentDictation(preserveDraftText: false)
+                voiceState = .idle
+            }
+
             // Don't register push-to-talk while the onboarding video is playing
-            guard !showOnboardingVideo else { return }
+            guard !showOnboardingVideo else {
+                ClickyDebugLogger.log("shortcut.transition", "ignored press during onboarding video")
+                return
+            }
 
             // Cancel any pending transient hide so the overlay stays visible
             transientHideTask?.cancel()
@@ -495,6 +773,7 @@ final class CompanionManager: ObservableObject {
             currentResponseTask?.cancel()
             elevenLabsTTSClient.stopPlayback()
             clearDetectedElementLocation()
+            ClickyDebugLogger.log("shortcut.transition", "prepared for new push-to-talk session", metadata: interactionStateLogMetadata())
 
             // Dismiss the onboarding prompt if it's showing
             if showOnboardingPrompt {
@@ -511,6 +790,7 @@ final class CompanionManager: ObservableObject {
             ClickyAnalytics.trackPushToTalkStarted()
 
             pendingKeyboardShortcutStartTask?.cancel()
+            ClickyDebugLogger.log("shortcut.transition", "starting keyboard dictation task")
             pendingKeyboardShortcutStartTask = Task {
                 await buddyDictationManager.startPushToTalkFromKeyboardShortcut(
                     currentDraftText: "",
@@ -520,10 +800,16 @@ final class CompanionManager: ObservableObject {
                     submitDraftText: { [weak self] finalTranscript in
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
+                        ClickyDebugLogger.log("dictation.final", "companion received transcript", metadata: [
+                            "transcriptLength": finalTranscript.count
+                        ])
                         ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
-                        self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                        if self?.handleDirectLocalMediaCommandIfRecognized(transcript: finalTranscript) != true {
+                            self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                        }
                     }
                 )
+                ClickyDebugLogger.log("shortcut.transition", "keyboard dictation task returned")
             }
         case .released:
             // Cancel the pending start task in case the user released the shortcut
@@ -531,12 +817,33 @@ final class CompanionManager: ObservableObject {
             // Without this, a quick press-and-release drops the release event and
             // leaves the waveform overlay stuck on screen indefinitely.
             ClickyAnalytics.trackPushToTalkReleased()
+            ClickyDebugLogger.log("shortcut.transition", "release handling started", metadata: interactionStateLogMetadata())
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
+            ClickyDebugLogger.log("shortcut.transition", "release handling finished", metadata: interactionStateLogMetadata())
         case .none:
             break
         }
+    }
+
+    private func interactionStateLogMetadata(extra: [String: Any] = [:]) -> [String: Any] {
+        var metadata: [String: Any] = [
+            "voiceState": String(describing: voiceState),
+            "dictationInProgress": buddyDictationManager.isDictationInProgress,
+            "isPreparingToRecord": buddyDictationManager.isPreparingToRecord,
+            "isRecordingKeyboard": buddyDictationManager.isRecordingFromKeyboardShortcut,
+            "isFinalizingTranscript": buddyDictationManager.isFinalizingTranscript,
+            "pendingKeyboardShortcutStartTask": pendingKeyboardShortcutStartTask != nil,
+            "currentResponseTask": currentResponseTask != nil,
+            "isOverlayVisible": isOverlayVisible
+        ]
+
+        for (key, value) in extra {
+            metadata[key] = value
+        }
+
+        return metadata
     }
 
     // MARK: - Companion Prompt
@@ -563,18 +870,156 @@ final class CompanionManager: ObservableObject {
 
     don't point at things when it would be pointless — like if the user asks a general knowledge question, or the conversation has nothing to do with what's on screen, or you'd just be pointing at something obvious they're already looking at. but if there's a specific UI element, menu, button, or area on screen that's relevant to what you're helping with, point at it.
 
-    when you point, append a coordinate tag at the very end of your response, AFTER your spoken text. the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. the origin (0,0) is the top-left corner of the image. x increases rightward, y increases downward.
+    when you point, append a coordinate tag after your spoken text. the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. the origin (0,0) is the top-left corner of the image. x increases rightward, y increases downward.
 
     format: [POINT:x,y:label] where x,y are integer pixel coordinates in the screenshot's coordinate space, and label is a short 1-3 word description of the element (like "search bar" or "save button"). if the element is on the cursor's screen you can omit the screen number. if the element is on a DIFFERENT screen, append :screenN where N is the screen number from the image label (e.g. :screen2). this is important — without the screen number, the cursor will point at the wrong place.
 
     if pointing wouldn't help, append [POINT:none].
+
+    computer control:
+    you can also actually click, type, or send global media controls. choose between pointing and acting based on the user's intent:
+    - if the user asks where something is, how to do something, what something means, or asks for guidance, point at the relevant UI element and explain.
+    - if the user asks you to operate the computer — click, open, press, select, choose, go to, focus, type, fill in, search for, pause media, skip music, or similar command language — perform the action.
+    - if the action would submit, buy, send, delete, close unsaved work, change account/security settings, or trigger an externally visible side effect, do not perform it automatically. point and explain what would happen instead.
+    - if the target is ambiguous or you cannot identify it confidently from the screenshot, point to the most likely target and explain the uncertainty instead of clicking.
+
+    for media controls, prefer the global media command over clicking a music app. use [MEDIA:play_pause] for pause, play, resume, stop the music, or toggle playback. use [MEDIA:next] for skip or next track. use [MEDIA:previous] for previous track or go back. these send the mac's media keys, so they work even if the music app is hidden or on another space.
+
+    when you click, append a click tag after the spoken text using the same screenshot coordinate space as pointing: [CLICK:x,y:label] or [CLICK:x,y:label:screenN].
+
+    when you type text into the currently focused field, append: [TYPE:text to type]. for newlines in typed text, write \\n. don't put a closing square bracket inside typed text.
+
+    if the task needs multiple actions, append all action tags in execution order, for example: [CLICK:430,220:name field][TYPE:hello].
+
+    action tags and point tags are hidden control tags. write normal spoken text first, then append the tags. never read or explain the tags.
 
     examples:
     - user asks how to color grade in final cut: "you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector]"
     - user asks what html is: "html stands for hypertext markup language, it's basically the skeleton of every web page. curious how it connects to the css you're looking at? [POINT:none]"
     - user asks how to commit in xcode: "see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control]"
     - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
+    - user asks you to click the search field: "i'll click the search field. [POINT:520,80:search field][CLICK:520,80:search field]"
+    - user says open the settings tab: "opening settings. [POINT:940,74:settings][CLICK:940,74:settings]"
+    - user asks you to type a phrase into the focused field: "i'll type that in. [POINT:none][TYPE:hello from clicky]"
+    - user asks you to stop the music: "done. [POINT:none][MEDIA:play_pause]"
+    - user asks you to skip the song: "skipping. [POINT:none][MEDIA:next]"
+    - user asks you to go back a track: "going back. [POINT:none][MEDIA:previous]"
     """
+
+    private func handleDirectLocalMediaCommandIfRecognized(transcript: String) -> Bool {
+        guard let mediaControlCommand = Self.parseDirectLocalMediaCommand(from: transcript) else {
+            ClickyDebugLogger.log("media.direct", "no direct local media command matched", metadata: [
+                "transcriptLength": transcript.count
+            ])
+            return false
+        }
+
+        ClickyDebugLogger.log("media.direct", "matched direct local media command", metadata: [
+            "command": mediaControlCommand.rawValue,
+            "transcriptLength": transcript.count
+        ])
+        currentResponseTask?.cancel()
+        elevenLabsTTSClient.stopPlayback()
+
+        currentResponseTask = Task {
+            voiceState = .processing
+            CompanionComputerController.pressMediaControl(mediaControlCommand)
+
+            await saveConversationAndSpeakResponse(
+                transcript: transcript,
+                spokenText: mediaControlCommand.spokenConfirmation
+            )
+
+            if !Task.isCancelled {
+                voiceState = .idle
+                scheduleTransientHideIfNeeded()
+            }
+        }
+
+        return true
+    }
+
+    private static func parseDirectLocalMediaCommand(from transcript: String) -> CompanionMediaControlCommand? {
+        let normalizedTranscript = normalizeDirectCommandTranscript(transcript)
+        guard !normalizedTranscript.isEmpty else { return nil }
+
+        let politePrefixPattern = #"(?:(?:can|could|would|will) you\s+)?(?:please\s+)?"#
+        let mediaObjectPattern = #"(?:the\s+|this\s+|that\s+)?(?:music|song|track|audio|playback|video|movie|media)"#
+        let trackObjectPattern = #"(?:the\s+|this\s+|that\s+|a\s+)?(?:song|track)"#
+
+        let nextTrackPatterns = [
+            #"^\#(politePrefixPattern)(?:skip|next)\s+\#(trackObjectPattern)$"#,
+            #"^\#(politePrefixPattern)(?:skip|next)\s+\#(mediaObjectPattern)$"#,
+            #"^\#(politePrefixPattern)(?:go\s+to\s+)?(?:the\s+)?next\s+\#(trackObjectPattern)$"#
+        ]
+        if normalizedTranscriptMatchesAnyRegularExpressionPattern(
+            normalizedTranscript,
+            patterns: nextTrackPatterns
+        ) {
+            return .nextTrack
+        }
+
+        let previousTrackPatterns = [
+            #"^\#(politePrefixPattern)(?:previous|prev|last)\s+\#(trackObjectPattern)$"#,
+            #"^\#(politePrefixPattern)(?:go\s+)?back\s+(?:one\s+|a\s+)?(?:song|track)$"#,
+            #"^\#(politePrefixPattern)play\s+(?:the\s+)?(?:previous|prev|last)\s+(?:song|track)$"#
+        ]
+        if normalizedTranscriptMatchesAnyRegularExpressionPattern(
+            normalizedTranscript,
+            patterns: previousTrackPatterns
+        ) {
+            return .previousTrack
+        }
+
+        let playPausePatterns = [
+            #"^\#(politePrefixPattern)(?:pause|resume)$"#,
+            #"^\#(politePrefixPattern)(?:pause|play|resume|stop)\s+\#(mediaObjectPattern)$"#,
+            #"^\#(politePrefixPattern)(?:pause|play|resume|stop)\s+(?:it|this)$"#,
+            #"^\#(politePrefixPattern)(?:turn\s+off|shut\s+off|toggle)\s+\#(mediaObjectPattern)$"#
+        ]
+        if normalizedTranscriptMatchesAnyRegularExpressionPattern(
+            normalizedTranscript,
+            patterns: playPausePatterns
+        ) {
+            return .playPause
+        }
+
+        return nil
+    }
+
+    private static func normalizeDirectCommandTranscript(_ transcript: String) -> String {
+        let lowercaseTranscript = transcript.lowercased()
+        let punctuationCollapsedTranscript = lowercaseTranscript.replacingOccurrences(
+            of: #"[^a-z0-9\s]"#,
+            with: " ",
+            options: .regularExpression
+        )
+        let whitespaceCollapsedTranscript = punctuationCollapsedTranscript.replacingOccurrences(
+            of: #"\s+"#,
+            with: " ",
+            options: .regularExpression
+        )
+
+        return whitespaceCollapsedTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func normalizedTranscriptMatchesAnyRegularExpressionPattern(
+        _ normalizedTranscript: String,
+        patterns: [String]
+    ) -> Bool {
+        for pattern in patterns {
+            guard let regularExpression = try? NSRegularExpression(pattern: pattern) else {
+                continue
+            }
+
+            let fullRange = NSRange(normalizedTranscript.startIndex..., in: normalizedTranscript)
+            if regularExpression.firstMatch(in: normalizedTranscript, range: fullRange) != nil {
+                return true
+            }
+        }
+
+        return false
+    }
 
     // MARK: - AI Response Pipeline
 
@@ -586,6 +1031,10 @@ final class CompanionManager: ObservableObject {
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
+        ClickyDebugLogger.log("response.pipeline", "starting Claude screenshot response", metadata: [
+            "transcriptLength": transcript.count,
+            "conversationHistoryCount": conversationHistory.count
+        ])
 
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
@@ -594,6 +1043,10 @@ final class CompanionManager: ObservableObject {
             do {
                 // Capture all connected screens so the AI has full context
                 let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                ClickyDebugLogger.log("response.pipeline", "captured screens", metadata: [
+                    "screenCount": screenCaptures.count,
+                    "labels": screenCaptures.map(\.label).joined(separator: ",")
+                ])
 
                 guard !Task.isCancelled else { return }
 
@@ -619,110 +1072,184 @@ final class CompanionManager: ObservableObject {
                         // No streaming text display — spinner stays until TTS plays
                     }
                 )
+                ClickyDebugLogger.log("response.pipeline", "Claude response received", metadata: [
+                    "responseLength": fullResponseText.count
+                ])
 
                 guard !Task.isCancelled else { return }
 
-                // Parse the [POINT:...] tag from Claude's response
-                let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
+                // Parse hidden computer-control tags before the point tag so
+                // [POINT:...] can still be the last remaining control directive.
+                let computerControlParseResult = Self.parseComputerControlActions(from: fullResponseText)
+                let parseResult = Self.parsePointingCoordinates(from: computerControlParseResult.spokenText)
                 let spokenText = parseResult.spokenText
+                ClickyDebugLogger.log("response.pipeline", "parsed control tags", metadata: [
+                    "spokenTextLength": spokenText.count,
+                    "actionCount": computerControlParseResult.actions.count,
+                    "hasPointCoordinate": parseResult.coordinate != nil,
+                    "pointLabel": parseResult.elementLabel ?? "none",
+                    "pointScreen": parseResult.screenNumber ?? -1
+                ])
 
                 // Handle element pointing if Claude returned coordinates.
                 // Switch to idle BEFORE setting the location so the triangle
                 // becomes visible and can fly to the target. Without this, the
                 // spinner hides the triangle and the flight animation is invisible.
                 let hasPointCoordinate = parseResult.coordinate != nil
-                if hasPointCoordinate {
+                let hasClickAction = computerControlParseResult.actions.contains { action in
+                    if case .click = action {
+                        return true
+                    }
+                    return false
+                }
+                if hasPointCoordinate || hasClickAction {
                     voiceState = .idle
                 }
 
-                // Pick the screen capture matching Claude's screen number,
-                // falling back to the cursor screen if not specified.
-                let targetScreenCapture: CompanionScreenCapture? = {
-                    if let screenNumber = parseResult.screenNumber,
-                       screenNumber >= 1 && screenNumber <= screenCaptures.count {
-                        return screenCaptures[screenNumber - 1]
-                    }
-                    return screenCaptures.first(where: { $0.isCursorScreen })
-                }()
-
                 if let pointCoordinate = parseResult.coordinate,
-                   let targetScreenCapture {
-                    // Claude's coordinates are in the screenshot's pixel space
-                    // (top-left origin, e.g. 1280x831). Scale to the display's
-                    // point space (e.g. 1512x982), then convert to AppKit global coords.
-                    let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
-                    let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
-                    let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
-                    let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
-                    let displayFrame = targetScreenCapture.displayFrame
-
-                    // Clamp to screenshot coordinate space
-                    let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                    let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-
-                    // Scale from screenshot pixels to display points
-                    let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-                    let displayLocalY = clampedY * (displayHeight / screenshotHeight)
-
-                    // Convert from top-left origin (screenshot) to bottom-left origin (AppKit)
-                    let appKitY = displayHeight - displayLocalY
-
-                    // Convert display-local coords to global screen coords
-                    let globalLocation = CGPoint(
-                        x: displayLocalX + displayFrame.origin.x,
-                        y: appKitY + displayFrame.origin.y
-                    )
-
-                    detectedElementScreenLocation = globalLocation
-                    detectedElementDisplayFrame = displayFrame
+                   let mappedPointLocation = Self.mapScreenshotCoordinateToGlobalScreenLocation(
+                    pointCoordinate,
+                    screenNumber: parseResult.screenNumber,
+                    screenCaptures: screenCaptures
+                   ) {
+                    detectedElementScreenLocation = mappedPointLocation.globalLocation
+                    detectedElementDisplayFrame = mappedPointLocation.displayFrame
                     ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
                     print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
+                    ClickyDebugLogger.log("response.pipeline", "mapped point coordinate", metadata: [
+                        "x": Int(pointCoordinate.x),
+                        "y": Int(pointCoordinate.y),
+                        "label": parseResult.elementLabel ?? "element",
+                        "screen": parseResult.screenNumber ?? -1,
+                        "globalX": Int(mappedPointLocation.globalLocation.x),
+                        "globalY": Int(mappedPointLocation.globalLocation.y)
+                    ])
                 } else {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
+                    ClickyDebugLogger.log("response.pipeline", "no mapped point coordinate", metadata: [
+                        "label": parseResult.elementLabel ?? "none"
+                    ])
                 }
 
-                // Save this exchange to conversation history (with the point tag
-                // stripped so it doesn't confuse future context)
-                conversationHistory.append((
-                    userTranscript: transcript,
-                    assistantResponse: spokenText
-                ))
+                await performComputerControlActions(
+                    computerControlParseResult.actions,
+                    screenCaptures: screenCaptures
+                )
 
-                // Keep only the last 10 exchanges to avoid unbounded context growth
-                if conversationHistory.count > 10 {
-                    conversationHistory.removeFirst(conversationHistory.count - 10)
-                }
-
-                print("🧠 Conversation history: \(conversationHistory.count) exchanges")
-
-                ClickyAnalytics.trackAIResponseReceived(response: spokenText)
-
-                // Play the response via TTS. Keep the spinner (processing state)
-                // until the audio actually starts playing, then switch to responding.
-                if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    do {
-                        try await elevenLabsTTSClient.speakText(spokenText)
-                        // speakText returns after player.play() — audio is now playing
-                        voiceState = .responding
-                    } catch {
-                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ ElevenLabs TTS error: \(error)")
-                        speakCreditsErrorFallback()
-                    }
-                }
+                await saveConversationAndSpeakResponse(
+                    transcript: transcript,
+                    spokenText: spokenText
+                )
             } catch is CancellationError {
                 // User spoke again — response was interrupted
+                ClickyDebugLogger.log("response.pipeline", "cancelled")
             } catch {
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
-                speakCreditsErrorFallback()
+                ClickyDebugLogger.log("response.pipeline", "failed", metadata: [
+                    "error": error.localizedDescription
+                ])
+                speakResponsePipelineErrorFallback(for: error)
             }
 
             if !Task.isCancelled {
                 voiceState = .idle
                 scheduleTransientHideIfNeeded()
+                ClickyDebugLogger.log("response.pipeline", "finished", metadata: interactionStateLogMetadata())
             }
         }
+    }
+
+    private func saveConversationAndSpeakResponse(transcript: String, spokenText: String) async {
+        // Save this exchange to conversation history (with control tags stripped
+        // so they don't confuse future context)
+        conversationHistory.append((
+            userTranscript: transcript,
+            assistantResponse: spokenText
+        ))
+
+        // Keep only the last 10 exchanges to avoid unbounded context growth
+        if conversationHistory.count > 10 {
+            conversationHistory.removeFirst(conversationHistory.count - 10)
+        }
+
+        print("🧠 Conversation history: \(conversationHistory.count) exchanges")
+        ClickyDebugLogger.log("response.history", "saved conversation exchange", metadata: [
+            "conversationHistoryCount": conversationHistory.count,
+            "spokenTextLength": spokenText.count,
+            "transcriptLength": transcript.count
+        ])
+
+        ClickyAnalytics.trackAIResponseReceived(response: spokenText)
+
+        // Play the response via TTS. Keep the spinner (processing state)
+        // until the audio actually starts playing, then switch to responding.
+        if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            do {
+                ClickyDebugLogger.log("tts", "starting ElevenLabs playback", metadata: [
+                    "spokenTextLength": spokenText.count
+                ])
+                try await elevenLabsTTSClient.speakText(spokenText)
+                // speakText returns after player.play() — audio is now playing
+                voiceState = .responding
+                ClickyDebugLogger.log("tts", "playback started")
+            } catch {
+                ClickyAnalytics.trackTTSError(error: error.localizedDescription)
+                print("⚠️ ElevenLabs TTS error: \(error)")
+                ClickyDebugLogger.log("tts", "playback failed", metadata: [
+                    "error": error.localizedDescription
+                ])
+                speakSystemVoiceFallback(spokenText)
+            }
+        }
+    }
+
+    private func scheduleVoiceStateSafetyResetIfNeeded() {
+        voiceStateSafetyResetTask?.cancel()
+        voiceStateSafetyResetTask = nil
+
+        let timeoutNanoseconds: UInt64?
+        switch voiceState {
+        case .idle:
+            timeoutNanoseconds = nil
+        case .listening:
+            timeoutNanoseconds = 45_000_000_000
+        case .processing:
+            timeoutNanoseconds = 90_000_000_000
+        case .responding:
+            timeoutNanoseconds = 90_000_000_000
+        }
+
+        guard let timeoutNanoseconds else { return }
+        let voiceStateWhenTimerStarted = voiceState
+        ClickyDebugLogger.log("voice.safety", "scheduled safety reset", metadata: [
+            "voiceState": String(describing: voiceStateWhenTimerStarted),
+            "timeoutSeconds": Double(timeoutNanoseconds) / 1_000_000_000
+        ])
+
+        voiceStateSafetyResetTask = Task {
+            try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+            guard !Task.isCancelled else { return }
+            guard voiceState == voiceStateWhenTimerStarted else { return }
+            resetStuckInteractionAfterSafetyTimeout(stuckVoiceState: voiceStateWhenTimerStarted)
+        }
+    }
+
+    private func resetStuckInteractionAfterSafetyTimeout(stuckVoiceState: CompanionVoiceState) {
+        print("⚠️ Companion: resetting stuck \(stuckVoiceState) state after safety timeout.")
+        ClickyDebugLogger.log("voice.safety", "resetting stuck interaction", metadata: interactionStateLogMetadata(extra: [
+            "stuckVoiceState": String(describing: stuckVoiceState)
+        ]))
+
+        currentResponseTask?.cancel()
+        currentResponseTask = nil
+        pendingKeyboardShortcutStartTask?.cancel()
+        pendingKeyboardShortcutStartTask = nil
+        buddyDictationManager.cancelCurrentDictation(preserveDraftText: false)
+        elevenLabsTTSClient.stopPlayback()
+        clearDetectedElementLocation()
+        voiceState = .idle
+        scheduleTransientHideIfNeeded()
     }
 
     /// If the cursor is in transient mode (user toggled "Show Clicky" off),
@@ -733,6 +1260,7 @@ final class CompanionManager: ObservableObject {
         guard !isClickyCursorEnabled && isOverlayVisible else { return }
 
         transientHideTask?.cancel()
+        ClickyDebugLogger.log("overlay.transient", "scheduled transient hide")
         transientHideTask = Task {
             // Wait for TTS audio to finish playing
             while elevenLabsTTSClient.isPlaying {
@@ -752,17 +1280,316 @@ final class CompanionManager: ObservableObject {
             guard !Task.isCancelled else { return }
             overlayWindowManager.fadeOutAndHideOverlay()
             isOverlayVisible = false
+            ClickyDebugLogger.log("overlay.transient", "transient overlay hidden")
         }
     }
 
-    /// Speaks a hardcoded error message using macOS system TTS when API
-    /// credits run out. Uses NSSpeechSynthesizer so it works even when
-    /// ElevenLabs is down.
-    private func speakCreditsErrorFallback() {
-        let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
+    /// Uses macOS system TTS as the last-resort voice path so failures in
+    /// Claude, ScreenCaptureKit, or ElevenLabs do not get misreported as a
+    /// credits problem.
+    private func speakSystemVoiceFallback(_ utterance: String) {
+        guard !utterance.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
         let synthesizer = NSSpeechSynthesizer()
         synthesizer.startSpeaking(utterance)
         voiceState = .responding
+    }
+
+    private func speakResponsePipelineErrorFallback(for error: Error) {
+        if Self.isScreenCaptureTCCError(error) {
+            markScreenContentCaptureUnavailable(
+                reason: "screen capture failed during response pipeline",
+                errorDescription: Self.diagnosticDescription(forScreenCaptureError: error)
+            )
+
+            if Self.hasPersistentContentCaptureEntitlement() {
+                speakSystemVoiceFallback("macOS blocked me from seeing your screen. Confirm Screen Recording is enabled for Clicky, then quit and reopen Clicky.")
+            } else {
+                speakSystemVoiceFallback("This Clicky build is missing Apple's persistent screen capture entitlement.")
+            }
+            return
+        }
+
+        speakSystemVoiceFallback("I hit an app error before I could answer. Check the Clicky development log for the exact failure.")
+    }
+
+    private static func isScreenCaptureTCCError(_ error: Error) -> Bool {
+        let errorDescription = error.localizedDescription.lowercased()
+        return errorDescription.contains("tcc")
+            || errorDescription.contains("display capture")
+            || errorDescription.contains("window capture")
+            || errorDescription.contains("screen capture")
+            || errorDescription.contains("declined")
+    }
+
+    // MARK: - Computer Control
+
+    private enum CompanionComputerControlAction {
+        case click(coordinate: CGPoint, elementLabel: String?, screenNumber: Int?)
+        case mediaControl(CompanionMediaControlCommand)
+        case typeText(String)
+    }
+
+    private struct ComputerControlActionParseResult {
+        let spokenText: String
+        let actions: [CompanionComputerControlAction]
+    }
+
+    private struct ComputerControlActionMatch {
+        let utf16Location: Int
+        let action: CompanionComputerControlAction
+    }
+
+    private struct MappedScreenLocation {
+        let globalLocation: CGPoint
+        let displayFrame: CGRect
+    }
+
+    private func performComputerControlActions(
+        _ actions: [CompanionComputerControlAction],
+        screenCaptures: [CompanionScreenCapture]
+    ) async {
+        guard !actions.isEmpty else { return }
+        ClickyDebugLogger.log("computer.actions", "executing actions", metadata: [
+            "actionCount": actions.count
+        ])
+        var estimatedBlueCursorStartLocation = NSEvent.mouseLocation
+
+        for action in actions {
+            guard !Task.isCancelled else { return }
+
+            switch action {
+            case .click(let coordinate, let elementLabel, let screenNumber):
+                ClickyDebugLogger.log("computer.actions", "click action requested", metadata: [
+                    "x": Int(coordinate.x),
+                    "y": Int(coordinate.y),
+                    "label": elementLabel ?? "element",
+                    "screen": screenNumber ?? -1
+                ])
+                guard let mappedClickLocation = Self.mapScreenshotCoordinateToGlobalScreenLocation(
+                    coordinate,
+                    screenNumber: screenNumber,
+                    screenCaptures: screenCaptures
+                ) else {
+                    print("⚠️ Computer control: could not map click coordinate.")
+                    ClickyDebugLogger.log("computer.actions", "could not map click coordinate", metadata: [
+                        "x": Int(coordinate.x),
+                        "y": Int(coordinate.y),
+                        "screen": screenNumber ?? -1
+                    ])
+                    continue
+                }
+
+                detectedElementBubbleText = elementLabel.map { "clicking \($0)" } ?? "clicking"
+                detectedElementScreenLocation = mappedClickLocation.globalLocation
+                detectedElementDisplayFrame = mappedClickLocation.displayFrame
+
+                let blueCursorFlightDelayNanoseconds = Self.estimatedBlueCursorFlightDelayNanoseconds(
+                    from: estimatedBlueCursorStartLocation,
+                    to: mappedClickLocation.globalLocation
+                )
+                try? await Task.sleep(nanoseconds: blueCursorFlightDelayNanoseconds)
+
+                CompanionComputerController.click(atAppKitScreenLocation: mappedClickLocation.globalLocation)
+                estimatedBlueCursorStartLocation = mappedClickLocation.globalLocation
+                print("🖱️ Computer control: clicked \"\(elementLabel ?? "element")\" at (\(Int(coordinate.x)), \(Int(coordinate.y)))")
+                ClickyDebugLogger.log("computer.actions", "click action completed", metadata: [
+                    "x": Int(coordinate.x),
+                    "y": Int(coordinate.y),
+                    "label": elementLabel ?? "element",
+                    "screen": screenNumber ?? -1,
+                    "globalX": Int(mappedClickLocation.globalLocation.x),
+                    "globalY": Int(mappedClickLocation.globalLocation.y)
+                ])
+                try? await Task.sleep(nanoseconds: 180_000_000)
+
+            case .mediaControl(let mediaControlCommand):
+                ClickyDebugLogger.log("computer.actions", "media action requested", metadata: [
+                    "command": mediaControlCommand.rawValue
+                ])
+                CompanionComputerController.pressMediaControl(mediaControlCommand)
+                print("🎛️ Computer control: executed \(mediaControlCommand.logDescription)")
+                ClickyDebugLogger.log("computer.actions", "media action completed", metadata: [
+                    "command": mediaControlCommand.rawValue
+                ])
+                try? await Task.sleep(nanoseconds: 120_000_000)
+
+            case .typeText(let text):
+                ClickyDebugLogger.log("computer.actions", "type action requested", metadata: [
+                    "characterCount": text.count
+                ])
+                CompanionComputerController.typeText(text)
+                print("⌨️ Computer control: typed \(text.count) character(s)")
+                ClickyDebugLogger.log("computer.actions", "type action completed", metadata: [
+                    "characterCount": text.count
+                ])
+                try? await Task.sleep(nanoseconds: 80_000_000)
+            }
+        }
+        ClickyDebugLogger.log("computer.actions", "finished actions", metadata: [
+            "actionCount": actions.count
+        ])
+    }
+
+    private static func estimatedBlueCursorFlightDelayNanoseconds(
+        from startLocation: CGPoint,
+        to targetLocation: CGPoint
+    ) -> UInt64 {
+        let distance = hypot(
+            targetLocation.x - startLocation.x,
+            targetLocation.y - startLocation.y
+        )
+        let flightDurationSeconds = min(max(distance / 800.0, 0.6), 1.4)
+        let clickAfterArrivalPaddingSeconds = 0.08
+        return UInt64((flightDurationSeconds + clickAfterArrivalPaddingSeconds) * 1_000_000_000)
+    }
+
+    private static func parseComputerControlActions(from responseText: String) -> ComputerControlActionParseResult {
+        let clickPattern = #"\[CLICK:(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?\]"#
+        let mediaPattern = #"\[MEDIA:([a-zA-Z_\- ]+)\]"#
+        let typePattern = #"\[TYPE:([^\]]*)\]"#
+        let nonePatterns = [
+            #"\[CLICK:none\]"#,
+            #"\[MEDIA:none\]"#,
+            #"\[TYPE:none\]"#
+        ]
+        var actionMatches: [ComputerControlActionMatch] = []
+
+        if let clickRegex = try? NSRegularExpression(pattern: clickPattern, options: [.caseInsensitive]) {
+            let matches = clickRegex.matches(
+                in: responseText,
+                range: NSRange(responseText.startIndex..., in: responseText)
+            )
+
+            for match in matches {
+                guard let xRange = Range(match.range(at: 1), in: responseText),
+                      let yRange = Range(match.range(at: 2), in: responseText),
+                      let x = Double(responseText[xRange]),
+                      let y = Double(responseText[yRange]) else {
+                    continue
+                }
+
+                var elementLabel: String?
+                if let labelRange = Range(match.range(at: 3), in: responseText) {
+                    elementLabel = String(responseText[labelRange]).trimmingCharacters(in: .whitespaces)
+                }
+
+                var screenNumber: Int?
+                if let screenRange = Range(match.range(at: 4), in: responseText) {
+                    screenNumber = Int(responseText[screenRange])
+                }
+
+                actionMatches.append(ComputerControlActionMatch(
+                    utf16Location: match.range.location,
+                    action: .click(
+                        coordinate: CGPoint(x: x, y: y),
+                        elementLabel: elementLabel,
+                        screenNumber: screenNumber
+                    )
+                ))
+            }
+        }
+
+        if let mediaRegex = try? NSRegularExpression(pattern: mediaPattern, options: [.caseInsensitive]) {
+            let matches = mediaRegex.matches(
+                in: responseText,
+                range: NSRange(responseText.startIndex..., in: responseText)
+            )
+
+            for match in matches {
+                guard let mediaControlRange = Range(match.range(at: 1), in: responseText),
+                      let mediaControlCommand = CompanionMediaControlCommand(
+                        controlTagValue: String(responseText[mediaControlRange])
+                      ) else {
+                    continue
+                }
+
+                actionMatches.append(ComputerControlActionMatch(
+                    utf16Location: match.range.location,
+                    action: .mediaControl(mediaControlCommand)
+                ))
+            }
+        }
+
+        if let typeRegex = try? NSRegularExpression(pattern: typePattern, options: [.caseInsensitive]) {
+            let matches = typeRegex.matches(
+                in: responseText,
+                range: NSRange(responseText.startIndex..., in: responseText)
+            )
+
+            for match in matches {
+                guard let textRange = Range(match.range(at: 1), in: responseText) else {
+                    continue
+                }
+
+                let typedText = String(responseText[textRange])
+                    .replacingOccurrences(of: "\\n", with: "\n")
+
+                actionMatches.append(ComputerControlActionMatch(
+                    utf16Location: match.range.location,
+                    action: .typeText(typedText)
+                ))
+            }
+        }
+
+        var spokenText = responseText
+        for pattern in [clickPattern, mediaPattern, typePattern] + nonePatterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+                continue
+            }
+            spokenText = regex.stringByReplacingMatches(
+                in: spokenText,
+                range: NSRange(spokenText.startIndex..., in: spokenText),
+                withTemplate: ""
+            )
+        }
+
+        let actions = actionMatches
+            .sorted { $0.utf16Location < $1.utf16Location }
+            .map(\.action)
+
+        return ComputerControlActionParseResult(
+            spokenText: spokenText.trimmingCharacters(in: .whitespacesAndNewlines),
+            actions: actions
+        )
+    }
+
+    private static func mapScreenshotCoordinateToGlobalScreenLocation(
+        _ screenshotCoordinate: CGPoint,
+        screenNumber: Int?,
+        screenCaptures: [CompanionScreenCapture]
+    ) -> MappedScreenLocation? {
+        let targetScreenCapture: CompanionScreenCapture? = {
+            if let screenNumber,
+               screenNumber >= 1 && screenNumber <= screenCaptures.count {
+                return screenCaptures[screenNumber - 1]
+            }
+            return screenCaptures.first(where: { $0.isCursorScreen })
+        }()
+
+        guard let targetScreenCapture else { return nil }
+
+        let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
+        let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
+        let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
+        let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
+        let displayFrame = targetScreenCapture.displayFrame
+
+        guard screenshotWidth > 0, screenshotHeight > 0 else { return nil }
+
+        let clampedX = max(0, min(screenshotCoordinate.x, screenshotWidth))
+        let clampedY = max(0, min(screenshotCoordinate.y, screenshotHeight))
+        let displayLocalX = clampedX * (displayWidth / screenshotWidth)
+        let displayLocalY = clampedY * (displayHeight / screenshotHeight)
+        let appKitY = displayHeight - displayLocalY
+
+        return MappedScreenLocation(
+            globalLocation: CGPoint(
+                x: displayLocalX + displayFrame.origin.x,
+                y: appKitY + displayFrame.origin.y
+            ),
+            displayFrame: displayFrame
+        )
     }
 
     // MARK: - Point Tag Parsing

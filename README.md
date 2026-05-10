@@ -45,7 +45,7 @@ If you want to do it yourself, here's the deal.
 
 - macOS 14.2+ (for ScreenCaptureKit)
 - Xcode 15+
-- Node.js 18+ (for the Cloudflare Worker)
+- Node.js 20.3+ (for the Cloudflare Worker)
 - A [Cloudflare](https://cloudflare.com) account (free tier works)
 - API keys for: [Anthropic](https://console.anthropic.com), [AssemblyAI](https://www.assemblyai.com), [ElevenLabs](https://elevenlabs.io)
 
@@ -90,28 +90,24 @@ cd worker
 npx wrangler dev
 ```
 
-This starts a local server (usually `http://localhost:8787`) that behaves exactly like the deployed Worker. You'll need to create a `.dev.vars` file in the `worker/` directory with your keys:
-
-```
-ANTHROPIC_API_KEY=sk-ant-...
-ASSEMBLYAI_API_KEY=...
-ELEVENLABS_API_KEY=...
-ELEVENLABS_VOICE_ID=...
-```
-
-Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing. Grep for `clicky-proxy` to find them all.
-
-### 3. Update the proxy URLs in the app
-
-The app has the Worker URL hardcoded in a few places. Search for `your-worker-name.your-subdomain.workers.dev` and replace it with your Worker URL:
+This starts a local server (usually `http://127.0.0.1:8787`) that behaves exactly like the deployed Worker. You'll need to create a `.dev.vars` file in the `worker/` directory with your keys. You can start from `worker/.dev.vars.example`:
 
 ```bash
-grep -r "clicky-proxy" leanring-buddy/
+cp worker/.dev.vars.example worker/.dev.vars
 ```
 
-You'll find it in:
-- `CompanionManager.swift` — Claude chat + ElevenLabs TTS
-- `AssemblyAIStreamingTranscriptionProvider.swift` — AssemblyAI token endpoint
+Then edit `worker/.dev.vars` with your real keys. The checked-in local dev app reads `ClickyProxyBaseURL` from `leanring-buddy/Info.plist`, which defaults to `http://127.0.0.1:8787`. If you deploy the Worker instead of using `wrangler dev`, change that one plist value to your deployed Worker URL.
+
+### 3. Update the proxy URL in the app
+
+The app uses one plist key for the Worker base URL:
+
+```xml
+<key>ClickyProxyBaseURL</key>
+<string>http://127.0.0.1:8787</string>
+```
+
+The Swift code derives `/chat`, `/tts`, and `/transcribe-token` from that base URL.
 
 ### 4. Open in Xcode and run
 
@@ -124,12 +120,39 @@ In Xcode:
 2. Set your signing team under Signing & Capabilities
 3. Hit **Cmd + R** to build and run
 
-The app will appear in your menu bar (not the dock). Click the icon to open the panel, grant the permissions it asks for, and you're good.
+The local fork builds as **Clicky Dev** with bundle ID `com.mark.clicky-dev`, so it can sit beside the original Clicky app. The app will appear in your menu bar (not the dock). Click the icon to open the panel, grant the permissions it asks for, and you're good.
+
+### 5. Install locally without Xcode
+
+If you only have Apple's command line tools installed, you can build and install the local fork directly:
+
+```bash
+./scripts/install-local-dev-app.sh
+```
+
+The script installs `/Applications/Clicky Dev.app`, signs it with your first available `Developer ID Application` certificate, and falls back to ad-hoc signing if no signing identity is installed. Developer ID signing is better for repeated local development because macOS privacy permissions are tied to the app's code identity.
+
+### Development logs
+
+Clicky Dev writes a local rotating diagnostic log here:
+
+```bash
+~/Library/Logs/Clicky Dev/clicky-dev.log
+```
+
+Tail it while testing push-to-talk, transcription, Claude responses, TTS, or click/type/media execution:
+
+```bash
+./scripts/tail-clicky-dev-log.sh
+```
+
+The log records raw shortcut transitions, dictation state changes, permission refreshes, AssemblyAI websocket lifecycle, Claude/TTS boundaries, and computer-control actions. It logs transcript and response lengths instead of full spoken text.
 
 ### Permissions the app needs
 
 - **Microphone** — for push-to-talk voice capture
-- **Accessibility** — for the global keyboard shortcut (Control + Option)
+- **Accessibility** — for clicking/type/media actions and Accessibility API control
+- **Input Monitoring** — for detecting the global keyboard shortcut (Control + Option)
 - **Screen Recording** — for taking screenshots when you use the hotkey
 - **Screen Content** — for ScreenCaptureKit access
 
@@ -137,13 +160,15 @@ The app will appear in your menu bar (not the dock). Click the icon to open the 
 
 If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
 
-**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied through a Cloudflare Worker.
+**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. Claude can also emit hidden `[CLICK:x,y:label:screenN]`, `[TYPE:text]`, and `[MEDIA:play_pause|next|previous]` tags when the user asks it to operate the computer. Obvious media-only phrases such as "pause the music" execute locally before the screenshot/model path. All three APIs are proxied through a Cloudflare Worker.
 
 ## Project structure
 
 ```
 leanring-buddy/          # Swift source (yes, the typo stays)
   CompanionManager.swift    # Central state machine
+  CompanionComputerController.swift # Blue-cursor click/type/media execution
+  ClickyDebugLogger.swift   # Local development log writer
   CompanionPanelView.swift  # Menu bar panel UI
   ClaudeAPI.swift           # Claude streaming client
   ElevenLabsTTSClient.swift # Text-to-speech playback
@@ -159,4 +184,4 @@ CLAUDE.md                # Full architecture doc (agents read this)
 
 PRs welcome. If you're using Claude Code, it already knows the codebase — just tell it what you want to build and point it at `CLAUDE.md`.
 
-Got feedback? DM me on X [@farzatv](https://x.com/farzatv).
+Got feedback? DM me on X [@clamepending](https://x.com/clamepending).

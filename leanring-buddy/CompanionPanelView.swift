@@ -62,7 +62,7 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 16)
 
-                dmFarzaButton
+                feedbackButton
                     .padding(.horizontal, 16)
             }
 
@@ -153,7 +153,7 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(DS.Colors.textSecondary)
 
-                Text("Some permissions were revoked. Grant all four below to keep using Clicky.")
+                Text("Some permissions were revoked. Grant the permissions below to keep using Clicky.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -254,6 +254,8 @@ struct CompanionPanelView: View {
 
             accessibilityPermissionRow
 
+            inputMonitoringPermissionRow
+
             screenRecordingPermissionRow
 
             if companionManager.hasScreenRecordingPermission {
@@ -333,6 +335,58 @@ struct CompanionPanelView: View {
         .padding(.vertical, 6)
     }
 
+    private var inputMonitoringPermissionRow: some View {
+        let isGranted = companionManager.hasInputMonitoringPermission
+        return HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "keyboard")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
+                    .frame(width: 16)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Input Monitoring")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+
+                    Text("Needed for Control+Option")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+            }
+
+            Spacer()
+
+            if isGranted {
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(DS.Colors.success)
+                        .frame(width: 6, height: 6)
+                    Text("Granted")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.success)
+                }
+            } else {
+                Button(action: {
+                    WindowPositionManager.requestInputMonitoringPermission()
+                }) {
+                    Text("Grant")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(DS.Colors.textOnAccent)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule()
+                                .fill(DS.Colors.accent)
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
     private var screenRecordingPermissionRow: some View {
         let isGranted = companionManager.hasScreenRecordingPermission
         return HStack {
@@ -392,6 +446,7 @@ struct CompanionPanelView: View {
 
     private var screenContentPermissionRow: some View {
         let isGranted = companionManager.hasScreenContentPermission
+        let isChecking = companionManager.isRequestingScreenContent
         return HStack {
             HStack(spacing: 8) {
                 Image(systemName: "eye")
@@ -399,9 +454,16 @@ struct CompanionPanelView: View {
                     .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
                     .frame(width: 16)
 
-                Text("Screen Content")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Screen Capture")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+
+                    Text(companionManager.screenContentPermissionProblem ?? "Verifies production capture access")
+                        .font(.system(size: 10))
+                        .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
+                        .lineLimit(2)
+                }
             }
 
             Spacer()
@@ -419,7 +481,7 @@ struct CompanionPanelView: View {
                 Button(action: {
                     companionManager.requestScreenContentPermission()
                 }) {
-                    Text("Grant")
+                    Text(isChecking ? "Checking" : "Verify")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(DS.Colors.textOnAccent)
                         .padding(.horizontal, 10)
@@ -429,6 +491,7 @@ struct CompanionPanelView: View {
                                 .fill(DS.Colors.accent)
                         )
                 }
+                .disabled(isChecking)
                 .buttonStyle(.plain)
                 .pointerCursor()
             }
@@ -641,11 +704,11 @@ struct CompanionPanelView: View {
         .pointerCursor()
     }
 
-    // MARK: - DM Farza Button
+    // MARK: - Feedback Button
 
-    private var dmFarzaButton: some View {
+    private var feedbackButton: some View {
         Button(action: {
-            if let url = URL(string: "https://x.com/farzatv") {
+            if let url = URL(string: "https://x.com/clamepending") {
                 NSWorkspace.shared.open(url)
             }
         }) {

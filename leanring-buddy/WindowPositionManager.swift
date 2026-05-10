@@ -19,7 +19,9 @@ enum PermissionRequestPresentationDestination: Equatable {
 @MainActor
 class WindowPositionManager {
     private static var hasAttemptedAccessibilitySystemPromptDuringCurrentLaunch = false
+    private static var hasAttemptedInputMonitoringSystemPromptDuringCurrentLaunch = false
     private static var hasAttemptedScreenRecordingSystemPromptDuringCurrentLaunch = false
+    private static let hasPreviouslyConfirmedAccessibilityPermissionUserDefaultsKey = "com.learningbuddy.hasPreviouslyConfirmedAccessibilityPermission"
     private static let hasPreviouslyConfirmedScreenRecordingPermissionUserDefaultsKey = "com.learningbuddy.hasPreviouslyConfirmedScreenRecordingPermission"
 
     /// Returns true when the Mac currently has more than one connected display.
@@ -31,9 +33,28 @@ class WindowPositionManager {
 
     // MARK: - Accessibility Permission
 
-    /// Returns true if the app has Accessibility permission.
+    /// Returns true only when the current app process has live Accessibility
+    /// permission. A cached grant is not enough here because Clicky's shortcut
+    /// and computer-control paths need macOS to deliver events to this exact
+    /// running binary.
     static func hasAccessibilityPermission() -> Bool {
+        let hasAccessibilityPermissionNow = hasLiveAccessibilityPermission()
+        if hasAccessibilityPermissionNow {
+            UserDefaults.standard.set(true, forKey: hasPreviouslyConfirmedAccessibilityPermissionUserDefaultsKey)
+        }
+        return hasAccessibilityPermissionNow
+    }
+
+    static func hasLiveAccessibilityPermission() -> Bool {
         AXIsProcessTrusted()
+    }
+
+    static func rememberAccessibilityPermissionWasGranted() {
+        UserDefaults.standard.set(true, forKey: hasPreviouslyConfirmedAccessibilityPermissionUserDefaultsKey)
+    }
+
+    static func clearPreviouslyConfirmedAccessibilityPermission() {
+        UserDefaults.standard.removeObject(forKey: hasPreviouslyConfirmedAccessibilityPermissionUserDefaultsKey)
     }
 
     /// Presents exactly one permission path per tap: the system prompt on the first
@@ -51,9 +72,11 @@ class WindowPositionManager {
             return .alreadyGranted
         case .systemPrompt:
             hasAttemptedAccessibilitySystemPromptDuringCurrentLaunch = true
+            rememberAccessibilityPermissionWasGranted()
             let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
             _ = AXIsProcessTrustedWithOptions(options)
         case .systemSettings:
+            rememberAccessibilityPermissionWasGranted()
             openAccessibilitySettings()
         }
 
@@ -71,6 +94,40 @@ class WindowPositionManager {
     static func revealAppInFinder() {
         guard let appURL = Bundle.main.bundleURL as URL? else { return }
         NSWorkspace.shared.activateFileViewerSelecting([appURL])
+    }
+
+    // MARK: - Input Monitoring Permission
+
+    /// Returns true when macOS allows Clicky to listen to global keyboard events.
+    /// Accessibility lets Clicky control the computer; Listen Event/Input Monitoring
+    /// is the separate TCC gate that makes the ctrl+option push-to-talk tap receive
+    /// key events from other apps.
+    static func hasInputMonitoringPermission() -> Bool {
+        CGPreflightListenEventAccess()
+    }
+
+    /// Presents exactly one permission path per tap: the native Listen Event
+    /// prompt first, then System Settings if macOS has already shown that prompt.
+    @discardableResult
+    static func requestInputMonitoringPermission() -> PermissionRequestPresentationDestination {
+        if hasInputMonitoringPermission() {
+            return .alreadyGranted
+        }
+
+        if hasAttemptedInputMonitoringSystemPromptDuringCurrentLaunch {
+            openInputMonitoringSettings()
+            return .systemSettings
+        }
+
+        hasAttemptedInputMonitoringSystemPromptDuringCurrentLaunch = true
+        _ = CGRequestListenEventAccess()
+        return .systemPrompt
+    }
+
+    /// Opens System Settings to the Input Monitoring pane.
+    static func openInputMonitoringSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     // MARK: - Screen Recording Permission

@@ -21,6 +21,18 @@ struct CompanionScreenCapture {
     let screenshotHeightInPixels: Int
 }
 
+enum CompanionScreenCaptureFallbackPreference {
+    private static let shouldPreferCoreGraphicsCaptureUserDefaultsKey = "com.learningbuddy.shouldPreferCoreGraphicsScreenCapture"
+
+    static var shouldPreferCoreGraphicsCapture: Bool {
+        UserDefaults.standard.bool(forKey: shouldPreferCoreGraphicsCaptureUserDefaultsKey)
+    }
+
+    static func rememberScreenCaptureKitNeedsFallback() {
+        UserDefaults.standard.set(true, forKey: shouldPreferCoreGraphicsCaptureUserDefaultsKey)
+    }
+}
+
 @MainActor
 enum CompanionScreenCaptureUtility {
 
@@ -28,6 +40,23 @@ enum CompanionScreenCaptureUtility {
     /// whether the user's cursor is on that screen. This gives the AI
     /// full context across multiple monitors.
     static func captureAllScreensAsJPEG() async throws -> [CompanionScreenCapture] {
+        if CompanionScreenCaptureFallbackPreference.shouldPreferCoreGraphicsCapture {
+            ClickyDebugLogger.log("screen.capture", "using CoreGraphics fallback by preference")
+            return try captureAllScreensWithCoreGraphicsFallback(screenCaptureKitError: nil)
+        }
+
+        do {
+            return try await captureAllScreensWithScreenCaptureKit()
+        } catch {
+            ClickyDebugLogger.log("screen.capture", "ScreenCaptureKit capture failed; trying CoreGraphics fallback", metadata: [
+                "error": error.localizedDescription
+            ])
+            CompanionScreenCaptureFallbackPreference.rememberScreenCaptureKitNeedsFallback()
+            return try captureAllScreensWithCoreGraphicsFallback(screenCaptureKitError: error)
+        }
+    }
+
+    private static func captureAllScreensWithScreenCaptureKit() async throws -> [CompanionScreenCapture] {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
 
         guard !content.displays.isEmpty else {
@@ -128,5 +157,107 @@ enum CompanionScreenCaptureUtility {
         }
 
         return capturedScreens
+    }
+
+    private static func captureAllScreensWithCoreGraphicsFallback(screenCaptureKitError: Error?) throws -> [CompanionScreenCapture] {
+        let mouseLocation = NSEvent.mouseLocation
+        let screensWithDisplayIDs = NSScreen.screens.compactMap { screen -> (screen: NSScreen, displayID: CGDirectDisplayID)? in
+            guard let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
+                return nil
+            }
+            return (screen: screen, displayID: screenNumber)
+        }
+
+        let sortedScreens = screensWithDisplayIDs.sorted { firstScreen, secondScreen in
+            let firstContainsCursor = firstScreen.screen.frame.contains(mouseLocation)
+            let secondContainsCursor = secondScreen.screen.frame.contains(mouseLocation)
+            if firstContainsCursor != secondContainsCursor { return firstContainsCursor }
+            return false
+        }
+
+        var capturedScreens: [CompanionScreenCapture] = []
+        for (screenIndex, screenWithDisplayID) in sortedScreens.enumerated() {
+            guard let fullSizeImage = CGDisplayCreateImage(screenWithDisplayID.displayID),
+                  let resizedJPEG = resizedJPEGData(from: fullSizeImage, maxDimension: 1280) else {
+                continue
+            }
+
+            let displayFrame = screenWithDisplayID.screen.frame
+            let isCursorScreen = displayFrame.contains(mouseLocation)
+            let screenLabel: String
+            if sortedScreens.count == 1 {
+                screenLabel = "user's screen (cursor is here)"
+            } else if isCursorScreen {
+                screenLabel = "screen \(screenIndex + 1) of \(sortedScreens.count) — cursor is on this screen (primary focus)"
+            } else {
+                screenLabel = "screen \(screenIndex + 1) of \(sortedScreens.count) — secondary screen"
+            }
+
+            capturedScreens.append(CompanionScreenCapture(
+                imageData: resizedJPEG.data,
+                label: screenLabel,
+                isCursorScreen: isCursorScreen,
+                displayWidthInPoints: Int(displayFrame.width),
+                displayHeightInPoints: Int(displayFrame.height),
+                displayFrame: displayFrame,
+                screenshotWidthInPixels: resizedJPEG.width,
+                screenshotHeightInPixels: resizedJPEG.height
+            ))
+        }
+
+        guard !capturedScreens.isEmpty else {
+            if let screenCaptureKitError {
+                throw screenCaptureKitError
+            }
+            throw NSError(
+                domain: "CompanionScreenCapture",
+                code: -3,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to capture any screen with CoreGraphics fallback"]
+            )
+        }
+
+        ClickyDebugLogger.log("screen.capture", "CoreGraphics fallback captured screens", metadata: [
+            "count": capturedScreens.count
+        ])
+        return capturedScreens
+    }
+
+    private static func resizedJPEGData(from image: CGImage, maxDimension: Int) -> (data: Data, width: Int, height: Int)? {
+        let originalWidth = image.width
+        let originalHeight = image.height
+        let largestOriginalDimension = max(originalWidth, originalHeight)
+        let scale = min(1.0, Double(maxDimension) / Double(largestOriginalDimension))
+        let targetWidth = max(1, Int(Double(originalWidth) * scale))
+        let targetHeight = max(1, Int(Double(originalHeight) * scale))
+
+        let resizedImage: CGImage
+        if targetWidth == originalWidth && targetHeight == originalHeight {
+            resizedImage = image
+        } else {
+            guard let context = CGContext(
+                data: nil,
+                width: targetWidth,
+                height: targetHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+            ) else {
+                return nil
+            }
+            context.interpolationQuality = .high
+            context.draw(image, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+            guard let renderedImage = context.makeImage() else {
+                return nil
+            }
+            resizedImage = renderedImage
+        }
+
+        guard let jpegData = NSBitmapImageRep(cgImage: resizedImage)
+            .representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
+            return nil
+        }
+
+        return (data: jpegData, width: targetWidth, height: targetHeight)
     }
 }

@@ -9,7 +9,10 @@
 
 import ServiceManagement
 import SwiftUI
+
+#if canImport(Sparkle)
 import Sparkle
+#endif
 
 @main
 struct leanring_buddyApp: App {
@@ -31,7 +34,9 @@ struct leanring_buddyApp: App {
 final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
     private let companionManager = CompanionManager()
+    #if canImport(Sparkle)
     private var sparkleUpdaterController: SPUStandardUpdaterController?
+    #endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("🎯 Clicky: Starting...")
@@ -72,6 +77,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    #if canImport(Sparkle)
     private func startSparkleUpdater() {
         let updaterController = SPUStandardUpdaterController(
             startingUpdater: false,
@@ -86,4 +92,5 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
             print("⚠️ Clicky: Sparkle updater failed to start: \(error)")
         }
     }
+    #endif
 }
