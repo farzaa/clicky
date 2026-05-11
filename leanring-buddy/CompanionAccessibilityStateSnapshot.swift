@@ -34,6 +34,11 @@ struct CompanionAccessibilityStateSnapshot {
     let focusedElementRole: String?
     let focusedElementValue: String?
     let focusedElementLabel: String?
+    /// Diagnostic: which AX lookup path actually returned the focused
+    /// element. Logged so we can tell which paths succeed for which apps.
+    /// Possible values: "system-wide", "frontmost-app", "focused-window",
+    /// "none".
+    let focusedElementSource: String
 
     /// Reads the current AX state. Costs roughly 5–30 ms depending on how
     /// many attribute queries succeed; the AX framework batches across the
@@ -43,13 +48,52 @@ struct CompanionAccessibilityStateSnapshot {
         let frontmostApplication = NSWorkspace.shared.frontmostApplication
         let frontmostApplicationName = frontmostApplication?.localizedName
 
-        // The system-wide AX root reports keyboard focus across the whole
-        // user session, regardless of which app currently owns it.
+        // Try several paths to find the focused UI element. Electron apps
+        // (Slack, Discord, VS Code) don't reliably bubble focus through
+        // the system-wide AX root, so a single lookup misses them. We try
+        // in order of generality and stop at the first success.
+        var focusedElement: AXUIElement? = nil
+        var focusedElementSource = "none"
+
+        // Path 1: system-wide AX root. Works for most native apps.
         let systemWideElement = AXUIElementCreateSystemWide()
-        let focusedElement = Self.copyAXElementAttribute(
+        if let element = Self.copyAXElementAttribute(
             from: systemWideElement,
             attributeName: kAXFocusedUIElementAttribute
-        )
+        ) {
+            focusedElement = element
+            focusedElementSource = "system-wide"
+        }
+
+        // Path 2: frontmost-app AX root. Works for Electron contenteditables
+        // and other apps that don't propagate focus to the session-level
+        // AX root but DO answer focus queries against their own process.
+        if focusedElement == nil, let frontmostProcessIdentifier = frontmostApplication?.processIdentifier {
+            let applicationAXElement = AXUIElementCreateApplication(frontmostProcessIdentifier)
+            if let element = Self.copyAXElementAttribute(
+                from: applicationAXElement,
+                attributeName: kAXFocusedUIElementAttribute
+            ) {
+                focusedElement = element
+                focusedElementSource = "frontmost-app"
+            }
+
+            // Path 3: frontmost-app's focused window. Some apps expose
+            // kAXFocusedUIElementAttribute only on the window, not the
+            // process. Walk down from the focused window.
+            if focusedElement == nil,
+               let focusedWindow = Self.copyAXElementAttribute(
+                   from: applicationAXElement,
+                   attributeName: kAXFocusedWindowAttribute
+               ),
+               let elementFromWindow = Self.copyAXElementAttribute(
+                   from: focusedWindow,
+                   attributeName: kAXFocusedUIElementAttribute
+               ) {
+                focusedElement = elementFromWindow
+                focusedElementSource = "focused-window"
+            }
+        }
 
         let focusedElementRole = focusedElement.flatMap {
             Self.copyStringAttribute(from: $0, attributeName: kAXRoleAttribute)
@@ -66,12 +110,21 @@ struct CompanionAccessibilityStateSnapshot {
             frontmostApplication: frontmostApplication
         )
 
+        DotDebugLogger.log("ax.snapshot", "captured", metadata: [
+            "axTrusted": AXIsProcessTrusted(),
+            "frontmost": frontmostApplicationName ?? "nil",
+            "focusedSource": focusedElementSource,
+            "focusedRole": focusedElementRole ?? "nil",
+            "focusedValueLength": focusedElementValue?.count ?? 0
+        ])
+
         return CompanionAccessibilityStateSnapshot(
             frontmostApplicationName: frontmostApplicationName,
             frontmostWindowTitle: frontmostWindowTitle,
             focusedElementRole: focusedElementRole,
             focusedElementValue: focusedElementValue,
-            focusedElementLabel: focusedElementLabel
+            focusedElementLabel: focusedElementLabel,
+            focusedElementSource: focusedElementSource
         )
     }
 

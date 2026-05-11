@@ -1621,6 +1621,12 @@ final class CompanionManager: ObservableObject {
                         // that may not show a caret. See
                         // `CompanionAccessibilityStateSnapshot.swift` for
                         // the captured fields and rationale.
+                        //
+                        // The 80ms wait lets the target app update its AX
+                        // tree after handling our CGEvent — focus state
+                        // can take a few render cycles to settle in
+                        // Electron apps especially.
+                        try? await Task.sleep(nanoseconds: 80_000_000)
                         let postActionAccessibilitySnapshot = CompanionAccessibilityStateSnapshot.capture()
                         let accessibilityDescription = postActionAccessibilitySnapshot.compactDescription
                         let toolResultContent: String
