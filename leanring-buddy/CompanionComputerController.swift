@@ -548,72 +548,136 @@ enum CompanionComputerController {
     static func typeText(_ text: String) {
         DotDebugLogger.log("computer.controller", "typing requested", metadata: [
             "characterCount": text.count,
-            "via": "clipboard-paste"
+            "via": "virtual-keystrokes"
         ])
 
-        // We paste rather than emit one CGEvent per character. Electron
-        // apps (Slack, Discord, VS Code) drop characters under fast
-        // `keyboardSetUnicodeString` bursts because React's synthetic
-        // event layer doesn't reliably translate Unicode-payload events
-        // (the `keyCode`/`key` fields end up empty). One cmd+V is
-        // lossless across every target we care about.
-        let pasteboard = NSPasteboard.general
-        let preservedPasteboardItems: [[NSPasteboard.PasteboardType: Data]] =
-            (pasteboard.pasteboardItems ?? []).map { existingItem in
-                var typeToData: [NSPasteboard.PasteboardType: Data] = [:]
-                for pasteboardType in existingItem.types {
-                    if let data = existingItem.data(forType: pasteboardType) {
-                        typeToData[pasteboardType] = data
-                    }
-                }
-                return typeToData
-            }
-
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-
-        // Post cmd+V as a real keystroke so the target app's keydown
-        // handler fires its paste pipeline. virtualKey 9 = kVK_ANSI_V.
+        // Each character is posted as a real keyboard event with its
+        // virtualKey populated, so React's synthetic-event layer in
+        // Electron apps (Slack, Discord, VS Code) sees a real keypress
+        // with `keyCode`/`key` set — the missing fields that caused the
+        // earlier `keyboardSetUnicodeString` approach to drop characters.
+        // Anything outside the US-QWERTY map (emoji, accented characters,
+        // CJK) falls back to the Unicode payload path per character so we
+        // still type those correctly even though Electron may drop some.
         let eventSource = CGEventSource(stateID: .combinedSessionState)
-        let pasteKeyDownEvent = CGEvent(
-            keyboardEventSource: eventSource,
-            virtualKey: 9,
-            keyDown: true
-        )
-        pasteKeyDownEvent?.flags = .maskCommand
-        pasteKeyDownEvent?.post(tap: .cghidEventTap)
-        let pasteKeyUpEvent = CGEvent(
-            keyboardEventSource: eventSource,
-            virtualKey: 9,
-            keyDown: false
-        )
-        pasteKeyUpEvent?.flags = .maskCommand
-        pasteKeyUpEvent?.post(tap: .cghidEventTap)
 
-        // Restore the user's previous clipboard contents after the target
-        // app has had time to read the pasted text. 150ms is comfortably
-        // longer than the system's paste round-trip and well under the
-        // agent loop's 500ms inter-step settling delay, so the restore
-        // can't race the next tool's clipboard use.
-        let pasteboardItemsToRestore = preservedPasteboardItems
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            let pasteboardToRestore = NSPasteboard.general
-            pasteboardToRestore.clearContents()
-            guard !pasteboardItemsToRestore.isEmpty else { return }
-            let rebuiltPasteboardItems: [NSPasteboardItem] = pasteboardItemsToRestore.map { typeToData in
-                let rebuiltItem = NSPasteboardItem()
-                for (pasteboardType, data) in typeToData {
-                    rebuiltItem.setData(data, forType: pasteboardType)
-                }
-                return rebuiltItem
+        for character in text {
+            if let keystrokeInfo = Self.usQwertyKeystrokeMap[character] {
+                let modifierFlags: CGEventFlags = keystrokeInfo.needsShift ? .maskShift : []
+                let keyDownEvent = CGEvent(
+                    keyboardEventSource: eventSource,
+                    virtualKey: keystrokeInfo.virtualKey,
+                    keyDown: true
+                )
+                keyDownEvent?.flags = modifierFlags
+                keyDownEvent?.post(tap: .cghidEventTap)
+                let keyUpEvent = CGEvent(
+                    keyboardEventSource: eventSource,
+                    virtualKey: keystrokeInfo.virtualKey,
+                    keyDown: false
+                )
+                keyUpEvent?.flags = modifierFlags
+                keyUpEvent?.post(tap: .cghidEventTap)
+            } else {
+                // Non-ASCII / non-mapped fallback. Generates a Unicode
+                // payload event with virtualKey 0; Electron may drop these,
+                // but native apps (TextEdit, Notes) and most browser-based
+                // inputs accept them. This keeps emoji + accented input
+                // working for the rare case we hit it.
+                var utf16Characters: [UniChar] = Array(String(character).utf16)
+                guard !utf16Characters.isEmpty else { continue }
+                let unicodeKeyDownEvent = CGEvent(
+                    keyboardEventSource: eventSource,
+                    virtualKey: 0,
+                    keyDown: true
+                )
+                unicodeKeyDownEvent?.keyboardSetUnicodeString(
+                    stringLength: utf16Characters.count,
+                    unicodeString: &utf16Characters
+                )
+                unicodeKeyDownEvent?.post(tap: .cghidEventTap)
+                let unicodeKeyUpEvent = CGEvent(
+                    keyboardEventSource: eventSource,
+                    virtualKey: 0,
+                    keyDown: false
+                )
+                unicodeKeyUpEvent?.keyboardSetUnicodeString(
+                    stringLength: utf16Characters.count,
+                    unicodeString: &utf16Characters
+                )
+                unicodeKeyUpEvent?.post(tap: .cghidEventTap)
             }
-            pasteboardToRestore.writeObjects(rebuiltPasteboardItems)
+
+            // Small inter-character pause so the target app's event loop
+            // has time to process each keystroke. Without it, fast bursts
+            // can be coalesced or processed out of order, especially in
+            // Electron apps under load.
+            usleep(3000)
         }
 
         DotDebugLogger.log("computer.controller", "typing completed", metadata: [
             "characterCount": text.count
         ])
     }
+
+    /// US-QWERTY mapping from a printable ASCII character to the macOS
+    /// virtual keycode + shift flag that produces it. Used by `typeText`
+    /// to emit real keypress events instead of Unicode-payload events,
+    /// which Electron / React contenteditable inputs handle reliably.
+    /// Keycodes are from `kVK_ANSI_*` in `HIToolbox/Events.h`.
+    private static let usQwertyKeystrokeMap: [Character: (virtualKey: CGKeyCode, needsShift: Bool)] = {
+        var keystrokeMap: [Character: (CGKeyCode, Bool)] = [:]
+
+        let unshiftedLowercaseLetters: [(Character, CGKeyCode)] = [
+            ("a", 0), ("s", 1), ("d", 2), ("f", 3), ("h", 4), ("g", 5),
+            ("z", 6), ("x", 7), ("c", 8), ("v", 9), ("b", 11), ("q", 12),
+            ("w", 13), ("e", 14), ("r", 15), ("y", 16), ("t", 17),
+            ("u", 32), ("i", 34), ("o", 31), ("p", 35),
+            ("l", 37), ("j", 38), ("k", 40),
+            ("n", 45), ("m", 46)
+        ]
+        for (lowercaseLetter, virtualKey) in unshiftedLowercaseLetters {
+            keystrokeMap[lowercaseLetter] = (virtualKey, false)
+            if let uppercaseScalar = lowercaseLetter.uppercased().unicodeScalars.first {
+                keystrokeMap[Character(uppercaseScalar)] = (virtualKey, true)
+            }
+        }
+
+        let unshiftedDigits: [(Character, CGKeyCode)] = [
+            ("0", 29), ("1", 18), ("2", 19), ("3", 20), ("4", 21),
+            ("5", 23), ("6", 22), ("7", 26), ("8", 28), ("9", 25)
+        ]
+        for (digit, virtualKey) in unshiftedDigits {
+            keystrokeMap[digit] = (virtualKey, false)
+        }
+
+        // Shifted-digit symbols (US QWERTY).
+        let shiftedDigitSymbols: [(Character, CGKeyCode)] = [
+            (")", 29), ("!", 18), ("@", 19), ("#", 20), ("$", 21),
+            ("%", 23), ("^", 22), ("&", 26), ("*", 28), ("(", 25)
+        ]
+        for (shiftedSymbol, virtualKey) in shiftedDigitSymbols {
+            keystrokeMap[shiftedSymbol] = (virtualKey, true)
+        }
+
+        // Whitespace and punctuation.
+        keystrokeMap[" "]  = (49, false)
+        keystrokeMap["\n"] = (36, false)
+        keystrokeMap["\t"] = (48, false)
+        keystrokeMap[";"]  = (41, false); keystrokeMap[":"]  = (41, true)
+        keystrokeMap["'"]  = (39, false); keystrokeMap["\""] = (39, true)
+        keystrokeMap[","]  = (43, false); keystrokeMap["<"]  = (43, true)
+        keystrokeMap["."]  = (47, false); keystrokeMap[">"]  = (47, true)
+        keystrokeMap["/"]  = (44, false); keystrokeMap["?"]  = (44, true)
+        keystrokeMap["-"]  = (27, false); keystrokeMap["_"]  = (27, true)
+        keystrokeMap["="]  = (24, false); keystrokeMap["+"]  = (24, true)
+        keystrokeMap["["]  = (33, false); keystrokeMap["{"]  = (33, true)
+        keystrokeMap["]"]  = (30, false); keystrokeMap["}"]  = (30, true)
+        keystrokeMap["\\"] = (42, false); keystrokeMap["|"]  = (42, true)
+        keystrokeMap["`"]  = (50, false); keystrokeMap["~"]  = (50, true)
+
+        return keystrokeMap
+    }()
 
     /// Result of a request to launch or activate a native macOS application.
     /// `didOpen` is true when NSWorkspace successfully resolved + activated
