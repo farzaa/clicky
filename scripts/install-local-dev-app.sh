@@ -64,13 +64,18 @@ if [[ "${DOT_INCLUDE_RESTRICTED_ENTITLEMENTS:-}" != "1" ]]; then
     echo "Omitting restricted persistent-content-capture entitlement for local dev signing"
 fi
 
+swift_source_files=()
+while IFS= read -r swift_source_file_path; do
+    swift_source_files+=("${swift_source_file_path}")
+done < <(find "${source_directory}" -name "*.swift" -type f)
+
 xcrun swiftc \
     -swift-version 5 \
     -target "${swift_target_triple}" \
     -sdk "$(xcrun --show-sdk-path)" \
     -O \
     -emit-executable \
-    "${source_directory}"/*.swift \
+    "${swift_source_files[@]}" \
     -o "${macos_directory}/${app_name}"
 
 cp "${source_directory}/Info.plist" "${info_plist_path}"

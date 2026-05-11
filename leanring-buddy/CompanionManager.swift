@@ -95,6 +95,11 @@ final class CompanionManager: ObservableObject {
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
+    /// Background coding-agent task lifecycle. Held here (not in AppDelegate)
+    /// so CompanionManager can wire its announcement handler into the same
+    /// TTS pipeline it already owns. AppDelegate reads this property to
+    /// hand it to the AgentTaskPanelManager.
+    let agentTaskManager = AgentTaskManager()
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
@@ -222,6 +227,10 @@ final class CompanionManager: ObservableObject {
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
+
+        agentTaskManager.announcementHandler = { [weak self] announcement in
+            self?.handleAgentTaskAnnouncement(announcement)
+        }
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -808,7 +817,7 @@ final class CompanionManager: ObservableObject {
                         ])
                         DotAnalytics.trackUserMessageSent(transcript: finalTranscript)
                         if self?.handleDirectLocalMediaCommandIfRecognized(transcript: finalTranscript) != true {
-                            self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                            self?.routeTranscriptToBackgroundAgentOrInlineLoop(transcript: finalTranscript)
                         }
                     }
                 )
@@ -1016,6 +1025,160 @@ final class CompanionManager: ObservableObject {
         }
 
         return false
+    }
+
+    // MARK: - Background Agent Task Routing
+
+    /// Routes a finalized transcript to either (a) a follow-up on the
+    /// currently running background task, (b) a fresh background task if
+    /// the planner classifies the request as substantial, or (c) the
+    /// existing inline tool-use loop. Called after the direct-media short-
+    /// circuit declines the transcript.
+    private func routeTranscriptToBackgroundAgentOrInlineLoop(transcript: String) {
+
+        // If a background task is already running, the user's voice is
+        // either a cancel request or a follow-up message — either way it
+        // does NOT start a new task or run inline.
+        if let runningTask = agentTaskManager.currentTask, !runningTask.status.isTerminal {
+            if Self.isProbableCancellationPhrase(transcript: transcript) {
+                DotDebugLogger.log("agent.route", "cancel phrase during running task; cancelling")
+                Task { await agentTaskManager.cancelCurrentTask() }
+                return
+            }
+            DotDebugLogger.log("agent.route", "routing as follow-up to running task")
+            Task { await agentTaskManager.sendFollowUpToCurrentTask(transcript) }
+            return
+        }
+
+        // No active task → use the planner to decide if this is substantial
+        // enough to spawn a background worker, or just a regular inline ask.
+        Task { @MainActor in
+            let plannerDecision = await runAgentTaskPlannerWithInlineFallback(
+                transcript: transcript
+            )
+            switch plannerDecision {
+            case .routeToBackground(let brief):
+                DotDebugLogger.log("agent.route", "planner classified as background task", metadata: [
+                    "title": brief.oneLineTitle,
+                    "workingDir": brief.workingDirectoryURL.path
+                ])
+                // Stop any in-flight inline response so its TTS doesn't
+                // overlap with the task-accepted announcement.
+                currentResponseTask?.cancel()
+                cancelPerStepNarrationQueue()
+                await agentTaskManager.startTask(brief: brief)
+            case .routeToInline:
+                DotDebugLogger.log("agent.route", "planner classified as inline; running existing loop")
+                sendTranscriptToClaudeWithScreenshot(transcript: transcript)
+            }
+        }
+    }
+
+    /// Calls the planner and returns its decision, falling back to
+    /// `.routeToInline` on any network/parse failure. Inline is the safe
+    /// default since it costs the user nothing extra if it turns out the
+    /// request was actually substantial.
+    private func runAgentTaskPlannerWithInlineFallback(
+        transcript: String
+    ) async -> AgentTaskPlannerDecision {
+        guard let plannerEndpointURL = URL(string: "\(Self.workerBaseURL)/chat") else {
+            return .routeToInline
+        }
+        let planner = AgentTaskPlanner(
+            proxyChatEndpointURL: plannerEndpointURL,
+            model: selectedModel
+        )
+        do {
+            return try await planner.classifyAndPlan(transcript: transcript)
+        } catch {
+            DotDebugLogger.log("agent.planner", "planner failed; falling through to inline", metadata: [
+                "error": error.localizedDescription
+            ])
+            return .routeToInline
+        }
+    }
+
+    /// Detects short transcripts that read as "cancel the running task."
+    /// Used when there's an active background task so the user can stop it
+    /// without having to click the panel.
+    private static func isProbableCancellationPhrase(transcript: String) -> Bool {
+        let normalized = transcript
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count <= 40 else { return false }
+        let cancellationPatterns: [String] = [
+            "cancel that",
+            "cancel the task",
+            "cancel it",
+            "stop that",
+            "stop the task",
+            "stop it",
+            "never mind",
+            "nevermind",
+            "abort",
+            "kill it",
+            "kill the task"
+        ]
+        for pattern in cancellationPatterns {
+            if normalized == pattern || normalized.hasPrefix(pattern + " ") {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Routes user-facing announcements from AgentTaskManager into the same
+    /// ElevenLabs / system-fallback TTS pipeline the inline loop uses. Most
+    /// announcements speak a single short sentence; some (follow-up
+    /// delivered) deliberately stay silent to avoid stepping on streaming
+    /// narration that the agent is already producing.
+    private func handleAgentTaskAnnouncement(_ announcement: AgentTaskAnnouncement) {
+        switch announcement {
+
+        case .acceptedTask(let brief):
+            let titleLower = brief.oneLineTitle.lowercased()
+            let durationLower = brief.estimatedDurationDescription.lowercased()
+            speakBackgroundTaskAnnouncementLine(
+                "got it. starting \(titleLower). \(durationLower)."
+            )
+
+        case .rejectedBecauseTaskAlreadyRunning(_, let runningBrief):
+            speakBackgroundTaskAnnouncementLine(
+                "i'm still working on \(runningBrief.oneLineTitle.lowercased()). say cancel that if you want me to stop it."
+            )
+
+        case .rejectedBecauseWorkerNotInstalled(let workerInstallInstruction):
+            speakBackgroundTaskAnnouncementLine(workerInstallInstruction)
+
+        case .taskCompleted(let brief, _):
+            speakBackgroundTaskAnnouncementLine(
+                "done with \(brief.oneLineTitle.lowercased()). check the panel for results."
+            )
+
+        case .taskFailed(let brief, _):
+            speakBackgroundTaskAnnouncementLine(
+                "hit a snag on \(brief.oneLineTitle.lowercased()). check the panel for details."
+            )
+
+        case .taskCancelled(let brief):
+            speakBackgroundTaskAnnouncementLine(
+                "cancelled \(brief.oneLineTitle.lowercased())."
+            )
+
+        case .followUpDelivered, .followUpRejectedBecauseNoActiveTask:
+            // Intentionally silent — the running narration is enough.
+            break
+        }
+    }
+
+    private func speakBackgroundTaskAnnouncementLine(_ line: String) {
+        Task { @MainActor in
+            do {
+                try await elevenLabsTTSClient.speakText(line)
+            } catch {
+                speakSystemVoiceFallback(line)
+            }
+        }
     }
 
     // MARK: - AI Response Pipeline

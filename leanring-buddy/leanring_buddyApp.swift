@@ -33,6 +33,7 @@ struct leanring_buddyApp: App {
 @MainActor
 final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
+    private var agentTaskPanelManager: AgentTaskPanelManager?
     private let companionManager = CompanionManager()
     private let accountManager = DotAccountManager()
     #if canImport(Sparkle)
@@ -51,6 +52,9 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         menuBarPanelManager = MenuBarPanelManager(
             companionManager: companionManager,
             accountManager: accountManager
+        )
+        agentTaskPanelManager = AgentTaskPanelManager(
+            agentTaskManager: companionManager.agentTaskManager
         )
         companionManager.start()
         // Auto-open the panel if the user has work to do — sign-in is the
