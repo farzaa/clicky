@@ -1537,12 +1537,17 @@ final class CompanionManager: ObservableObject {
             )
 
         case .switchSpace(let direction):
-            await performComputerControlActions(
-                [.switchSpace(direction: direction)],
-                screenCaptures: originatingScreenCaptures
-            )
+            // Capture the switch result so Claude sees in tool_result whether
+            // the OS actually moved Spaces (vs "already at the edge"). Helps
+            // it stop retrying when there's nowhere to go.
+            let switchResult = CompanionComputerController.switchSpace(direction: direction)
+            // Settle delay outside the controller so we don't block the
+            // CGS call's own timing.
+            try? await Task.sleep(nanoseconds: 600_000_000)
             return AgentToolExecutionResult(
-                toolResultContent: "switched space \(direction.rawValue)",
+                toolResultContent: switchResult.didSwitch
+                    ? "switched space \(direction.rawValue) — \(switchResult.resultDescription)"
+                    : "switch_space failed: \(switchResult.resultDescription)",
                 didTriggerBailOut: false
             )
 

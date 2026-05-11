@@ -235,30 +235,38 @@ enum CompanionComputerController {
         case previous
     }
 
-    /// Switches to the macOS Space adjacent to the current one. Posts the
-    /// system-default ctrl+→ / ctrl+← keystroke that Mission Control
-    /// listens for. Reliable as long as the user hasn't unbound the
-    /// shortcut in System Settings (they're on by default). Distinct from
-    /// `cmd+space` (Spotlight) and bare `space` (spacebar) — Claude was
-    /// firing both of those when asked to switch Spaces before this tool
-    /// existed.
-    static func switchSpace(direction: SpaceSwitchDirection) {
-        let keySpec: String
-        switch direction {
-        case .next:     keySpec = "ctrl+right"
-        case .previous: keySpec = "ctrl+left"
-        }
+    /// Switches to the macOS Space adjacent to the current one using the
+    /// private CGS API via `MacSpaceController`. Returns a description of
+    /// what happened so the agent loop can surface it in its tool_result.
+    ///
+    /// Why not just post ctrl+→ via CGEvent: macOS Sequoia+ silently
+    /// filters CGEvents targeting the Mission Control / Spaces system
+    /// shortcuts, even from processes with full Accessibility permission.
+    /// The OS reports the event posted successfully but nothing happens.
+    /// `CGSManagedDisplaySetCurrentSpace` is the same primitive used by
+    /// Yabai, Spectacle, Magnet — it bypasses the synthetic-event filter
+    /// because it talks to WindowServer directly rather than synthesising
+    /// a keystroke.
+    @discardableResult
+    static func switchSpace(direction: SpaceSwitchDirection) -> MacSpaceController.SwitchResult {
         DotDebugLogger.log("computer.controller", "switch space requested", metadata: [
             "direction": direction.rawValue,
-            "keySpec": keySpec
+            "via": "CGSManagedDisplaySetCurrentSpace"
         ])
-        guard let keystroke = parseKeystroke(fromKeySpec: keySpec) else {
-            DotDebugLogger.log("computer.controller", "switch space skipped — keystroke parse failed", metadata: [
-                "keySpec": keySpec
-            ])
-            return
+        let macDirection: MacSpaceSwitchDirection
+        switch direction {
+        case .next:     macDirection = .next
+        case .previous: macDirection = .previous
         }
-        pressKeystroke(keystroke)
+        let result = MacSpaceController.switchToAdjacentSpace(direction: macDirection)
+        DotDebugLogger.log("computer.controller", "switch space completed", metadata: [
+            "direction": direction.rawValue,
+            "didSwitch": result.didSwitch,
+            "resultDescription": result.resultDescription,
+            "previousSpaceID": result.previousSpaceID ?? 0,
+            "newSpaceID": result.newSpaceID ?? 0
+        ])
+        return result
     }
 
     /// Brings up macOS Mission Control so every Space + window thumbnail is
