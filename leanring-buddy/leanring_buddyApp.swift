@@ -36,6 +36,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
     private var textCommandPanelManager: TextCommandPanelManager?
     private var textCommandToggleSubscription: AnyCancellable?
+    private var agentTaskPanelManager: AgentTaskPanelManager?
     private let companionManager = CompanionManager()
     private let accountManager = DotAccountManager()
     /// Subscribes to the user's vibe-id event-bus session and runs delivered
@@ -77,6 +78,10 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] in
                 self?.textCommandPanelManager?.toggleTextCommandPanel()
             }
+
+        agentTaskPanelManager = AgentTaskPanelManager(
+            agentTaskManager: companionManager.agentTaskManager
+        )
 
         companionManager.start()
         // Auto-open the panel if the user has work to do — sign-in is the
