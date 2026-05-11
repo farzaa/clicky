@@ -2,27 +2,21 @@
 
 ## Source Files
 
-### FloatingSessionButton.swift
-- `FloatingSessionButtonManager` — `@MainActor` class managing the `NSPanel` lifecycle
-  - `showFloatingButton()` — Creates/shows the panel in top-right of primary screen
-  - `hideFloatingButton()` — Hides panel (keeps it alive for quick re-show)
-  - `destroyFloatingButton()` — Removes panel permanently (session ended)
-  - `onFloatingButtonClicked` — Callback closure, set by ContentView to bring main window to front
-  - `floatingButtonPanel` — Exposed `NSPanel` reference for screenshot exclusion
-- `FloatingButtonView` — Private SwiftUI view with gradient circle, scale+glow hover animation, pointer cursor
+### ContextCircleManager.swift
+- `ContextCircleManager` — `@MainActor` class managing the non-activating context circle and context editor `NSPanel` instances
+  - `start()` — Begins visibility and cursor-screen placement updates
+  - `stop()` — Stops placement updates and hides the circle and editor popup
+  - circle click — Toggles the compact context editor popup without activating the app
+  - file drop callback — Adds dragged files to `CompanionManager` context attachments
+- `ContextCircleView` — Private SwiftUI circle view with hover/drop visual states and pointer cursor
+- `ContextEditorView` — Private SwiftUI popup for Add file, Copy clipboard, remove attachment, and Clear actions
+- `ContextCircleDropTargetView` — AppKit bridge for reliable file drops in the non-activating panel
 
-### ContentView.swift
-- Receives `FloatingSessionButtonManager` via `@EnvironmentObject`
-- `isMainWindowCurrentlyFocused` — Tracks main window focus state
-- `configureFloatingButtonManager()` — Wires up the click callback
-- `startObservingMainWindowFocusChanges()` — Sets up `NSWindow` notification observers
-- `updateFloatingButtonVisibility()` — Core logic: show if running + not focused, hide otherwise
-- `bringMainWindowToFront()` — Activates app and orders main window front
-
-### ScreenshotManager.swift
-- `floatingButtonWindowToExcludeFromCaptures` — `NSWindow?` reference set by ContentView
-- `captureScreen()` — Matches the floating window to an `SCWindow` and excludes it from capture filter
+### CompanionManager.swift
+- Owns in-memory `ContextAttachment` values for text files, clipboard text, and clipboard images
+- Validates supported text file extensions and attachment limits
+- Adds attached text and images to the Claude request path for future voice turns
 
 ### leanring_buddyApp.swift
-- Owns `FloatingSessionButtonManager` as `@StateObject`
-- Injects it into ContentView via `.environmentObject()`
+- Owns `ContextCircleManager` alongside `MenuBarPanelManager` and `CompanionManager`
+- Starts and stops the context circle with the app lifecycle

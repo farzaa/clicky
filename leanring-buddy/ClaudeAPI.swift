@@ -100,6 +100,7 @@ class ClaudeAPI {
     /// Returns the full accumulated text and total duration when the stream completes.
     func analyzeImageStreaming(
         images: [(data: Data, label: String)],
+        additionalTextContext: [(title: String, text: String)] = [],
         systemPrompt: String,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
         userPrompt: String,
@@ -131,6 +132,15 @@ class ClaudeAPI {
             contentBlocks.append([
                 "type": "text",
                 "text": image.label
+            ])
+        }
+        for contextItem in additionalTextContext {
+            contentBlocks.append([
+                "type": "text",
+                "text": """
+                Additional context from \(contextItem.title):
+                \(contextItem.text)
+                """
             ])
         }
         contentBlocks.append([
@@ -214,6 +224,7 @@ class ClaudeAPI {
     /// Non-streaming fallback for validation requests where we don't need progressive display.
     func analyzeImage(
         images: [(data: Data, label: String)],
+        additionalTextContext: [(title: String, text: String)] = [],
         systemPrompt: String,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
         userPrompt: String
@@ -242,6 +253,15 @@ class ClaudeAPI {
             contentBlocks.append([
                 "type": "text",
                 "text": image.label
+            ])
+        }
+        for contextItem in additionalTextContext {
+            contentBlocks.append([
+                "type": "text",
+                "text": """
+                Additional context from \(contextItem.title):
+                \(contextItem.text)
+                """
             ])
         }
         contentBlocks.append([

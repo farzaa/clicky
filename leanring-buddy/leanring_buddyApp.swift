@@ -30,6 +30,7 @@ struct leanring_buddyApp: App {
 @MainActor
 final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
+    private var contextCircleManager: ContextCircleManager?
     private let companionManager = CompanionManager()
     private var sparkleUpdaterController: SPUStandardUpdaterController?
 
@@ -43,7 +44,9 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         ClickyAnalytics.trackAppOpened()
 
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
+        contextCircleManager = ContextCircleManager(companionManager: companionManager)
         companionManager.start()
+        contextCircleManager?.start()
         // Auto-open the panel if the user still needs to do something:
         // either they haven't onboarded yet, or permissions were revoked.
         if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
@@ -54,6 +57,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        contextCircleManager?.stop()
         companionManager.stop()
     }
 

@@ -8,6 +8,7 @@
 //
 
 import AVFoundation
+import AppKit
 import Combine
 import Foundation
 import PostHog
@@ -21,8 +22,30 @@ enum CompanionVoiceState {
     case responding
 }
 
+enum ContextAttachmentKind {
+    case textFile
+    case clipboardText
+    case clipboardImage
+}
+
+struct ContextAttachment: Identifiable {
+    let id = UUID()
+    let title: String
+    let kind: ContextAttachmentKind
+    let previewText: String
+    let textPayload: String?
+    let imagePayload: Data?
+}
+
 @MainActor
 final class CompanionManager: ObservableObject {
+    static let supportedContextFileExtensions: Set<String> = [
+        "txt", "md", "swift", "js", "ts", "tsx", "jsx", "json", "csv",
+        "yaml", "yml", "html", "css", "xml", "log"
+    ]
+    static let maximumContextAttachmentCount = 5
+    static let maximumContextTextCharacterCount = 100_000
+
     @Published private(set) var voiceState: CompanionVoiceState = .idle
     @Published private(set) var lastTranscript: String?
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
@@ -30,6 +53,8 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var hasScreenRecordingPermission = false
     @Published private(set) var hasMicrophonePermission = false
     @Published private(set) var hasScreenContentPermission = false
+    @Published private(set) var contextAttachments: [ContextAttachment] = []
+    @Published var contextAttachmentErrorMessage: String?
 
     /// Screen location (global AppKit coords) of a detected UI element the
     /// buddy should fly to and point at. Parsed from Claude's response;
@@ -116,6 +141,76 @@ final class CompanionManager: ObservableObject {
         claudeAPI.model = model
     }
 
+    var canAddMoreContextAttachments: Bool {
+        contextAttachments.count < Self.maximumContextAttachmentCount
+    }
+
+    func addContextFiles(from fileURLs: [URL]) {
+        contextAttachmentErrorMessage = nil
+
+        for fileURL in fileURLs {
+            guard canAddMoreContextAttachments else {
+                contextAttachmentErrorMessage = "You can attach up to \(Self.maximumContextAttachmentCount) context items."
+                return
+            }
+
+            addSingleContextFile(from: fileURL)
+        }
+    }
+
+    func copyCurrentClipboardAsContext() {
+        contextAttachmentErrorMessage = nil
+
+        guard canAddMoreContextAttachments else {
+            contextAttachmentErrorMessage = "You can attach up to \(Self.maximumContextAttachmentCount) context items."
+            return
+        }
+
+        let pasteboard = NSPasteboard.general
+        if let clipboardString = pasteboard.string(forType: .string),
+           !clipboardString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard let validatedClipboardString = validatedContextText(
+                clipboardString,
+                attachmentTitle: "Clipboard text"
+            ) else {
+                return
+            }
+            let attachment = ContextAttachment(
+                title: "Clipboard text",
+                kind: .clipboardText,
+                previewText: previewText(for: validatedClipboardString),
+                textPayload: validatedClipboardString,
+                imagePayload: nil
+            )
+            contextAttachments.append(attachment)
+            return
+        }
+
+        if let pngData = pasteboard.data(forType: .png) {
+            addClipboardImageContext(imageData: pngData)
+            return
+        }
+
+        if let tiffData = pasteboard.data(forType: .tiff),
+           let bitmapImage = NSBitmapImageRep(data: tiffData),
+           let pngData = bitmapImage.representation(using: .png, properties: [:]) {
+            addClipboardImageContext(imageData: pngData)
+            return
+        }
+
+        contextAttachmentErrorMessage = "Clipboard has no text or image to attach."
+    }
+
+    func removeContextAttachment(id: UUID) {
+        contextAttachments.removeAll { $0.id == id }
+        contextAttachmentErrorMessage = nil
+    }
+
+    func clearContextAttachments() {
+        contextAttachments.removeAll()
+        contextAttachmentErrorMessage = nil
+    }
+
     /// User preference for whether the Clicky cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
@@ -139,11 +234,74 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    private func addSingleContextFile(from fileURL: URL) {
+        let fileExtension = fileURL.pathExtension.lowercased()
+        guard Self.supportedContextFileExtensions.contains(fileExtension) else {
+            contextAttachmentErrorMessage = "\(fileURL.lastPathComponent) is not a supported text file."
+            return
+        }
+
+        let didStartSecurityScopedAccess = fileURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartSecurityScopedAccess {
+                fileURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        do {
+            let fileText = try String(contentsOf: fileURL, encoding: .utf8)
+            guard let validatedFileText = validatedContextText(fileText, attachmentTitle: fileURL.lastPathComponent) else {
+                return
+            }
+            let attachment = ContextAttachment(
+                title: fileURL.lastPathComponent,
+                kind: .textFile,
+                previewText: previewText(for: validatedFileText),
+                textPayload: validatedFileText,
+                imagePayload: nil
+            )
+            contextAttachments.append(attachment)
+        } catch {
+            contextAttachmentErrorMessage = "Could not read \(fileURL.lastPathComponent) as UTF-8 text."
+        }
+    }
+
+    private func addClipboardImageContext(imageData: Data) {
+        let attachment = ContextAttachment(
+            title: "Clipboard image",
+            kind: .clipboardImage,
+            previewText: "Image copied from clipboard",
+            textPayload: nil,
+            imagePayload: imageData
+        )
+        contextAttachments.append(attachment)
+    }
+
+    private func validatedContextText(_ text: String, attachmentTitle: String) -> String? {
+        guard text.count <= Self.maximumContextTextCharacterCount else {
+            contextAttachmentErrorMessage = "\(attachmentTitle) is too large to attach."
+            return nil
+        }
+        return text
+    }
+
+    private func previewText(for text: String) -> String {
+        let singleLineText = text
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard singleLineText.count > 90 else { return singleLineText }
+        let endIndex = singleLineText.index(singleLineText.startIndex, offsetBy: 90)
+        return String(singleLineText[..<endIndex]) + "..."
+    }
+
     /// Whether the user has completed onboarding at least once. Persisted
     /// to UserDefaults so the Start button only appears on first launch.
-    var hasCompletedOnboarding: Bool {
-        get { UserDefaults.standard.bool(forKey: "hasCompletedOnboarding") }
-        set { UserDefaults.standard.set(newValue, forKey: "hasCompletedOnboarding") }
+    @Published var hasCompletedOnboarding: Bool = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding") {
+        didSet {
+            UserDefaults.standard.set(hasCompletedOnboarding, forKey: "hasCompletedOnboarding")
+        }
     }
 
     /// Whether the user has submitted their email during onboarding.
@@ -604,6 +762,15 @@ final class CompanionManager: ObservableObject {
                     let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
                     return (data: capture.imageData, label: capture.label + dimensionInfo)
                 }
+                let contextImageAttachments = contextAttachments.compactMap { attachment -> (data: Data, label: String)? in
+                    guard let imagePayload = attachment.imagePayload else { return nil }
+                    return (data: imagePayload, label: "Additional context image from \(attachment.title)")
+                }
+                let imagesWithAdditionalContext = labeledImages + contextImageAttachments
+                let additionalTextContext = contextAttachments.compactMap { attachment -> (title: String, text: String)? in
+                    guard let textPayload = attachment.textPayload else { return nil }
+                    return (title: attachment.title, text: textPayload)
+                }
 
                 // Pass conversation history so Claude remembers prior exchanges
                 let historyForAPI = conversationHistory.map { entry in
@@ -611,7 +778,8 @@ final class CompanionManager: ObservableObject {
                 }
 
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
+                    images: imagesWithAdditionalContext,
+                    additionalTextContext: additionalTextContext,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt,
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
