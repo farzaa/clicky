@@ -430,6 +430,23 @@ enum CompanionComputerController {
         let originalMouseLocation = quartzEventLocation(forAppKitScreenLocation: NSEvent.mouseLocation)
         let eventSource = CGEventSource(stateID: .combinedSessionState)
 
+        // Send mouseMoved to the target FIRST so the OS + the target app
+        // both update their hovered-element state. Without this, Electron
+        // / Chromium-based apps (Slack, Discord, VS Code) receive the
+        // mouseDown but don't activate the element underneath because
+        // their hover state still points elsewhere — the click reaches
+        // the right pixel but no focus change happens. A 25 ms pause lets
+        // the hover state settle through the event pipeline before the
+        // click lands.
+        let mouseMovedEvent = CGEvent(
+            mouseEventSource: eventSource,
+            mouseType: .mouseMoved,
+            mouseCursorPosition: eventLocation,
+            mouseButton: .left
+        )
+        mouseMovedEvent?.post(tap: .cghidEventTap)
+        usleep(25_000)
+
         let mouseDownEvent = CGEvent(
             mouseEventSource: eventSource,
             mouseType: .leftMouseDown,
@@ -443,8 +460,19 @@ enum CompanionComputerController {
             mouseButton: .left
         )
 
+        // Realistic press duration. A 0ms down→up can be treated as
+        // event-tap noise by some apps and discarded; ~40ms looks like a
+        // real human click.
         mouseDownEvent?.post(tap: .cghidEventTap)
+        usleep(40_000)
         mouseUpEvent?.post(tap: .cghidEventTap)
+
+        // Brief settle so the target finishes processing the click
+        // sequence (focus change, JS handlers) with the cursor still
+        // over the element, before we warp back to the user's original
+        // position.
+        usleep(40_000)
+
         CGWarpMouseCursorPosition(originalMouseLocation)
         CGAssociateMouseAndMouseCursorPosition(boolean_t(1))
     }
