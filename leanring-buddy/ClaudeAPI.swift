@@ -263,7 +263,11 @@ class ClaudeAPI {
         }
         let body: [String: Any] = [
             "model": model,
-            "max_tokens": 1024,
+            // 2048 (was 1024) gives the model headroom to emit multiple
+            // tool_use blocks in one response — narration + 2-3 structured
+            // tool calls can exceed 1024 tokens and we'd otherwise see the
+            // model implicitly truncate to a single tool per turn.
+            "max_tokens": 2048,
             "system": systemBlocks,
             "messages": messages,
             "tools": toolsWithCacheBreakpoint
