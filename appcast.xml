@@ -3,6 +3,14 @@
     <channel>
         <title>Dot</title>
         <item>
+            <title>1.7</title>
+            <pubDate>Mon, 11 May 2026 15:34:25 -0700</pubDate>
+            <sparkle:version>17</sparkle:version>
+            <sparkle:shortVersionString>1.7</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/Clamepending/dot/releases/download/v1.7/Dot.dmg" length="11386568" type="application/octet-stream" sparkle:edSignature="Df0z0SlgBc4g51fOddV8Ql780mWdC+T2b3aezVMPoHGZpgRbrvztaaOCQlHTcV5hHPlijA+6kdUHO4rYLvXJCA=="/>
+        </item>
+        <item>
             <title>1.6</title>
             <pubDate>Mon, 11 May 2026 15:24:56 -0700</pubDate>
             <sparkle:version>16</sparkle:version>
@@ -17,14 +25,6 @@
             <sparkle:shortVersionString>1.5</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/Clamepending/dot/releases/download/v1.5/Dot.dmg" length="11386922" type="application/octet-stream" sparkle:edSignature="dmiqroORIOBboUQXc9YydnXy71yjfwX5RVWya3+vuMeu8BbMMDj/t+xqOAv11tocy+EAHGq2n2DGjQ4HLiMXAQ=="/>
-        </item>
-        <item>
-            <title>1.4</title>
-            <pubDate>Mon, 11 May 2026 14:35:15 -0700</pubDate>
-            <sparkle:version>14</sparkle:version>
-            <sparkle:shortVersionString>1.4</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/Clamepending/dot/releases/download/v1.4/Dot.dmg" length="11380913" type="application/octet-stream" sparkle:edSignature="w5WpOETQTJM9gRlFDlHcM943/KOIamXWh8GB7rmrgzInfJAh9clFxjwv0jOFLmdVDTLMcvF9OpeZ5jqsd3wkBw=="/>
         </item>
         <item>
             <title>0.7</title>
