@@ -211,6 +211,123 @@ class ClaudeAPI {
         return (text: accumulatedResponseText, duration: duration)
     }
 
+    /// Tool-augmented vision request. Sends the same image+prompt payload as
+    /// `analyzeImageStreaming` to a tool-enabled endpoint (e.g. `/chat-tools` on
+    /// the Worker) which runs the Composio agentic loop server-side and
+    /// returns a single non-streaming JSON response of the shape:
+    ///   { "text": "<final assistant text>",
+    ///     "tool_calls": [{ "name": "...", "input": {...}, "result": {...} }, ...],
+    ///     "stop_reason": "end_turn" | "tool_use" | "max_tokens" | ... }
+    ///
+    /// `clickyUserId` identifies the Composio session owner. Different users
+    /// of the same Worker have isolated tool connections (Slack, Gmail, etc.)
+    /// keyed off this id, so it must be stable per Mac.
+    func analyzeImageWithTools(
+        toolsProxyURL: String,
+        clickyUserId: String,
+        images: [(data: Data, label: String)],
+        systemPrompt: String,
+        conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
+        userPrompt: String
+    ) async throws -> (text: String, toolCallNames: [String], duration: TimeInterval) {
+        let toolsRequestStartTime = Date()
+
+        guard let toolsEndpointURL = URL(string: toolsProxyURL) else {
+            throw NSError(
+                domain: "ClaudeAPI",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid tools proxy URL: \(toolsProxyURL)"]
+            )
+        }
+
+        var toolsRequest = URLRequest(url: toolsEndpointURL)
+        toolsRequest.httpMethod = "POST"
+        toolsRequest.timeoutInterval = 180
+        toolsRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // The Worker uses this header to namespace the user's Composio session
+        // (their connected Slack/Gmail/etc. accounts).
+        toolsRequest.setValue(clickyUserId, forHTTPHeaderField: "x-clicky-user-id")
+
+        var requestMessages: [[String: Any]] = []
+
+        for (userPlaceholder, assistantResponse) in conversationHistory {
+            requestMessages.append(["role": "user", "content": userPlaceholder])
+            requestMessages.append(["role": "assistant", "content": assistantResponse])
+        }
+
+        var currentUserContentBlocks: [[String: Any]] = []
+        for image in images {
+            currentUserContentBlocks.append([
+                "type": "image",
+                "source": [
+                    "type": "base64",
+                    "media_type": detectImageMediaType(for: image.data),
+                    "data": image.data.base64EncodedString()
+                ]
+            ])
+            currentUserContentBlocks.append([
+                "type": "text",
+                "text": image.label
+            ])
+        }
+        currentUserContentBlocks.append([
+            "type": "text",
+            "text": userPrompt
+        ])
+        requestMessages.append(["role": "user", "content": currentUserContentBlocks])
+
+        // Note: no `stream: true` — the Worker runs the tool loop and replies
+        // with a single JSON payload, even though `messages` is shaped like a
+        // standard Anthropic Messages request.
+        let toolsRequestBody: [String: Any] = [
+            "model": model,
+            "max_tokens": 1024,
+            "system": systemPrompt,
+            "messages": requestMessages
+        ]
+
+        let toolsRequestBodyData = try JSONSerialization.data(withJSONObject: toolsRequestBody)
+        toolsRequest.httpBody = toolsRequestBodyData
+        let toolsRequestPayloadMB = Double(toolsRequestBodyData.count) / 1_048_576.0
+        print("🌐 Claude tools request: \(String(format: "%.1f", toolsRequestPayloadMB))MB, \(images.count) image(s), userId=\(clickyUserId)")
+
+        let (toolsResponseData, toolsResponse) = try await session.data(for: toolsRequest)
+
+        guard let toolsHTTPResponse = toolsResponse as? HTTPURLResponse,
+              (200...299).contains(toolsHTTPResponse.statusCode) else {
+            let toolsErrorBody = String(data: toolsResponseData, encoding: .utf8) ?? "Unknown error"
+            throw NSError(
+                domain: "ClaudeAPI",
+                code: (toolsResponse as? HTTPURLResponse)?.statusCode ?? -1,
+                userInfo: [NSLocalizedDescriptionKey: "Tools API Error: \(toolsErrorBody)"]
+            )
+        }
+
+        guard let toolsResponseJSON = try JSONSerialization.jsonObject(with: toolsResponseData) as? [String: Any],
+              let finalAssistantText = toolsResponseJSON["text"] as? String else {
+            throw NSError(
+                domain: "ClaudeAPI",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid tools response format"]
+            )
+        }
+
+        // Pull tool call names so we can log/announce what the agent did.
+        // Result payloads are intentionally not surfaced to the UI — they can
+        // be huge JSON blobs and Claude's `text` already summarizes them.
+        var executedToolCallNames: [String] = []
+        if let toolCallEntries = toolsResponseJSON["tool_calls"] as? [[String: Any]] {
+            for toolCallEntry in toolCallEntries {
+                if let toolCallName = toolCallEntry["name"] as? String {
+                    executedToolCallNames.append(toolCallName)
+                }
+            }
+        }
+
+        let toolsRequestDuration = Date().timeIntervalSince(toolsRequestStartTime)
+        return (text: finalAssistantText, toolCallNames: executedToolCallNames, duration: toolsRequestDuration)
+    }
+
     /// Non-streaming fallback for validation requests where we don't need progressive display.
     func analyzeImage(
         images: [(data: Data, label: String)],

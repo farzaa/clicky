@@ -48,6 +48,7 @@ If you want to do it yourself, here's the deal.
 - Node.js 18+ (for the Cloudflare Worker)
 - A [Cloudflare](https://cloudflare.com) account (free tier works)
 - API keys for: [Anthropic](https://console.anthropic.com), [AssemblyAI](https://www.assemblyai.com), [ElevenLabs](https://elevenlabs.io)
+- Optional, for tool-calling: [Composio](https://app.composio.dev) API key
 
 ### 1. Set up the Cloudflare Worker
 
@@ -64,6 +65,11 @@ Now add your secrets. Wrangler will prompt you to paste each one:
 npx wrangler secret put ANTHROPIC_API_KEY
 npx wrangler secret put ASSEMBLYAI_API_KEY
 npx wrangler secret put ELEVENLABS_API_KEY
+
+# Optional — only required if you want the Composio tool-calling toggle
+# in the panel ("Tools (Composio)") to do anything. See the Tools section
+# below.
+npx wrangler secret put COMPOSIO_API_KEY
 ```
 
 For the ElevenLabs voice ID, open `wrangler.toml` and set it there (it's not sensitive):
@@ -97,6 +103,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 ASSEMBLYAI_API_KEY=...
 ELEVENLABS_API_KEY=...
 ELEVENLABS_VOICE_ID=...
+COMPOSIO_API_KEY=...   # optional, only for the Tools toggle
 ```
 
 Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing. Grep for `clicky-proxy` to find them all.
@@ -154,6 +161,49 @@ worker/                  # Cloudflare Worker proxy
   src/index.ts              # Three routes: /chat, /tts, /transcribe-token
 CLAUDE.md                # Full architecture doc (agents read this)
 ```
+
+## Tool-calling with Composio (optional)
+
+Clicky can do more than see, hear, and point — it can also _act_. Flip the
+**Tools (Composio)** toggle in the panel and Claude can execute actions
+inside your connected apps (Slack, Gmail, Linear, Notion, GitHub, Google
+Calendar, and ~1000 others) on your behalf via [Composio](https://composio.dev).
+
+Example: hold push-to-talk on a stack trace and say _"send this to #eng on
+Slack"_. Clicky takes a screenshot, Claude reads it, calls
+`SLACK_SEND_MESSAGE` against your connected Slack workspace, and replies
+"Done."
+
+### Setup
+
+1. Get an API key from [app.composio.dev](https://app.composio.dev).
+2. Set it on the Worker (or in `.dev.vars` for local development):
+
+   ```bash
+   cd worker
+   npx wrangler secret put COMPOSIO_API_KEY
+   ```
+
+3. Connect the apps you want Clicky to use against the same user-id Clicky
+   sends from your Mac. Clicky generates a stable id on first launch and
+   stores it under the UserDefaults key `clickyComposioUserId` — easiest
+   path is to read it once from the macOS defaults and pass it to Composio:
+
+   ```bash
+   defaults read so.clicky.leanring-buddy clickyComposioUserId
+   # → clicky-<some-uuid>
+
+   composio link slack --user-id "clicky-<some-uuid>"
+   composio link gmail --user-id "clicky-<some-uuid>"
+   # ...etc
+   ```
+
+4. Flip the **Tools (Composio)** toggle in the panel. Voice requests now
+   route through `/chat-tools` on the Worker, which runs Claude ↔ Composio
+   tool calls server-side and returns the final response.
+
+When the toggle is **off**, Clicky behaves exactly like before — streaming
+chat through `/chat`, no tools, no Composio dependency at runtime.
 
 ## Contributing
 
