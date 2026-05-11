@@ -1126,7 +1126,7 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Companion Prompt
 
-    private static let maxAgentStepsPerUserTurn = 10
+    private static let maxAgentStepsPerUserTurn = 40
 
     /// Hardware-mouse movement (in points) that we treat as the user
     /// reclaiming control. 40pt is loose enough to ignore micro-jiggle on
