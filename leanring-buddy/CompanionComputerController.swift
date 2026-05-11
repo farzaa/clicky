@@ -7,6 +7,7 @@
 
 import AppKit
 import ApplicationServices
+import Carbon.HIToolbox
 
 enum CompanionMediaControlCommand: String {
     case playPause = "play_pause"
@@ -546,9 +547,11 @@ enum CompanionComputerController {
     }
 
     static func typeText(_ text: String) {
+        let currentLayoutIdentifier = CompanionKeyboardLayoutMap.shared.currentInputSourceIdentifier
         DotDebugLogger.log("computer.controller", "typing requested", metadata: [
             "characterCount": text.count,
-            "via": "virtual-keystrokes"
+            "via": "virtual-keystrokes",
+            "keyboardLayout": currentLayoutIdentifier
         ])
 
         // Each character is posted as a real keyboard event with its
@@ -556,34 +559,36 @@ enum CompanionComputerController {
         // Electron apps (Slack, Discord, VS Code) sees a real keypress
         // with `keyCode`/`key` set — the missing fields that caused the
         // earlier `keyboardSetUnicodeString` approach to drop characters.
-        // Anything outside the US-QWERTY map (emoji, accented characters,
-        // CJK) falls back to the Unicode payload path per character so we
-        // still type those correctly even though Electron may drop some.
+        // The (character → virtualKey + modifiers) lookup uses
+        // `UCKeyTranslate` against the user's currently active keyboard
+        // layout, so this works identically on US QWERTY, Dvorak, AZERTY,
+        // JIS, etc. Anything the current layout can't produce with a
+        // single keypress (emoji, IME-composed characters, dead-key
+        // sequences) falls back to the Unicode-payload path.
         let eventSource = CGEventSource(stateID: .combinedSessionState)
 
         for character in text {
-            if let keystrokeInfo = Self.usQwertyKeystrokeMap[character] {
-                let modifierFlags: CGEventFlags = keystrokeInfo.needsShift ? .maskShift : []
+            if let keystrokeInfo = CompanionKeyboardLayoutMap.shared.keystroke(producing: character) {
                 let keyDownEvent = CGEvent(
                     keyboardEventSource: eventSource,
                     virtualKey: keystrokeInfo.virtualKey,
                     keyDown: true
                 )
-                keyDownEvent?.flags = modifierFlags
+                keyDownEvent?.flags = keystrokeInfo.modifierFlags
                 keyDownEvent?.post(tap: .cghidEventTap)
                 let keyUpEvent = CGEvent(
                     keyboardEventSource: eventSource,
                     virtualKey: keystrokeInfo.virtualKey,
                     keyDown: false
                 )
-                keyUpEvent?.flags = modifierFlags
+                keyUpEvent?.flags = keystrokeInfo.modifierFlags
                 keyUpEvent?.post(tap: .cghidEventTap)
             } else {
-                // Non-ASCII / non-mapped fallback. Generates a Unicode
-                // payload event with virtualKey 0; Electron may drop these,
-                // but native apps (TextEdit, Notes) and most browser-based
-                // inputs accept them. This keeps emoji + accented input
-                // working for the rare case we hit it.
+                // No single keypress on the current layout produces this
+                // character. Fall back to the Unicode payload mechanism.
+                // Native apps (TextEdit, Notes) handle this fine; some
+                // Electron apps may drop it — that's the unavoidable
+                // tradeoff for emoji / non-Latin scripts.
                 var utf16Characters: [UniChar] = Array(String(character).utf16)
                 guard !utf16Characters.isEmpty else { continue }
                 let unicodeKeyDownEvent = CGEvent(
@@ -619,65 +624,6 @@ enum CompanionComputerController {
             "characterCount": text.count
         ])
     }
-
-    /// US-QWERTY mapping from a printable ASCII character to the macOS
-    /// virtual keycode + shift flag that produces it. Used by `typeText`
-    /// to emit real keypress events instead of Unicode-payload events,
-    /// which Electron / React contenteditable inputs handle reliably.
-    /// Keycodes are from `kVK_ANSI_*` in `HIToolbox/Events.h`.
-    private static let usQwertyKeystrokeMap: [Character: (virtualKey: CGKeyCode, needsShift: Bool)] = {
-        var keystrokeMap: [Character: (CGKeyCode, Bool)] = [:]
-
-        let unshiftedLowercaseLetters: [(Character, CGKeyCode)] = [
-            ("a", 0), ("s", 1), ("d", 2), ("f", 3), ("h", 4), ("g", 5),
-            ("z", 6), ("x", 7), ("c", 8), ("v", 9), ("b", 11), ("q", 12),
-            ("w", 13), ("e", 14), ("r", 15), ("y", 16), ("t", 17),
-            ("u", 32), ("i", 34), ("o", 31), ("p", 35),
-            ("l", 37), ("j", 38), ("k", 40),
-            ("n", 45), ("m", 46)
-        ]
-        for (lowercaseLetter, virtualKey) in unshiftedLowercaseLetters {
-            keystrokeMap[lowercaseLetter] = (virtualKey, false)
-            if let uppercaseScalar = lowercaseLetter.uppercased().unicodeScalars.first {
-                keystrokeMap[Character(uppercaseScalar)] = (virtualKey, true)
-            }
-        }
-
-        let unshiftedDigits: [(Character, CGKeyCode)] = [
-            ("0", 29), ("1", 18), ("2", 19), ("3", 20), ("4", 21),
-            ("5", 23), ("6", 22), ("7", 26), ("8", 28), ("9", 25)
-        ]
-        for (digit, virtualKey) in unshiftedDigits {
-            keystrokeMap[digit] = (virtualKey, false)
-        }
-
-        // Shifted-digit symbols (US QWERTY).
-        let shiftedDigitSymbols: [(Character, CGKeyCode)] = [
-            (")", 29), ("!", 18), ("@", 19), ("#", 20), ("$", 21),
-            ("%", 23), ("^", 22), ("&", 26), ("*", 28), ("(", 25)
-        ]
-        for (shiftedSymbol, virtualKey) in shiftedDigitSymbols {
-            keystrokeMap[shiftedSymbol] = (virtualKey, true)
-        }
-
-        // Whitespace and punctuation.
-        keystrokeMap[" "]  = (49, false)
-        keystrokeMap["\n"] = (36, false)
-        keystrokeMap["\t"] = (48, false)
-        keystrokeMap[";"]  = (41, false); keystrokeMap[":"]  = (41, true)
-        keystrokeMap["'"]  = (39, false); keystrokeMap["\""] = (39, true)
-        keystrokeMap[","]  = (43, false); keystrokeMap["<"]  = (43, true)
-        keystrokeMap["."]  = (47, false); keystrokeMap[">"]  = (47, true)
-        keystrokeMap["/"]  = (44, false); keystrokeMap["?"]  = (44, true)
-        keystrokeMap["-"]  = (27, false); keystrokeMap["_"]  = (27, true)
-        keystrokeMap["="]  = (24, false); keystrokeMap["+"]  = (24, true)
-        keystrokeMap["["]  = (33, false); keystrokeMap["{"]  = (33, true)
-        keystrokeMap["]"]  = (30, false); keystrokeMap["}"]  = (30, true)
-        keystrokeMap["\\"] = (42, false); keystrokeMap["|"]  = (42, true)
-        keystrokeMap["`"]  = (50, false); keystrokeMap["~"]  = (50, true)
-
-        return keystrokeMap
-    }()
 
     /// Result of a request to launch or activate a native macOS application.
     /// `didOpen` is true when NSWorkspace successfully resolved + activated
