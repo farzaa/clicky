@@ -165,6 +165,20 @@ struct CompanionPanelView: View {
             // }
 
             if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                if !companionManager.recentMemoryWriteToastEntries.isEmpty {
+                    Spacer()
+                        .frame(height: 12)
+
+                    memoryWriteToastList
+                        .padding(.horizontal, 16)
+                }
+
+                Spacer()
+                    .frame(height: 12)
+
+                MemoryInspectorView(companionManager: companionManager)
+                    .padding(.horizontal, 16)
+
                 Spacer()
                     .frame(height: 16)
 
@@ -905,6 +919,54 @@ struct CompanionPanelView: View {
     }
 
     // MARK: - Feedback Button
+
+    /// Phase 3b trust surface: stack of recent memory writes the model
+    /// silently performed. Each row shows what was saved + Undo / dismiss
+    /// affordances so prompt-injection or model-confabulation can be
+    /// caught before it persists. Empty state hidden by the caller.
+    private var memoryWriteToastList: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(companionManager.recentMemoryWriteToastEntries) { toastEntry in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: toastEntry.supportsUndo ? "brain.head.profile" : "sparkles")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.textTertiary)
+                    Text(toastEntry.displayMessage)
+                        .font(.system(size: 11))
+                        .foregroundColor(DS.Colors.textSecondary)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    if toastEntry.supportsUndo {
+                        Button(action: {
+                            companionManager.undoMemoryWriteToast(toastID: toastEntry.id)
+                        }) {
+                            Text("Undo")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(DS.Colors.textTertiary)
+                        }
+                        .buttonStyle(.plain)
+                        .pointerCursor()
+                    }
+                    Button(action: {
+                        companionManager.dismissMemoryWriteToast(toastID: toastEntry.id)
+                    }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundColor(DS.Colors.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: DS.CornerRadius.small, style: .continuous)
+                        .fill(Color.white.opacity(0.05))
+                )
+            }
+        }
+    }
 
     private var feedbackButton: some View {
         Button(action: {
