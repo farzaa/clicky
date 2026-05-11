@@ -1499,6 +1499,16 @@ final class CompanionManager: ObservableObject {
             var didCancelDueToUserMouseMove = false
             var didBailOutEarly = false
 
+            // Tracks the most recent `click_element` coordinate so we can
+            // refuse consecutive same-spot clicks. Slack and other Electron
+            // contenteditables get focused on first click, but no caret
+            // renders in the captured screenshot — the model sees "no
+            // change" and re-clicks. The guard breaks that loop by
+            // synthesizing a tool_result that tells the model the click
+            // already landed and it should type_text instead. Reset by
+            // any non-click action.
+            var mostRecentClickCoordinateAcrossSteps: CGPoint? = nil
+
             do {
                 var apiMessages: [[String: Any]] = []
 
@@ -1603,6 +1613,36 @@ final class CompanionManager: ObservableObject {
                                 "is_error": true
                             ])
                             continue
+                        }
+
+                        // Guard against consecutive same-coordinate clicks
+                        // (see `mostRecentClickCoordinateAcrossSteps` above).
+                        // If this is a click_element within ~10pt of the
+                        // previous click and no other action has happened
+                        // since, refuse without executing — return a
+                        // tool_result that nudges the model toward typing.
+                        if case .clickElement(let clickCoordinate, _, _) = decodedToolCall {
+                            if let previousClickCoordinate = mostRecentClickCoordinateAcrossSteps,
+                               abs(previousClickCoordinate.x - clickCoordinate.x) < 10,
+                               abs(previousClickCoordinate.y - clickCoordinate.y) < 10 {
+                                DotDebugLogger.log("agent.loop", "refused consecutive same-coord click", metadata: [
+                                    "x": Int(clickCoordinate.x),
+                                    "y": Int(clickCoordinate.y),
+                                    "stepsExecuted": stepsExecuted
+                                ])
+                                toolResultBlocks.append([
+                                    "type": "tool_result",
+                                    "tool_use_id": toolUseBlock.toolUseID,
+                                    "content": "skipped: you already clicked this element at (\(Int(clickCoordinate.x)), \(Int(clickCoordinate.y))) on a previous step. macOS often doesn't render a visible caret in the captured screenshot, but the click WAS successful — the target is focused. proceed by calling type_text (or another action) instead of re-clicking. if you truly cannot proceed, call bail_out."
+                                ])
+                                continue
+                            }
+                            mostRecentClickCoordinateAcrossSteps = clickCoordinate
+                        } else {
+                            // Any non-click action resets the tracker so a
+                            // legitimate click → type → click sequence at
+                            // the same coordinate isn't blocked.
+                            mostRecentClickCoordinateAcrossSteps = nil
                         }
 
                         let executionResult = await executeAgentToolCall(
