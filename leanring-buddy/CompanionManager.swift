@@ -1501,6 +1501,17 @@ final class CompanionManager: ObservableObject {
             var didCancelDueToUserMouseMove = false
             var didBailOutEarly = false
 
+            // Tracks the most recent `click_element` coordinate so we can
+            // refuse consecutive same-coord clicks. Required for Electron
+            // apps (Slack, Discord, VS Code) where the renderer process
+            // is invisible to AX queries — the [ax] enricher returns
+            // `focusedSource=none` for them, so the model has no
+            // ground-truth signal about whether the click landed and will
+            // re-click forever. The AX enricher is still doing useful
+            // work for native apps; this guard is the complementary
+            // signal for the Electron case. Reset by any non-click action.
+            var mostRecentClickCoordinateAcrossSteps: CGPoint? = nil
+
             do {
                 var apiMessages: [[String: Any]] = []
 
@@ -1607,6 +1618,36 @@ final class CompanionManager: ObservableObject {
                             continue
                         }
 
+                        // Guard against consecutive same-coordinate clicks
+                        // (see `mostRecentClickCoordinateAcrossSteps` above).
+                        // Required for Electron apps where AX can't tell us
+                        // focus state; without it the model spam-clicks the
+                        // same input forever waiting for visual feedback
+                        // that never comes.
+                        if case .clickElement(let clickCoordinate, _, _) = decodedToolCall {
+                            if let previousClickCoordinate = mostRecentClickCoordinateAcrossSteps,
+                               abs(previousClickCoordinate.x - clickCoordinate.x) < 10,
+                               abs(previousClickCoordinate.y - clickCoordinate.y) < 10 {
+                                DotDebugLogger.log("agent.loop", "refused consecutive same-coord click", metadata: [
+                                    "x": Int(clickCoordinate.x),
+                                    "y": Int(clickCoordinate.y),
+                                    "stepsExecuted": stepsExecuted
+                                ])
+                                toolResultBlocks.append([
+                                    "type": "tool_result",
+                                    "tool_use_id": toolUseBlock.toolUseID,
+                                    "content": "REFUSED: this click is identical to the previous step's click at (\(Int(clickCoordinate.x)), \(Int(clickCoordinate.y))). the first click DID land — the target IS focused even if the screenshot doesn't show a caret (some Electron apps like Slack/Discord/VS Code don't render carets in captured frames). do NOT click again. on your NEXT step call type_text with the text you want to enter. if typing is genuinely not the right next action, call a different tool (open_url, press_keystroke, switch_tab, bail_out, etc.) — anything but another click at this coordinate."
+                                ])
+                                continue
+                            }
+                            mostRecentClickCoordinateAcrossSteps = clickCoordinate
+                        } else {
+                            // Any non-click action resets the tracker so a
+                            // legitimate click → type → click sequence at
+                            // the same coordinate later isn't blocked.
+                            mostRecentClickCoordinateAcrossSteps = nil
+                        }
+
                         let executionResult = await executeAgentToolCall(
                             decodedToolCall,
                             originatingScreenCaptures: currentScreenCaptures
@@ -1615,17 +1656,16 @@ final class CompanionManager: ObservableObject {
                         // Capture macOS Accessibility state right after the
                         // action and append it to the tool_result. This is
                         // how the model gets unambiguous ground truth about
-                        // whether the action took effect — "focused=AXTextArea
-                        // value=''" tells the model the input is ready
-                        // without it having to infer focus from a screenshot
-                        // that may not show a caret. See
-                        // `CompanionAccessibilityStateSnapshot.swift` for
-                        // the captured fields and rationale.
+                        // whether the action took effect for native apps —
+                        // "focused=AXTextArea value=''" tells the model the
+                        // input is ready without it having to infer focus
+                        // from a screenshot. Returns empty for Electron
+                        // apps whose renderer is opaque to AX; in that
+                        // case the same-coord click guard above is the
+                        // signal that breaks the click loop.
                         //
                         // The 80ms wait lets the target app update its AX
-                        // tree after handling our CGEvent — focus state
-                        // can take a few render cycles to settle in
-                        // Electron apps especially.
+                        // tree after handling our CGEvent.
                         try? await Task.sleep(nanoseconds: 80_000_000)
                         let postActionAccessibilitySnapshot = CompanionAccessibilityStateSnapshot.capture()
                         let accessibilityDescription = postActionAccessibilitySnapshot.compactDescription
