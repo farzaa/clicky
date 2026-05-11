@@ -1041,6 +1041,26 @@ struct CompanionPanelView: View {
                 Spacer()
             }
 
+            if let availableUpdateVersion = companionManager.availableUpdateVersion {
+                Button(action: {
+                    companionManager.requestInstallAvailableUpdate()
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("Update to v\(availableUpdateVersion)")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .foregroundColor(DS.Colors.textOnAccent)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(DS.Colors.accent))
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .padding(.leading, 8)
+            }
+
             Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
                 .font(.system(size: 10, weight: .regular))
                 .foregroundColor(DS.Colors.textTertiary.opacity(0.5))

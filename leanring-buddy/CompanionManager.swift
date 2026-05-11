@@ -150,6 +150,19 @@ final class CompanionManager: ObservableObject {
     /// hand it to the AgentTaskPanelManager.
     let agentTaskManager = AgentTaskManager()
 
+    /// Display version string (e.g. "0.9") of a newer Sparkle update that's
+    /// been discovered on the appcast but not yet installed. Drives the
+    /// "update available" badge in the menu bar panel. Set by the Sparkle
+    /// updater delegate in AppDelegate; cleared after the user accepts the
+    /// install or after a successful relaunch.
+    @Published var availableUpdateVersion: String?
+
+    /// Invoked when the user taps the update badge in the panel. AppDelegate
+    /// wires this to `SPUStandardUpdaterController.checkForUpdates(_:)` so
+    /// Sparkle's standard install UI shows up. Kept as a closure so this
+    /// file doesn't need to import Sparkle.
+    var requestInstallAvailableUpdate: () -> Void = {}
+
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
     private static var workerBaseURL: String {

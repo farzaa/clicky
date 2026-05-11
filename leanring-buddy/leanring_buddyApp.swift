@@ -151,10 +151,18 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private func startSparkleUpdater() {
         let updaterController = SPUStandardUpdaterController(
             startingUpdater: false,
-            updaterDelegate: nil,
+            updaterDelegate: self,
             userDriverDelegate: nil
         )
         self.sparkleUpdaterController = updaterController
+
+        // Wire the panel badge's "install update" tap to Sparkle's standard
+        // check-for-updates flow. Re-using checkForUpdates means we surface
+        // the same install dialog Sparkle would have shown on launch, so the
+        // user gets a single, familiar UI for accepting the update.
+        companionManager.requestInstallAvailableUpdate = { [weak updaterController] in
+            updaterController?.checkForUpdates(nil)
+        }
 
         do {
             try updaterController.updater.start()
@@ -164,3 +172,17 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     }
     #endif
 }
+
+#if canImport(Sparkle)
+extension CompanionAppDelegate: SPUUpdaterDelegate {
+    /// Fires once per appcast check when Sparkle has parsed a newer version
+    /// than what's installed. Used to surface the in-panel "update available"
+    /// badge in addition to Sparkle's own update dialog.
+    nonisolated func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+        let availableVersionString = item.displayVersionString
+        Task { @MainActor in
+            self.companionManager.availableUpdateVersion = availableVersionString
+        }
+    }
+}
+#endif
