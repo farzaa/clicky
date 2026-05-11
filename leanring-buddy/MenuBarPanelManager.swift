@@ -20,7 +20,8 @@ extension Notification.Name {
 
 /// Custom NSPanel subclass that can become the key window even with
 /// .nonactivatingPanel style, allowing text fields to receive focus.
-private class KeyablePanel: NSPanel {
+/// Shared by the menu-bar dropdown and the text-command floating panel.
+class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 

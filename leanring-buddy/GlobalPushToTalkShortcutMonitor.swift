@@ -15,6 +15,22 @@ import Foundation
 final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     let shortcutTransitionPublisher = PassthroughSubject<BuddyPushToTalkShortcut.ShortcutTransition, Never>()
 
+    /// Fires once each time the user taps the text-command shortcut
+    /// (`cmd + shift + space`). The handler treats it as a toggle: tap
+    /// shows the floating text panel; tap again hides it. This sits on
+    /// the same listen-only CGEvent tap as push-to-talk so we don't pay
+    /// for two separate kernel taps.
+    ///
+    /// Chosen for left-hand ergonomics (cmd pinky, shift pinky, space
+    /// thumb), mirroring Spotlight's `cmd + space` pattern. Disjoint
+    /// modifier set from PTT (`ctrl + option`) so the two can't shadow
+    /// each other. Not a default macOS shortcut.
+    let textCommandToggleRequestPublisher = PassthroughSubject<Void, Never>()
+
+    /// Virtual key code for Space (kVK_Space). Used by the text-command
+    /// shortcut detection below.
+    private static let textCommandShortcutKeyCode: UInt16 = 49
+
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
 
@@ -152,7 +168,37 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             shortcutTransitionPublisher.send(.released)
         }
 
+        // Text-command toggle hotkey: cmd + shift + space, detected on keyDown.
+        // The listen-only tap doesn't consume the event, so this fires even
+        // when another app currently has keyboard focus.
+        if Self.isTextCommandShortcutKeyDown(
+            eventType: eventType,
+            keyCode: eventKeyCode,
+            modifierFlags: event.flags
+        ) {
+            DotDebugLogger.log("shortcut.text", "text-command shortcut toggled")
+            textCommandToggleRequestPublisher.send(())
+        }
+
         return Unmanaged.passUnretained(event)
+    }
+
+    private static func isTextCommandShortcutKeyDown(
+        eventType: CGEventType,
+        keyCode: UInt16,
+        modifierFlags: CGEventFlags
+    ) -> Bool {
+        guard eventType == .keyDown else { return false }
+        guard keyCode == Self.textCommandShortcutKeyCode else { return false }
+        // Must have cmd AND shift held, but neither option nor ctrl —
+        // keep the shortcut unambiguous, avoid collisions with the
+        // four-modifier emoji/special-character chords, and stay
+        // disjoint from the push-to-talk modifier set (ctrl + option).
+        guard modifierFlags.contains(.maskCommand) else { return false }
+        guard modifierFlags.contains(.maskShift) else { return false }
+        guard !modifierFlags.contains(.maskAlternate) else { return false }
+        guard !modifierFlags.contains(.maskControl) else { return false }
+        return true
     }
 
     private func logRawShortcutEventIfRelevant(

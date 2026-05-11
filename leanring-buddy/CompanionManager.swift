@@ -27,6 +27,28 @@ enum CompanionVoiceState {
     case responding
 }
 
+/// Terminal outcome of one agent-loop turn. Published on
+/// `CompanionManager.agentLoopOutcomePublisher` so subscribers — e.g. the
+/// remote-command bus — can attribute a completed / cancelled / failed
+/// agent run back to whatever caller kicked it off.
+struct AgentLoopOutcome {
+    enum Status {
+        case completed
+        case cancelled
+        case failed
+    }
+    /// Same string the caller passed to `runTranscriptThroughAgentLoop`.
+    let source: String
+    let status: Status
+    /// Total spoken text produced across all steps. Empty for cancellation /
+    /// failure before the first spoken chunk landed.
+    let finalSpokenText: String
+    /// Number of agent steps that actually executed before the loop ended.
+    let stepsExecuted: Int
+    /// Best-effort description when status is .failed. nil otherwise.
+    let errorDescription: String?
+}
+
 @MainActor
 final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle {
@@ -65,12 +87,19 @@ final class CompanionManager: ObservableObject {
     /// in sync with the actual click + sound effect.
     @Published var clickPulseToken: UUID = UUID()
 
-    /// Transient hint for the overlay: when the agent loop fires a scroll
-    /// tool call, this is set to the scroll direction's unit vector for
-    /// ~250ms so the blue cursor briefly nudges that way to visually mirror
-    /// the scroll. Reset to nil after the animation window so the cursor
-    /// springs back to its tracking position.
-    @Published var scrollAnimationHintUnitVector: CGVector?
+    /// Bumped to a fresh UUID every time the agent loop fires a scroll
+    /// tool call. The overlay observes this via `.onChange` and runs its
+    /// Disney-style anticipation → pop → ease animation for THIS scroll
+    /// tick (even when consecutive scrolls share a direction — token
+    /// re-bumping retriggers the animation cleanly). Direction lives in
+    /// `mostRecentScrollDirectionUnitVector` so the overlay can read it
+    /// when the animation fires.
+    @Published var scrollAnimationTriggerToken: UUID = UUID()
+
+    /// The scroll direction associated with the most recent
+    /// `scrollAnimationTriggerToken` bump. Always written BEFORE the token
+    /// is bumped so the overlay reads a consistent pair.
+    var mostRecentScrollDirectionUnitVector: CGVector = .zero
 
     // MARK: - Onboarding Video State (shared across all screen overlays)
 
@@ -95,8 +124,25 @@ final class CompanionManager: ObservableObject {
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
-    // Response text is now displayed inline on the cursor overlay via
-    // streamingResponseText, so no separate response overlay manager is needed.
+
+    /// Text of the caption bubble currently shown next to the blue Dot
+    /// cursor. Drives an inline SwiftUI view in `BlueCursorView` so the
+    /// caption tracks the Dot's actual screen position (not the
+    /// hardware cursor), the same way the navigation pointer bubble
+    /// does. Updated by the per-step narration queue in sync with TTS.
+    @Published var captionBubbleText: String = ""
+
+    /// Whether the caption bubble is currently visible. Driven by the
+    /// narration queue: set true just before each chunk's TTS plays,
+    /// reset after the queue drains (with a short read-the-last-line
+    /// linger) or on cancellation.
+    @Published var captionBubbleVisible: Bool = false
+
+    /// Scheduled task that flips `captionBubbleVisible` back to false a
+    /// few seconds after the narration queue drains. Cancelled if a new
+    /// chunk arrives in the meantime so consecutive chunks read as a
+    /// continuous bubble rather than blinking off and on.
+    private var captionBubbleFadeOutTask: Task<Void, Never>?
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
@@ -120,6 +166,18 @@ final class CompanionManager: ObservableObject {
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
+
+    /// Fires once per agent-loop terminal state (completed / cancelled /
+    /// failed). The `source` carries the same string the caller passed to
+    /// `runTranscriptThroughAgentLoop`, so observers (e.g. the remote
+    /// command subscriber) can correlate the outcome back to the request
+    /// they issued.
+    let agentLoopOutcomePublisher = PassthroughSubject<AgentLoopOutcome, Never>()
+
+    /// The source string of the currently running agent loop, captured so
+    /// the loop's closure can attach it to the outcome event it publishes
+    /// at termination. nil while no loop is running.
+    private var currentAgentLoopSource: String?
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
@@ -346,21 +404,41 @@ final class CompanionManager: ObservableObject {
     }
 
     /// Feeds a transcript through the same dispatch as a real push-to-talk
-    /// release would (media-command short-circuit, then the agent loop with
-    /// screenshot). Wired to the `dot://debug?transcript=…` URL so the agent
-    /// loop can be exercised end-to-end without voice input. Local-dev only —
-    /// gate or remove before shipping production.
-    func runTranscriptThroughAgentLoopForDebug(transcript: String) {
+    /// release would (media-command short-circuit first, then the agent
+    /// loop with screenshot). Used by both the typed text-command panel
+    /// (cmd+shift+space) and the `dot://debug?transcript=…` URL.
+    func runTranscriptThroughAgentLoop(transcript: String, source: String) {
         let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTranscript.isEmpty else { return }
-        DotDebugLogger.log("debug.url", "received debug transcript", metadata: [
+        DotDebugLogger.log("transcript.input", "received transcript", metadata: [
+            "source": source,
             "transcriptLength": trimmedTranscript.count
         ])
         lastTranscript = trimmedTranscript
         if handleDirectLocalMediaCommandIfRecognized(transcript: trimmedTranscript) {
+            // Local media commands never spin up the agent loop, but the
+            // remote subscriber still needs to learn the work landed —
+            // synthesise a completion so callers waiting on the outcome
+            // publisher don't time out.
+            agentLoopOutcomePublisher.send(AgentLoopOutcome(
+                source: source,
+                status: .completed,
+                finalSpokenText: "",
+                stepsExecuted: 0,
+                errorDescription: nil
+            ))
             return
         }
-        sendTranscriptToClaudeWithScreenshot(transcript: trimmedTranscript)
+        sendTranscriptToClaudeWithScreenshot(transcript: trimmedTranscript, source: source)
+    }
+
+    /// Publisher fired each time the user taps the text-command shortcut
+    /// (cmd+shift+space). Exposed so the AppDelegate can wire it to the
+    /// TextCommandPanelManager without giving the panel direct access to
+    /// the shortcut monitor.
+    var textCommandToggleRequestPublisher: AnyPublisher<Void, Never> {
+        globalPushToTalkShortcutMonitor.textCommandToggleRequestPublisher
+            .eraseToAnyPublisher()
     }
 
     func refreshAllPermissions() {
@@ -808,7 +886,10 @@ final class CompanionManager: ObservableObject {
                         ])
                         DotAnalytics.trackUserMessageSent(transcript: finalTranscript)
                         if self?.handleDirectLocalMediaCommandIfRecognized(transcript: finalTranscript) != true {
-                            self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                            self?.sendTranscriptToClaudeWithScreenshot(
+                                transcript: finalTranscript,
+                                source: "push-to-talk"
+                            )
                         }
                     }
                 )
@@ -1029,14 +1110,16 @@ final class CompanionManager: ObservableObject {
     /// step budget is exhausted. The accumulated spoken text from every step
     /// is fed into the per-step TTS narration queue in real time.
     /// See docs/agent-loop-tool-use-migration.md.
-    private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
+    private func sendTranscriptToClaudeWithScreenshot(transcript: String, source: String) {
         currentResponseTask?.cancel()
         cancelPerStepNarrationQueue()
         DotDebugLogger.log("response.pipeline", "starting tool-use agent loop", metadata: [
+            "source": source,
             "transcriptLength": transcript.count,
             "conversationHistoryCount": conversationHistory.count,
             "maxSteps": Self.maxAgentStepsPerUserTurn
         ])
+        currentAgentLoopSource = source
 
         currentResponseTask = Task {
             voiceState = .processing
@@ -1241,6 +1324,23 @@ final class CompanionManager: ObservableObject {
                     "protocol": "tool_use"
                 ])
             } catch {
+                // Treat ANY error that arrives after the parent Task was
+                // cancelled as a cancellation, not a failure. URLSession's
+                // in-flight `data(for:)` throws URLError(.cancelled) when
+                // its task is cancelled — that's NOT a Swift
+                // CancellationError, so without this check the generic
+                // catch below would fire the system-voice "app failure"
+                // fallback every time the user starts a new turn while a
+                // previous one is mid-flight.
+                if Task.isCancelled || Self.isLikelyCancellationError(error) {
+                    DotDebugLogger.log("agent.loop", "cancelled mid-step (wrapped error)", metadata: [
+                        "error": error.localizedDescription,
+                        "stepsExecuted": stepsExecuted,
+                        "protocol": "tool_use"
+                    ])
+                    return
+                }
+
                 DotAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Tool-use agent loop error: \(error)")
                 DotDebugLogger.log("agent.loop", "failed", metadata: [
@@ -1476,21 +1576,22 @@ final class CompanionManager: ObservableObject {
                 "direction": scrollDirection.rawValue,
                 "amount": scrollAmount.rawValue
             ])
-            // Set the visual hint BEFORE posting the scroll so the cursor
-            // nudge starts in sync with the wheel event. Cleared shortly
-            // afterward so the cursor springs back to its tracking position.
-            scrollAnimationHintUnitVector = scrollDirection.visualHintUnitVector
+            // The cursor is hidden during .processing; flip to .idle so the
+            // user actually sees the Disney-style scroll bounce.
+            voiceState = .idle
+            // Direction first, then token. Order matters: the overlay's
+            // .onChange reads the direction the moment the token bumps.
+            mostRecentScrollDirectionUnitVector = scrollDirection.visualHintUnitVector
+            scrollAnimationTriggerToken = UUID()
             CompanionComputerController.scrollWheel(
                 direction: scrollDirection,
                 magnitude: scrollAmount.scrollLineMagnitude
             )
-            // Hold the nudge briefly so the user sees the dot move; then
-            // clear so the overlay animates it back. Both phases together
-            // are ~350ms — fast enough to feel responsive, slow enough to
-            // see.
-            try? await Task.sleep(nanoseconds: 220_000_000)
-            scrollAnimationHintUnitVector = nil
-            try? await Task.sleep(nanoseconds: 130_000_000)
+            // The overlay's afterimage-trail animation runs ~260ms total
+            // (burst → linger → fade). Yield long enough for it to play
+            // through plus a tiny buffer so the next agent step doesn't
+            // re-fire mid-trail.
+            try? await Task.sleep(nanoseconds: 300_000_000)
             DotDebugLogger.log("computer.actions", "scroll action completed", metadata: [
                 "direction": scrollDirection.rawValue,
                 "amount": scrollAmount.rawValue
@@ -1624,6 +1725,14 @@ final class CompanionManager: ObservableObject {
                     DotDebugLogger.log("tts.step", "playing chunk", metadata: [
                         "chunkLength": nextChunk.count
                     ])
+                    // Show the caption BEFORE TTS starts so the visible
+                    // text and the audio start together. Cancels any
+                    // pending fade-out so consecutive chunks render as a
+                    // continuous bubble rather than blinking off and on.
+                    strongSelf.captionBubbleFadeOutTask?.cancel()
+                    strongSelf.captionBubbleFadeOutTask = nil
+                    strongSelf.captionBubbleText = nextChunk
+                    strongSelf.captionBubbleVisible = true
                     try await strongSelf.elevenLabsTTSClient.speakText(nextChunk)
                     if Task.isCancelled { break }
                     await strongSelf.elevenLabsTTSClient.awaitPlaybackCompletion()
@@ -1636,7 +1745,26 @@ final class CompanionManager: ObservableObject {
                     ])
                 }
             }
+            // Queue drained — let the final chunk linger so the user
+            // has time to finish reading, then fade out. The task is
+            // stored on self so a new chunk arriving in the meantime
+            // can cancel the fade-out and keep the bubble alive.
+            self?.scheduleCaptionBubbleFadeOut()
             self?.perStepNarrationProcessingTask = nil
+        }
+    }
+
+    private func scheduleCaptionBubbleFadeOut() {
+        captionBubbleFadeOutTask?.cancel()
+        captionBubbleFadeOutTask = Task { @MainActor [weak self] in
+            // ~6s of read time after the last chunk's audio ends. If the
+            // user starts a new turn before this fires, the cancel path
+            // wipes the bubble immediately.
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.captionBubbleVisible = false
+            self?.captionBubbleText = ""
+            self?.captionBubbleFadeOutTask = nil
         }
     }
 
@@ -1648,12 +1776,18 @@ final class CompanionManager: ObservableObject {
     /// Cancels any queued or in-flight per-step narration. Called whenever
     /// a new turn begins (push-to-talk, debug URL, media short-circuit) so
     /// stale audio from the previous turn doesn't bleed into the new one.
+    /// Also hides the caption bubble so leftover text from a cancelled
+    /// turn doesn't linger on screen.
     private func cancelPerStepNarrationQueue() {
         elevenLabsTTSClient.stopPlayback()
         perStepNarrationChunks.removeAll()
         perStepNarrationProcessingTask?.cancel()
         perStepNarrationProcessingTask = nil
         didEnqueueAnyPerStepNarrationForCurrentTurn = false
+        captionBubbleFadeOutTask?.cancel()
+        captionBubbleFadeOutTask = nil
+        captionBubbleVisible = false
+        captionBubbleText = ""
     }
 
     private func scheduleVoiceStateSafetyResetIfNeeded() {
@@ -1745,6 +1879,22 @@ final class CompanionManager: ObservableObject {
         let synthesizer = NSSpeechSynthesizer()
         synthesizer.startSpeaking(utterance)
         voiceState = .responding
+    }
+
+    /// True when the error looks like the agent-loop Task was cancelled —
+    /// either Swift's `CancellationError` directly, or the URLSession
+    /// equivalent `URLError(.cancelled)` (raised when the in-flight network
+    /// call is cancelled because its parent Task is). Without this, every
+    /// new turn that arrives while the previous one is mid-flight would
+    /// fire the system-voice "app failure" fallback.
+    private static func isLikelyCancellationError(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+        let bridgedNSError = error as NSError
+        if bridgedNSError.domain == NSURLErrorDomain && bridgedNSError.code == NSURLErrorCancelled {
+            return true
+        }
+        return false
     }
 
     private func speakResponsePipelineErrorFallback(for error: Error) {

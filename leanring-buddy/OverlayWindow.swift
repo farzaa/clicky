@@ -85,6 +85,13 @@ struct NavigationBubbleSizePreferenceKey: PreferenceKey {
     }
 }
 
+struct CaptionBubbleSizePreferenceKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
+    }
+}
+
 /// The buddy's behavioral mode. Controls whether it follows the cursor,
 /// is flying toward a detected UI element, or is pointing at an element.
 enum BuddyNavigationMode {
@@ -157,11 +164,22 @@ struct BlueCursorView: View {
     /// an energetic "swooping" feel.
     @State private var buddyFlightScale: CGFloat = 1.0
 
-    /// Transient offset applied to the cursor when the agent loop fires a
-    /// scroll tool. Animated from .zero → ~18pt in the scroll direction →
-    /// back, mirroring the apparent direction of the scroll. Driven by
-    /// `companionManager.scrollAnimationHintUnitVector`.
-    @State private var scrollVisualOffset: CGSize = .zero
+    /// Subtle uniform scale dip applied to the main dot when a scroll
+    /// fires — a quick 1.0 → 0.92 → 1.0 squash that reads as "absorbing
+    /// the scroll energy" without the dot feeling sluggish. Paired with
+    /// the afterimage trail rendered next to the dot.
+    @State private var scrollSquashScale: CGFloat = 1.0
+
+    /// 0.0 = no afterimage trail, 1.0 = trail fully visible. Animated
+    /// fast-in / linger / fast-out to mirror the instant scroll wheel.
+    /// Three ghost circles fan out in `scrollTrailDirection` at
+    /// increasing offsets with decreasing opacity multipliers — like
+    /// motion blur or a comet smear.
+    @State private var scrollTrailIntensity: Double = 0.0
+
+    /// Unit vector the afterimage trail extends along (matches the
+    /// scroll direction). Set just before the trail intensity animates.
+    @State private var scrollTrailDirection: CGVector = .zero
 
     /// Scale factor for the navigation speech bubble's pop-in entrance.
     /// Starts at 0.5 and springs to 1.0 when the first character appears.
@@ -174,6 +192,11 @@ struct BlueCursorView: View {
     /// True when the buddy is flying BACK to the cursor after pointing.
     /// Only during the return flight can cursor movement cancel the animation.
     @State private var isReturningToCursor: Bool = false
+
+    /// Measured size of the TTS-caption bubble, used to center it
+    /// horizontally next to the cursor (the position() modifier wants
+    /// the bubble's center, not its corner).
+    @State private var captionBubbleSize: CGSize = .zero
 
     // MARK: - Onboarding Video Layout
 
@@ -268,6 +291,53 @@ struct BlueCursorView: View {
                     }
             }
 
+            // TTS caption bubble — shown next to the blue Dot while the
+            // agent is speaking (per-step narration). Wraps to a max
+            // width, follows the cursor with a spring animation, and
+            // gates visibility on the same `buddyIsVisibleOnThisScreen`
+            // logic as the navigation pointer bubble so only one screen
+            // renders the caption at a time on multi-monitor setups.
+            if buddyIsVisibleOnThisScreen
+                && companionManager.captionBubbleVisible
+                && !companionManager.captionBubbleText.isEmpty {
+                Text(companionManager.captionBubbleText)
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundColor(.white)
+                    .lineSpacing(3)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: Self.captionBubbleMaxWidth, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.black.opacity(0.78))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
+                            )
+                            .shadow(color: Color.black.opacity(0.4), radius: 14, x: 0, y: 6)
+                    )
+                    .overlay(
+                        GeometryReader { geo in
+                            Color.clear
+                                .preference(key: CaptionBubbleSizePreferenceKey.self, value: geo.size)
+                        }
+                    )
+                    .position(
+                        x: cursorPosition.x + Self.captionBubbleHorizontalOffsetInPoints + (captionBubbleSize.width / 2),
+                        y: cursorPosition.y + Self.captionBubbleVerticalOffsetInPoints + (captionBubbleSize.height / 2)
+                    )
+                    .opacity(companionManager.captionBubbleVisible ? 1.0 : 0.0)
+                    .animation(.spring(response: 0.25, dampingFraction: 0.75, blendDuration: 0), value: cursorPosition)
+                    .animation(.easeInOut(duration: 0.18), value: companionManager.captionBubbleText)
+                    .animation(.easeInOut(duration: 0.25), value: companionManager.captionBubbleVisible)
+                    .onPreferenceChange(CaptionBubbleSizePreferenceKey.self) { newSize in
+                        captionBubbleSize = newSize
+                    }
+                    .allowsHitTesting(false)
+            }
+
             // Navigation pointer bubble — shown when buddy arrives at a detected element.
             // Pops in with a scale-bounce (0.5x → 1.0x spring) and a bright initial
             // glow that settles, creating a "materializing" effect.
@@ -312,12 +382,43 @@ struct BlueCursorView: View {
             // During cursor following: fast spring animation for snappy tracking.
             // During navigation: NO implicit animation — the frame-by-frame bezier
             // timer controls position directly at 60fps for a smooth arc flight.
+            // Afterimage trail ghosts rendered BEHIND the main dot so the
+            // main cursor stays on top. Each ghost is the same color +
+            // size, offset further in the scroll direction with lower
+            // opacity — reads as motion blur or a comet smear matching
+            // the instant scroll-wheel event. Driven by
+            // `scrollTrailIntensity` (animated burst → fade) and
+            // `scrollTrailDirection` (set at trigger time).
+            ForEach(1...Self.scrollAfterimageGhostCount, id: \.self) { ghostIndex in
+                let ghostOffsetMagnitude = CGFloat(ghostIndex) * Self.scrollAfterimageGhostSpacingInPoints
+                let ghostFadeRolloff = Double(ghostIndex - 1) / Double(Self.scrollAfterimageGhostCount)
+                Circle()
+                    .fill(DS.Colors.overlayCursorBlue)
+                    .frame(width: 14, height: 14)
+                    .shadow(color: DS.Colors.overlayCursorBlue, radius: 6, x: 0, y: 0)
+                    .scaleEffect(max(0.5, 1.0 - CGFloat(ghostIndex) * 0.12))
+                    .offset(
+                        x: scrollTrailDirection.dx * ghostOffsetMagnitude,
+                        y: scrollTrailDirection.dy * ghostOffsetMagnitude
+                    )
+                    .opacity(scrollTrailIntensity * (0.6 - ghostFadeRolloff * 0.45))
+                    .position(cursorPosition)
+                    .allowsHitTesting(false)
+            }
+
+            // Blue dot cursor — shown when idle or while TTS is playing (responding).
+            // All three states (dot, waveform, spinner) stay in the view tree
+            // permanently and cross-fade via opacity so SwiftUI doesn't remove/re-insert
+            // them (which caused a visible cursor "pop").
+            //
+            // During cursor following: fast spring animation for snappy tracking.
+            // During navigation: NO implicit animation — the frame-by-frame bezier
+            // timer controls position directly at 60fps for a smooth arc flight.
             Circle()
                 .fill(DS.Colors.overlayCursorBlue)
                 .frame(width: 14, height: 14)
                 .shadow(color: DS.Colors.overlayCursorBlue, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
-                .scaleEffect(buddyFlightScale * clickPulseScale)
-                .offset(scrollVisualOffset)
+                .scaleEffect(buddyFlightScale * clickPulseScale * scrollSquashScale)
                 .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(
@@ -331,7 +432,6 @@ struct BlueCursorView: View {
                     buddyNavigationMode == .navigatingToTarget ? nil : .easeInOut(duration: 0.3),
                     value: triangleRotationDegrees
                 )
-                .animation(.easeInOut(duration: 0.18), value: scrollVisualOffset)
 
             // Blue waveform — replaces the triangle while listening
             BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel)
@@ -408,27 +508,61 @@ struct BlueCursorView: View {
                 }
             }
         }
-        .onChange(of: companionManager.scrollAnimationHintUnitVector) { newHintUnitVector in
-            // Mirror the agent's scroll in the cursor: nudge it ~18pt in the
-            // scroll direction, then animate back when the hint clears.
-            // (CompanionManager sets the hint just before posting the wheel
-            // event and clears it ~220ms later — see the .scroll case in
-            // executeAgentToolCall.)
-            if let hintUnitVector = newHintUnitVector {
-                scrollVisualOffset = CGSize(
-                    width: hintUnitVector.dx * Self.scrollCursorNudgeMagnitudeInPoints,
-                    height: hintUnitVector.dy * Self.scrollCursorNudgeMagnitudeInPoints
-                )
-            } else {
-                scrollVisualOffset = .zero
+        .onChange(of: companionManager.scrollAnimationTriggerToken) { _ in
+            playScrollAfterimageTrail(
+                directionUnitVector: companionManager.mostRecentScrollDirectionUnitVector
+            )
+        }
+    }
+
+    /// Fast afterimage trail to mirror the instant scroll-wheel event.
+    /// The main dot does a tiny squash (1.0 → 0.92 → 1.0) and three
+    /// ghost copies fan out in the scroll direction with decreasing
+    /// opacity. Burst-in is fast (40ms), the trail lingers briefly
+    /// (80ms), then fades out (140ms) — total ~260ms, fast enough to
+    /// feel synced with the actual wheel scroll rather than a deliberate
+    /// animation playing after it.
+    private func playScrollAfterimageTrail(directionUnitVector: CGVector) {
+        guard directionUnitVector != .zero else { return }
+
+        // Set the trail direction BEFORE animating intensity so the
+        // ghosts know which way to fan out the moment they fade in.
+        scrollTrailDirection = directionUnitVector
+
+        // Burst in: trail appears, main dot squashes slightly.
+        withAnimation(.easeOut(duration: 0.04)) {
+            scrollTrailIntensity = 1.0
+            scrollSquashScale = Self.scrollMainDotSquashScale
+        }
+
+        // Main dot springs back to rest scale almost immediately —
+        // the squash is a flicker, not a sustained pose.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.6, blendDuration: 0)) {
+                scrollSquashScale = 1.0
+            }
+        }
+
+        // Trail lingers briefly, then fades out.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            withAnimation(.easeIn(duration: 0.14)) {
+                scrollTrailIntensity = 0.0
             }
         }
     }
 
-    /// How far (in points) the blue cursor nudges in the scroll direction
-    /// when the agent fires the scroll tool. Big enough to be visible at a
-    /// glance, small enough not to feel jumpy.
-    private static let scrollCursorNudgeMagnitudeInPoints: CGFloat = 18
+    // Afterimage trail tuning. Tweak these to taste — they're tight on
+    // purpose so the smear feels like motion blur, not a separate beat.
+    private static let scrollAfterimageGhostCount: Int = 3
+    private static let scrollAfterimageGhostSpacingInPoints: CGFloat = 11
+    private static let scrollMainDotSquashScale: CGFloat = 0.92
+
+    // TTS caption bubble tuning. Bubble lives just below-right of the Dot
+    // so it doesn't collide with the small navigation-pointer bubble
+    // (which sits at +18y to the right).
+    private static let captionBubbleMaxWidth: CGFloat = 320
+    private static let captionBubbleHorizontalOffsetInPoints: CGFloat = 16
+    private static let captionBubbleVerticalOffsetInPoints: CGFloat = 28
 
     /// Whether the buddy triangle should be visible on this screen.
     /// True when cursor is on this screen during normal following, or

@@ -7,6 +7,7 @@
 //  opens a floating panel with companion voice controls.
 //
 
+import Combine
 import ServiceManagement
 import SwiftUI
 
@@ -33,6 +34,8 @@ struct leanring_buddyApp: App {
 @MainActor
 final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
+    private var textCommandPanelManager: TextCommandPanelManager?
+    private var textCommandToggleSubscription: AnyCancellable?
     private let companionManager = CompanionManager()
     private let accountManager = DotAccountManager()
     #if canImport(Sparkle)
@@ -52,6 +55,22 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
             companionManager: companionManager,
             accountManager: accountManager
         )
+
+        let companionManagerForTextPanel = companionManager
+        textCommandPanelManager = TextCommandPanelManager(
+            onTextCommandSubmitted: { submittedText in
+                companionManagerForTextPanel.runTranscriptThroughAgentLoop(
+                    transcript: submittedText,
+                    source: "text-command"
+                )
+            }
+        )
+        textCommandToggleSubscription = companionManager.textCommandToggleRequestPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                self?.textCommandPanelManager?.toggleTextCommandPanel()
+            }
+
         companionManager.start()
         // Auto-open the panel if the user has work to do — sign-in is the
         // top-priority gate, then onboarding/permissions.
@@ -97,7 +116,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         let trimmedTranscript = transcriptQueryValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTranscript.isEmpty else { return true }
         print("🧪 Dot: debug URL fired transcript \"\(trimmedTranscript)\"")
-        companionManager.runTranscriptThroughAgentLoopForDebug(transcript: trimmedTranscript)
+        companionManager.runTranscriptThroughAgentLoop(transcript: trimmedTranscript, source: "debug-url")
         return true
     }
 
