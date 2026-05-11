@@ -78,6 +78,7 @@ class WindowPositionManager {
         case .systemSettings:
             rememberAccessibilityPermissionWasGranted()
             openAccessibilitySettings()
+            revealAppInFinder()
         }
 
         return presentationDestination
@@ -116,6 +117,7 @@ class WindowPositionManager {
 
         if hasAttemptedInputMonitoringSystemPromptDuringCurrentLaunch {
             openInputMonitoringSettings()
+            revealAppInFinder()
             return .systemSettings
         }
 
