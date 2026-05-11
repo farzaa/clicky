@@ -1163,7 +1163,7 @@ final class CompanionManager: ObservableObject {
     choosing tools:
     - if the user asks where something is, how to do something, or wants guidance, call point_at_element to draw the blue cursor companion to the relevant UI element. err on the side of pointing rather than not pointing — it makes help concrete.
     - if the user asks you to operate the computer — open, click, navigate, type, search, create, switch — call action tools. usually multiple in sequence: e.g. open_url then click_element.
-    - typing into a text field: emit click_element AND type_text in the SAME response when you can. one click + one type, in one turn.
+    - typing into a text field: STRONGLY PREFER the fill_text_field tool. it takes (x, y, text) and does click + focus + type as one atomic operation. it works on Slack/Discord/VS Code where naive click + type fragments across turns and the click doesn't transfer focus. ONLY fall back to separate click_element + type_text if fill_text_field's behavior doesn't fit (e.g. you need to type into a field that's already focused without re-clicking).
     - for opening a URL or going to a website, ALWAYS use open_url. it routes through macOS's default-browser handler so it works no matter which app is focused, including when no browser is open yet. NEVER simulate cmd+L + typing for URL navigation — that silently fails when focus isn't already on a browser.
     - for launching or activating a native app (Spotify, Slack, VS Code, Notion, Mail, etc.), use open_app. it's atomic and reliable — don't try to click dock icons or drive Spotlight via cmd+space + typing.
     - if you can encode a search/destination into a URL (youtube.com/results?search_query=lo-fi+beats, google.com/search?q=swift+arrays, drive.google.com), prefer open_url with that direct URL over open_url + click + type — fewer steps and zero focus dependencies.
@@ -1989,6 +1989,33 @@ final class CompanionManager: ObservableObject {
             )
             return AgentToolExecutionResult(
                 toolResultContent: "typed \(text.count) character(s)",
+                didTriggerBailOut: false
+            )
+
+        case .fillTextField(let coordinate, let label, let screen, let text, let clearExisting):
+            // Composite: click → settle → optional select-all → type.
+            // The whole sequence is one tool call so the model can't
+            // fragment it across multiple turns and get stuck in a
+            // click-feedback loop on Electron apps. The 150 ms post-click
+            // pause gives the target's contenteditable time to register
+            // focus before we start typing (Slack/Discord/VS Code need
+            // this — they don't snap focus synchronously).
+            var actions: [CompanionComputerControlAction] = [
+                .click(coordinate: coordinate, elementLabel: label, screenNumber: screen),
+                .pauseForMilliseconds(150)
+            ]
+            if clearExisting,
+               let selectAllKeystroke = CompanionComputerController.parseKeystroke(fromKeySpec: "cmd+a") {
+                actions.append(.keyPress(selectAllKeystroke))
+                actions.append(.pauseForMilliseconds(50))
+            }
+            actions.append(.typeText(text))
+            await performComputerControlActions(
+                actions,
+                screenCaptures: originatingScreenCaptures
+            )
+            return AgentToolExecutionResult(
+                toolResultContent: "filled \(label ?? "field") at (\(Int(coordinate.x)), \(Int(coordinate.y))) with \(text.count) character(s)\(clearExisting ? " (cleared first)" : "")",
                 didTriggerBailOut: false
             )
 
@@ -2834,6 +2861,11 @@ final class CompanionManager: ObservableObject {
         case mediaControl(CompanionMediaControlCommand)
         case typeText(String)
         case keyPress(CompanionKeystroke)
+        /// Lets composite tool executors (e.g. fill_text_field) interleave
+        /// a fixed-duration wait between primitive actions without leaving
+        /// `performComputerControlActions`. Used to let focus / paste /
+        /// re-render settle in the target app between sub-steps.
+        case pauseForMilliseconds(Int)
         // High-level open primitives that route through NSWorkspace instead
         // of synthesising keyboard shortcuts. These are reliable regardless
         // of which app is currently focused — the key reason they exist is
@@ -2959,6 +2991,12 @@ final class CompanionManager: ObservableObject {
                     "keystroke": keystroke.humanReadableDescription
                 ])
                 try? await Task.sleep(nanoseconds: 80_000_000)
+
+            case .pauseForMilliseconds(let milliseconds):
+                DotDebugLogger.log("computer.actions", "pause action", metadata: [
+                    "milliseconds": milliseconds
+                ])
+                try? await Task.sleep(nanoseconds: UInt64(max(0, milliseconds)) * 1_000_000)
 
             case .openURL(let urlString):
                 await executeOpenURL(urlString: urlString)

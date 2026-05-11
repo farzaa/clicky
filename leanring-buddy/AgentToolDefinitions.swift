@@ -78,6 +78,7 @@ enum AgentToolCall {
     case pointAtElement(coordinate: CGPoint, label: String?, screen: Int?)
     case clickElement(coordinate: CGPoint, label: String?, screen: Int?)
     case typeText(String)
+    case fillTextField(coordinate: CGPoint, label: String?, screen: Int?, text: String, clearExisting: Bool)
     case pressKeystroke(spec: String)
     case scroll(direction: AgentScrollDirection, amount: AgentScrollAmount)
     case openURL(String)
@@ -108,6 +109,7 @@ enum AgentToolDefinitions {
         pointAtElementTool,
         clickElementTool,
         typeTextTool,
+        fillTextFieldTool,
         pressKeystrokeTool,
         scrollTool,
         openURLTool,
@@ -185,7 +187,7 @@ enum AgentToolDefinitions {
 
     private static let typeTextTool = AgentToolDefinition(
         name: "type_text",
-        description: "Type a string into the currently focused field. Only types literal characters — cannot send special keys (backspace, return, modifier shortcuts). Use press_keystroke for those. Newlines: include a literal \\n in the string.",
+        description: "Type a string into the currently focused field. Only types literal characters — cannot send special keys (backspace, return, modifier shortcuts). Use press_keystroke for those. Newlines: include a literal \\n in the string. PREFER fill_text_field instead when the goal is 'put text X into field Y' — it handles the click + focus + type sequence atomically.",
         inputSchema: [
             "type": "object",
             "properties": [
@@ -195,6 +197,41 @@ enum AgentToolDefinitions {
                 ]
             ],
             "required": ["text"]
+        ]
+    )
+
+    private static let fillTextFieldTool = AgentToolDefinition(
+        name: "fill_text_field",
+        description: "Atomically click a text field and type into it in ONE tool call. STRONGLY PREFER this over click_element + type_text whenever the goal is 'put text X into field Y'. Internally: hover-primes the target, clicks with a realistic press duration to focus the field (works on Slack/Discord/VS Code where naive synthetic clicks don't transfer focus), optionally clears existing content with cmd+a, waits briefly for focus to settle, then types the text. Avoids the screenshot-feedback loop where click and type get fragmented across multiple turns and the click doesn't appear to land. Coordinates are pixels in the latest screenshot.",
+        inputSchema: [
+            "type": "object",
+            "properties": [
+                "x": [
+                    "type": "integer",
+                    "description": "Pixel x-coordinate of the text field in the most recent screenshot."
+                ],
+                "y": [
+                    "type": "integer",
+                    "description": "Pixel y-coordinate of the text field in the most recent screenshot. Aim for the CENTER of the input area, not the header/toolbar above it."
+                ],
+                "label": [
+                    "type": "string",
+                    "description": "1–3 word description of the field, e.g. \"message input\", \"search box\"."
+                ],
+                "screen": [
+                    "type": "integer",
+                    "description": "Optional 1-based screen index if the field is on a non-primary monitor."
+                ],
+                "text": [
+                    "type": "string",
+                    "description": "Literal text to type after focusing. Use \\n for newline. Does NOT press enter at the end — call press_keystroke('return') separately if you want to submit."
+                ],
+                "clear_existing": [
+                    "type": "boolean",
+                    "description": "If true, select-all (cmd+a) before typing so the new text replaces any existing content. Default false (append/insert at cursor)."
+                ]
+            ],
+            "required": ["x", "y", "text"]
         ]
     )
 
@@ -420,6 +457,18 @@ enum AgentToolDefinitions {
             // Same \\n → \n unescape that the legacy text-tag parser did.
             let unescaped = textValue.replacingOccurrences(of: "\\n", with: "\n")
             return .typeText(unescaped)
+        case "fill_text_field":
+            guard let coordinate = decodeCoordinate(from: toolUseBlock.inputArguments),
+                  let textValue = toolUseBlock.inputArguments["text"] as? String else { return nil }
+            let unescapedText = textValue.replacingOccurrences(of: "\\n", with: "\n")
+            let clearExistingValue = (toolUseBlock.inputArguments["clear_existing"] as? Bool) ?? false
+            return .fillTextField(
+                coordinate: coordinate,
+                label: decodeOptionalString(toolUseBlock.inputArguments["label"]),
+                screen: decodeOptionalInt(toolUseBlock.inputArguments["screen"]),
+                text: unescapedText,
+                clearExisting: clearExistingValue
+            )
         case "press_keystroke":
             guard let specValue = toolUseBlock.inputArguments["spec"] as? String else { return nil }
             return .pressKeystroke(spec: specValue)
