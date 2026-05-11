@@ -79,6 +79,7 @@ enum AgentToolCall {
     case clickElement(coordinate: CGPoint, label: String?, screen: Int?)
     case typeText(String)
     case fillTextField(coordinate: CGPoint, label: String?, screen: Int?, text: String, clearExisting: Bool)
+    case fillAndSubmit(coordinate: CGPoint, label: String?, screen: Int?, text: String, clearExisting: Bool, submitKeystrokeSpec: String)
     case pressKeystroke(spec: String)
     case scroll(direction: AgentScrollDirection, amount: AgentScrollAmount)
     case openURL(String)
@@ -110,6 +111,7 @@ enum AgentToolDefinitions {
         clickElementTool,
         typeTextTool,
         fillTextFieldTool,
+        fillAndSubmitTool,
         pressKeystrokeTool,
         scrollTool,
         openURLTool,
@@ -200,9 +202,48 @@ enum AgentToolDefinitions {
         ]
     )
 
+    private static let fillAndSubmitTool = AgentToolDefinition(
+        name: "fill_and_submit",
+        description: "Atomically click a text field, type into it, and press a submit keystroke (default: return) — all in ONE tool call. This DOES SUBMIT — only use when the user explicitly asked you to send the message, submit the form, run the search, etc. For chat apps like Slack/Discord/iMessage this presses return which posts the message. For URL bars and form fields it confirms. If the user just wants to draft text without sending, use fill_text_field instead. Internally: same hover-primed click + focus settle + optional cmd+a clear + type sequence as fill_text_field, then 100 ms settle, then the submit keystroke.",
+        inputSchema: [
+            "type": "object",
+            "properties": [
+                "x": [
+                    "type": "integer",
+                    "description": "Pixel x-coordinate of the text field in the most recent screenshot."
+                ],
+                "y": [
+                    "type": "integer",
+                    "description": "Pixel y-coordinate of the text field in the most recent screenshot. Aim for the CENTER of the input area, not the header/toolbar above it."
+                ],
+                "label": [
+                    "type": "string",
+                    "description": "1–3 word description of the field, e.g. \"message input\", \"search box\"."
+                ],
+                "screen": [
+                    "type": "integer",
+                    "description": "Optional 1-based screen index if the field is on a non-primary monitor."
+                ],
+                "text": [
+                    "type": "string",
+                    "description": "Literal text to type before submitting. Use \\n for newline within the body."
+                ],
+                "clear_existing": [
+                    "type": "boolean",
+                    "description": "If true, select-all (cmd+a) before typing so the new text replaces any existing content. Default false."
+                ],
+                "submit_keystroke": [
+                    "type": "string",
+                    "description": "Keystroke spec to press after typing. Default \"return\" (works for Slack/Discord/iMessage send, search bars, most forms). Use \"cmd+return\" for apps that require it (some email clients). Same spec format as press_keystroke."
+                ]
+            ],
+            "required": ["x", "y", "text"]
+        ]
+    )
+
     private static let fillTextFieldTool = AgentToolDefinition(
         name: "fill_text_field",
-        description: "Atomically click a text field and type into it in ONE tool call. STRONGLY PREFER this over click_element + type_text whenever the goal is 'put text X into field Y'. Internally: hover-primes the target, clicks with a realistic press duration to focus the field (works on Slack/Discord/VS Code where naive synthetic clicks don't transfer focus), optionally clears existing content with cmd+a, waits briefly for focus to settle, then types the text. Avoids the screenshot-feedback loop where click and type get fragmented across multiple turns and the click doesn't appear to land. Coordinates are pixels in the latest screenshot.",
+        description: "Atomically click a text field and type into it in ONE tool call. STRONGLY PREFER this over click_element + type_text whenever the goal is 'put text X into field Y' WITHOUT submitting. Internally: hover-primes the target, clicks with a realistic press duration to focus the field (works on Slack/Discord/VS Code where naive synthetic clicks don't transfer focus), optionally clears existing content with cmd+a, waits briefly for focus to settle, then types the text. Does NOT press enter — use fill_and_submit if the goal is to send or submit. Coordinates are pixels in the latest screenshot.",
         inputSchema: [
             "type": "object",
             "properties": [
@@ -468,6 +509,20 @@ enum AgentToolDefinitions {
                 screen: decodeOptionalInt(toolUseBlock.inputArguments["screen"]),
                 text: unescapedText,
                 clearExisting: clearExistingValue
+            )
+        case "fill_and_submit":
+            guard let coordinate = decodeCoordinate(from: toolUseBlock.inputArguments),
+                  let textValue = toolUseBlock.inputArguments["text"] as? String else { return nil }
+            let unescapedText = textValue.replacingOccurrences(of: "\\n", with: "\n")
+            let clearExistingValue = (toolUseBlock.inputArguments["clear_existing"] as? Bool) ?? false
+            let submitKeystrokeSpec = (toolUseBlock.inputArguments["submit_keystroke"] as? String) ?? "return"
+            return .fillAndSubmit(
+                coordinate: coordinate,
+                label: decodeOptionalString(toolUseBlock.inputArguments["label"]),
+                screen: decodeOptionalInt(toolUseBlock.inputArguments["screen"]),
+                text: unescapedText,
+                clearExisting: clearExistingValue,
+                submitKeystrokeSpec: submitKeystrokeSpec
             )
         case "press_keystroke":
             guard let specValue = toolUseBlock.inputArguments["spec"] as? String else { return nil }

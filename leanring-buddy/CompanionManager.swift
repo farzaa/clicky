@@ -1163,7 +1163,8 @@ final class CompanionManager: ObservableObject {
     choosing tools:
     - if the user asks where something is, how to do something, or wants guidance, call point_at_element to draw the blue cursor companion to the relevant UI element. err on the side of pointing rather than not pointing — it makes help concrete.
     - if the user asks you to operate the computer — open, click, navigate, type, search, create, switch — call action tools. usually multiple in sequence: e.g. open_url then click_element.
-    - typing into a text field: STRONGLY PREFER the fill_text_field tool. it takes (x, y, text) and does click + focus + type as one atomic operation. it works on Slack/Discord/VS Code where naive click + type fragments across turns and the click doesn't transfer focus. ONLY fall back to separate click_element + type_text if fill_text_field's behavior doesn't fit (e.g. you need to type into a field that's already focused without re-clicking).
+    - typing into a text field WITHOUT submitting (drafting, filling part of a form): use fill_text_field — it takes (x, y, text) and does click + focus + type atomically. it works on Slack/Discord/VS Code where naive click + type fragments across turns and the click doesn't transfer focus. ONLY fall back to separate click_element + type_text if you need to type into a field that's already focused without re-clicking.
+    - typing AND sending/submitting (sending a Slack DM, posting to a channel, submitting a search, submitting a form the user explicitly asked you to send): use fill_and_submit — same as fill_text_field plus a configurable submit keystroke (default `return`) at the end. only use when the user explicitly asked you to send/submit/post — never auto-submit. for `cmd+return` apps pass submit_keystroke="cmd+return".
     - for opening a URL or going to a website, ALWAYS use open_url. it routes through macOS's default-browser handler so it works no matter which app is focused, including when no browser is open yet. NEVER simulate cmd+L + typing for URL navigation — that silently fails when focus isn't already on a browser.
     - for launching or activating a native app (Spotify, Slack, VS Code, Notion, Mail, etc.), use open_app. it's atomic and reliable — don't try to click dock icons or drive Spotlight via cmd+space + typing.
     - if you can encode a search/destination into a URL (youtube.com/results?search_query=lo-fi+beats, google.com/search?q=swift+arrays, drive.google.com), prefer open_url with that direct URL over open_url + click + type — fewer steps and zero focus dependencies.
@@ -2000,22 +2001,55 @@ final class CompanionManager: ObservableObject {
             // pause gives the target's contenteditable time to register
             // focus before we start typing (Slack/Discord/VS Code need
             // this — they don't snap focus synchronously).
-            var actions: [CompanionComputerControlAction] = [
+            var fillActions: [CompanionComputerControlAction] = [
                 .click(coordinate: coordinate, elementLabel: label, screenNumber: screen),
                 .pauseForMilliseconds(150)
             ]
             if clearExisting,
                let selectAllKeystroke = CompanionComputerController.parseKeystroke(fromKeySpec: "cmd+a") {
-                actions.append(.keyPress(selectAllKeystroke))
-                actions.append(.pauseForMilliseconds(50))
+                fillActions.append(.keyPress(selectAllKeystroke))
+                fillActions.append(.pauseForMilliseconds(50))
             }
-            actions.append(.typeText(text))
+            fillActions.append(.typeText(text))
             await performComputerControlActions(
-                actions,
+                fillActions,
                 screenCaptures: originatingScreenCaptures
             )
             return AgentToolExecutionResult(
                 toolResultContent: "filled \(label ?? "field") at (\(Int(coordinate.x)), \(Int(coordinate.y))) with \(text.count) character(s)\(clearExisting ? " (cleared first)" : "")",
+                didTriggerBailOut: false
+            )
+
+        case .fillAndSubmit(let coordinate, let label, let screen, let text, let clearExisting, let submitKeystrokeSpec):
+            // Same composite as fill_text_field plus a final submit
+            // keystroke. The 100 ms pause after typing lets the target
+            // process the input event before the submit keystroke fires
+            // — important for chat apps where the message must contain
+            // the typed text by the time `return` is pressed.
+            guard let submitKeystroke = CompanionComputerController.parseKeystroke(fromKeySpec: submitKeystrokeSpec) else {
+                return AgentToolExecutionResult(
+                    toolResultContent: "error: unrecognized submit keystroke spec \"\(submitKeystrokeSpec)\". try \"return\" or \"cmd+return\".",
+                    didTriggerBailOut: false
+                )
+            }
+            var fillAndSubmitActions: [CompanionComputerControlAction] = [
+                .click(coordinate: coordinate, elementLabel: label, screenNumber: screen),
+                .pauseForMilliseconds(150)
+            ]
+            if clearExisting,
+               let selectAllKeystroke = CompanionComputerController.parseKeystroke(fromKeySpec: "cmd+a") {
+                fillAndSubmitActions.append(.keyPress(selectAllKeystroke))
+                fillAndSubmitActions.append(.pauseForMilliseconds(50))
+            }
+            fillAndSubmitActions.append(.typeText(text))
+            fillAndSubmitActions.append(.pauseForMilliseconds(100))
+            fillAndSubmitActions.append(.keyPress(submitKeystroke))
+            await performComputerControlActions(
+                fillAndSubmitActions,
+                screenCaptures: originatingScreenCaptures
+            )
+            return AgentToolExecutionResult(
+                toolResultContent: "filled \(label ?? "field") at (\(Int(coordinate.x)), \(Int(coordinate.y))) with \(text.count) character(s)\(clearExisting ? " (cleared first)" : "") and submitted via \(submitKeystroke.humanReadableDescription)",
                 didTriggerBailOut: false
             )
 
