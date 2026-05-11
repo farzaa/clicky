@@ -29,12 +29,14 @@ The app never calls external APIs directly. All requests go through a Cloudflare
 
 | Route | Upstream | Purpose |
 |-------|----------|---------|
-| `POST /chat` | `api.anthropic.com/v1/messages` | Claude vision + streaming chat |
+| `POST /chat` | `api.anthropic.com/v1/messages` | Claude vision + streaming chat (no tools) |
+| `POST /chat-tools` | Anthropic + Composio | Tool-augmented chat, agentic loop server-side, non-streaming JSON response. See "Composio Tool-Calling" below. |
 | `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
 | `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Fetches a short-lived (480s) AssemblyAI websocket token |
 
-Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`
+Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`, `COMPOSIO_API_KEY` (optional, only required for `/chat-tools`)
 Worker vars: `ELEVENLABS_VOICE_ID`
+Worker compatibility: `nodejs_compat` flag enabled — required for `@composio/core`'s Node-style imports to bundle on Workers.
 
 ### Key Architecture Decisions
 
@@ -47,6 +49,8 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 **Shared URLSession for AssemblyAI**: A single long-lived `URLSession` is shared across all AssemblyAI streaming sessions (owned by the provider, not the session). Creating and invalidating a URLSession per session corrupts the OS connection pool and causes "Socket is not connected" errors after a few rapid reconnections.
 
 **Transient Cursor Mode**: When "Show Clicky" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
+
+**Composio Tool-Calling (opt-in)**: When the user flips **Tools (Composio)** on in the panel, voice requests route from `claudeAPI.analyzeImageStreaming` (POST `/chat`, SSE) to `claudeAPI.analyzeImageWithTools` (POST `/chat-tools`, single non-streaming JSON). The Worker runs the Claude ↔ Composio agentic loop server-side (capped at 5 iterations), executes tools against the user's connected accounts, and returns `{ text, tool_calls, stop_reason }`. The pointing flow (`[POINT:x,y:label:screenN]`) is only parsed in the streaming path — tools mode is for acting, not pointing. The user is identified to Composio by a stable per-install UUID stored in UserDefaults under `clickyComposioUserId`, sent on every `/chat-tools` request as the `x-clicky-user-id` header. Off by default: opt-in because it requires `composio link <toolkit> --user-id <clicky-uuid>` setup out-of-band.
 
 ## Key Files
 
@@ -74,7 +78,8 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
-| `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
+| `worker/src/index.ts` | ~310 | Cloudflare Worker proxy. Four routes: `/chat` (Claude streaming passthrough), `/chat-tools` (Claude + Composio agentic loop, non-streaming JSON), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). Uses `@anthropic-ai/sdk`, `@composio/core`, `@composio/anthropic`. Requires `nodejs_compat` Workers flag. |
+| `worker/test-tools.sh` | ~30 | Curl-based smoke test for the `/chat-tools` endpoint against `wrangler dev`. Useful for verifying the Composio loop without rebuilding the Swift app. |
 
 ## Build & Run
 
