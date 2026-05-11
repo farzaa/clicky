@@ -34,12 +34,18 @@ final class MenuBarPanelManager: NSObject {
 
     private let companionManager: CompanionManager
     private let accountManager: DotAccountManager
+    private let remoteCommandSubscriber: RemoteCommandSubscriber
     private let panelWidth: CGFloat = 320
     private let panelHeight: CGFloat = 380
 
-    init(companionManager: CompanionManager, accountManager: DotAccountManager) {
+    init(
+        companionManager: CompanionManager,
+        accountManager: DotAccountManager,
+        remoteCommandSubscriber: RemoteCommandSubscriber
+    ) {
         self.companionManager = companionManager
         self.accountManager = accountManager
+        self.remoteCommandSubscriber = remoteCommandSubscriber
         super.init()
         createStatusItem()
 
@@ -139,7 +145,8 @@ final class MenuBarPanelManager: NSObject {
     private func createPanel() {
         let companionPanelView = CompanionPanelView(
             companionManager: companionManager,
-            accountManager: accountManager
+            accountManager: accountManager,
+            remoteCommandSubscriber: remoteCommandSubscriber
         )
             .frame(width: panelWidth)
 

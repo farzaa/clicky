@@ -38,6 +38,12 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var textCommandToggleSubscription: AnyCancellable?
     private let companionManager = CompanionManager()
     private let accountManager = DotAccountManager()
+    /// Subscribes to the user's vibe-id event-bus session and runs delivered
+    /// remote commands through the agent loop. Off by default; user toggles
+    /// it on from the menu bar panel.
+    private lazy var remoteCommandSubscriber = RemoteCommandSubscriber(
+        companionManager: companionManager
+    )
     #if canImport(Sparkle)
     private var sparkleUpdaterController: SPUStandardUpdaterController?
     #endif
@@ -53,7 +59,8 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
         menuBarPanelManager = MenuBarPanelManager(
             companionManager: companionManager,
-            accountManager: accountManager
+            accountManager: accountManager,
+            remoteCommandSubscriber: remoteCommandSubscriber
         )
 
         let companionManagerForTextPanel = companionManager

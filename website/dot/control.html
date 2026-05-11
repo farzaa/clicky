@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Dot — remote control</title>
+  <meta name="robots" content="noindex" />
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    /* Page-specific layout overrides — keep the global look from styles.css. */
+    body { background: #0b0c0f; color: #e7e8eb; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; margin: 0; }
+    main { max-width: 480px; margin: 0 auto; padding: 24px 16px 96px; }
+    h1 { font-size: 22px; font-weight: 600; margin: 0 0 6px; }
+    .subtitle { font-size: 13px; color: #9aa0aa; margin: 0 0 24px; }
+    .composeForm { display: flex; flex-direction: column; gap: 10px; }
+    .composeTextarea {
+      width: 100%; min-height: 96px; background: #15171c; color: #e7e8eb;
+      border: 1px solid #2a2e36; border-radius: 12px; padding: 12px;
+      font-size: 16px; resize: vertical; box-sizing: border-box;
+      font-family: inherit;
+    }
+    .composeTextarea:focus { outline: none; border-color: #4a90e2; }
+    .sendButton {
+      align-self: flex-end; background: #4a90e2; color: white; border: 0;
+      border-radius: 10px; padding: 10px 18px; font-size: 14px; font-weight: 600;
+      cursor: pointer;
+    }
+    .sendButton:disabled { opacity: 0.5; cursor: not-allowed; }
+    .infoBox {
+      margin: 12px 0; padding: 10px 12px; border-radius: 8px;
+      background: #15171c; border: 1px solid #2a2e36; font-size: 12px; color: #9aa0aa;
+    }
+    .errorBox { border-color: #a23a3a; color: #ffb4b4; background: #1c1115; }
+    .historyList { margin-top: 28px; }
+    .historyItem {
+      padding: 10px 12px; border-radius: 8px; background: #15171c;
+      border: 1px solid #2a2e36; margin-bottom: 8px;
+    }
+    .historyTranscript { font-size: 14px; color: #e7e8eb; margin: 0 0 4px; word-wrap: break-word; }
+    .historyMeta { font-size: 11px; color: #6b7280; }
+    .historyStatusCompleted { color: #6ee7a3; }
+    .historyStatusFailed    { color: #ff9c9c; }
+    .historyStatusCancelled { color: #c9c9c9; }
+    .historyStatusPending   { color: #c0b370; }
+    footer { font-size: 11px; color: #5a606a; text-align: center; margin-top: 40px; }
+    a { color: #4a90e2; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Send a command to Dot</h1>
+    <p id="subtitle" class="subtitle">Signed in as your Mac. Anything you type runs through Dot's agent loop as if you'd pressed ctrl+option locally.</p>
+
+    <section id="signedOutSection" style="display: none;">
+      <div class="infoBox">
+        Sign in with the same Google account your Mac uses. Your Mac picks up the command via the user-session WebSocket bus.
+      </div>
+      <a id="signInButton" href="#" class="sendButton" style="display: inline-block; text-align: center; text-decoration: none;">Sign in with Google</a>
+    </section>
+
+    <section id="signedInSection" style="display: none;">
+      <form id="composeForm" class="composeForm" onsubmit="return false;">
+        <textarea id="commandInput" class="composeTextarea" placeholder="open google.com / play my workout playlist / summarise the current page"></textarea>
+        <button id="sendButton" class="sendButton" type="button">Send to Dot</button>
+      </form>
+
+      <p id="errorBox" class="infoBox errorBox" style="display: none;"></p>
+
+      <div class="historyList">
+        <h2 style="font-size: 13px; color: #9aa0aa; font-weight: 500; margin: 0 0 8px;">Recent commands</h2>
+        <div id="historyContainer"></div>
+      </div>
+    </section>
+
+    <footer>© Vibe Research · <a id="signOutLink" href="#" style="display: none;">sign out</a></footer>
+  </main>
+
+  <script src="config.js"></script>
+  <script>
+    // ============================================================
+    // Dot remote control web page.
+    //
+    // Reuses the existing vibe-id Google sign-in flow: redirect to
+    // /auth/start?project=dot&return_to=<this page>, get redirected
+    // back with token+email in the URL fragment, store the install
+    // token in localStorage. From then on, every POST /events carries
+    // the token in the Authorization header.
+    //
+    // Live results: the page also opens a WebSocket to
+    // /session/ws?subscribe=dot.command.completed so the user sees
+    // the result of their command land in real time without polling.
+    // ============================================================
+
+    var VIBE_ID_BASE_URL =
+      (window.DOT_CONFIG && window.DOT_CONFIG.vibeIdBaseURL) || "https://api.accounts.vibe-research.net";
+
+    // We use the SAME storage key the research-lab account page uses so
+    // signing in on either lands you with a working session on both.
+    var INSTALL_TOKEN_STORAGE_KEY = "vibeResearch.installToken";
+    var EMAIL_STORAGE_KEY = "vibeResearch.email";
+
+    var PROJECT_ID_FOR_AUTH = "dot";
+    var EVENT_TYPE_COMMAND_ISSUED = "dot.command.issued";
+    var EVENT_TYPE_COMMAND_COMPLETED = "dot.command.completed";
+
+    /// In-memory map: originating event_id → last-known UI row state. The
+    /// list is rendered from this so we can mutate one row when its
+    /// `*.completed` companion event arrives without re-fetching everything.
+    var recentCommandRowsByEventId = new Map();
+    /// Insertion order so we can re-render newest-first without resort
+    /// churn on every update.
+    var recentCommandIdOrderNewestFirst = [];
+
+    var liveSessionWebSocket = null;
+    var liveSessionWebSocketReconnectAttempt = 0;
+
+    // ----------------------------------------------------------------
+    // Auth bootstrapping
+    // ----------------------------------------------------------------
+
+    function consumeFragmentIfPresent() {
+      if (!window.location.hash) return;
+      var fragmentParameters = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      var receivedToken = fragmentParameters.get("token");
+      var receivedEmail = fragmentParameters.get("email");
+      if (receivedToken) {
+        localStorage.setItem(INSTALL_TOKEN_STORAGE_KEY, receivedToken);
+        if (receivedEmail) localStorage.setItem(EMAIL_STORAGE_KEY, receivedEmail);
+        history.replaceState(null, "", window.location.pathname);
+      }
+    }
+
+    function buildSignInRedirectURL() {
+      var returnToURL = window.location.origin.replace(/\/$/, "") + window.location.pathname;
+      return VIBE_ID_BASE_URL +
+        "/auth/start?project=" + encodeURIComponent(PROJECT_ID_FOR_AUTH) +
+        "&return_to=" + encodeURIComponent(returnToURL);
+    }
+
+    function showSignedOutState() {
+      document.getElementById("signedInSection").style.display = "none";
+      document.getElementById("signedOutSection").style.display = "";
+      document.getElementById("signInButton").setAttribute("href", buildSignInRedirectURL());
+    }
+
+    function showSignedInState() {
+      document.getElementById("signedOutSection").style.display = "none";
+      document.getElementById("signedInSection").style.display = "";
+      document.getElementById("signOutLink").style.display = "";
+
+      var emailAddress = localStorage.getItem(EMAIL_STORAGE_KEY) || "your account";
+      document.getElementById("subtitle").textContent =
+        "Signed in as " + emailAddress + ". Anything you type runs through Dot's agent loop on your Mac.";
+    }
+
+    function showErrorMessage(messageText) {
+      var errorBox = document.getElementById("errorBox");
+      errorBox.textContent = messageText;
+      errorBox.style.display = "block";
+    }
+
+    function clearErrorMessage() {
+      var errorBox = document.getElementById("errorBox");
+      errorBox.textContent = "";
+      errorBox.style.display = "none";
+    }
+
+    // ----------------------------------------------------------------
+    // History rendering
+    // ----------------------------------------------------------------
+
+    function renderHistory() {
+      var container = document.getElementById("historyContainer");
+      container.innerHTML = "";
+      for (var i = 0; i < recentCommandIdOrderNewestFirst.length; i += 1) {
+        var commandId = recentCommandIdOrderNewestFirst[i];
+        var row = recentCommandRowsByEventId.get(commandId);
+        if (!row) continue;
+        container.appendChild(renderHistoryRow(row));
+      }
+    }
+
+    function renderHistoryRow(row) {
+      var rowElement = document.createElement("div");
+      rowElement.className = "historyItem";
+
+      var transcriptElement = document.createElement("p");
+      transcriptElement.className = "historyTranscript";
+      transcriptElement.textContent = row.transcript || "(no transcript)";
+
+      var metaElement = document.createElement("div");
+      metaElement.className = "historyMeta";
+      var statusLabel = row.status || "pending";
+      var statusClass = "historyStatus" + statusLabel.charAt(0).toUpperCase() + statusLabel.slice(1);
+      var timeString = new Date((row.createdAt || 0) * 1000).toLocaleTimeString();
+      metaElement.innerHTML =
+        '<span class="' + statusClass + '">' + statusLabel + '</span> · ' + timeString +
+        (row.summary ? ' · ' + escapeHTMLForRender(row.summary) : "");
+
+      rowElement.appendChild(transcriptElement);
+      rowElement.appendChild(metaElement);
+      return rowElement;
+    }
+
+    function escapeHTMLForRender(rawText) {
+      return rawText.replace(/[&<>]/g, function (matchedChar) {
+        return matchedChar === "&" ? "&amp;" : (matchedChar === "<" ? "&lt;" : "&gt;");
+      });
+    }
+
+    function upsertCommandRow(rowFields) {
+      var existing = recentCommandRowsByEventId.get(rowFields.id);
+      if (existing) {
+        // Merge so the *.completed event doesn't wipe the transcript we
+        // stamped on *.issued.
+        var merged = {};
+        for (var k in existing) merged[k] = existing[k];
+        for (var k2 in rowFields) if (rowFields[k2] !== undefined) merged[k2] = rowFields[k2];
+        recentCommandRowsByEventId.set(rowFields.id, merged);
+      } else {
+        recentCommandRowsByEventId.set(rowFields.id, rowFields);
+        recentCommandIdOrderNewestFirst.unshift(rowFields.id);
+        if (recentCommandIdOrderNewestFirst.length > 25) {
+          var dropped = recentCommandIdOrderNewestFirst.pop();
+          recentCommandRowsByEventId.delete(dropped);
+        }
+      }
+      renderHistory();
+    }
+
+    async function loadInitialHistory() {
+      var installToken = localStorage.getItem(INSTALL_TOKEN_STORAGE_KEY);
+      if (!installToken) return;
+      try {
+        var historyResponse = await fetch(VIBE_ID_BASE_URL + "/events?limit=25", {
+          headers: { authorization: "Bearer " + installToken },
+        });
+        if (historyResponse.status === 401) {
+          localStorage.removeItem(INSTALL_TOKEN_STORAGE_KEY);
+          showSignedOutState();
+          return;
+        }
+        if (!historyResponse.ok) return;
+        var historyBody = await historyResponse.json();
+        var historyEntries = (historyBody && historyBody.events) || [];
+        // Walk oldest-first so the upsert order matches reality, then we
+        // render newest-first.
+        recentCommandRowsByEventId.clear();
+        recentCommandIdOrderNewestFirst = [];
+        for (var i = historyEntries.length - 1; i >= 0; i -= 1) {
+          ingestHistoricalEventEnvelope(historyEntries[i]);
+        }
+        renderHistory();
+      } catch (loadError) {
+        // ignore — live stream will fill in over time
+      }
+    }
+
+    function ingestHistoricalEventEnvelope(envelope) {
+      if (!envelope || !envelope.event_type) return;
+      if (envelope.event_type === EVENT_TYPE_COMMAND_ISSUED) {
+        upsertCommandRow({
+          id: envelope.id,
+          transcript: (envelope.payload && envelope.payload.transcript) || "",
+          status: "pending",
+          createdAt: envelope.created_at,
+        });
+      } else if (envelope.event_type === EVENT_TYPE_COMMAND_COMPLETED) {
+        var originating = envelope.payload && envelope.payload.originating_event_id;
+        if (!originating) return;
+        upsertCommandRow({
+          id: originating,
+          status: envelope.payload.status || "completed",
+          summary: envelope.payload.summary || undefined,
+        });
+      }
+    }
+
+    // ----------------------------------------------------------------
+    // Live WebSocket subscription
+    // ----------------------------------------------------------------
+
+    function openLiveSessionWebSocket() {
+      var installToken = localStorage.getItem(INSTALL_TOKEN_STORAGE_KEY);
+      if (!installToken) return;
+      try {
+        var websocketBase = VIBE_ID_BASE_URL.replace(/^https/, "wss").replace(/^http/, "ws");
+        var websocketURL = websocketBase + "/session/ws?token=" + encodeURIComponent(installToken) +
+          "&device_id=" + encodeURIComponent(getOrCreateBrowserDeviceId()) +
+          "&subscribe=" + encodeURIComponent("dot.command.completed,dot.command.issued");
+        liveSessionWebSocket = new WebSocket(websocketURL);
+      } catch (websocketConstructionError) {
+        return;
+      }
+      liveSessionWebSocket.onopen = function () {
+        liveSessionWebSocketReconnectAttempt = 0;
+      };
+      liveSessionWebSocket.onmessage = function (eventFromSocket) {
+        try {
+          var envelope = JSON.parse(eventFromSocket.data);
+          ingestHistoricalEventEnvelope(envelope);
+        } catch (parseError) { /* ignore */ }
+      };
+      liveSessionWebSocket.onclose = function () {
+        scheduleLiveSessionReconnection();
+      };
+      liveSessionWebSocket.onerror = function () {
+        try { liveSessionWebSocket.close(); } catch (closeError) {}
+      };
+    }
+
+    function scheduleLiveSessionReconnection() {
+      liveSessionWebSocketReconnectAttempt = Math.min(liveSessionWebSocketReconnectAttempt + 1, 6);
+      var delayMilliseconds = Math.min(30000, 1000 * Math.pow(2, liveSessionWebSocketReconnectAttempt));
+      setTimeout(openLiveSessionWebSocket, delayMilliseconds);
+    }
+
+    function getOrCreateBrowserDeviceId() {
+      var existing = localStorage.getItem("vibeResearch.browserDeviceId");
+      if (existing) return existing;
+      var fresh = "web-" + (crypto && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + "-" + Math.random().toString(36).slice(2, 10));
+      localStorage.setItem("vibeResearch.browserDeviceId", fresh);
+      return fresh;
+    }
+
+    // ----------------------------------------------------------------
+    // Send-command form
+    // ----------------------------------------------------------------
+
+    async function sendCommandFromForm() {
+      var commandInputElement = document.getElementById("commandInput");
+      var sendButtonElement = document.getElementById("sendButton");
+      var transcriptText = (commandInputElement.value || "").trim();
+      if (!transcriptText) return;
+
+      var installToken = localStorage.getItem(INSTALL_TOKEN_STORAGE_KEY);
+      if (!installToken) {
+        showErrorMessage("Sign in first.");
+        return;
+      }
+
+      sendButtonElement.disabled = true;
+      clearErrorMessage();
+
+      var clientGeneratedEventId =
+        (crypto && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + "-" + Math.random().toString(36).slice(2, 10));
+
+      try {
+        var postResponse = await fetch(VIBE_ID_BASE_URL + "/events", {
+          method: "POST",
+          headers: {
+            authorization: "Bearer " + installToken,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            id: clientGeneratedEventId,
+            event_type: EVENT_TYPE_COMMAND_ISSUED,
+            payload: { transcript: transcriptText },
+          }),
+        });
+        if (postResponse.status === 401) {
+          localStorage.removeItem(INSTALL_TOKEN_STORAGE_KEY);
+          showSignedOutState();
+          return;
+        }
+        if (postResponse.status === 403) {
+          showErrorMessage("Remote control is disabled for your project. Check the menu bar toggle on your Mac.");
+          return;
+        }
+        if (postResponse.status === 429) {
+          showErrorMessage("Slow down — too many commands.");
+          return;
+        }
+        if (!postResponse.ok) {
+          showErrorMessage("Couldn't send (status " + postResponse.status + ").");
+          return;
+        }
+        var postBody = await postResponse.json();
+        var serverEventId = postBody.command_id || clientGeneratedEventId;
+
+        upsertCommandRow({
+          id: serverEventId,
+          transcript: transcriptText,
+          status: "pending",
+          createdAt: Math.floor(Date.now() / 1000),
+        });
+
+        commandInputElement.value = "";
+      } catch (sendError) {
+        showErrorMessage("Network error: " + (sendError && sendError.message ? sendError.message : "unknown"));
+      } finally {
+        sendButtonElement.disabled = false;
+      }
+    }
+
+    function bindFormHandlers() {
+      document.getElementById("sendButton").addEventListener("click", sendCommandFromForm);
+      document.getElementById("commandInput").addEventListener("keydown", function (keyEvent) {
+        if ((keyEvent.metaKey || keyEvent.ctrlKey) && keyEvent.key === "Enter") {
+          keyEvent.preventDefault();
+          sendCommandFromForm();
+        }
+      });
+      document.getElementById("signOutLink").addEventListener("click", function (clickEvent) {
+        clickEvent.preventDefault();
+        localStorage.removeItem(INSTALL_TOKEN_STORAGE_KEY);
+        localStorage.removeItem(EMAIL_STORAGE_KEY);
+        if (liveSessionWebSocket) { try { liveSessionWebSocket.close(); } catch (closeError) {} }
+        showSignedOutState();
+      });
+    }
+
+    // ----------------------------------------------------------------
+    // Boot
+    // ----------------------------------------------------------------
+
+    (function bootControlPage() {
+      consumeFragmentIfPresent();
+      bindFormHandlers();
+      var installToken = localStorage.getItem(INSTALL_TOKEN_STORAGE_KEY);
+      if (!installToken) {
+        showSignedOutState();
+        return;
+      }
+      showSignedInState();
+      loadInitialHistory();
+      openLiveSessionWebSocket();
+    })();
+  </script>
+</body>
+</html>

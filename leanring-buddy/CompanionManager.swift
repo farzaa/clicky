@@ -1312,17 +1312,33 @@ final class CompanionManager: ObservableObject {
                 )
 
                 DotDebugLogger.log("agent.loop", "finished", metadata: [
+                    "source": source,
                     "stepsExecuted": stepsExecuted,
                     "cancelledByMouseMove": didCancelDueToUserMouseMove,
                     "bailedOut": didBailOutEarly,
                     "finalSpokenTextLength": accumulatedSpokenText.count,
                     "protocol": "tool_use"
                 ])
+                self.agentLoopOutcomePublisher.send(AgentLoopOutcome(
+                    source: source,
+                    status: didCancelDueToUserMouseMove ? .cancelled : .completed,
+                    finalSpokenText: accumulatedSpokenText,
+                    stepsExecuted: stepsExecuted,
+                    errorDescription: nil
+                ))
             } catch is CancellationError {
                 DotDebugLogger.log("agent.loop", "cancelled mid-step", metadata: [
+                    "source": source,
                     "stepsExecuted": stepsExecuted,
                     "protocol": "tool_use"
                 ])
+                self.agentLoopOutcomePublisher.send(AgentLoopOutcome(
+                    source: source,
+                    status: .cancelled,
+                    finalSpokenText: accumulatedSpokenText,
+                    stepsExecuted: stepsExecuted,
+                    errorDescription: nil
+                ))
             } catch {
                 // Treat ANY error that arrives after the parent Task was
                 // cancelled as a cancellation, not a failure. URLSession's
@@ -1334,20 +1350,36 @@ final class CompanionManager: ObservableObject {
                 // previous one is mid-flight.
                 if Task.isCancelled || Self.isLikelyCancellationError(error) {
                     DotDebugLogger.log("agent.loop", "cancelled mid-step (wrapped error)", metadata: [
+                        "source": source,
                         "error": error.localizedDescription,
                         "stepsExecuted": stepsExecuted,
                         "protocol": "tool_use"
                     ])
+                    self.agentLoopOutcomePublisher.send(AgentLoopOutcome(
+                        source: source,
+                        status: .cancelled,
+                        finalSpokenText: accumulatedSpokenText,
+                        stepsExecuted: stepsExecuted,
+                        errorDescription: nil
+                    ))
                     return
                 }
 
                 DotAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Tool-use agent loop error: \(error)")
                 DotDebugLogger.log("agent.loop", "failed", metadata: [
+                    "source": source,
                     "error": error.localizedDescription,
                     "stepsExecuted": stepsExecuted,
                     "protocol": "tool_use"
                 ])
+                self.agentLoopOutcomePublisher.send(AgentLoopOutcome(
+                    source: source,
+                    status: .failed,
+                    finalSpokenText: accumulatedSpokenText,
+                    stepsExecuted: stepsExecuted,
+                    errorDescription: error.localizedDescription
+                ))
                 speakResponsePipelineErrorFallback(for: error)
             }
 
@@ -1356,6 +1388,7 @@ final class CompanionManager: ObservableObject {
                 scheduleTransientHideIfNeeded()
                 DotDebugLogger.log("agent.loop", "voice state reset", metadata: interactionStateLogMetadata())
             }
+            self.currentAgentLoopSource = nil
         }
     }
 

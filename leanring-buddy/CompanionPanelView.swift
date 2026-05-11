@@ -13,12 +13,108 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @ObservedObject var accountManager: DotAccountManager
+    @ObservedObject var remoteCommandSubscriber: RemoteCommandSubscriber
+
+    @AppStorage(RemoteCommandSubscriber.remoteControlEnabledUserDefaultsKey)
+    private var isRemoteControlEnabled: Bool = false
 
     var body: some View {
         if accountManager.isSignedIn {
             signedInBody
         } else {
             signedOutBody
+        }
+    }
+
+    // MARK: - Remote control toggle + audit row
+    //
+    // Off by default. Flipping on opens a WebSocket to vibe-id and starts
+    // accepting `dot.command.issued` events from the user's phone or any
+    // other signed-in surface. The audit row lists the last ~5 events
+    // delivered to THIS Mac with completion status, so the user can see
+    // at a glance what remote has been issuing.
+
+    @ViewBuilder
+    fileprivate var remoteControlSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Toggle(isOn: $isRemoteControlEnabled) {
+                    Text("remote control")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.85))
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .onChange(of: isRemoteControlEnabled) { newValue in
+                    remoteCommandSubscriber.setRemoteControlEnabled(newValue)
+                }
+                Spacer()
+                if isRemoteControlEnabled {
+                    Circle()
+                        .fill(remoteCommandSubscriber.isWebSocketConnected ? Color.green : Color.orange)
+                        .frame(width: 6, height: 6)
+                        .help(
+                            remoteCommandSubscriber.isWebSocketConnected
+                                ? "connected"
+                                : (remoteCommandSubscriber.lastErrorDescription ?? "connecting…")
+                        )
+                }
+            }
+
+            if isRemoteControlEnabled {
+                Text("phone commands signed into the same Google account land here.")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.45))
+            }
+
+            if remoteCommandSubscriber.coldBootReplayBannerEventCount > 0 {
+                HStack(spacing: 6) {
+                    Text(
+                        "\(remoteCommandSubscriber.coldBootReplayBannerEventCount) older command\(remoteCommandSubscriber.coldBootReplayBannerEventCount == 1 ? "" : "s") replayed after wake"
+                    )
+                    .font(.system(size: 10))
+                    .foregroundColor(.yellow.opacity(0.9))
+                    Spacer()
+                    Button("dismiss") {
+                        remoteCommandSubscriber.dismissColdBootReplayBanner()
+                    }
+                    .font(.system(size: 10))
+                    .buttonStyle(.plain)
+                    .foregroundColor(.white.opacity(0.6))
+                }
+                .padding(.vertical, 4)
+                .padding(.horizontal, 6)
+                .background(Color.yellow.opacity(0.08))
+                .cornerRadius(4)
+            }
+
+            if isRemoteControlEnabled, !remoteCommandSubscriber.recentDeliveredEvents.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(remoteCommandSubscriber.recentDeliveredEvents.prefix(5)) { event in
+                        HStack(spacing: 6) {
+                            Text(event.payload["transcript"] ?? event.eventType)
+                                .font(.system(size: 10))
+                                .foregroundColor(.white.opacity(0.7))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            Spacer()
+                            Text(event.completedStatus ?? "running…")
+                                .font(.system(size: 10))
+                                .foregroundColor(remoteCommandStatusColor(for: event.completedStatus))
+                        }
+                    }
+                }
+                .padding(.top, 2)
+            }
+        }
+    }
+
+    private func remoteCommandStatusColor(for status: String?) -> Color {
+        switch status {
+        case "completed": return .green.opacity(0.8)
+        case "cancelled": return .white.opacity(0.45)
+        case "failed":    return .red.opacity(0.8)
+        default:          return .white.opacity(0.45)
         }
     }
 
@@ -71,6 +167,12 @@ struct CompanionPanelView: View {
             if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
                 Spacer()
                     .frame(height: 16)
+
+                remoteControlSection
+                    .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 12)
 
                 feedbackButton
                     .padding(.horizontal, 16)
