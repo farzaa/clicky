@@ -92,6 +92,11 @@ enum AgentToolCall {
     case browserHistoryForward
     case mediaControl(CompanionMediaControlCommand)
     case bailOut(reason: String)
+    /// Anthropic's predefined memory tool (memory_20250818). The input dict
+    /// is passed straight through to `DotMemoryStore.dispatch` — Anthropic
+    /// owns the schema, we just execute against ~/Library/Application
+    /// Support/Dot/memories/.
+    case memory(input: [String: Any])
 }
 
 enum AgentToolDefinitions {
@@ -119,8 +124,22 @@ enum AgentToolDefinitions {
         bailOutTool
     ]
 
+    /// Predefined Anthropic tools (declared by `type` rather than a custom
+    /// `input_schema`). Currently just the memory tool. Anthropic owns the
+    /// command schema; the model has been trained against it directly, so we
+    /// intentionally don't wrap it in `AgentToolDefinition`.
+    private static let predefinedToolPayloads: [[String: Any]] = [
+        [
+            "type": "memory_20250818",
+            "name": "memory"
+        ]
+    ]
+
     static var apiPayloadList: [[String: Any]] {
-        return toolCatalog.map { $0.apiPayload }
+        // Predefined tools first so the cache_control marker that
+        // `runAgentTurnWithToolUse` adds to the LAST entry lands on a
+        // custom tool (well-tested combo), not on a predefined tool.
+        return predefinedToolPayloads + toolCatalog.map { $0.apiPayload }
     }
 
     // MARK: - Tool definitions
@@ -454,6 +473,10 @@ enum AgentToolDefinitions {
         case "bail_out":
             let reason = decodeOptionalString(toolUseBlock.inputArguments["reason"]) ?? "no reason given"
             return .bailOut(reason: reason)
+        case "memory":
+            // Forward the raw input dict; DotMemoryStore validates each field
+            // against Anthropic's command schema (view/create/str_replace/etc).
+            return .memory(input: toolUseBlock.inputArguments)
         default:
             return nil
         }

@@ -240,6 +240,10 @@ class ClaudeAPI {
         tools: [[String: Any]]
     ) async throws -> ToolUseTurnResponse {
         var request = makeAPIRequest()
+        // Opt into Anthropic's context-management beta. Required to declare
+        // the memory_20250818 predefined tool in `tools`. Forwarded by the
+        // vibe-id proxy via its `anthropic-beta` passthrough.
+        request.setValue("context-management-2025-06-27", forHTTPHeaderField: "anthropic-beta")
         // Mark system + tools as a single cacheable prefix via cache_control
         // on the last tool. Anthropic's prompt cache (~5min TTL) then lets
         // every step after the first in a turn (and turns in quick
@@ -346,6 +350,105 @@ class ClaudeAPI {
             rawAssistantContentBlocks: contentArray,
             stopReason: parsedJSON["stop_reason"] as? String
         )
+    }
+
+    /// Summarize a chunk of past conversation via Haiku 4.5 for cheap,
+    /// fast compaction of the cross-turn `conversationHistory` buffer when
+    /// it grows beyond its soft cap. The returned text replaces N old
+    /// exchanges with a single synthetic entry, keeping the long-term
+    /// thread coherent without unbounded token growth.
+    func summarizeConversationViaHaiku(transcriptToSummarize: String) async throws -> String {
+        var request = makeAPIRequest()
+
+        let summarizationSystemPrompt = """
+        you summarize past conversations between dot (a macOS voice assistant) and its user. given a chunk of older exchanges, write ONE tight paragraph (3-6 sentences) capturing: recurring topics, decisions made, personal facts about the user, and any unresolved threads. omit small-talk and one-off utility commands ("open spotify"). write in third person about both parties. plain prose, no bullets, no headers.
+        """
+
+        let body: [String: Any] = [
+            "model": "claude-haiku-4-5",
+            "max_tokens": 512,
+            "system": summarizationSystemPrompt,
+            "messages": [[
+                "role": "user",
+                "content": transcriptToSummarize
+            ]]
+        ]
+
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            let responseBodyText = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw NSError(
+                domain: "ClaudeAPI",
+                code: (response as? HTTPURLResponse)?.statusCode ?? -1,
+                userInfo: [NSLocalizedDescriptionKey: "Haiku summarize failed: \(responseBodyText)"]
+            )
+        }
+        let parsedJSON = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let contentArray = parsedJSON?["content"] as? [[String: Any]],
+              let firstTextBlock = contentArray.first(where: { ($0["type"] as? String) == "text" }),
+              let summaryText = firstTextBlock["text"] as? String else {
+            throw NSError(
+                domain: "ClaudeAPI",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Haiku summarize returned no text block"]
+            )
+        }
+        return summaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Read-only Haiku 4.5 review of the current /memories/ contents.
+    /// Used by the sleep-cycle hygiene pass to surface duplicates,
+    /// contradictions, and stale-looking entries to the user. Returns
+    /// either a short observation paragraph or the literal string
+    /// "nothing notable" when memory looks healthy — the caller skips
+    /// surfacing in that case so the user isn't pestered for no reason.
+    /// We intentionally do NOT auto-mutate memory based on this output;
+    /// surfacing for human review only.
+    func reviewMemoryStateViaHaiku(memoryStateText: String) async throws -> String {
+        var request = makeAPIRequest()
+
+        let memoryReviewSystemPrompt = """
+        you review a snapshot of dot's long-term memory store and surface anything the USER would want to know about. each memory file is delimited by --- /memories/path ---.
+
+        look for: (a) duplicates — multiple files saying the same fact, (b) contradictions — facts that conflict (e.g. one file says "uses cursor", another says "uses zed"), (c) stale-looking entries — facts that read like they're from an outdated context, (d) clutter — many tiny single-fact files that could be merged.
+
+        respond with ONE short paragraph (2-4 sentences) describing what you noticed. if memory looks clean, respond with exactly "nothing notable" and nothing else. plain prose, no bullets, no headers, no preamble like "here's what i found:".
+        """
+
+        let body: [String: Any] = [
+            "model": "claude-haiku-4-5",
+            "max_tokens": 300,
+            "system": memoryReviewSystemPrompt,
+            "messages": [[
+                "role": "user",
+                "content": memoryStateText
+            ]]
+        ]
+
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            let responseBodyText = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw NSError(
+                domain: "ClaudeAPI",
+                code: (response as? HTTPURLResponse)?.statusCode ?? -1,
+                userInfo: [NSLocalizedDescriptionKey: "Haiku memory-review failed: \(responseBodyText)"]
+            )
+        }
+        let parsedJSON = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let contentArray = parsedJSON?["content"] as? [[String: Any]],
+              let firstTextBlock = contentArray.first(where: { ($0["type"] as? String) == "text" }),
+              let observationText = firstTextBlock["text"] as? String else {
+            throw NSError(
+                domain: "ClaudeAPI",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Haiku memory-review returned no text block"]
+            )
+        }
+        return observationText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Non-streaming fallback for validation requests where we don't need progressive display.
