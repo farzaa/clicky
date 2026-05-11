@@ -61,6 +61,65 @@
     .label { color: var(--text-secondary); font-size: 13px; }
     .error { color: var(--danger); font-size: 13px; margin-top: 12px; }
     footer { margin-top: 60px; color: var(--text-tertiary); font-size: 12px; letter-spacing: 0.04em; }
+
+    /* ---------- Spending-over-time mini chart ---------- */
+    .usage-chart-row {
+      display: flex;
+      align-items: stretch;
+      gap: 8px;
+      height: 140px;
+      margin-top: 16px;
+    }
+    .usage-chart-day {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      align-items: center;
+      min-width: 0;
+    }
+    .usage-chart-day-total {
+      font-size: 10px;
+      color: var(--text-tertiary);
+      margin-bottom: 4px;
+      white-space: nowrap;
+    }
+    .usage-chart-bar {
+      width: 100%;
+      max-width: 28px;
+      display: flex;
+      flex-direction: column-reverse;
+      border-radius: 4px;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .usage-chart-bar-segment { width: 100%; }
+    .usage-chart-day-label {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      margin-top: 6px;
+    }
+    .usage-chart-legend {
+      display: flex;
+      gap: 14px;
+      margin-top: 14px;
+      flex-wrap: wrap;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    .usage-chart-legend-swatch {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    .usage-chart-empty {
+      font-size: 13px;
+      color: var(--text-tertiary);
+      margin-top: 12px;
+    }
   </style>
 </head>
 <body>
@@ -98,6 +157,11 @@
           <p id="addCreditsError" class="error" style="display: none; margin-top: 12px; margin-bottom: 0;"></p>
           <p style="color: var(--text-tertiary); font-size: 13px; margin: 14px 0 0;">Or <a href="https://x.com/clamepending" target="_blank" rel="noopener">DM me on X</a> if you'd rather not put your card down.</p>
         </div>
+      </div>
+
+      <div class="card" id="usageChartCard">
+        <div class="label">Spending — last 7 days</div>
+        <div id="usageChartBody"></div>
       </div>
     </section>
 
@@ -177,6 +241,127 @@
           : "—";
     }
 
+    // ---------- Spending-over-time chart ----------
+    // Stable color palette per project so the legend and bars stay aligned
+    // even as new projects appear. Anything not in this map gets a neutral
+    // fallback color.
+    var PROJECT_COLORS = {
+      dot: "#60a5fa",
+      swarmlab: "#a78bfa",
+      ottoauth: "#34d399",
+    };
+    var FALLBACK_PROJECT_COLOR = "#94a3b8";
+
+    function colorForProject(projectId) {
+      return PROJECT_COLORS[projectId] || FALLBACK_PROJECT_COLOR;
+    }
+
+    function shortDayLabel(isoDate) {
+      // Render in user's local timezone since the chart is for them.
+      var date = new Date(isoDate + "T12:00:00Z");
+      return date.toLocaleDateString(undefined, { weekday: "short" });
+    }
+
+    async function loadUsageChart() {
+      var installToken = localStorage.getItem(TOKEN_STORAGE_KEY);
+      if (!installToken) return;
+      var chartBody = document.getElementById("usageChartBody");
+      try {
+        var response = await fetch(VIBE_ID_BASE_URL + "/auth/usage?days=7", {
+          headers: { authorization: "Bearer " + installToken },
+        });
+        if (!response.ok) {
+          chartBody.innerHTML = '<div class="usage-chart-empty">Couldn\'t load spending history.</div>';
+          return;
+        }
+        var data = await response.json();
+        renderUsageChart(data.buckets || []);
+      } catch (_networkError) {
+        chartBody.innerHTML = '<div class="usage-chart-empty">Couldn\'t load spending history.</div>';
+      }
+    }
+
+    function renderUsageChart(buckets) {
+      var chartBody = document.getElementById("usageChartBody");
+      if (buckets.length === 0) {
+        chartBody.innerHTML = '<div class="usage-chart-empty">No spending in the last 7 days.</div>';
+        return;
+      }
+
+      // Total per day, plus the running set of every project that appeared
+      // anywhere in the window so we can build a stable legend even on days
+      // where one project had no spend.
+      var dayTotals = buckets.map(function (bucket) {
+        var sum = 0;
+        Object.keys(bucket.by_project).forEach(function (projectId) {
+          sum += bucket.by_project[projectId];
+        });
+        return sum;
+      });
+      var maxDayTotalCents = Math.max.apply(null, dayTotals);
+
+      if (maxDayTotalCents === 0) {
+        chartBody.innerHTML = '<div class="usage-chart-empty">No spending in the last 7 days.</div>';
+        return;
+      }
+
+      var projectIdsInWindow = {};
+      buckets.forEach(function (bucket) {
+        Object.keys(bucket.by_project).forEach(function (projectId) {
+          if (bucket.by_project[projectId] > 0) projectIdsInWindow[projectId] = true;
+        });
+      });
+      // Stable ordering: known projects first in palette order, then any
+      // others alphabetically. Keeps legend + stacking deterministic.
+      var orderedProjectIds = Object.keys(PROJECT_COLORS)
+        .filter(function (projectId) { return projectIdsInWindow[projectId]; })
+        .concat(
+          Object.keys(projectIdsInWindow)
+            .filter(function (projectId) { return !PROJECT_COLORS.hasOwnProperty(projectId); })
+            .sort()
+        );
+
+      var chartHtmlParts = ['<div class="usage-chart-row">'];
+      buckets.forEach(function (bucket, dayIndex) {
+        var dayTotalCents = dayTotals[dayIndex];
+        var barHeightPercent = maxDayTotalCents > 0 ? (dayTotalCents / maxDayTotalCents) * 100 : 0;
+
+        chartHtmlParts.push('<div class="usage-chart-day">');
+        chartHtmlParts.push(
+          '<div class="usage-chart-day-total">' +
+            (dayTotalCents > 0 ? formatCents(dayTotalCents) : '') +
+          '</div>'
+        );
+        chartHtmlParts.push('<div class="usage-chart-bar" style="height: ' + barHeightPercent + '%;">');
+        // Stack from bottom up via column-reverse, so iterate in legend order
+        // to get the same visual order as the legend.
+        orderedProjectIds.forEach(function (projectId) {
+          var spentCents = bucket.by_project[projectId] || 0;
+          if (spentCents <= 0) return;
+          var segmentFlex = spentCents;
+          chartHtmlParts.push(
+            '<div class="usage-chart-bar-segment" style="background: ' +
+              colorForProject(projectId) + '; flex: ' + segmentFlex + ';"></div>'
+          );
+        });
+        chartHtmlParts.push('</div>');
+        chartHtmlParts.push('<div class="usage-chart-day-label">' + shortDayLabel(bucket.day) + '</div>');
+        chartHtmlParts.push('</div>');
+      });
+      chartHtmlParts.push('</div>');
+
+      chartHtmlParts.push('<div class="usage-chart-legend">');
+      orderedProjectIds.forEach(function (projectId) {
+        chartHtmlParts.push(
+          '<span><span class="usage-chart-legend-swatch" style="background: ' +
+            colorForProject(projectId) + ';"></span>' + projectId + '</span>'
+        );
+      });
+      chartHtmlParts.push('</div>');
+
+      chartBody.innerHTML = chartHtmlParts.join('');
+    }
+
     async function loadAccount() {
       var installToken = localStorage.getItem(TOKEN_STORAGE_KEY);
       if (!installToken) {
@@ -199,6 +384,7 @@
         }
         var responseJson = await meResponse.json();
         showSignedIn(responseJson);
+        loadUsageChart();
       } catch (networkError) {
         showErrorMessage("Couldn't reach the identity server: " + networkError.message);
       }
