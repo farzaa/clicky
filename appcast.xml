@@ -3,6 +3,14 @@
     <channel>
         <title>Dot</title>
         <item>
+            <title>0.9</title>
+            <pubDate>Mon, 11 May 2026 12:44:45 -0700</pubDate>
+            <sparkle:version>9</sparkle:version>
+            <sparkle:shortVersionString>0.9</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/Clamepending/dot/releases/download/v0.9/Dot.dmg" length="11366084" type="application/octet-stream" sparkle:edSignature="pZIzdyql62AYhzyVOxbKM/TiDPgTQEMlhv4IlvA6KTkuDuN3Nm9CcvK9Fu8otaAh8y9Bg4hLyilGdHCs9swJDQ=="/>
+        </item>
+        <item>
             <title>0.8</title>
             <pubDate>Sun, 10 May 2026 13:20:35 -0700</pubDate>
             <sparkle:version>8</sparkle:version>
