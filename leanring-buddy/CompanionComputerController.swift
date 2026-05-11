@@ -547,45 +547,72 @@ enum CompanionComputerController {
 
     static func typeText(_ text: String) {
         DotDebugLogger.log("computer.controller", "typing requested", metadata: [
-            "characterCount": text.count
+            "characterCount": text.count,
+            "via": "clipboard-paste"
         ])
-        let eventSource = CGEventSource(stateID: .combinedSessionState)
 
-        for character in text {
-            postUnicodeKeyboardEvent(
-                String(character),
-                keyDown: true,
-                eventSource: eventSource
-            )
-            postUnicodeKeyboardEvent(
-                String(character),
-                keyDown: false,
-                eventSource: eventSource
-            )
+        // We paste rather than emit one CGEvent per character. Electron
+        // apps (Slack, Discord, VS Code) drop characters under fast
+        // `keyboardSetUnicodeString` bursts because React's synthetic
+        // event layer doesn't reliably translate Unicode-payload events
+        // (the `keyCode`/`key` fields end up empty). One cmd+V is
+        // lossless across every target we care about.
+        let pasteboard = NSPasteboard.general
+        let preservedPasteboardItems: [[NSPasteboard.PasteboardType: Data]] =
+            (pasteboard.pasteboardItems ?? []).map { existingItem in
+                var typeToData: [NSPasteboard.PasteboardType: Data] = [:]
+                for pasteboardType in existingItem.types {
+                    if let data = existingItem.data(forType: pasteboardType) {
+                        typeToData[pasteboardType] = data
+                    }
+                }
+                return typeToData
+            }
+
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+
+        // Post cmd+V as a real keystroke so the target app's keydown
+        // handler fires its paste pipeline. virtualKey 9 = kVK_ANSI_V.
+        let eventSource = CGEventSource(stateID: .combinedSessionState)
+        let pasteKeyDownEvent = CGEvent(
+            keyboardEventSource: eventSource,
+            virtualKey: 9,
+            keyDown: true
+        )
+        pasteKeyDownEvent?.flags = .maskCommand
+        pasteKeyDownEvent?.post(tap: .cghidEventTap)
+        let pasteKeyUpEvent = CGEvent(
+            keyboardEventSource: eventSource,
+            virtualKey: 9,
+            keyDown: false
+        )
+        pasteKeyUpEvent?.flags = .maskCommand
+        pasteKeyUpEvent?.post(tap: .cghidEventTap)
+
+        // Restore the user's previous clipboard contents after the target
+        // app has had time to read the pasted text. 150ms is comfortably
+        // longer than the system's paste round-trip and well under the
+        // agent loop's 500ms inter-step settling delay, so the restore
+        // can't race the next tool's clipboard use.
+        let pasteboardItemsToRestore = preservedPasteboardItems
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            let pasteboardToRestore = NSPasteboard.general
+            pasteboardToRestore.clearContents()
+            guard !pasteboardItemsToRestore.isEmpty else { return }
+            let rebuiltPasteboardItems: [NSPasteboardItem] = pasteboardItemsToRestore.map { typeToData in
+                let rebuiltItem = NSPasteboardItem()
+                for (pasteboardType, data) in typeToData {
+                    rebuiltItem.setData(data, forType: pasteboardType)
+                }
+                return rebuiltItem
+            }
+            pasteboardToRestore.writeObjects(rebuiltPasteboardItems)
         }
+
         DotDebugLogger.log("computer.controller", "typing completed", metadata: [
             "characterCount": text.count
         ])
-    }
-
-    private static func postUnicodeKeyboardEvent(
-        _ text: String,
-        keyDown: Bool,
-        eventSource: CGEventSource?
-    ) {
-        var utf16Characters: [UniChar] = Array(text.utf16)
-        guard !utf16Characters.isEmpty else { return }
-
-        let keyboardEvent = CGEvent(
-            keyboardEventSource: eventSource,
-            virtualKey: 0,
-            keyDown: keyDown
-        )
-        keyboardEvent?.keyboardSetUnicodeString(
-            stringLength: utf16Characters.count,
-            unicodeString: &utf16Characters
-        )
-        keyboardEvent?.post(tap: .cghidEventTap)
     }
 
     /// Result of a request to launch or activate a native macOS application.
