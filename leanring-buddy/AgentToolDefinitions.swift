@@ -82,6 +82,8 @@ enum AgentToolCall {
     case scroll(direction: AgentScrollDirection, amount: AgentScrollAmount)
     case openURL(String)
     case openApplication(nameOrBundleIdentifier: String)
+    case switchSpace(direction: CompanionComputerController.SpaceSwitchDirection)
+    case showMissionControl
     case navigateBrowserToURL(String)
     case openNewBrowserTab(initialURL: String?)
     case closeCurrentBrowserTab
@@ -105,6 +107,8 @@ enum AgentToolDefinitions {
         scrollTool,
         openURLTool,
         openApplicationTool,
+        switchSpaceTool,
+        showMissionControlTool,
         navigateBrowserTool,
         openNewTabTool,
         closeTabTool,
@@ -238,6 +242,31 @@ enum AgentToolDefinitions {
                 ]
             ],
             "required": ["name"]
+        ]
+    )
+
+    private static let switchSpaceTool = AgentToolDefinition(
+        name: "switch_space",
+        description: "Switch to an adjacent macOS Space (virtual desktop). Posts the system-default ctrl+→ / ctrl+← shortcut. Use this — not press_keystroke('cmd+space') (which is Spotlight) or press_keystroke('space') (which is the spacebar) — when the user asks to switch desktops / spaces / virtual screens. For \"go to my coding space\" or similar named targets, call this once with direction=next or previous, then re-observe; chain more calls if the destination wasn't reached. If the user asks to see all spaces, use show_mission_control instead.",
+        inputSchema: [
+            "type": "object",
+            "properties": [
+                "direction": [
+                    "type": "string",
+                    "enum": ["next", "previous"],
+                    "description": "next slides one Space to the right; previous slides one Space to the left."
+                ]
+            ],
+            "required": ["direction"]
+        ]
+    )
+
+    private static let showMissionControlTool = AgentToolDefinition(
+        name: "show_mission_control",
+        description: "Open macOS Mission Control so all Spaces and windows are visible at once. Posts the system-default ctrl+↑ shortcut. Use when the user wants to see all their Spaces / desktops, or when you need a visual to pick which Space to switch to next (you can call this, observe the new screenshot, then click_element on the target Space thumbnail).",
+        inputSchema: [
+            "type": "object",
+            "properties": [:] as [String: Any]
         ]
     )
 
@@ -393,6 +422,14 @@ enum AgentToolDefinitions {
             return .openApplication(
                 nameOrBundleIdentifier: nameValue.trimmingCharacters(in: .whitespacesAndNewlines)
             )
+        case "switch_space":
+            guard let directionValue = toolUseBlock.inputArguments["direction"] as? String,
+                  let parsedDirection = CompanionComputerController.SpaceSwitchDirection(
+                      rawValue: directionValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                  ) else { return nil }
+            return .switchSpace(direction: parsedDirection)
+        case "show_mission_control":
+            return .showMissionControl
         case "navigate_browser":
             guard let urlValue = toolUseBlock.inputArguments["url"] as? String,
                   !urlValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }

@@ -973,6 +973,8 @@ final class CompanionManager: ObservableObject {
     - for other browser-chrome operations (opening a new tab, closing a tab, switching tabs, history), use the dedicated browser tools (open_new_tab, close_tab, switch_tab, browser_back, browser_forward). only use these when a browser is the frontmost app — they send keyboard shortcuts that would go to the wrong app otherwise.
     - for media (pause/play/skip), use media_control — works even if the music app is hidden.
     - to scroll the page (or any scrollable view under the cursor), use scroll. \"down\" reveals what's below the fold; \"up\" reveals above. if the user wants to scroll a specific pane (sidebar, embedded list, panel that isn't where the cursor is), call point_at_element first to move the cursor there, then scroll on the next step. the blue cursor companion briefly nudges in the scroll direction so the user sees the action happen.
+    - to switch macOS Spaces / virtual desktops, use switch_space with direction=next or previous. NEVER press_keystroke('cmd+space') — that's Spotlight. NEVER press_keystroke('space') — that's the spacebar. NEVER press_keystroke('cmd+arrow') — that's text navigation. switch_space posts the system-default ctrl+→/← shortcut Mission Control actually listens for. if the destination is more than one Space away, chain multiple switch_space calls. if the user wants to see all Spaces at once, use show_mission_control instead.
+    - if the user asks to open an app that's on a different Space, prefer open_app: macOS auto-switches to the Space where the app lives as part of activation, so you almost never need a manual switch_space first.
     - safe to auto-execute end-to-end: opening URLs, opening apps, focusing fields, scrolling, switching tabs, typing into drafts, creating new docs/files. just do them.
     - needs explicit user confirmation: sending a message or email, paying or buying, deleting data, closing unsaved work, changing account / security settings. don't auto-execute those — call bail_out and explain.
     - if a target is genuinely ambiguous and you can't tell which element to click, call bail_out and explain.
@@ -1534,6 +1536,26 @@ final class CompanionManager: ObservableObject {
                 didTriggerBailOut: false
             )
 
+        case .switchSpace(let direction):
+            await performComputerControlActions(
+                [.switchSpace(direction: direction)],
+                screenCaptures: originatingScreenCaptures
+            )
+            return AgentToolExecutionResult(
+                toolResultContent: "switched space \(direction.rawValue)",
+                didTriggerBailOut: false
+            )
+
+        case .showMissionControl:
+            await performComputerControlActions(
+                [.showMissionControl],
+                screenCaptures: originatingScreenCaptures
+            )
+            return AgentToolExecutionResult(
+                toolResultContent: "opened mission control",
+                didTriggerBailOut: false
+            )
+
         case .navigateBrowserToURL(let url):
             await performComputerControlActions(
                 [.navigateBrowserToURL(url)],
@@ -1978,6 +2000,12 @@ final class CompanionManager: ObservableObject {
         // no actual navigation.
         case openURL(String)
         case openApplication(nameOrBundleIdentifier: String)
+        // macOS Spaces / Mission Control. Dedicated cases (rather than
+        // press_keystroke) so the system prompt can steer Claude away from
+        // the textually-similar but wrong `cmd+space` (Spotlight) and bare
+        // `space` (spacebar) keystrokes it was firing before.
+        case switchSpace(direction: CompanionComputerController.SpaceSwitchDirection)
+        case showMissionControl
         // High-level browser navigation macros that wrap a known-reliable
         // keystroke sequence so Claude doesn't have to reconstruct it from
         // primitives and risk hitting the wrong target.
@@ -2096,6 +2124,12 @@ final class CompanionManager: ObservableObject {
             case .openApplication(let nameOrBundleIdentifier):
                 await executeOpenApplication(nameOrBundleIdentifier: nameOrBundleIdentifier)
 
+            case .switchSpace(let spaceDirection):
+                await executeSwitchSpace(direction: spaceDirection)
+
+            case .showMissionControl:
+                await executeShowMissionControl()
+
             case .navigateBrowserToURL(let targetURL):
                 await executeBrowserNavigation(targetURL: targetURL)
 
@@ -2167,6 +2201,33 @@ final class CompanionManager: ObservableObject {
             "resolvedName": openApplicationResult.resolvedApplicationName,
             "errorDescription": openApplicationResult.errorDescription ?? ""
         ])
+    }
+
+    /// Slides to the adjacent macOS Space using the system-default
+    /// ctrl+→ / ctrl+← shortcut. The post-action settle is ~600ms — long
+    /// enough for the Space-switch animation to land, short enough that
+    /// the next agent step doesn't feel sluggish.
+    private func executeSwitchSpace(
+        direction: CompanionComputerController.SpaceSwitchDirection
+    ) async {
+        DotDebugLogger.log("computer.actions", "switch_space action requested", metadata: [
+            "direction": direction.rawValue
+        ])
+        CompanionComputerController.switchSpace(direction: direction)
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        DotDebugLogger.log("computer.actions", "switch_space action completed", metadata: [
+            "direction": direction.rawValue
+        ])
+    }
+
+    /// Opens macOS Mission Control via the system-default ctrl+↑ shortcut.
+    /// Mission Control's transition animation is ~400ms; the settle gives
+    /// the next agent step a fully-rendered overview to act on.
+    private func executeShowMissionControl() async {
+        DotDebugLogger.log("computer.actions", "show_mission_control action requested")
+        CompanionComputerController.showMissionControl()
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        DotDebugLogger.log("computer.actions", "show_mission_control action completed")
     }
 
     /// High-level browser navigation: routes through NSWorkspace.shared.open

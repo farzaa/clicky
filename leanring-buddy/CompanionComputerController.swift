@@ -228,6 +228,52 @@ enum CompanionComputerController {
         ])
     }
 
+    /// Direction the user wants to slide through macOS Spaces, in
+    /// viewport-content terms. "next" moves to the desktop on the right.
+    enum SpaceSwitchDirection: String {
+        case next
+        case previous
+    }
+
+    /// Switches to the macOS Space adjacent to the current one. Posts the
+    /// system-default ctrl+→ / ctrl+← keystroke that Mission Control
+    /// listens for. Reliable as long as the user hasn't unbound the
+    /// shortcut in System Settings (they're on by default). Distinct from
+    /// `cmd+space` (Spotlight) and bare `space` (spacebar) — Claude was
+    /// firing both of those when asked to switch Spaces before this tool
+    /// existed.
+    static func switchSpace(direction: SpaceSwitchDirection) {
+        let keySpec: String
+        switch direction {
+        case .next:     keySpec = "ctrl+right"
+        case .previous: keySpec = "ctrl+left"
+        }
+        DotDebugLogger.log("computer.controller", "switch space requested", metadata: [
+            "direction": direction.rawValue,
+            "keySpec": keySpec
+        ])
+        guard let keystroke = parseKeystroke(fromKeySpec: keySpec) else {
+            DotDebugLogger.log("computer.controller", "switch space skipped — keystroke parse failed", metadata: [
+                "keySpec": keySpec
+            ])
+            return
+        }
+        pressKeystroke(keystroke)
+    }
+
+    /// Brings up macOS Mission Control so every Space + window thumbnail is
+    /// on screen. Useful when Claude needs the user to pick a Space, or
+    /// when the next agent step wants to click a specific thumbnail. Posts
+    /// the default ctrl+↑ shortcut.
+    static func showMissionControl() {
+        DotDebugLogger.log("computer.controller", "mission control requested")
+        guard let keystroke = parseKeystroke(fromKeySpec: "ctrl+up") else {
+            DotDebugLogger.log("computer.controller", "mission control skipped — keystroke parse failed")
+            return
+        }
+        pressKeystroke(keystroke)
+    }
+
     static func click(atAppKitScreenLocation appKitScreenLocation: CGPoint) {
         let eventLocation = quartzEventLocation(forAppKitScreenLocation: appKitScreenLocation)
         DotDebugLogger.log("computer.controller", "click requested", metadata: [
