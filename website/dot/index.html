@@ -22,6 +22,18 @@
       <div class="cta-row">
         <a id="downloadButton" href="#" class="button">↓ Download for macOS</a>
       </div>
+
+      <p class="muted" id="waitlistPrompt" style="margin-top: 14px;">
+        on windows? <a href="#" id="waitlistLink">join the waitlist</a>
+      </p>
+      <form id="waitlistForm" style="display: none; margin-top: 14px; max-width: 420px;">
+        <div style="display: flex; gap: 8px;">
+          <input type="email" id="waitlistEmailInput" class="input" placeholder="enter your email" required autocomplete="email" />
+          <button type="submit" id="waitlistSubmit" class="button">join</button>
+        </div>
+        <p id="waitlistError" class="error" style="display: none;"></p>
+      </form>
+      <p class="muted" id="waitlistThanks" style="display: none; margin-top: 14px;">thanks, we'll let you know when Dot's on Windows.</p>
     </section>
 
     <section class="section">
@@ -60,6 +72,63 @@
       var githubLink = document.getElementById("githubLink");
       if (githubLink && config.githubURL) {
         githubLink.setAttribute("href", config.githubURL);
+      }
+
+      // ---------- Windows waitlist ----------
+      var waitlistLink = document.getElementById("waitlistLink");
+      var waitlistPrompt = document.getElementById("waitlistPrompt");
+      var waitlistForm = document.getElementById("waitlistForm");
+      var waitlistEmailInput = document.getElementById("waitlistEmailInput");
+      var waitlistSubmit = document.getElementById("waitlistSubmit");
+      var waitlistError = document.getElementById("waitlistError");
+      var waitlistThanks = document.getElementById("waitlistThanks");
+
+      if (waitlistLink) {
+        waitlistLink.addEventListener("click", function (event) {
+          event.preventDefault();
+          waitlistPrompt.style.display = "none";
+          waitlistForm.style.display = "";
+          waitlistEmailInput.focus();
+        });
+      }
+
+      if (waitlistForm) {
+        waitlistForm.addEventListener("submit", async function (event) {
+          event.preventDefault();
+          var enteredEmail = (waitlistEmailInput.value || "").trim();
+          if (!enteredEmail) return;
+
+          waitlistError.style.display = "none";
+          waitlistSubmit.disabled = true;
+          waitlistSubmit.textContent = "joining…";
+
+          try {
+            var response = await fetch(config.vibeIdBaseURL + "/waitlist", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                email: enteredEmail,
+                platform: "windows",
+                source: "dot.vibe-research.net",
+              }),
+            });
+            if (!response.ok) {
+              var errorBody = {};
+              try { errorBody = await response.json(); } catch (_) {}
+              throw new Error(errorBody.error || ("status " + response.status));
+            }
+            waitlistForm.style.display = "none";
+            waitlistThanks.style.display = "";
+          } catch (signupError) {
+            var message = signupError && signupError.message ? signupError.message : "unknown error";
+            waitlistError.textContent =
+              message === "invalid_email" ? "that email doesn't look right — try again?" :
+              "couldn't sign you up: " + message;
+            waitlistError.style.display = "";
+            waitlistSubmit.disabled = false;
+            waitlistSubmit.textContent = "join";
+          }
+        });
       }
     })();
   </script>
