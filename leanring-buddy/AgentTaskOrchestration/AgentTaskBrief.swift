@@ -21,6 +21,7 @@ struct AgentTaskBrief: Identifiable, Equatable {
     let workingDirectoryURL: URL
     let additionalDirectoryURLs: [URL]
     let originatingSource: String?
+    let shouldUsePersonalConnectedTools: Bool
     let estimatedDurationDescription: String
     let maxToolCallSteps: Int
     let maxWallClockSeconds: Int

@@ -1,17 +1,17 @@
 # Background Agent Tasks: Dot as a Conductor for External Coding Agents
 
-Status: **Implemented explicit-prefix background coding agents.**
+Status: **Implemented explicit-prefix coding agents plus deterministic personal-task background routes.**
 
 ## Goal
 
-Let the user explicitly say things like *"dot agent reimplement this paper and give me an interactive demo"* and have Dot run that as a long-lived background coding task on the user's Mac. Non-prefixed requests stay in Dot's normal live computer-use loop.
+Let the user explicitly say things like *"dot agent reimplement this paper and give me an interactive demo"* and have Dot run that as a long-lived background coding task on the user's Mac. Also route a small set of long-running personal research/artifact/accounting tasks to the same durable worker when they clearly need web/Gmail/Drive/Slides-style connected tools. Foreground UI work, especially cart prep and live site operation, stays in Dot's normal screenshot computer-use loop.
 
 Dot's edge is voice + screen + ambient surface. We use that to orchestrate existing best-in-class coding agents rather than reimplementing them.
 
 ## Non-goals (v1)
 
 - Cloud execution. Tasks run on the user's machine.
-- Broad live browser/app automation in background agents. Normal Dot handles UI/session work inline.
+- Broad live browser/app automation in background agents. Normal Dot handles foreground UI/session work inline; background personal tasks may use connected Chrome/Gmail/Drive/Canva tools for durable research/artifact/accounting work.
 - Existing-repo cwd inference from frontmost IDEs. v1 uses auto-named task directories and tells the worker to inspect user-supplied paths when possible.
 - Vibe-id Anthropic passthrough. v1 uses the user's installed Claude Code CLI auth.
 - Codex CLI fallback. v1 ships Claude Code support only; the adapter protocol is shaped so adding Codex is a single new file in v2.
@@ -25,8 +25,9 @@ Dot's edge is voice + screen + ambient surface. We use that to orchestrate exist
 │                                                      │
 │  CompanionManager                                    │
 │   ↓ transcript finalized                             │
-│   ↓ explicit prefix check                            │
-│   │     ↳ dot agent prefix spawns                    │
+│   ↓ explicit prefix + deterministic personal routes  │
+│   │     ↳ dot agent / research / Gmail-Drive         │
+│   │       accounting routes spawn                    │
 │   ↓                                                  │
 │   ↓ no route → existing live inline tool-use loop    │
 │   ↓ background route → AgentTaskManager.startTask    │
@@ -64,6 +65,8 @@ struct AgentTaskBrief {
     let detailedInstructions: String          // the actual prompt to the worker
     let workingDirectoryURL: URL              // auto-named, e.g. ~/Desktop/Dot Tasks/...
     let additionalDirectoryURLs: [URL]        // explicit user-supplied paths exposed through --add-dir
+    let originatingSource: String?            // debug-url, typed panel, voice, etc.
+    let shouldUsePersonalConnectedTools: Bool // Gmail/Drive/Chrome/Canva route vs coding route
     let estimatedDurationDescription: String  // "about 10 minutes" — surfaced via TTS
     let maxToolCallSteps: Int                 // budget cap, default 120
     let maxWallClockSeconds: Int              // budget cap, default 2700
@@ -120,7 +123,7 @@ claude -p --output-format=stream-json --input-format=stream-json \
        <<<"<one-shot brief>"
 ```
 
-Explicit coding tasks get code/search/shell tools and stay headless. Browser/app UI work remains in Dot's live inline loop.
+Explicit coding tasks get code/search/shell tools and stay headless. Personal background tasks get web/search plus connected Chrome, Gmail, Google Drive, and Canva tools, and are launched with both `--allowedTools` and `--tools` so shell fallback is unavailable on that route. Browser/app UI work such as Snackpass cart prep remains in Dot's live inline loop.
 
 We read stdout line-by-line; each line is a JSON object of the form:
 
@@ -146,16 +149,20 @@ Cancellation: send SIGTERM; if still alive after 2s, SIGKILL.
 
 Detection: `which claude || command -v claude || stat ~/.npm-global/bin/claude /opt/homebrew/bin/claude /usr/local/bin/claude`. Memoize. If absent, the manager surfaces "install Claude Code" in the panel and a TTS line.
 
-## Explicit command routing
+## Routing Rules
 
-Dot does not use an LLM or keyword classifier to infer background-agent intent. The only background trigger is a leading `dot agent ...` command:
+Dot does not use an LLM to infer background-agent intent. Routing is deterministic:
 
 - `submit my homework to the course site` → normal Dot live inline loop
 - `click the save button in Chrome` → normal Dot live inline loop
-- `dot agent build me a CS185 test harness` -> background agent
-- `dot agent inspect /Users/mark/Desktop/project and summarize failing tests` -> background agent
+- `buy me a boba at TP Tea on Snackpass, put it in cart but don't check out` → normal Dot live inline loop, because live cart prep requires foreground UI control and must stop before payment/checkout
+- `create a Google Slides pitchdeck for vibe-research.net` → normal Dot live inline loop by default, because the user should be able to watch Dot navigate Slides, gather images, and build the deck on screen
+- `dot agent build me a CS185 test harness` → background coding agent
+- `dot agent inspect /Users/mark/Desktop/project and summarize failing tests` → background coding agent
+- `find me the best pizza places next to Berkeley campus` → personal background task with web search
+- `find the total cost of hotels for my Japan trip; trip is in Google Sheets and bookings may be in Gmail` → personal background task with read-only Drive/Gmail access and arithmetic in the final answer
 
-The prefix is intentionally blunt. It gives the user a reliable mental model and prevents long-running coding agents from appearing when the user expected Dot to operate the current browser/app session.
+The explicit `dot agent` prefix remains the only open-ended background trigger. The personal routes are narrow keyword predicates for recommendations and Gmail/Sheets trip accounting. Presentation/deck creation and shopping/cart tasks stay inline unless the user explicitly asks for background work.
 
 If the stripped request contains existing absolute or `~/...` paths, Dot adds those directories to Claude Code with `--add-dir`. Generated task state still lives under `~/Desktop/Dot Tasks/`, but explicit paths let the worker inspect real project folders without requiring a live UI route.
 

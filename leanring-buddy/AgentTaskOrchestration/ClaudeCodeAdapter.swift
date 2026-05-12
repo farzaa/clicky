@@ -51,6 +51,66 @@ final class ClaudeCodeAdapter: AgentWorker {
         "Bash"
     ]
 
+    /// Long-running personal tasks can use Claude Code as the durable worker,
+    /// but they need connected account tools for Gmail, Drive, browser, and
+    /// deck/artifact creation. Bash is intentionally excluded here; if Google
+    /// Slides/Drive/Canva cannot create the artifact, the worker should report
+    /// that blocker instead of silently falling back to shell-generated files.
+    nonisolated private static let personalConnectedTaskAllowedToolNames: [String] = [
+        "Read",
+        "Write",
+        "Edit",
+        "MultiEdit",
+        "Glob",
+        "Grep",
+        "LS",
+        "TodoWrite",
+        "ToolSearch",
+        "WebFetch",
+        "WebSearch",
+        "mcp__claude-in-chrome__browser_batch",
+        "mcp__claude-in-chrome__computer",
+        "mcp__claude-in-chrome__file_upload",
+        "mcp__claude-in-chrome__find",
+        "mcp__claude-in-chrome__form_input",
+        "mcp__claude-in-chrome__get_page_text",
+        "mcp__claude-in-chrome__javascript_tool",
+        "mcp__claude-in-chrome__navigate",
+        "mcp__claude-in-chrome__read_console_messages",
+        "mcp__claude-in-chrome__read_network_requests",
+        "mcp__claude-in-chrome__read_page",
+        "mcp__claude-in-chrome__resize_window",
+        "mcp__claude-in-chrome__shortcuts_execute",
+        "mcp__claude-in-chrome__shortcuts_list",
+        "mcp__claude-in-chrome__switch_browser",
+        "mcp__claude-in-chrome__tabs_close_mcp",
+        "mcp__claude-in-chrome__tabs_context_mcp",
+        "mcp__claude-in-chrome__tabs_create_mcp",
+        "mcp__claude-in-chrome__upload_image",
+        "mcp__claude_ai_Gmail__get_thread",
+        "mcp__claude_ai_Gmail__list_drafts",
+        "mcp__claude_ai_Gmail__list_labels",
+        "mcp__claude_ai_Gmail__search_threads",
+        "mcp__claude_ai_Google_Drive__copy_file",
+        "mcp__claude_ai_Google_Drive__create_file",
+        "mcp__claude_ai_Google_Drive__download_file_content",
+        "mcp__claude_ai_Google_Drive__get_file_metadata",
+        "mcp__claude_ai_Google_Drive__list_recent_files",
+        "mcp__claude_ai_Google_Drive__read_file_content",
+        "mcp__claude_ai_Google_Drive__search_files",
+        "mcp__claude_ai_Canva__commit-editing-transaction",
+        "mcp__claude_ai_Canva__create-design-from-candidate",
+        "mcp__claude_ai_Canva__export-design",
+        "mcp__claude_ai_Canva__generate-design",
+        "mcp__claude_ai_Canva__generate-design-structured",
+        "mcp__claude_ai_Canva__get-design",
+        "mcp__claude_ai_Canva__get-design-content",
+        "mcp__claude_ai_Canva__get-design-pages",
+        "mcp__claude_ai_Canva__get-export-formats",
+        "mcp__claude_ai_Canva__perform-editing-operations",
+        "mcp__claude_ai_Canva__start-editing-transaction"
+    ]
+
     private static var cachedResolvedBinaryPath: String?
 
     /// Walks the candidate paths and returns the first one that exists and
@@ -221,15 +281,24 @@ final class ClaudeCodeAdapter: AgentWorker {
         // workspace, so they must be able to use explicitly allowed coding
         // tools without an interactive approval prompt. Live browser/app work
         // stays in Dot's foreground computer-use loop.
+        let allowedToolNames = brief.shouldUsePersonalConnectedTools
+            ? Self.personalConnectedTaskAllowedToolNames
+            : Self.codingAgentAllowedToolNames
+
         var arguments = [
             "--print",
             "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--verbose",
             "--permission-mode", "bypassPermissions",
-            "--allowedTools", Self.codingAgentAllowedToolNames.joined(separator: ","),
+            "--allowedTools", allowedToolNames.joined(separator: ","),
             "--max-turns", String(brief.maxToolCallSteps)
         ]
+        if brief.shouldUsePersonalConnectedTools {
+            arguments.append("--tools")
+            arguments.append(allowedToolNames.joined(separator: ","))
+            arguments.append("--chrome")
+        }
         if !brief.additionalDirectoryURLs.isEmpty {
             arguments.append("--add-dir")
             arguments.append(contentsOf: brief.additionalDirectoryURLs.map(\.path))

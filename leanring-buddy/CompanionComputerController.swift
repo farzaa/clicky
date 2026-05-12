@@ -293,16 +293,11 @@ enum CompanionComputerController {
             "accessibilityTrusted": AXIsProcessTrusted()
         ])
 
-        if AXIsProcessTrusted(),
-           performAccessibilityPress(atQuartzEventLocation: eventLocation) {
-            print("🖱️ Computer control: performed AXPress without moving the hardware cursor.")
-            DotDebugLogger.log("computer.controller", "click completed with AXPress", metadata: [
-                "quartzX": Int(eventLocation.x),
-                "quartzY": Int(eventLocation.y)
-            ])
-            return
-        }
-
+        // Prefer real mouse events for click_element. AXPress can look
+        // successful while doing the wrong thing in browser canvases such as
+        // Google Slides: the AX node accepts "press", but the web editor never
+        // receives the mouseDown/mouseUp sequence it needs to enter edit mode.
+        // The coordinate path is also the behavior users expect to watch.
         postCoordinateClickPreservingHardwareCursor(atQuartzEventLocation: eventLocation)
         print("🖱️ Computer control: posted coordinate click without leaving the hardware cursor at the target.")
         DotDebugLogger.log("computer.controller", "click completed with coordinate events", metadata: [
@@ -324,121 +319,6 @@ enum CompanionComputerController {
             "quartzX": Int(eventLocation.x),
             "quartzY": Int(eventLocation.y)
         ])
-    }
-
-    private static func performAccessibilityPress(atQuartzEventLocation eventLocation: CGPoint) -> Bool {
-        let systemWideElement = AXUIElementCreateSystemWide()
-        var targetElement: AXUIElement?
-        let copyResult = AXUIElementCopyElementAtPosition(
-            systemWideElement,
-            Float(eventLocation.x),
-            Float(eventLocation.y),
-            &targetElement
-        )
-
-        guard copyResult == .success, let targetElement else {
-            return false
-        }
-
-        return performPressOnElementOrAncestor(targetElement)
-    }
-
-    private static func performPressOnElementOrAncestor(_ targetElement: AXUIElement) -> Bool {
-        // Don't try AXPress when the click landed on a text-input element.
-        // Text fields/areas/search fields/combo boxes don't support kAXPress,
-        // so the ancestor walker below would press a button-like wrapper
-        // (a toolbar item, a container) instead of focusing the field —
-        // leaving the user's next type_text call to hit the wrong place
-        // and play the macOS funk sound. Coordinate clicks reliably focus
-        // text inputs, so let the caller fall through to that path.
-        if elementHasTextInputRole(targetElement) {
-            return false
-        }
-
-        var currentElement: AXUIElement? = targetElement
-
-        for _ in 0..<5 {
-            guard let element = currentElement else { return false }
-
-            if elementSupportsPressAction(element),
-               AXUIElementPerformAction(element, kAXPressAction as CFString) == .success {
-                return true
-            }
-
-            var parentElementValue: CFTypeRef?
-            let parentResult = AXUIElementCopyAttributeValue(
-                element,
-                kAXParentAttribute as CFString,
-                &parentElementValue
-            )
-
-            guard parentResult == .success,
-                  let parentElement = parentElementValue else {
-                return false
-            }
-
-            currentElement = (parentElement as! AXUIElement)
-        }
-
-        return false
-    }
-
-    private static func elementSupportsPressAction(_ element: AXUIElement) -> Bool {
-        var actionNamesValue: CFArray?
-        let copyResult = AXUIElementCopyActionNames(element, &actionNamesValue)
-        guard copyResult == .success,
-              let actionNames = actionNamesValue as? [String] else {
-            return false
-        }
-
-        return actionNames.contains(kAXPressAction as String)
-    }
-
-    private static func elementHasTextInputRole(_ element: AXUIElement) -> Bool {
-        var roleAttributeValue: CFTypeRef?
-        let copyRoleResult = AXUIElementCopyAttributeValue(
-            element,
-            kAXRoleAttribute as CFString,
-            &roleAttributeValue
-        )
-        guard copyRoleResult == .success,
-              let roleString = roleAttributeValue as? String else {
-            return false
-        }
-
-        let textInputAccessibilityRoles: Set<String> = [
-            kAXTextFieldRole as String,
-            kAXTextAreaRole as String,
-            kAXComboBoxRole as String,
-            // macOS doesn't expose AXSearchField as a public constant,
-            // so use the literal that VoiceOver and accessibility tools
-            // observe for NSSearchField and similar controls.
-            "AXSearchField"
-        ]
-        if textInputAccessibilityRoles.contains(roleString) {
-            return true
-        }
-
-        // Some AXTextField wrappers (notably NSSearchField) report
-        // role = AXTextField with subrole = AXSearchField — both already
-        // covered above — but other controls expose themselves only via
-        // subrole. Check the subrole as well so we don't miss them.
-        var subroleAttributeValue: CFTypeRef?
-        let copySubroleResult = AXUIElementCopyAttributeValue(
-            element,
-            kAXSubroleAttribute as CFString,
-            &subroleAttributeValue
-        )
-        guard copySubroleResult == .success,
-              let subroleString = subroleAttributeValue as? String else {
-            return false
-        }
-
-        let textInputAccessibilitySubroles: Set<String> = [
-            "AXSearchField",
-            "AXSecureTextField"
-        ]
-        return textInputAccessibilitySubroles.contains(subroleString)
     }
 
     private static func postCoordinateClickPreservingHardwareCursor(atQuartzEventLocation eventLocation: CGPoint) {
