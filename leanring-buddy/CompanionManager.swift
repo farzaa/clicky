@@ -620,7 +620,7 @@ final class CompanionManager: ObservableObject {
             ))
             return
         }
-        routeTranscriptToBackgroundAgentOrInlineLoop(
+        routeTranscriptToExplicitAgentCommandOrInlineLoop(
             transcript: trimmedTranscript,
             source: source
         )
@@ -1080,7 +1080,7 @@ final class CompanionManager: ObservableObject {
                         ])
                         DotAnalytics.trackUserMessageSent(transcript: finalTranscript)
                         if self?.handleDirectLocalMediaCommandIfRecognized(transcript: finalTranscript) != true {
-                            self?.routeTranscriptToBackgroundAgentOrInlineLoop(
+                            self?.routeTranscriptToExplicitAgentCommandOrInlineLoop(
                                 transcript: finalTranscript,
                                 source: "push-to-talk"
                             )
@@ -1310,82 +1310,167 @@ final class CompanionManager: ObservableObject {
         return false
     }
 
-    // MARK: - Background Agent Task Routing
+    // MARK: - Explicit Background Agent Task Routing
 
-    /// Routes a finalized transcript to either (a) a follow-up on the
-    /// currently running background task, (b) a fresh background task if
-    /// the planner classifies the request as substantial, or (c) the
-    /// existing inline tool-use loop. Called after the direct-media short-
-    /// circuit declines the transcript. Used by both the push-to-talk
-    /// path and the text-command panel.
-    private func routeTranscriptToBackgroundAgentOrInlineLoop(
+    /// Routes finalized transcripts through one explicit escape hatch:
+    /// requests that start with "dot agent ..." spawn a background coding
+    /// agent. Everything else stays in Dot's live inline loop so browser,
+    /// app, file-picker, and authenticated-session work cannot be silently
+    /// misrouted into a headless worker.
+    private func routeTranscriptToExplicitAgentCommandOrInlineLoop(
         transcript: String,
         source: String
     ) {
-
-        // If a background task is already running, the user's voice is
-        // either a cancel request or a follow-up message — either way it
-        // does NOT start a new task or run inline.
-        if let runningTask = agentTaskManager.currentTask, !runningTask.status.isTerminal {
+        if agentTaskManager.hasActiveTask {
             if Self.isProbableCancellationPhrase(transcript: transcript) {
-                DotDebugLogger.log("agent.route", "cancel phrase during running task; cancelling")
-                Task { await agentTaskManager.cancelCurrentTask() }
+                DotDebugLogger.log("agent.route", "cancel phrase during running task; cancelling most recent")
+                Task { await agentTaskManager.cancelMostRecentRunningTask() }
                 return
             }
-            DotDebugLogger.log("agent.route", "routing as follow-up to running task")
-            Task { await agentTaskManager.sendFollowUpToCurrentTask(transcript) }
+        }
+
+        guard let explicitAgentRequest = Self.extractExplicitAgentRequest(from: transcript) else {
+            DotDebugLogger.log("agent.route", "no explicit dot agent prefix; running inline loop", metadata: [
+                "source": source
+            ])
+            sendTranscriptToClaudeWithScreenshot(transcript: transcript, source: source)
             return
         }
 
-        // No active task → use the planner to decide if this is substantial
-        // enough to spawn a background worker, or just a regular inline ask.
+        let brief = Self.makeExplicitAgentTaskBrief(
+            originalTranscript: transcript,
+            explicitAgentRequest: explicitAgentRequest
+        )
+
+        DotDebugLogger.log("agent.route", "explicit dot agent command; starting background task", metadata: [
+            "title": brief.oneLineTitle,
+            "workingDir": brief.workingDirectoryURL.path,
+            "source": source
+        ])
+
+        currentResponseTask?.cancel()
+        cancelPerStepNarrationQueue()
         Task { @MainActor in
-            let plannerDecision = await runAgentTaskPlannerWithInlineFallback(
-                transcript: transcript
-            )
-            switch plannerDecision {
-            case .routeToBackground(let brief):
-                DotDebugLogger.log("agent.route", "planner classified as background task", metadata: [
-                    "title": brief.oneLineTitle,
-                    "workingDir": brief.workingDirectoryURL.path,
-                    "source": source
-                ])
-                // Stop any in-flight inline response so its TTS doesn't
-                // overlap with the task-accepted announcement.
-                currentResponseTask?.cancel()
-                cancelPerStepNarrationQueue()
-                await agentTaskManager.startTask(brief: brief)
-            case .routeToInline:
-                DotDebugLogger.log("agent.route", "planner classified as inline; running existing loop", metadata: [
-                    "source": source
-                ])
-                sendTranscriptToClaudeWithScreenshot(transcript: transcript, source: source)
-            }
+            await agentTaskManager.startTask(brief: brief)
         }
     }
 
-    /// Calls the planner and returns its decision, falling back to
-    /// `.routeToInline` on any network/parse failure. Inline is the safe
-    /// default since it costs the user nothing extra if it turns out the
-    /// request was actually substantial.
-    private func runAgentTaskPlannerWithInlineFallback(
-        transcript: String
-    ) async -> AgentTaskPlannerDecision {
-        guard let plannerEndpointURL = URL(string: "\(Self.workerBaseURL)/chat") else {
-            return .routeToInline
+    private static func extractExplicitAgentRequest(from transcript: String) -> String? {
+        let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTranscript.isEmpty else { return nil }
+
+        let pattern = #"(?i)^\s*dot[\s,.:;-]+agent\b[\s,.:;-]*(.*)$"#
+        guard let regularExpression = try? NSRegularExpression(pattern: pattern) else {
+            return nil
         }
-        let planner = AgentTaskPlanner(
-            proxyChatEndpointURL: plannerEndpointURL,
-            model: selectedModel
+
+        let fullRange = NSRange(trimmedTranscript.startIndex..., in: trimmedTranscript)
+        guard let match = regularExpression.firstMatch(in: trimmedTranscript, range: fullRange),
+              match.numberOfRanges >= 2,
+              let requestRange = Range(match.range(at: 1), in: trimmedTranscript) else {
+            return nil
+        }
+
+        let explicitAgentRequest = String(trimmedTranscript[requestRange])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return explicitAgentRequest.isEmpty ? nil : explicitAgentRequest
+    }
+
+    private static func makeExplicitAgentTaskBrief(
+        originalTranscript: String,
+        explicitAgentRequest: String
+    ) -> AgentTaskBrief {
+        let oneLineTitle = makeExplicitAgentTaskTitle(from: explicitAgentRequest)
+        let workingDirectoryURL = AgentTaskManager.makeWorkingDirectoryURL(forTitle: oneLineTitle)
+        let additionalDirectoryURLs = extractAdditionalDirectoryURLs(from: explicitAgentRequest)
+        let additionalDirectoryInstruction: String
+        if additionalDirectoryURLs.isEmpty {
+            additionalDirectoryInstruction = "No additional local directories were detected in the request."
+        } else {
+            let directoryList = additionalDirectoryURLs
+                .map { "- \($0.path)" }
+                .joined(separator: "\n")
+            additionalDirectoryInstruction = """
+            The following user-supplied local directories were added to Claude Code's allowed directories:
+            \(directoryList)
+            """
+        }
+        let detailedInstructions = """
+        Complete the user's explicit background coding-agent request.
+
+        Request:
+        \(explicitAgentRequest)
+
+        Work from the generated Dot task directory unless the user supplied a specific path. If the user supplied a local path, inspect and work with that path directly. If access to a path is blocked, explain the exact path and permission issue in the final summary instead of guessing.
+
+        \(additionalDirectoryInstruction)
+
+        Leave any generated artifacts, notes, scripts, or test output in a clear location and end with a concise summary of what changed and how you verified it.
+        """
+
+        return AgentTaskBrief(
+            id: UUID(),
+            oneLineTitle: oneLineTitle,
+            userOriginalRequest: originalTranscript,
+            detailedInstructions: detailedInstructions,
+            workingDirectoryURL: workingDirectoryURL,
+            additionalDirectoryURLs: additionalDirectoryURLs,
+            estimatedDurationDescription: "a few minutes",
+            maxToolCallSteps: AgentTaskBrief.defaultMaxToolCallSteps,
+            maxWallClockSeconds: AgentTaskBrief.defaultMaxWallClockSeconds
         )
-        do {
-            return try await planner.classifyAndPlan(transcript: transcript)
-        } catch {
-            DotDebugLogger.log("agent.planner", "planner failed; falling through to inline", metadata: [
-                "error": error.localizedDescription
-            ])
-            return .routeToInline
+    }
+
+    private static func makeExplicitAgentTaskTitle(from explicitAgentRequest: String) -> String {
+        let words = explicitAgentRequest
+            .split { character in
+                !character.isLetter && !character.isNumber
+            }
+            .prefix(6)
+            .map { String($0) }
+        let title = words.joined(separator: " ")
+        return title.isEmpty ? "Background coding agent" : title
+    }
+
+    private static func extractAdditionalDirectoryURLs(from explicitAgentRequest: String) -> [URL] {
+        let pattern = #"(?:~|/)[^\s,;]+"#
+        guard let regularExpression = try? NSRegularExpression(pattern: pattern) else {
+            return []
         }
+
+        let fullRange = NSRange(explicitAgentRequest.startIndex..., in: explicitAgentRequest)
+        let matches = regularExpression.matches(in: explicitAgentRequest, range: fullRange)
+        var seenPaths: Set<String> = []
+        var directoryURLs: [URL] = []
+
+        for match in matches {
+            guard let range = Range(match.range, in: explicitAgentRequest) else {
+                continue
+            }
+            let rawPath = explicitAgentRequest[range]
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'`.,:;)]}"))
+            let expandedPath = NSString(string: String(rawPath)).expandingTildeInPath
+            guard expandedPath.hasPrefix("/") else {
+                continue
+            }
+
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: expandedPath, isDirectory: &isDirectory) else {
+                continue
+            }
+
+            let directoryURL = (isDirectory.boolValue
+                ? URL(fileURLWithPath: expandedPath)
+                : URL(fileURLWithPath: expandedPath).deletingLastPathComponent())
+                .standardizedFileURL
+            guard !seenPaths.contains(directoryURL.path) else {
+                continue
+            }
+            seenPaths.insert(directoryURL.path)
+            directoryURLs.append(directoryURL)
+        }
+
+        return Array(directoryURLs.prefix(6))
     }
 
     /// Detects short transcripts that read as "cancel the running task."
@@ -1418,10 +1503,7 @@ final class CompanionManager: ObservableObject {
     }
 
     /// Routes user-facing announcements from AgentTaskManager into the same
-    /// ElevenLabs / system-fallback TTS pipeline the inline loop uses. Most
-    /// announcements speak a single short sentence; some (follow-up
-    /// delivered) deliberately stay silent to avoid stepping on streaming
-    /// narration that the agent is already producing.
+    /// ElevenLabs / system-fallback TTS pipeline the inline loop uses.
     private func handleAgentTaskAnnouncement(_ announcement: AgentTaskAnnouncement) {
         switch announcement {
 
@@ -1432,9 +1514,9 @@ final class CompanionManager: ObservableObject {
                 "got it. starting \(titleLower). \(durationLower)."
             )
 
-        case .rejectedBecauseTaskAlreadyRunning(_, let runningBrief):
+        case .rejectedBecauseTooManyTasks(_, let maxConcurrentTaskCount):
             speakBackgroundTaskAnnouncementLine(
-                "i'm still working on \(runningBrief.oneLineTitle.lowercased()). say cancel that if you want me to stop it."
+                "i already have \(maxConcurrentTaskCount) coding agents running. cancel one before starting another."
             )
 
         case .rejectedBecauseWorkerNotInstalled(let workerInstallInstruction):
@@ -1454,10 +1536,6 @@ final class CompanionManager: ObservableObject {
             speakBackgroundTaskAnnouncementLine(
                 "cancelled \(brief.oneLineTitle.lowercased())."
             )
-
-        case .followUpDelivered, .followUpRejectedBecauseNoActiveTask:
-            // Intentionally silent — the running narration is enough.
-            break
         }
     }
 

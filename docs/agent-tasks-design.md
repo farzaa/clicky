@@ -1,18 +1,18 @@
 # Background Agent Tasks: Dot as a Conductor for External Coding Agents
 
-Status: **Initial design — v1 implementation in progress.**
+Status: **Implemented explicit-prefix v1.**
 
 ## Goal
 
-Let the user say things like *"hey dot, reimplement this paper and give me an interactive demo"* and have Dot run that as a long-lived background task on the user's Mac — without competing with Claude Code / Codex CLI's coding ability.
+Let the user explicitly say things like *"dot agent reimplement this paper and give me an interactive demo"* and have Dot run that as a long-lived background coding task on the user's Mac — without making normal Dot requests unpredictable.
 
 Dot's edge is voice + screen + ambient surface. We use that to orchestrate existing best-in-class coding agents rather than reimplementing them.
 
 ## Non-goals (v1)
 
 - Cloud execution. Tasks run on the user's machine.
-- Multiple concurrent agent tasks. One at a time; queue further requests.
-- Existing-repo edits driven by frontmost-IDE detection. v1 only spawns greenfield work into auto-named directories.
+- Live browser/app automation in background agents. Normal Dot handles live UI/session work inline.
+- Existing-repo cwd inference from frontmost IDEs. v1 uses auto-named task directories and tells the worker to inspect user-supplied paths when possible.
 - Vibe-id Anthropic passthrough. v1 uses the user's installed Claude Code CLI auth.
 - Codex CLI fallback. v1 ships Claude Code support only; the adapter protocol is shaped so adding Codex is a single new file in v2.
 - A local in-process Swift agent loop as a fallback. v1 surfaces "install Claude Code" if not present.
@@ -25,19 +25,19 @@ Dot's edge is voice + screen + ambient surface. We use that to orchestrate exist
 │                                                      │
 │  CompanionManager                                    │
 │   ↓ transcript finalized                             │
-│   ↓ AgentTaskPlanner.classifyAndPlan(transcript)     │
-│   │     ↳ uses Claude inline to turn the spoken      │
-│   │       request into a structured brief            │
+│   ↓ explicit prefix check                            │
+│   │     ↳ only "dot agent ..." spawns a worker       │
 │   ↓                                                  │
-│   ↓ inline? → existing tool-use loop                 │
-│   ↓ background? → AgentTaskManager.startTask(brief)  │
+│   ↓ no prefix → existing live inline tool-use loop   │
+│   ↓ prefix → AgentTaskManager.startTask(brief)       │
 │                                                      │
-│  AgentTaskManager (single-task v1)                   │
+│  AgentTaskManager (multi-task coding agents)         │
 │   - owns AgentTask state + history                   │
 │   - holds one AgentWorker subprocess                 │
 │   - feeds AgentTaskEvent stream into the panel       │
 │                                                      │
-│  AgentTaskPanelManager  →  NSPanel on right edge     │
+│  SubagentDotOverlayManager → colored right-edge dots │
+│  AgentTaskPanelManager    → selected-task NSPanel    │
 │   - SwiftUI view: title, status, event log, cancel   │
 └──────────────────────────────────────────────────────┘
                         │
@@ -54,7 +54,7 @@ The boundary that matters is **the `AgentWorker` protocol**. Everything above it
 
 ### `AgentTaskBrief`
 
-What the user wants, expanded into something a coding agent can act on. Produced by `AgentTaskPlanner` from the raw transcript + an optional screenshot.
+What the user wants, converted from an explicit `dot agent ...` command into something a coding agent can act on.
 
 ```swift
 struct AgentTaskBrief {
@@ -63,6 +63,7 @@ struct AgentTaskBrief {
     let userOriginalRequest: String           // verbatim transcript
     let detailedInstructions: String          // the actual prompt to the worker
     let workingDirectoryURL: URL              // auto-named, e.g. ~/Desktop/Dot Tasks/...
+    let additionalDirectoryURLs: [URL]        // explicit user-supplied paths exposed through --add-dir
     let estimatedDurationDescription: String  // "about 10 minutes" — surfaced via TTS
     let maxToolCallSteps: Int                 // budget cap, default 75
     let maxWallClockSeconds: Int              // budget cap, default 1800
@@ -142,79 +143,80 @@ Cancellation: send SIGTERM; if still alive after 2s, SIGKILL.
 
 Detection: `which claude || command -v claude || stat ~/.npm-global/bin/claude /opt/homebrew/bin/claude /usr/local/bin/claude`. Memoize. If absent, the manager surfaces "install Claude Code" in the panel and a TTS line.
 
-## AgentTaskPlanner — voice request → brief
+## Explicit command routing
 
-The planner uses Dot's existing `ClaudeAPI` (vibe-id-proxied Anthropic) with a small prompt that returns structured JSON:
+Dot does not infer background-agent intent. The only background trigger is a leading `dot agent ...` command. This removes the LLM route classifier entirely:
 
-```json
-{
-  "routeDecision": "background",  // or "inline"
-  "oneLineTitle": "Reimplement attention paper",
-  "detailedInstructions": "Read the PDF in the user's current screen if accessible. Set up a Python venv with PyTorch and Gradio. Implement the model from section 3. Smoke-train on synthetic data for under 5 minutes. Build a Gradio demo and print the local URL.",
-  "estimatedDuration": "about 10 minutes"
-}
-```
+- `submit my homework to the course site` → normal Dot live inline loop
+- `click the save button in Chrome` → normal Dot live inline loop
+- `dot agent build me a CS185 test harness` → background coding agent
+- `dot agent inspect /Users/mark/Desktop/project and summarize failing tests` → background coding agent
 
-If `routeDecision=="inline"`, we fall through to the existing inline tool-use loop. If `"background"`, we hand the brief to `AgentTaskManager`.
+The prefix is intentionally blunt. It gives the user a reliable mental model and prevents long-running coding agents from appearing when the user expected Dot to operate the current browser/app session.
 
-The classifier prompt is small enough (~300 tokens) that the latency hit is acceptable on every transcript. We don't try to be clever with prefix shortcuts in v1 — the LLM is the router.
+If the stripped request contains existing absolute or `~/...` paths, Dot adds those directories to Claude Code with `--add-dir`. Generated task state still lives under `~/Desktop/Dot Tasks/`, but explicit paths let the worker inspect real project folders without requiring a live UI route.
 
 The working directory is auto-named from `oneLineTitle` → slug + date, placed under `~/Desktop/Dot Tasks/<slug>-<yyyy-mm-dd>/`. Auto-`git init` and create an `INSTRUCTIONS.md` file with the brief inside it before spawning, so the agent sees its own marching orders on disk.
 
-## AgentTaskManager — lifecycle + single-task semantics
+## AgentTaskManager — lifecycle + multi-task semantics
 
 ```swift
 @MainActor
 final class AgentTaskManager: ObservableObject {
-    @Published private(set) var currentTask: AgentTask?
-    @Published private(set) var recentlyCompletedTasks: [AgentTask] = []
-    // single task at a time for v1; further requests get rejected with TTS
+    @Published private(set) var runningTasks: [AgentTask] = []
+    @Published private(set) var recentlyFinishedTasks: [AgentTask] = []
+    // up to 5 concurrent coding agents; further requests get rejected with TTS
 
     func startTask(brief: AgentTaskBrief) async
-    func cancelCurrentTask() async
-    func sendFollowUpToCurrentTask(_ message: String) async
+    func cancelMostRecentRunningTask() async
+    func cancelTask(taskID: UUID) async
+    func deleteTask(taskID: UUID) async
 }
 ```
 
-`AgentTask` is a value type holding the brief + an ordered list of received events + status (`queued | running | completed | failed | cancelled`).
+`AgentTask` is an `ObservableObject` reference type holding the brief + an ordered list of received events + status (`queued | running | completed | failed | cancelled`).
 
-If a second task is requested while one is running, v1 rejects it via TTS: *"I'm still working on the previous task. Say 'cancel that' if you want me to stop it."*
+Each running task owns a separate `ClaudeCodeAdapter`, event-consumer task, and wall-clock watchdog keyed by task ID. If a sixth task is requested while five are running, Dot rejects it via TTS and asks the user to cancel one before starting another.
 
-## Right-side panel
+Deleting a subagent removes it from Dot's `runningTasks` / `recentlyFinishedTasks` UI state. If the subagent is still running, deletion cancels its `ClaudeCodeAdapter` first. The working directory is never deleted by this action.
 
-A new `NSPanel`, mirroring `MenuBarPanelManager`:
+## Right-side dots and panel
 
-- 380pt wide, anchored to the right edge of the primary screen
+Two `NSPanel` surfaces mirror the `MenuBarPanelManager` style:
+
+- `SubagentDotOverlayManager`: transparent right-edge overlay, one colored clickable dot per running/recent task, stacked from top right downward
+- `AgentTaskPanelManager`: 380pt selected-task detail panel opened by clicking a dot
 - Same nonactivating / floating / canJoinAllSpaces / fullScreenAuxiliary attributes as the menu bar panel
-- Auto-shows when a task starts; auto-hides 5s after the last task completes (unless user pinned it)
-- Content: SwiftUI `AgentTaskPanelView` listing the current task (title, status badge, expandable event log, cancel button, reveal-in-Finder button) and recent completions
+- The dot overlay appears when tasks exist; the detail panel does not auto-open
+- Hovering a dot reveals an `x` delete control; destructive deletion stays on the dot overlay instead of being duplicated in the detail panel
+- Content: SwiftUI `AgentTaskPanelView` showing the selected task's title, status badge, latest assistant summary, collapsed-by-default event history, and a cancel action for running tasks
 
 Visual style follows `DS` design system tokens.
 
 ## Trigger flow end-to-end
 
-1. User holds push-to-talk, says *"hey dot, reimplement the paper on my screen and give me an interactive demo."*
+1. User holds push-to-talk, says *"dot agent reimplement the paper and give me an interactive demo."*
 2. Existing dictation pipeline finalizes the transcript on key-up.
 3. `handleDirectLocalMediaCommandIfRecognized` returns false (no match).
-4. **New**: `AgentTaskPlanner.classifyAndPlan(transcript:, screenContext:)` runs.
-5. Planner returns `routeDecision == "background"` with a structured brief.
-6. `CompanionManager` calls `agentTaskManager.startTask(brief:)`.
-7. `AgentTaskManager` creates the working dir, `git init`s, writes `INSTRUCTIONS.md`, and asks `ClaudeCodeAdapter.spawn(brief:)`.
-8. `AgentTaskPanelManager` shows the right-side panel.
+4. `CompanionManager` detects the explicit `dot agent` prefix.
+5. `CompanionManager` builds an `AgentTaskBrief` directly from the stripped request.
+6. `AgentTaskManager` creates the working dir, `git init`s, writes `INSTRUCTIONS.md`, and asks `ClaudeCodeAdapter.spawn(brief:)`.
+7. `SubagentDotOverlayManager` shows a colored dot for the new coding agent.
+8. User clicks a dot to open `AgentTaskPanelManager` for that task's output.
 9. Events stream in. Each `assistantMessage` event optionally goes to TTS for the *first* one only — subsequent messages go to the panel silently to avoid TTS-spam during a 10-minute task.
 10. On `workerCompleted`, Dot speaks one summary line and posts a macOS notification.
 
 Mid-run voice interrupt:
 - User holds push-to-talk again, says *"actually use JAX instead of PyTorch."*
 - Dictation pipeline finalizes.
-- `CompanionManager` detects an active task in `AgentTaskManager` and routes the new transcript via `agentTaskManager.sendFollowUpToCurrentTask(_)` instead of starting a new task or running inline.
-- `ClaudeCodeAdapter.sendFollowUpMessage` writes a user message line to the process's stdin.
+- Short cancellation phrases cancel the most recent running background agent.
+- Other non-prefixed transcripts stay in the normal Dot inline loop. Background follow-up routing is intentionally deferred until there is an explicit UI or command syntax for choosing the target agent.
 
 ## Budgets + guardrails
 
 - Step budget (`maxToolCallSteps`): default 75. Worker self-honors via Claude Code's `--max-turns`.
 - Wall clock (`maxWallClockSeconds`): default 1800 (30 min). Enforced by a `Task.sleep` cancellation watchdog in `AgentTaskManager`.
-- Working dir is always under `~/Desktop/Dot Tasks/`. No tasks ever operate on system directories or the user's home root.
+- Generated task state is always under `~/Desktop/Dot Tasks/`. Workers may inspect or edit user-supplied paths when Claude Code permissions allow it; if access is blocked, the worker should report the exact path and blocker.
 - `--permission-mode=acceptEdits` is the default. We do NOT pass `--dangerously-skip-permissions`.
 - Auto-`git init` + commit before spawning, so the user can `git diff` / `git reset --hard` to roll the whole task back.
 
@@ -230,20 +232,19 @@ Mid-run voice interrupt:
 
 - `AgentTaskBrief`, `AgentTaskEvent`, `AgentWorker` protocol, `AgentTask`
 - `ClaudeCodeAdapter` (only worker)
-- `AgentTaskManager` (single concurrent task)
-- `AgentTaskPlanner` (LLM-based classification + brief expansion)
+- `AgentTaskManager` (up to 5 concurrent coding agents)
+- `SubagentDotOverlayManager` + `SubagentDotOverlayView`
 - `AgentTaskPanelManager` + `AgentTaskPanelView`
-- `CompanionManager` integration at the transcript-submit point
+- `CompanionManager` explicit `dot agent ...` command routing
 - Auto-`git init` of working dirs
-- Cancel + reveal-in-Finder
+- Right-edge dot deletion + running-task cancel
 
 ## What's explicitly deferred
 
 - Codex CLI adapter
-- Multiple concurrent tasks
 - Existing-repo (frontmost-IDE-detected) cwd
 - Vibe-id Anthropic passthrough
 - Local Swift fallback worker
 - Streaming partial assistant tokens to TTS mid-run (instead of one summary line)
 - Persistent task history across app restarts
-- Inline pause/resume via voice
+- Inline pause/resume/follow-up via voice

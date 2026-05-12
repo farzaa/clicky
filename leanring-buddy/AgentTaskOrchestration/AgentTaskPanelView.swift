@@ -2,9 +2,9 @@
 //  AgentTaskPanelView.swift
 //  leanring-buddy
 //
-//  SwiftUI content for the right-edge floating panel that shows the
-//  currently running background task and recently finished ones. Hosted by
-//  AgentTaskPanelManager inside an NSPanel.
+//  SwiftUI content for the right-edge floating panel that shows the selected
+//  coding-agent task. The subagent dot overlay owns the task list; this panel
+//  owns the detailed output for whichever dot the user clicked.
 //
 
 import AppKit
@@ -13,6 +13,8 @@ import SwiftUI
 struct AgentTaskPanelView: View {
 
     @ObservedObject var agentTaskManager: AgentTaskManager
+    @ObservedObject var panelSelection: AgentTaskPanelSelection
+    var onCancelTaskRequested: (AgentTask) -> Void
     var onCloseRequested: () -> Void
 
     var body: some View {
@@ -23,23 +25,16 @@ struct AgentTaskPanelView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: DS.Spacing.md) {
-                    if let runningTask = agentTaskManager.currentTask {
+                    if let selectedTask {
                         AgentTaskCardView(
-                            task: runningTask,
-                            isCurrentlyRunning: !runningTask.status.isTerminal,
+                            task: selectedTask,
+                            isCurrentlyRunning: !selectedTask.status.isTerminal,
                             onCancelRequested: {
-                                Task { await agentTaskManager.cancelCurrentTask() }
-                            },
-                            onRevealInFinderRequested: {
-                                agentTaskManager.revealTaskWorkingDirectoryInFinder(runningTask)
+                                onCancelTaskRequested(selectedTask)
                             }
                         )
-                    } else if agentTaskManager.recentlyFinishedTasks.isEmpty {
+                    } else {
                         emptyStateSection
-                    }
-
-                    if !agentTaskManager.recentlyFinishedTasks.isEmpty {
-                        recentlyFinishedSection
                     }
                 }
                 .padding(.horizontal, DS.Spacing.lg)
@@ -47,7 +42,7 @@ struct AgentTaskPanelView: View {
             }
         }
         .frame(width: 380)
-        .frame(minHeight: 220, maxHeight: 620)
+        .frame(minHeight: 150, maxHeight: 420)
         .background(DS.Colors.surface1)
         .clipShape(RoundedRectangle(cornerRadius: DS.CornerRadius.extraLarge, style: .continuous))
         .overlay(
@@ -56,11 +51,20 @@ struct AgentTaskPanelView: View {
         )
     }
 
+    private var selectedTask: AgentTask? {
+        guard let selectedTaskID = panelSelection.selectedTaskID else {
+            return nil
+        }
+        return agentTaskManager.visibleTasksForSubagentDots.first { task in
+            task.id == selectedTaskID
+        }
+    }
+
     // MARK: - Header
 
     private var headerSection: some View {
         HStack(spacing: DS.Spacing.sm) {
-            Text("Background tasks")
+            Text("Coding agent")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(DS.Colors.textPrimary)
             Spacer()
@@ -72,6 +76,7 @@ struct AgentTaskPanelView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .pointerCursor()
             .help("Hide panel")
         }
         .padding(.horizontal, DS.Spacing.lg)
@@ -82,10 +87,10 @@ struct AgentTaskPanelView: View {
 
     private var emptyStateSection: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.sm) {
-            Text("Nothing running")
+            Text("No task selected")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(DS.Colors.textSecondary)
-            Text("Hold push-to-talk and ask Dot to build, research, or run something substantial — like \"reimplement this paper and give me a demo.\" Dot will hand it off to a coding agent and show progress here.")
+            Text("Click a colored dot on the right edge to inspect that coding agent's output.")
                 .font(.system(size: 11))
                 .foregroundColor(DS.Colors.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -94,26 +99,6 @@ struct AgentTaskPanelView: View {
         .padding(.vertical, DS.Spacing.md)
         .background(DS.Colors.surface2)
         .clipShape(RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous))
-    }
-
-    // MARK: - Recently finished
-
-    private var recentlyFinishedSection: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
-            Text("RECENTLY FINISHED")
-                .font(.system(size: 9, weight: .bold))
-                .tracking(0.5)
-                .foregroundColor(DS.Colors.textTertiary)
-
-            ForEach(agentTaskManager.recentlyFinishedTasks) { finishedTask in
-                AgentTaskCompactRowView(
-                    task: finishedTask,
-                    onRevealInFinderRequested: {
-                        agentTaskManager.revealTaskWorkingDirectoryInFinder(finishedTask)
-                    }
-                )
-            }
-        }
     }
 }
 
@@ -124,31 +109,26 @@ private struct AgentTaskCardView: View {
     @ObservedObject var task: AgentTask
     let isCurrentlyRunning: Bool
     let onCancelRequested: () -> Void
-    let onRevealInFinderRequested: () -> Void
 
-    @State private var isEventLogExpanded: Bool = true
+    @State private var isEventLogExpanded: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+        VStack(alignment: .leading, spacing: DS.Spacing.md) {
             cardHeader
             cardSubheader
-            if isEventLogExpanded {
+            if !task.events.isEmpty {
                 eventLogView
             }
-            footerActions
+            if isCurrentlyRunning {
+                footerActions
+            }
         }
-        .padding(DS.Spacing.md)
-        .background(DS.Colors.surface2)
-        .clipShape(RoundedRectangle(cornerRadius: DS.CornerRadius.large, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.CornerRadius.large, style: .continuous)
-                .stroke(borderColorForStatus, lineWidth: 1)
-        )
     }
 
     private var cardHeader: some View {
-        HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.sm) {
+        HStack(alignment: .top, spacing: DS.Spacing.sm) {
             statusBadge
+                .padding(.top, 5)
             Text(task.brief.oneLineTitle)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(DS.Colors.textPrimary)
@@ -159,12 +139,10 @@ private struct AgentTaskCardView: View {
     }
 
     private var cardSubheader: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            if isCurrentlyRunning {
-                Text("Estimated: \(task.brief.estimatedDurationDescription)")
-                    .font(.system(size: 10))
-                    .foregroundColor(DS.Colors.textTertiary)
-            }
+        VStack(alignment: .leading, spacing: 6) {
+            Text(taskStatusText)
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
             if let latestAssistantText = task.mostRecentAssistantMessageText, isCurrentlyRunning {
                 Text(latestAssistantText)
                     .font(.system(size: 11))
@@ -185,55 +163,50 @@ private struct AgentTaskCardView: View {
     }
 
     private var eventLogView: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Button(action: { isEventLogExpanded.toggle() }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: isEventLogExpanded ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 9, weight: .semibold))
-                        Text("EVENTS (\(task.events.count))")
-                            .font(.system(size: 9, weight: .bold))
-                            .tracking(0.5)
-                    }
-                    .foregroundColor(DS.Colors.textTertiary)
+        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+            Button(action: { isEventLogExpanded.toggle() }) {
+                HStack(spacing: 5) {
+                    Image(systemName: isEventLogExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 8, weight: .semibold))
+                        .frame(width: 10)
+                    Text("Events (\(task.events.count))")
+                        .font(.system(size: 10, weight: .medium))
+                    Spacer(minLength: 0)
                 }
-                .buttonStyle(.plain)
-                Spacer()
+                .foregroundColor(DS.Colors.textTertiary)
+                .contentShape(Rectangle())
             }
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 3) {
-                    ForEach(Array(task.events.suffix(40))) { timestampedEvent in
-                        AgentTaskEventRowView(event: timestampedEvent.event)
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .help(isEventLogExpanded ? "Hide event history" : "Show event history")
+
+            if isEventLogExpanded {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 3) {
+                        ForEach(Array(task.events.suffix(40))) { timestampedEvent in
+                            AgentTaskEventRowView(event: timestampedEvent.event)
+                        }
                     }
                 }
+                .frame(maxHeight: 180)
+                .padding(DS.Spacing.xs)
+                .background(DS.Colors.surface2.opacity(0.6))
+                .clipShape(RoundedRectangle(cornerRadius: DS.CornerRadius.small, style: .continuous))
             }
-            .frame(maxHeight: 220)
-            .padding(DS.Spacing.xs)
-            .background(DS.Colors.surface1)
-            .clipShape(RoundedRectangle(cornerRadius: DS.CornerRadius.small, style: .continuous))
         }
-        .padding(.top, DS.Spacing.xs)
     }
 
     private var footerActions: some View {
-        HStack(spacing: DS.Spacing.sm) {
-            if isCurrentlyRunning {
-                Button(action: onCancelRequested) {
-                    Text("Cancel")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(DS.Colors.destructiveText)
-                }
-                .buttonStyle(.plain)
-            }
-            Button(action: onRevealInFinderRequested) {
-                Text("Reveal in Finder")
+        HStack {
+            Button(action: onCancelRequested) {
+                Text("Cancel")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(DS.Colors.accentText)
+                    .foregroundColor(DS.Colors.destructiveText)
             }
             .buttonStyle(.plain)
+            .pointerCursor()
             Spacer()
         }
-        .padding(.top, DS.Spacing.xs)
     }
 
     private var statusBadge: some View {
@@ -267,69 +240,20 @@ private struct AgentTaskCardView: View {
         }
     }
 
-    private var borderColorForStatus: Color {
+    private var taskStatusText: String {
         switch task.status {
-        case .running, .planning:
-            return DS.Colors.accent.opacity(0.4)
+        case .queued:
+            return "Queued"
+        case .planning:
+            return "Planning"
+        case .running:
+            return "Running • \(task.brief.estimatedDurationDescription)"
+        case .completed:
+            return "Completed"
         case .failed:
-            return DS.Colors.destructive.opacity(0.3)
-        default:
-            return DS.Colors.borderSubtle
-        }
-    }
-}
-
-// MARK: - Compact finished-task row
-
-private struct AgentTaskCompactRowView: View {
-    let task: AgentTask
-    let onRevealInFinderRequested: () -> Void
-
-    var body: some View {
-        HStack(spacing: DS.Spacing.sm) {
-            Image(systemName: iconNameForStatus)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(iconColorForStatus)
-                .frame(width: 14)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(task.brief.oneLineTitle)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
-                    .lineLimit(1)
-                Text(task.status.rawValue.capitalized)
-                    .font(.system(size: 9))
-                    .foregroundColor(DS.Colors.textTertiary)
-            }
-            Spacer()
-            Button(action: onRevealInFinderRequested) {
-                Image(systemName: "folder")
-                    .font(.system(size: 10))
-                    .foregroundColor(DS.Colors.textTertiary)
-            }
-            .buttonStyle(.plain)
-            .help("Reveal working directory in Finder")
-        }
-        .padding(.horizontal, DS.Spacing.sm)
-        .padding(.vertical, DS.Spacing.xs)
-        .background(DS.Colors.surface2.opacity(0.5))
-        .clipShape(RoundedRectangle(cornerRadius: DS.CornerRadius.small, style: .continuous))
-    }
-
-    private var iconNameForStatus: String {
-        switch task.status {
-        case .completed: return "checkmark.circle.fill"
-        case .failed: return "xmark.octagon.fill"
-        case .cancelled: return "minus.circle.fill"
-        default: return "circle"
-        }
-    }
-
-    private var iconColorForStatus: Color {
-        switch task.status {
-        case .completed: return DS.Colors.success
-        case .failed: return DS.Colors.destructive
-        case .cancelled: return DS.Colors.textTertiary
-        default: return DS.Colors.textTertiary
+            return "Failed"
+        case .cancelled:
+            return "Cancelled"
         }
     }
 }

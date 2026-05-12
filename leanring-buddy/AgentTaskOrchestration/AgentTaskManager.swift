@@ -2,9 +2,9 @@
 //  AgentTaskManager.swift
 //  leanring-buddy
 //
-//  Owns the lifecycle of background agent tasks. Single concurrent task in
-//  v1 — further requests get rejected via the announcement callback so the
-//  caller can speak them aloud. See docs/agent-tasks-design.md.
+//  Owns the lifecycle of background agent tasks. Multiple coding agents can
+//  run concurrently; each task owns its worker, event stream, and watchdog.
+//  See docs/agent-tasks-design.md.
 //
 
 import AppKit
@@ -16,24 +16,23 @@ import SwiftUI
 /// the user. Wrapped as a callback so the manager itself stays UI-free.
 enum AgentTaskAnnouncement {
     case acceptedTask(brief: AgentTaskBrief)
-    case rejectedBecauseTaskAlreadyRunning(rejectedBrief: AgentTaskBrief, runningBrief: AgentTaskBrief)
+    case rejectedBecauseTooManyTasks(rejectedBrief: AgentTaskBrief, maxConcurrentTaskCount: Int)
     case rejectedBecauseWorkerNotInstalled(workerInstallInstruction: String)
     case taskCompleted(brief: AgentTaskBrief, finalSummary: String)
     case taskFailed(brief: AgentTaskBrief, failureReason: String)
     case taskCancelled(brief: AgentTaskBrief)
-    case followUpDelivered(brief: AgentTaskBrief)
-    case followUpRejectedBecauseNoActiveTask
 }
 
 @MainActor
 final class AgentTaskManager: ObservableObject {
 
-    /// The currently running task, if any. Set as soon as the worker spawns
-    /// and cleared once a terminal event arrives.
-    @Published private(set) var currentTask: AgentTask?
+    /// Coding-agent tasks that have not yet reached a terminal state. Each
+    /// running task has a matching worker in `activeWorkersByTaskID`.
+    @Published private(set) var runningTasks: [AgentTask] = []
 
     /// Tasks that have reached a terminal state. Capped at a small ring so
-    /// the panel can show recent completions without unbounded memory growth.
+    /// the overlay and panel can show recent completions without unbounded
+    /// memory growth.
     @Published private(set) var recentlyFinishedTasks: [AgentTask] = []
 
     /// Set to true when at least one task has been created during this app
@@ -45,29 +44,43 @@ final class AgentTaskManager: ObservableObject {
     var announcementHandler: ((AgentTaskAnnouncement) -> Void)?
 
     private static let maxRecentlyFinishedTaskCount: Int = 5
+    private static let maxConcurrentTaskCount: Int = 5
 
-    private var activeWorker: ClaudeCodeAdapter?
-    private var workerEventConsumerTask: Task<Void, Never>?
-    private var wallClockBudgetWatchdogTask: Task<Void, Never>?
+    private var activeWorkersByTaskID: [UUID: ClaudeCodeAdapter] = [:]
+    private var workerEventConsumerTasksByTaskID: [UUID: Task<Void, Never>] = [:]
+    private var wallClockBudgetWatchdogTasksByTaskID: [UUID: Task<Void, Never>] = [:]
+    private var deletedTaskIDs: Set<UUID> = []
+
+    var hasActiveTask: Bool {
+        runningTasks.contains { !$0.status.isTerminal }
+    }
+
+    var mostRecentRunningTask: AgentTask? {
+        runningTasks.last(where: { !$0.status.isTerminal })
+    }
+
+    var visibleTasksForSubagentDots: [AgentTask] {
+        runningTasks + recentlyFinishedTasks
+    }
 
     // MARK: - Public lifecycle
 
-    /// Attempts to start the brief as a background task. If another task is
-    /// already running, the request is rejected and the caller is told via
-    /// the announcement handler so it can speak the rejection.
+    /// Attempts to start the brief as a background task. Coding agents are
+    /// safe to parallelize because each one works in its own generated
+    /// directory, so new requests spawn new workers until the concurrency cap.
     func startTask(brief: AgentTaskBrief) async {
         DotDebugLogger.log("agent.task", "startTask invoked", metadata: [
             "title": brief.oneLineTitle,
             "workingDir": brief.workingDirectoryURL.path
         ])
 
-        if let runningTask = currentTask, !runningTask.status.isTerminal {
-            DotDebugLogger.log("agent.task", "rejected: already running", metadata: [
-                "runningTitle": runningTask.brief.oneLineTitle
+        if runningTasks.count >= Self.maxConcurrentTaskCount {
+            DotDebugLogger.log("agent.task", "rejected: concurrency cap reached", metadata: [
+                "maxConcurrentTaskCount": Self.maxConcurrentTaskCount
             ])
-            announcementHandler?(.rejectedBecauseTaskAlreadyRunning(
+            announcementHandler?(.rejectedBecauseTooManyTasks(
                 rejectedBrief: brief,
-                runningBrief: runningTask.brief
+                maxConcurrentTaskCount: Self.maxConcurrentTaskCount
             ))
             return
         }
@@ -84,15 +97,16 @@ final class AgentTaskManager: ObservableObject {
         }
 
         let newTask = AgentTask(brief: brief, initialStatus: .planning)
-        currentTask = newTask
+        runningTasks.append(newTask)
         hasEverStartedATask = true
         announcementHandler?(.acceptedTask(brief: brief))
-        DotDebugLogger.log("agent.task", "task accepted and set as current", metadata: [
-            "title": brief.oneLineTitle
+        DotDebugLogger.log("agent.task", "task accepted", metadata: [
+            "title": brief.oneLineTitle,
+            "runningTaskCount": runningTasks.count
         ])
 
         let adapter = ClaudeCodeAdapter()
-        activeWorker = adapter
+        activeWorkersByTaskID[newTask.id] = adapter
 
         do {
             DotDebugLogger.log("agent.task", "about to spawn worker")
@@ -117,41 +131,22 @@ final class AgentTaskManager: ObservableObject {
             newTask.finishedAt = Date()
             announcementHandler?(.taskFailed(brief: brief, failureReason: failureReason))
             archiveFinishedTask(newTask)
-            currentTask = nil
-            activeWorker = nil
+            removeRunningTask(withID: newTask.id)
+            activeWorkersByTaskID[newTask.id] = nil
         }
     }
 
-    /// Routes a user-spoken follow-up message to the currently running task.
-    /// If no task is running, the caller is told via the announcement handler
-    /// so it can fall through to the inline voice-response path instead.
-    func sendFollowUpToCurrentTask(_ message: String) async {
-        guard let runningTask = currentTask,
-              !runningTask.status.isTerminal,
-              let adapter = activeWorker else {
-            announcementHandler?(.followUpRejectedBecauseNoActiveTask)
+    func cancelMostRecentRunningTask() async {
+        guard let runningTask = mostRecentRunningTask else {
             return
         }
-
-        do {
-            try await adapter.sendFollowUpMessage(message)
-            runningTask.events.append(TimestampedAgentTaskEvent(
-                event: .assistantMessage(text: "(user added: \(message))")
-            ))
-            announcementHandler?(.followUpDelivered(brief: runningTask.brief))
-        } catch {
-            let errorText = (error as? LocalizedError)?.errorDescription
-                ?? error.localizedDescription
-            runningTask.events.append(TimestampedAgentTaskEvent(
-                event: .errorRaised(text: "failed to deliver follow-up: \(errorText)")
-            ))
-        }
+        await cancelTask(taskID: runningTask.id)
     }
 
-    func cancelCurrentTask() async {
-        guard let runningTask = currentTask,
+    func cancelTask(taskID: UUID) async {
+        guard let runningTask = runningTasks.first(where: { $0.id == taskID }),
               !runningTask.status.isTerminal,
-              let adapter = activeWorker else {
+              let adapter = activeWorkersByTaskID[taskID] else {
             return
         }
         await adapter.cancel()
@@ -159,6 +154,38 @@ final class AgentTaskManager: ObservableObject {
         // finalize the stream; the consumer task closes out the task object
         // and the announcement. No additional work needed here.
         _ = runningTask
+    }
+
+    /// Removes a subagent from Dot's UI state. If the task is still running,
+    /// deleting it also cancels the worker. The working directory stays on
+    /// disk so "delete" never destroys generated files or logs.
+    func deleteTask(taskID: UUID) async {
+        deletedTaskIDs.insert(taskID)
+
+        DotDebugLogger.log("agent.task", "deleteTask invoked", metadata: [
+            "taskID": taskID.uuidString
+        ])
+
+        workerEventConsumerTasksByTaskID[taskID]?.cancel()
+        workerEventConsumerTasksByTaskID[taskID] = nil
+
+        wallClockBudgetWatchdogTasksByTaskID[taskID]?.cancel()
+        wallClockBudgetWatchdogTasksByTaskID[taskID] = nil
+
+        let adapter = activeWorkersByTaskID[taskID]
+        activeWorkersByTaskID[taskID] = nil
+
+        if let runningTask = runningTasks.first(where: { $0.id == taskID }),
+           !runningTask.status.isTerminal {
+            runningTask.status = .cancelled
+            runningTask.finishedAt = Date()
+        }
+        removeRunningTask(withID: taskID)
+        recentlyFinishedTasks.removeAll { $0.id == taskID }
+
+        if let adapter {
+            await adapter.cancel()
+        }
     }
 
     func revealTaskWorkingDirectoryInFinder(_ task: AgentTask) {
@@ -171,15 +198,21 @@ final class AgentTaskManager: ObservableObject {
         _ eventStream: AsyncThrowingStream<AgentTaskEvent, Error>,
         for task: AgentTask
     ) {
-        workerEventConsumerTask?.cancel()
-        workerEventConsumerTask = Task { @MainActor [weak self] in
+        workerEventConsumerTasksByTaskID[task.id]?.cancel()
+        workerEventConsumerTasksByTaskID[task.id] = Task { @MainActor [weak self] in
             do {
                 for try await event in eventStream {
                     guard let self else { return }
+                    if self.deletedTaskIDs.contains(task.id) {
+                        return
+                    }
                     self.handleIncomingEvent(event, for: task)
                 }
             } catch {
                 guard let self else { return }
+                if self.deletedTaskIDs.contains(task.id) {
+                    return
+                }
                 let errorText = (error as? LocalizedError)?.errorDescription
                     ?? error.localizedDescription
                 task.events.append(TimestampedAgentTaskEvent(
@@ -192,13 +225,36 @@ final class AgentTaskManager: ObservableObject {
                     failureReason: errorText
                 ))
                 self.archiveFinishedTask(task)
-                self.currentTask = nil
-                self.activeWorker = nil
+                self.removeRunningTask(withID: task.id)
+                self.activeWorkersByTaskID[task.id] = nil
             }
             // Stream ended cleanly. Final state was set by the terminal-event
-            // handler in handleIncomingEvent; just clear references.
-            self?.wallClockBudgetWatchdogTask?.cancel()
-            self?.wallClockBudgetWatchdogTask = nil
+            // handler in handleIncomingEvent. If the worker exited without
+            // one, mark the task failed so it never gets stuck as running.
+            guard let self else { return }
+            if self.deletedTaskIDs.contains(task.id) {
+                self.workerEventConsumerTasksByTaskID[task.id] = nil
+                self.activeWorkersByTaskID[task.id] = nil
+                return
+            }
+            if !task.status.isTerminal {
+                let failureReason = "worker exited without a terminal event"
+                task.events.append(TimestampedAgentTaskEvent(
+                    event: .errorRaised(text: failureReason)
+                ))
+                task.status = .failed
+                task.finishedAt = Date()
+                self.announcementHandler?(.taskFailed(
+                    brief: task.brief,
+                    failureReason: failureReason
+                ))
+                self.archiveFinishedTask(task)
+                self.removeRunningTask(withID: task.id)
+            }
+            self.wallClockBudgetWatchdogTasksByTaskID[task.id]?.cancel()
+            self.wallClockBudgetWatchdogTasksByTaskID[task.id] = nil
+            self.workerEventConsumerTasksByTaskID[task.id] = nil
+            self.activeWorkersByTaskID[task.id] = nil
         }
     }
 
@@ -214,30 +270,30 @@ final class AgentTaskManager: ObservableObject {
             task.finishedAt = Date()
             announcementHandler?(.taskCompleted(brief: task.brief, finalSummary: finalSummary))
             archiveFinishedTask(task)
-            currentTask = nil
-            activeWorker = nil
-            wallClockBudgetWatchdogTask?.cancel()
-            wallClockBudgetWatchdogTask = nil
+            removeRunningTask(withID: task.id)
+            activeWorkersByTaskID[task.id] = nil
+            wallClockBudgetWatchdogTasksByTaskID[task.id]?.cancel()
+            wallClockBudgetWatchdogTasksByTaskID[task.id] = nil
 
         case .workerFailed(let failureReason):
             task.status = .failed
             task.finishedAt = Date()
             announcementHandler?(.taskFailed(brief: task.brief, failureReason: failureReason))
             archiveFinishedTask(task)
-            currentTask = nil
-            activeWorker = nil
-            wallClockBudgetWatchdogTask?.cancel()
-            wallClockBudgetWatchdogTask = nil
+            removeRunningTask(withID: task.id)
+            activeWorkersByTaskID[task.id] = nil
+            wallClockBudgetWatchdogTasksByTaskID[task.id]?.cancel()
+            wallClockBudgetWatchdogTasksByTaskID[task.id] = nil
 
         case .workerCancelled:
             task.status = .cancelled
             task.finishedAt = Date()
             announcementHandler?(.taskCancelled(brief: task.brief))
             archiveFinishedTask(task)
-            currentTask = nil
-            activeWorker = nil
-            wallClockBudgetWatchdogTask?.cancel()
-            wallClockBudgetWatchdogTask = nil
+            removeRunningTask(withID: task.id)
+            activeWorkersByTaskID[task.id] = nil
+            wallClockBudgetWatchdogTasksByTaskID[task.id]?.cancel()
+            wallClockBudgetWatchdogTasksByTaskID[task.id] = nil
 
         default:
             // Non-terminal — keep going.
@@ -248,21 +304,20 @@ final class AgentTaskManager: ObservableObject {
     // MARK: - Budget watchdog
 
     private func startWallClockBudgetWatchdog(for task: AgentTask) {
-        wallClockBudgetWatchdogTask?.cancel()
+        wallClockBudgetWatchdogTasksByTaskID[task.id]?.cancel()
         let timeoutSeconds = task.brief.maxWallClockSeconds
-        wallClockBudgetWatchdogTask = Task { @MainActor [weak self] in
+        wallClockBudgetWatchdogTasksByTaskID[task.id] = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds) * 1_000_000_000)
             guard !Task.isCancelled else { return }
             guard let self else { return }
-            guard let currentlyRunningTask = self.currentTask,
-                  currentlyRunningTask.id == task.id,
+            guard let currentlyRunningTask = self.runningTasks.first(where: { $0.id == task.id }),
                   !currentlyRunningTask.status.isTerminal else {
                 return
             }
             currentlyRunningTask.events.append(TimestampedAgentTaskEvent(
                 event: .warningEmitted(text: "wall-clock budget exceeded, cancelling task")
             ))
-            await self.cancelCurrentTask()
+            await self.cancelTask(taskID: task.id)
         }
     }
 
@@ -277,6 +332,10 @@ final class AgentTaskManager: ObservableObject {
         }
     }
 
+    private func removeRunningTask(withID taskID: UUID) {
+        runningTasks.removeAll { $0.id == taskID }
+    }
+
     // MARK: - Working directory utility
 
     /// Auto-names a per-task working directory under ~/Desktop/Dot Tasks/.
@@ -284,8 +343,8 @@ final class AgentTaskManager: ObservableObject {
     /// same title get distinct dirs. Creates the directory if missing.
     ///
     /// Marked `nonisolated` because it touches only FileManager + pure
-    /// string helpers — callers (e.g. AgentTaskPlanner) often run in non-
-    /// MainActor contexts and need a sync URL back.
+    /// string helpers, and routing code may need a sync URL before handing
+    /// the task to the MainActor manager.
     nonisolated static func makeWorkingDirectoryURL(forTitle title: String) -> URL {
         let baseTasksDirectoryURL = FileManager.default
             .homeDirectoryForCurrentUser

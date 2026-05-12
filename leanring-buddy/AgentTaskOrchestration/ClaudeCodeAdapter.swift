@@ -203,7 +203,7 @@ final class ClaudeCodeAdapter: AgentWorker {
         // the tool-call budget. `--permission-mode=acceptEdits` lets the agent
         // make file edits without prompting; we deliberately do NOT pass
         // `--dangerously-skip-permissions`.
-        return [
+        var arguments = [
             "--print",
             "--input-format", "stream-json",
             "--output-format", "stream-json",
@@ -211,6 +211,11 @@ final class ClaudeCodeAdapter: AgentWorker {
             "--permission-mode", "acceptEdits",
             "--max-turns", String(brief.maxToolCallSteps)
         ]
+        if !brief.additionalDirectoryURLs.isEmpty {
+            arguments.append("--add-dir")
+            arguments.append(contentsOf: brief.additionalDirectoryURLs.map(\.path))
+        }
+        return arguments
     }
 
     private static func buildChildEnvironment() -> [String: String] {

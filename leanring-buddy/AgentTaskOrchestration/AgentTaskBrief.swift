@@ -9,16 +9,16 @@
 import Combine
 import Foundation
 
-/// The structured request that the planner produces from a raw voice
-/// transcript and that we hand off to an `AgentWorker` to actually execute.
-/// A brief is immutable once created — follow-up messages live on the
-/// task object, not on the brief.
+/// The structured request produced from an explicit `dot agent ...` command
+/// and handed to an `AgentWorker` to execute. A brief is immutable once
+/// created; mutable lifecycle state lives on `AgentTask`.
 struct AgentTaskBrief: Identifiable, Equatable {
     let id: UUID
     let oneLineTitle: String
     let userOriginalRequest: String
     let detailedInstructions: String
     let workingDirectoryURL: URL
+    let additionalDirectoryURLs: [URL]
     let estimatedDurationDescription: String
     let maxToolCallSteps: Int
     let maxWallClockSeconds: Int
