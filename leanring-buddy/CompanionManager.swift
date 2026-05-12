@@ -1334,6 +1334,20 @@ final class CompanionManager: ObservableObject {
         case .fillAndSubmit:
             return "submitting"
 
+        case .performActionSequence(let steps):
+            let sequenceCaptions = steps.compactMap { actionSequenceStep in
+                programmaticCaption(for: actionSequenceStep)
+            }
+            guard !sequenceCaptions.isEmpty else {
+                return "doing actions"
+            }
+            var uniqueSequenceCaptions: [String] = []
+            for sequenceCaption in sequenceCaptions {
+                guard !uniqueSequenceCaptions.contains(sequenceCaption) else { continue }
+                uniqueSequenceCaptions.append(sequenceCaption)
+            }
+            return uniqueSequenceCaptions.prefix(2).joined(separator: ", ")
+
         case .pressKeystroke(let spec):
             return "pressing \(shortKeystrokeDescription(spec))"
 
@@ -1399,6 +1413,31 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    private static func programmaticCaption(for actionSequenceStep: AgentActionSequenceStep) -> String? {
+        switch actionSequenceStep {
+        case .clickElement(_, let label, _):
+            if let spokenLabel = shortSpokenLabel(label) {
+                return "clicking \(spokenLabel)"
+            }
+            return "clicking"
+
+        case .typeText(let text):
+            if let spokenText = shortSpokenTypedText(text) {
+                return "typing \(spokenText)"
+            }
+            return "typing"
+
+        case .pressKeystroke(let spec):
+            return "pressing \(shortKeystrokeDescription(spec))"
+
+        case .pauseForMilliseconds:
+            return "waiting"
+
+        case .scroll(let direction, _):
+            return "scrolling \(direction.rawValue)"
+        }
+    }
+
     private static func shortSpokenLabel(_ label: String?) -> String? {
         guard let label else { return nil }
         let collapsedLabel = label
@@ -1445,7 +1484,7 @@ final class CompanionManager: ObservableObject {
 
     you operate in a multi-step agent loop. each turn you may emit one or more tool calls. the tools run sequentially, the screen is re-captured, and you're called again with the tool results + new screenshot to continue. you have up to \(maxAgentStepsPerUserTurn) steps per user request.
 
-    for maximum efficiency, whenever you need to perform multiple independent operations, invoke all relevant tools simultaneously rather than sequentially. specifically: when you can predict the next 2-3 actions deterministically — e.g. click a text input, then type into it; or open a URL, then click a specific button you know will be at a known coordinate — emit them as separate tool calls in the SAME response. they run back-to-back inside one turn without a screenshot between them, which is faster AND avoids self-doubt loops where you re-click waiting for a visible confirmation that never comes.
+    for maximum efficiency, avoid one-action-per-screenshot when the next actions are deterministic. when you can predict the next 2-6 local primitives without seeing an intermediate screen, use perform_action_sequence. when you need multiple independent high-level tools that are not eligible for perform_action_sequence, emit them in the SAME response. they run back-to-back inside one turn without a screenshot between them, which is faster AND avoids self-doubt loops where you re-click waiting for a visible confirmation that never comes.
 
     most desktop tasks need multiple steps in a row — navigate somewhere, then click a button, then type, then confirm. chain steps until the user's original request is FULLY done. don't stop after the first action just because you made some progress. before ending the turn, re-read the user's original request and honestly ask "is THAT actually done now?" — if not, emit more tool calls.
 
@@ -1461,6 +1500,9 @@ final class CompanionManager: ObservableObject {
     choosing tools:
     - if the user asks where something is, how to do something, or wants guidance, call point_at_element to draw the blue cursor companion to the relevant UI element. err on the side of pointing rather than not pointing — it makes help concrete.
     - if the user asks you to operate the computer — open, click, navigate, type, search, create, switch — call action tools. usually multiple in sequence: e.g. open_url then click_element.
+    - google slides / deck creation is foreground UI automation by default. if the user asks you to create or edit a deck without explicitly saying "dot agent" or "in the background", open Google Slides in the visible browser, create/edit the deck there, search/download/use images visibly when useful, and let the user watch the blue cursor operate the UI. do not hand this to a background worker.
+    - when the next 2-6 local actions are deterministic and do NOT require seeing the intermediate screen, use perform_action_sequence to batch them. good: click a known field → type → return; cmd+a → type; tab → tab → return; scroll down twice. bad: click a button that changes the page, then guess the next coordinate; open a URL then click an element on the new page; submit/send/pay/delete. chunk only until the next visual decision point, then observe.
+    - never repeat the exact same perform_action_sequence twice in a row. if the first chunk did not create the expected visible/AX state, stop and reason from the current screenshot, use a different tool, wait for async work, or bail out. repeated cleanup chunks like cmd+a → backspace are a bug, not persistence.
     - typing into a text field WITHOUT submitting (drafting, filling part of a form): use fill_text_field — it takes (x, y, text) and does click + focus + type atomically. it works on Slack/Discord/VS Code where naive click + type fragments across turns and the click doesn't transfer focus. ONLY fall back to separate click_element + type_text if you need to type into a field that's already focused without re-clicking.
     - typing AND sending/submitting (sending a Slack DM, posting to a channel, submitting a search, submitting a form the user explicitly asked you to send): use fill_and_submit — same as fill_text_field plus a configurable submit keystroke (default `return`) at the end. only use when the user explicitly asked you to send/submit/post — never auto-submit. for `cmd+return` apps pass submit_keystroke="cmd+return".
     - for opening a URL or going to a website, ALWAYS use open_url. it routes through macOS's default-browser handler so it works no matter which app is focused, including when no browser is open yet. NEVER simulate cmd+L + typing for URL navigation — that silently fails when focus isn't already on a browser.
@@ -1618,9 +1660,41 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Background Agent Task Routing
 
+    private enum BackgroundAgentTaskRoute {
+        case explicitAgentPrefix
+        case personalBackgroundTask
+
+        var shouldUsePersonalConnectedTools: Bool {
+            switch self {
+            case .explicitAgentPrefix:
+                return false
+            case .personalBackgroundTask:
+                return true
+            }
+        }
+
+        var logDescription: String {
+            switch self {
+            case .explicitAgentPrefix:
+                return "explicit_dot_agent_prefix"
+            case .personalBackgroundTask:
+                return "personal_background_task"
+            }
+        }
+
+        var estimatedDurationDescription: String {
+            switch self {
+            case .explicitAgentPrefix:
+                return "a few minutes"
+            case .personalBackgroundTask:
+                return "i'll work on it in the background"
+            }
+        }
+    }
+
     /// Routes finalized transcripts. Live desktop-control requests stay in the
-    /// inline screenshot loop. Only explicit `dot agent ...` requests run in
-    /// Claude Code.
+    /// inline screenshot loop. Explicit coding requests and deterministic
+    /// long-running personal tasks run in Claude Code.
     private func routeTranscriptToExplicitAgentCommandOrInlineLoop(
         transcript: String,
         source: String,
@@ -1640,6 +1714,19 @@ final class CompanionManager: ObservableObject {
                 originalTranscript: transcript,
                 backgroundAgentRequest: explicitAgentRequest,
                 source: source,
+                route: .explicitAgentPrefix,
+                includeConversationHistory: includeConversationHistory,
+                persistConversationHistory: persistConversationHistory
+            )
+            return
+        }
+
+        if let personalBackgroundTaskRequest = Self.extractPersonalBackgroundTaskRequest(from: transcript) {
+            startBackgroundAgentTask(
+                originalTranscript: transcript,
+                backgroundAgentRequest: personalBackgroundTaskRequest,
+                source: source,
+                route: .personalBackgroundTask,
                 includeConversationHistory: includeConversationHistory,
                 persistConversationHistory: persistConversationHistory
             )
@@ -1663,6 +1750,7 @@ final class CompanionManager: ObservableObject {
         originalTranscript: String,
         backgroundAgentRequest: String,
         source: String,
+        route: BackgroundAgentTaskRoute,
         includeConversationHistory: Bool = true,
         persistConversationHistory: Bool = true
     ) {
@@ -1692,14 +1780,15 @@ final class CompanionManager: ObservableObject {
                 originalTranscript: originalTranscript,
                 explicitAgentRequest: backgroundAgentRequest,
                 foregroundDocumentContext: foregroundDocumentContext,
-                originatingSource: source
+                originatingSource: source,
+                route: route
             )
 
             DotDebugLogger.log("agent.route", "starting background task", metadata: [
                 "title": brief.oneLineTitle,
                 "workingDir": brief.workingDirectoryURL.path,
                 "source": source,
-                "route": "explicit_dot_agent_prefix",
+                "route": route.logDescription,
                 "foregroundContextHasDocument": foregroundDocumentContext?.hasDocumentReference ?? false
             ])
 
@@ -1741,6 +1830,90 @@ final class CompanionManager: ObservableObject {
         return explicitAgentRequest.isEmpty ? nil : explicitAgentRequest
     }
 
+    private static func extractPersonalBackgroundTaskRequest(from transcript: String) -> String? {
+        let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedTranscript.count >= 20 else { return nil }
+        guard extractExplicitAgentRequest(from: trimmedTranscript) == nil else { return nil }
+        guard !isLiveCartPreparationTask(trimmedTranscript) else { return nil }
+        guard shouldPromoteToPersonalBackgroundTask(trimmedTranscript) else { return nil }
+        return trimmedTranscript
+    }
+
+    private static func isLiveCartPreparationTask(_ transcript: String) -> Bool {
+        let normalizedTranscript = normalizeDirectCommandTranscript(transcript)
+        let shoppingSiteMarkers = [
+            "snackpass",
+            "doordash",
+            "door dash",
+            "uber eats",
+            "ubereats",
+            "instacart"
+        ]
+        let cartActionMarkers = [
+            "buy",
+            "order",
+            "cart",
+            "checkout",
+            "check out"
+        ]
+
+        return containsAnyMarker(in: normalizedTranscript, markers: shoppingSiteMarkers)
+            && containsAnyMarker(in: normalizedTranscript, markers: cartActionMarkers)
+    }
+
+    private static func shouldPromoteToPersonalBackgroundTask(_ transcript: String) -> Bool {
+        let normalizedTranscript = normalizeDirectCommandTranscript(transcript)
+
+        let personalGoogleDataMarkers = [
+            "gmail",
+            "google sheets",
+            "sheet",
+            "spreadsheet",
+            "booking info",
+            "booking confirmation"
+        ]
+        let tripOrCostMarkers = [
+            "hotel",
+            "hotels",
+            "trip",
+            "total cost",
+            "cost of",
+            "japan"
+        ]
+        if containsAnyMarker(in: normalizedTranscript, markers: personalGoogleDataMarkers)
+            && containsAnyMarker(in: normalizedTranscript, markers: tripOrCostMarkers) {
+            return true
+        }
+
+        let recommendationMarkers = [
+            "find me the best",
+            "find the best",
+            "best pizza",
+            "best restaurants",
+            "best places",
+            "research",
+            "compare"
+        ]
+        let localPlaceMarkers = [
+            "pizza",
+            "restaurant",
+            "restaurants",
+            "places",
+            "near",
+            "next to",
+            "campus",
+            "berkeley"
+        ]
+        return containsAnyMarker(in: normalizedTranscript, markers: recommendationMarkers)
+            && containsAnyMarker(in: normalizedTranscript, markers: localPlaceMarkers)
+    }
+
+    private static func containsAnyMarker(in normalizedTranscript: String, markers: [String]) -> Bool {
+        return markers.contains { marker in
+            normalizedTranscript.contains(marker)
+        }
+    }
+
     private static func shouldIncludeForegroundContextInBackgroundTask(_ backgroundAgentRequest: String) -> Bool {
         let normalizedRequest = normalizeDirectCommandTranscript(backgroundAgentRequest)
         let currentContextMarkers = [
@@ -1770,7 +1943,8 @@ final class CompanionManager: ObservableObject {
         originalTranscript: String,
         explicitAgentRequest: String,
         foregroundDocumentContext: ForegroundDocumentContextSnapshot?,
-        originatingSource: String
+        originatingSource: String,
+        route: BackgroundAgentTaskRoute
     ) -> AgentTaskBrief {
         let oneLineTitle = makeExplicitAgentTaskTitle(from: explicitAgentRequest)
         let workingDirectoryURL = AgentTaskManager.makeWorkingDirectoryURL(forTitle: oneLineTitle)
@@ -1790,9 +1964,19 @@ final class CompanionManager: ObservableObject {
             \(directoryList)
             """
         }
-        let taskModeInstruction = """
-        This is an explicit background coding-agent request. Complete the coding, file, or research work the user asked for, using the generated task directory as the default workspace.
-        """
+        let taskModeInstruction: String
+        switch route {
+        case .explicitAgentPrefix:
+            taskModeInstruction = """
+            This is an explicit background coding-agent request. Complete the coding, file, or research work the user asked for, using the generated task directory as the default workspace.
+            """
+        case .personalBackgroundTask:
+            taskModeInstruction = """
+            This is a deterministic long-running personal task that Dot routed to the background worker. Prefer WebSearch/WebFetch and connected Chrome/Gmail/Google Drive/Canva tools over the foreground screen-control loop. If a required connected account or tool is unavailable, report the exact blocker instead of pretending the task completed.
+
+            Safety boundary: do not pay, purchase, submit orders, send emails, share documents, delete user data, or change account settings. Deck/presentation tasks may create an editable artifact, but must not share or send it. If the user asks for Google Slides, first try to create an editable Google Slides or Google Drive presentation and report its URL or exact blocker; use Canva or a local draft only as a clearly labeled fallback after connected presentation creation fails. Gmail/Sheets/trip-accounting tasks are read-only and must show the arithmetic used. Recommendation tasks should return ranked options with concise reasons and sources.
+            """
+        }
         let foregroundContextInstruction: String
         if let foregroundDocumentContext {
             foregroundContextInstruction = """
@@ -1832,7 +2016,8 @@ final class CompanionManager: ObservableObject {
             workingDirectoryURL: workingDirectoryURL,
             additionalDirectoryURLs: additionalDirectoryURLs,
             originatingSource: originatingSource,
-            estimatedDurationDescription: "a few minutes",
+            shouldUsePersonalConnectedTools: route.shouldUsePersonalConnectedTools,
+            estimatedDurationDescription: route.estimatedDurationDescription,
             maxToolCallSteps: AgentTaskBrief.defaultMaxToolCallSteps,
             maxWallClockSeconds: AgentTaskBrief.defaultMaxWallClockSeconds
         )
@@ -2772,6 +2957,14 @@ final class CompanionManager: ObservableObject {
             // signal for the Electron case. Reset by any non-click action.
             var mostRecentClickCoordinateAcrossSteps: CGPoint? = nil
 
+            // `perform_action_sequence` is intentionally powerful: it skips
+            // intermediate screenshots so deterministic local primitives run
+            // fast. That also means a bad focus/layout assumption can be
+            // amplified if the model retries the exact same edit chunk after
+            // seeing no visible proof. Refuse consecutive identical mutating
+            // chunks; repeated scroll-only chunks remain allowed.
+            var mostRecentMutatingActionSequenceSignatureAcrossSteps: String? = nil
+
             do {
                 var apiMessages: [[String: Any]] = []
 
@@ -2964,6 +3157,26 @@ final class CompanionManager: ObservableObject {
                             mostRecentClickCoordinateAcrossSteps = nil
                         }
 
+                        if case .performActionSequence(let sequenceSteps) = decodedToolCall {
+                            let actionSequenceSignature = Self.actionSequenceRepeatGuardSignature(for: sequenceSteps)
+                            if let actionSequenceSignature,
+                               mostRecentMutatingActionSequenceSignatureAcrossSteps == actionSequenceSignature {
+                                DotDebugLogger.log("agent.loop", "refused consecutive identical action sequence", metadata: [
+                                    "actionCount": sequenceSteps.count,
+                                    "stepsExecuted": stepsExecuted
+                                ])
+                                toolResultBlocks.append([
+                                    "type": "tool_result",
+                                    "tool_use_id": toolUseBlock.toolUseID,
+                                    "content": "REFUSED: this perform_action_sequence is identical to the previous mutating action sequence. the prior chunk already ran. do NOT repeat the same chunk. use the current screenshot and [ax] focus state to choose a different next action, wait/observe if async work is still loading, or call bail_out if you cannot make safe progress."
+                                ])
+                                continue
+                            }
+                            mostRecentMutatingActionSequenceSignatureAcrossSteps = actionSequenceSignature
+                        } else {
+                            mostRecentMutatingActionSequenceSignatureAcrossSteps = nil
+                        }
+
                         if case .memory = decodedToolCall {
                             memoryToolCallCount += 1
                         }
@@ -3045,12 +3258,11 @@ final class CompanionManager: ObservableObject {
                     }
 
                     // Re-baseline mouse and run the settling + mouse-move
-                    // check before the next API call. AXPress doesn't move
-                    // the cursor; coordinate-click fallback warps it back.
-                    // Either way, the current cursor position right after
+                    // check before the next API call. Coordinate clicks warp
+                    // the cursor back after posting the real mouseDown/mouseUp
+                    // sequence, so the current cursor position right after
                     // actions is the post-action baseline against which we
-                    // measure user-driven movement during the settling
-                    // window.
+                    // measure user-driven movement during the settling window.
                     baselineUserMouseLocation = NSEvent.mouseLocation
                     let settlingStartedAt = Date()
                     try? await Task.sleep(nanoseconds: Self.interStepSettlingDelayNanoseconds)
@@ -3219,22 +3431,53 @@ final class CompanionManager: ObservableObject {
     /// Builds a `user`-role content-block list: any tool_result blocks first
     private static func transcriptWithInlineTaskHints(_ transcript: String) -> String {
         let normalizedTranscript = normalizeDirectCommandTranscript(transcript)
-        guard normalizedTranscript.contains("snackpass") else {
+        var liveTaskHints: [String] = []
+
+        if normalizedTranscript.contains("snackpass") {
+            if normalizedTranscript.contains("tp tea") || normalizedTranscript.contains("tptea") {
+                liveTaskHints.append(
+                    "this is a foreground UI cart-prep task, not a background task. For TP TEA Berkeley on Snackpass, open the real store URL directly: https://order.snackpass.co/TP-TEA-(Berkeley-2383-Telegraph-Ave)-5deaa0f39bb37200f43f7768 . Do not cycle guessed paths like snackpass.co/tp-tea, /order, or /stores. Add a reasonable boba or milk-tea item to the cart if possible, then stop before checkout/payment."
+                )
+            } else {
+                liveTaskHints.append(
+                    "this is a foreground UI cart-prep task, not a background task. For Snackpass, use a direct Google search URL for the exact store plus \"Snackpass\" if you do not already see the store page. Do not cycle guessed Snackpass paths. Stop once the requested item is in cart; never check out or pay."
+                )
+            }
+        }
+
+        let presentationMarkers = [
+            "google slides",
+            "slides",
+            "slide deck",
+            "pitchdeck",
+            "pitch deck",
+            "deck for vcs",
+            "deck for investors"
+        ]
+        let presentationCreationMarkers = [
+            "create",
+            "make",
+            "build",
+            "draft",
+            "put together"
+        ]
+        if containsAnyMarker(in: normalizedTranscript, markers: presentationMarkers)
+            && containsAnyMarker(in: normalizedTranscript, markers: presentationCreationMarkers) {
+            liveTaskHints.append(
+                "this is a foreground visible UI automation task. Open or use Google Slides in the visible browser and build/edit the deck on screen so the user can watch Dot operate. Start from https://docs.google.com/presentation/create unless the user clearly wants the current deck. For title/subtitle/text placeholders, prefer fill_text_field with the placeholder coordinates and text in one tool call; do not split into click_element then type_text unless the field is already focused. Use web search and visible browser steps to gather images or source material when useful. Do not route this to background Claude Code unless the user explicitly says dot agent or asks for background work."
+            )
+        }
+
+        guard !liveTaskHints.isEmpty else {
             return transcript
         }
-
-        if normalizedTranscript.contains("tp tea") || normalizedTranscript.contains("tptea") {
-            return """
-            \(transcript)
-
-            [dot live-task hint: this is a foreground UI cart-prep task, not a background task. For TP TEA Berkeley on Snackpass, open the real store URL directly: https://order.snackpass.co/TP-TEA-(Berkeley-2383-Telegraph-Ave)-5deaa0f39bb37200f43f7768 . Do not cycle guessed paths like snackpass.co/tp-tea, /order, or /stores. Add a reasonable boba or milk-tea item to the cart if possible, then stop before checkout/payment.]
-            """
-        }
-
+        let hintText = liveTaskHints
+            .map { "[dot live-task hint: \($0)]" }
+            .joined(separator: "\n")
         return """
         \(transcript)
 
-        [dot live-task hint: this is a foreground UI cart-prep task, not a background task. For Snackpass, use a direct Google search URL for the exact store plus "Snackpass" if you do not already see the store page. Do not cycle guessed Snackpass paths. Stop once the requested item is in cart; never check out or pay.]
+        \(hintText)
         """
     }
 
@@ -3334,6 +3577,109 @@ final class CompanionManager: ObservableObject {
             self.didTriggerBailOut = didTriggerBailOut
             self.shouldCaptureFreshScreenAfterExecution = shouldCaptureFreshScreenAfterExecution
         }
+    }
+
+    private struct ActionSequenceBuildResult {
+        let actions: [CompanionComputerControlAction]
+        let actionDescriptions: [String]
+        let errorDescription: String?
+    }
+
+    private static func actionSequenceRepeatGuardSignature(
+        for sequenceSteps: [AgentActionSequenceStep]
+    ) -> String? {
+        let containsMutatingAction = sequenceSteps.contains { sequenceStep in
+            switch sequenceStep {
+            case .scroll, .pauseForMilliseconds:
+                return false
+            case .clickElement, .typeText, .pressKeystroke:
+                return true
+            }
+        }
+        guard containsMutatingAction else { return nil }
+
+        return sequenceSteps.map { sequenceStep in
+            switch sequenceStep {
+            case .clickElement(let coordinate, _, let screen):
+                let screenDescription = screen.map(String.init) ?? "nil"
+                return "click:\(Int(coordinate.x.rounded())):\(Int(coordinate.y.rounded())):\(screenDescription)"
+
+            case .typeText(let text):
+                return "type:\(text)"
+
+            case .pressKeystroke(let spec):
+                let normalizedSpec = spec
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                return "key:\(normalizedSpec)"
+
+            case .pauseForMilliseconds(let milliseconds):
+                return "pause:\(min(max(milliseconds, 0), 1_500))"
+
+            case .scroll(let direction, let amount):
+                return "scroll:\(direction.rawValue):\(amount.rawValue)"
+            }
+        }
+        .joined(separator: "|")
+    }
+
+    private static func computerControlActions(
+        for sequenceSteps: [AgentActionSequenceStep]
+    ) -> ActionSequenceBuildResult {
+        guard !sequenceSteps.isEmpty else {
+            return ActionSequenceBuildResult(
+                actions: [],
+                actionDescriptions: [],
+                errorDescription: "actions must not be empty"
+            )
+        }
+        guard sequenceSteps.count <= 6 else {
+            return ActionSequenceBuildResult(
+                actions: [],
+                actionDescriptions: [],
+                errorDescription: "actions count \(sequenceSteps.count) exceeds the maximum of 6"
+            )
+        }
+
+        var actions: [CompanionComputerControlAction] = []
+        var actionDescriptions: [String] = []
+        for (stepIndex, sequenceStep) in sequenceSteps.enumerated() {
+            switch sequenceStep {
+            case .clickElement(let coordinate, let label, let screen):
+                actions.append(.click(coordinate: coordinate, elementLabel: label, screenNumber: screen))
+                actionDescriptions.append("clicked \(label ?? "element") at (\(Int(coordinate.x)), \(Int(coordinate.y)))")
+
+            case .typeText(let text):
+                actions.append(.typeText(text))
+                actionDescriptions.append("typed \(text.count) character(s)")
+
+            case .pressKeystroke(let spec):
+                guard let parsedKeystroke = CompanionComputerController.parseKeystroke(fromKeySpec: spec) else {
+                    return ActionSequenceBuildResult(
+                        actions: [],
+                        actionDescriptions: [],
+                        errorDescription: "action \(stepIndex + 1) has unrecognized keystroke spec \"\(spec)\""
+                    )
+                }
+                actions.append(.keyPress(parsedKeystroke))
+                actionDescriptions.append("pressed \(parsedKeystroke.humanReadableDescription)")
+
+            case .pauseForMilliseconds(let milliseconds):
+                let clampedMilliseconds = min(max(milliseconds, 0), 1_500)
+                actions.append(.pauseForMilliseconds(clampedMilliseconds))
+                actionDescriptions.append("paused \(clampedMilliseconds) ms")
+
+            case .scroll(let direction, let amount):
+                actions.append(.scroll(direction: direction, amount: amount))
+                actionDescriptions.append("scrolled \(direction.rawValue) (\(amount.rawValue))")
+            }
+        }
+
+        return ActionSequenceBuildResult(
+            actions: actions,
+            actionDescriptions: actionDescriptions,
+            errorDescription: nil
+        )
     }
 
     /// Dispatches one decoded tool call. point_at_element and bail_out are
@@ -3455,6 +3801,32 @@ final class CompanionManager: ObservableObject {
             )
             return AgentToolExecutionResult(
                 toolResultContent: "filled \(label ?? "field") at (\(Int(coordinate.x)), \(Int(coordinate.y))) with \(text.count) character(s)\(clearExisting ? " (cleared first)" : "") and submitted via \(submitKeystroke.humanReadableDescription)",
+                didTriggerBailOut: false
+            )
+
+        case .performActionSequence(let sequenceSteps):
+            let sequenceBuildResult = Self.computerControlActions(for: sequenceSteps)
+            if let errorDescription = sequenceBuildResult.errorDescription {
+                return AgentToolExecutionResult(
+                    toolResultContent: "error: perform_action_sequence rejected: \(errorDescription)",
+                    didTriggerBailOut: false
+                )
+            }
+            await performComputerControlActions(
+                sequenceBuildResult.actions,
+                screenCaptures: originatingScreenCaptures
+            )
+            let sequenceSummary = sequenceBuildResult.actionDescriptions
+                .enumerated()
+                .map { index, actionDescription in
+                    "\(index + 1). \(actionDescription)"
+                }
+                .joined(separator: "; ")
+            DotDebugLogger.log("agent.loop", "performed action sequence", metadata: [
+                "actionCount": sequenceBuildResult.actions.count
+            ])
+            return AgentToolExecutionResult(
+                toolResultContent: "performed action sequence: \(sequenceSummary)",
                 didTriggerBailOut: false
             )
 
@@ -3624,25 +3996,10 @@ final class CompanionManager: ObservableObject {
             )
 
         case .scroll(let scrollDirection, let scrollAmount):
-            DotDebugLogger.log("computer.actions", "scroll action requested", metadata: [
-                "direction": scrollDirection.rawValue,
-                "amount": scrollAmount.rawValue
-            ])
-            // The cursor is hidden during .processing; flip to .idle so the
-            // user actually sees the Disney-style scroll bounce.
-            voiceState = .idle
-            // Direction first, then token. Order matters: the overlay's
-            // .onChange reads the direction the moment the token bumps.
-            mostRecentScrollDirectionUnitVector = scrollDirection.visualHintUnitVector
-            scrollAnimationTriggerToken = UUID()
-            CompanionComputerController.scrollWheel(
-                direction: scrollDirection,
-                magnitude: scrollAmount.scrollLineMagnitude
+            await performComputerControlActions(
+                [.scroll(direction: scrollDirection, amount: scrollAmount)],
+                screenCaptures: originatingScreenCaptures
             )
-            DotDebugLogger.log("computer.actions", "scroll action completed", metadata: [
-                "direction": scrollDirection.rawValue,
-                "amount": scrollAmount.rawValue
-            ])
             return AgentToolExecutionResult(
                 toolResultContent: "scrolled \(scrollDirection.rawValue) (\(scrollAmount.rawValue))",
                 didTriggerBailOut: false
@@ -4387,6 +4744,7 @@ final class CompanionManager: ObservableObject {
         case mediaControl(CompanionMediaControlCommand)
         case typeText(String)
         case keyPress(CompanionKeystroke)
+        case scroll(direction: AgentScrollDirection, amount: AgentScrollAmount)
         /// Lets composite tool executors (e.g. fill_text_field) interleave
         /// a fixed-duration wait between primitive actions without leaving
         /// `performComputerControlActions`. Used to let focus / paste /
@@ -4517,6 +4875,28 @@ final class CompanionManager: ObservableObject {
                     "keystroke": keystroke.humanReadableDescription
                 ])
                 try? await Task.sleep(nanoseconds: 80_000_000)
+
+            case .scroll(let scrollDirection, let scrollAmount):
+                DotDebugLogger.log("computer.actions", "scroll action requested", metadata: [
+                    "direction": scrollDirection.rawValue,
+                    "amount": scrollAmount.rawValue
+                ])
+                // The cursor is hidden during .processing; flip to .idle so the
+                // user actually sees the scroll hint even inside a batched
+                // action sequence.
+                voiceState = .idle
+                // Direction first, then token. Order matters: the overlay's
+                // .onChange reads the direction the moment the token bumps.
+                mostRecentScrollDirectionUnitVector = scrollDirection.visualHintUnitVector
+                scrollAnimationTriggerToken = UUID()
+                CompanionComputerController.scrollWheel(
+                    direction: scrollDirection,
+                    magnitude: scrollAmount.scrollLineMagnitude
+                )
+                DotDebugLogger.log("computer.actions", "scroll action completed", metadata: [
+                    "direction": scrollDirection.rawValue,
+                    "amount": scrollAmount.rawValue
+                ])
 
             case .pauseForMilliseconds(let milliseconds):
                 DotDebugLogger.log("computer.actions", "pause action", metadata: [

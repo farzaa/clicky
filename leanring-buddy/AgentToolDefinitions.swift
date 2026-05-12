@@ -80,6 +80,7 @@ enum AgentToolCall {
     case typeText(String)
     case fillTextField(coordinate: CGPoint, label: String?, screen: Int?, text: String, clearExisting: Bool)
     case fillAndSubmit(coordinate: CGPoint, label: String?, screen: Int?, text: String, clearExisting: Bool, submitKeystrokeSpec: String)
+    case performActionSequence([AgentActionSequenceStep])
     case pressKeystroke(spec: String)
     case scroll(direction: AgentScrollDirection, amount: AgentScrollAmount)
     case waitForSeconds(Int)
@@ -107,6 +108,14 @@ enum AgentToolCall {
     case memory(input: [String: Any])
 }
 
+enum AgentActionSequenceStep {
+    case clickElement(coordinate: CGPoint, label: String?, screen: Int?)
+    case typeText(String)
+    case pressKeystroke(spec: String)
+    case pauseForMilliseconds(Int)
+    case scroll(direction: AgentScrollDirection, amount: AgentScrollAmount)
+}
+
 struct AgentZipArchiveEntry {
     let sourcePath: String
     let archivePath: String
@@ -123,6 +132,7 @@ enum AgentToolDefinitions {
         typeTextTool,
         fillTextFieldTool,
         fillAndSubmitTool,
+        performActionSequenceTool,
         pressKeystrokeTool,
         scrollTool,
         waitForSecondsTool,
@@ -204,7 +214,7 @@ enum AgentToolDefinitions {
 
     private static let clickElementTool = AgentToolDefinition(
         name: "click_element",
-        description: "Click a UI element on screen. Use only when (a) the target is page content (not browser chrome — for the address bar / tabs use the navigate / tab tools instead), AND (b) you can identify the target confidently from the current screenshot. Coordinates are pixels in the latest screenshot. Clicks try AXPress first (no cursor move) and fall back to a coordinate event that restores the hardware cursor.",
+        description: "Click a UI element on screen. Use only when (a) the target is page content (not browser chrome — for the address bar / tabs use the navigate / tab tools instead), AND (b) you can identify the target confidently from the current screenshot. Coordinates are pixels in the latest screenshot. Clicks send real coordinate mouse events and restore the hardware cursor afterward, so web canvases such as Google Slides receive an actual mouseDown/mouseUp sequence.",
         inputSchema: [
             "type": "object",
             "properties": coordinateSchemaProperties,
@@ -319,6 +329,72 @@ enum AgentToolDefinitions {
                 ]
             ],
             "required": ["direction"]
+        ]
+    )
+
+    private static let performActionSequenceTool = AgentToolDefinition(
+        name: "perform_action_sequence",
+        description: "Execute 1-6 deterministic local UI actions serially before the next screenshot. Use this to chunk through actions that do NOT require seeing the intermediate screen: repeated scrolls; click a known field then type; type then press return; cmd+a then type; tab/tab/return keyboard flows. Do NOT use across a visual decision point, page navigation, modal appearance, unknown layout shift, purchase/checkout/send confirmation, or anything where action N+1 depends on seeing what action N changed. Never repeat the exact same mutating sequence twice in a row; observe, choose a different tool, wait, or bail out instead. Prefer fill_text_field/fill_and_submit for a single known text field; use this for heterogeneous or repeated primitives.",
+        inputSchema: [
+            "type": "object",
+            "properties": [
+                "actions": [
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 6,
+                    "description": "Ordered primitive actions to execute before the next screenshot. Stop at the next visual decision point.",
+                    "items": [
+                        "type": "object",
+                        "properties": [
+                            "type": [
+                                "type": "string",
+                                "enum": ["click_element", "type_text", "press_keystroke", "pause", "scroll"],
+                                "description": "Primitive action type."
+                            ],
+                            "x": [
+                                "type": "integer",
+                                "description": "For click_element: pixel x-coordinate in the most recent screenshot."
+                            ],
+                            "y": [
+                                "type": "integer",
+                                "description": "For click_element: pixel y-coordinate in the most recent screenshot."
+                            ],
+                            "label": [
+                                "type": "string",
+                                "description": "For click_element: 1-3 word target label."
+                            ],
+                            "screen": [
+                                "type": "integer",
+                                "description": "For click_element: optional 1-based screen index."
+                            ],
+                            "text": [
+                                "type": "string",
+                                "description": "For type_text: literal text to type. Use \\n for newline."
+                            ],
+                            "spec": [
+                                "type": "string",
+                                "description": "For press_keystroke: key spec like return, tab, escape, cmd+a, cmd+shift+z."
+                            ],
+                            "milliseconds": [
+                                "type": "integer",
+                                "description": "For pause: short fixed wait in milliseconds. Clamped to 0-1500."
+                            ],
+                            "direction": [
+                                "type": "string",
+                                "enum": ["up", "down", "left", "right"],
+                                "description": "For scroll: direction to scroll."
+                            ],
+                            "amount": [
+                                "type": "string",
+                                "enum": ["small", "medium", "large"],
+                                "description": "For scroll: default medium."
+                            ]
+                        ],
+                        "required": ["type"]
+                    ]
+                ]
+            ],
+            "required": ["actions"]
         ]
     )
 
@@ -667,6 +743,15 @@ enum AgentToolDefinitions {
                 clearExisting: clearExistingValue,
                 submitKeystrokeSpec: submitKeystrokeSpec
             )
+        case "perform_action_sequence":
+            guard let rawActions = toolUseBlock.inputArguments["actions"] as? [[String: Any]],
+                  !rawActions.isEmpty,
+                  rawActions.count <= 6 else { return nil }
+            let decodedSteps = rawActions.compactMap { rawAction in
+                decodeActionSequenceStep(from: rawAction)
+            }
+            guard decodedSteps.count == rawActions.count else { return nil }
+            return .performActionSequence(decodedSteps)
         case "press_keystroke":
             guard let specValue = toolUseBlock.inputArguments["spec"] as? String else { return nil }
             return .pressKeystroke(spec: specValue)
@@ -776,12 +861,71 @@ enum AgentToolDefinitions {
         }
     }
 
-    private static func decodeCoordinate(from inputArguments: [String: Any]) -> CGPoint? {
-        guard let xValue = decodeOptionalInt(inputArguments["x"]),
-              let yValue = decodeOptionalInt(inputArguments["y"]) else {
+    private static func decodeActionSequenceStep(from rawAction: [String: Any]) -> AgentActionSequenceStep? {
+        guard let typeValue = rawAction["type"] as? String else { return nil }
+        let normalizedType = typeValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        switch normalizedType {
+        case "click", "click_element":
+            guard let coordinate = decodeCoordinate(from: rawAction) else { return nil }
+            return .clickElement(
+                coordinate: coordinate,
+                label: decodeOptionalString(rawAction["label"]),
+                screen: decodeOptionalInt(rawAction["screen"])
+            )
+
+        case "type", "type_text":
+            guard let textValue = rawAction["text"] as? String else { return nil }
+            return .typeText(textValue.replacingOccurrences(of: "\\n", with: "\n"))
+
+        case "key", "press", "press_keystroke":
+            guard let specValue = rawAction["spec"] as? String,
+                  !specValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return .pressKeystroke(spec: specValue.trimmingCharacters(in: .whitespacesAndNewlines))
+
+        case "pause", "wait":
+            let rawMilliseconds = decodeOptionalInt(rawAction["milliseconds"])
+                ?? decodeOptionalInt(rawAction["ms"])
+                ?? ((decodeOptionalInt(rawAction["seconds"]) ?? 0) * 1_000)
+            let clampedMilliseconds = min(max(rawMilliseconds, 0), 1_500)
+            return .pauseForMilliseconds(clampedMilliseconds)
+
+        case "scroll":
+            guard let directionRawValue = rawAction["direction"] as? String,
+                  let scrollDirection = AgentScrollDirection(rawValue: directionRawValue.lowercased()) else {
+                return nil
+            }
+            let amountRawValue = (rawAction["amount"] as? String)?.lowercased() ?? "medium"
+            let scrollAmount = AgentScrollAmount(rawValue: amountRawValue) ?? .medium
+            return .scroll(direction: scrollDirection, amount: scrollAmount)
+
+        default:
             return nil
         }
-        return CGPoint(x: xValue, y: yValue)
+    }
+
+    private static func decodeCoordinate(from inputArguments: [String: Any]) -> CGPoint? {
+        if let xValue = decodeOptionalInt(inputArguments["x"]),
+           let yValue = decodeOptionalInt(inputArguments["y"]) {
+            return CGPoint(x: xValue, y: yValue)
+        }
+
+        for nestedCoordinateKey in ["coordinate", "coordinates", "point"] {
+            if let nestedCoordinate = inputArguments[nestedCoordinateKey] as? [String: Any],
+               let xValue = decodeOptionalInt(nestedCoordinate["x"]),
+               let yValue = decodeOptionalInt(nestedCoordinate["y"]) {
+                return CGPoint(x: xValue, y: yValue)
+            }
+            if let nestedCoordinate = inputArguments[nestedCoordinateKey] as? [Any],
+               nestedCoordinate.count >= 2,
+               let xValue = decodeOptionalInt(nestedCoordinate[0]),
+               let yValue = decodeOptionalInt(nestedCoordinate[1]) {
+                return CGPoint(x: xValue, y: yValue)
+            }
+        }
+
+        return nil
     }
 
     private static func decodeOptionalString(_ rawValue: Any?) -> String? {
