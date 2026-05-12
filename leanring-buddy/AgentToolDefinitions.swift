@@ -157,10 +157,18 @@ enum AgentToolDefinitions {
     ]
 
     static var apiPayloadList: [[String: Any]] {
+        return apiPayloadList(includingMemoryTool: true)
+    }
+
+    static func apiPayloadList(includingMemoryTool shouldIncludeMemoryTool: Bool) -> [[String: Any]] {
         // Predefined tools first so the cache_control marker that
         // `runAgentTurnWithToolUse` adds to the LAST entry lands on a
         // custom tool (well-tested combo), not on a predefined tool.
-        return predefinedToolPayloads + toolCatalog.map { $0.apiPayload }
+        let customToolPayloads = toolCatalog.map { $0.apiPayload }
+        guard shouldIncludeMemoryTool else {
+            return customToolPayloads
+        }
+        return predefinedToolPayloads + customToolPayloads
     }
 
     // MARK: - Tool definitions

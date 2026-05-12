@@ -277,8 +277,15 @@ class ClaudeAPI {
         request.httpBody = bodyData
         let payloadMB = Double(bodyData.count) / 1_048_576.0
         print("🌐 Claude tool-use request: \(String(format: "%.1f", payloadMB))MB, messages=\(messages.count), tools=\(tools.count)")
+        let requestStartedAt = Date()
+        DotDebugLogger.log("claude.api", "tool-use request started", metadata: [
+            "payloadMB": String(format: "%.2f", payloadMB),
+            "messageCount": messages.count,
+            "toolCount": tools.count
+        ])
 
         let (data, response) = try await session.data(for: request)
+        let requestDurationMs = Int((Date().timeIntervalSince(requestStartedAt) * 1_000).rounded())
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw NSError(
@@ -317,7 +324,8 @@ class ClaudeAPI {
             "inputTokens": inputTokens,
             "outputTokens": outputTokens,
             "cacheCreationInputTokens": cacheCreationTokens,
-            "cacheReadInputTokens": cacheReadTokens
+            "cacheReadInputTokens": cacheReadTokens,
+            "requestDurationMs": requestDurationMs
         ])
 
         var collectedTextBlocks: [String] = []

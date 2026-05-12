@@ -17,7 +17,7 @@ import SwiftUI
 enum AgentTaskAnnouncement {
     case acceptedTask(brief: AgentTaskBrief)
     case rejectedBecauseTooManyTasks(rejectedBrief: AgentTaskBrief, maxConcurrentTaskCount: Int)
-    case rejectedBecauseWorkerNotInstalled(workerInstallInstruction: String)
+    case rejectedBecauseWorkerNotInstalled(rejectedBrief: AgentTaskBrief, workerInstallInstruction: String)
     case taskCompleted(brief: AgentTaskBrief, finalSummary: String)
     case taskFailed(brief: AgentTaskBrief, failureReason: String)
     case taskCancelled(brief: AgentTaskBrief)
@@ -91,6 +91,7 @@ final class AgentTaskManager: ObservableObject {
         ])
         guard isWorkerInstalled else {
             announcementHandler?(.rejectedBecauseWorkerNotInstalled(
+                rejectedBrief: brief,
                 workerInstallInstruction: ClaudeCodeAdapter.installInstructionMessage()
             ))
             return
@@ -190,6 +191,33 @@ final class AgentTaskManager: ObservableObject {
 
     func revealTaskWorkingDirectoryInFinder(_ task: AgentTask) {
         NSWorkspace.shared.open(task.brief.workingDirectoryURL)
+    }
+
+    /// App shutdown is synchronous, so do not wait for async stream cleanup.
+    /// Terminate child workers immediately and mark their in-memory tasks as
+    /// cancelled so relaunches do not leave orphaned Claude Code processes.
+    func terminateAllRunningWorkersForAppShutdown() {
+        guard !activeWorkersByTaskID.isEmpty else { return }
+
+        DotDebugLogger.log("agent.task", "terminating workers for app shutdown", metadata: [
+            "activeWorkerCount": activeWorkersByTaskID.count
+        ])
+
+        for (taskID, adapter) in activeWorkersByTaskID {
+            adapter.terminateImmediatelyForAppShutdown()
+            wallClockBudgetWatchdogTasksByTaskID[taskID]?.cancel()
+            wallClockBudgetWatchdogTasksByTaskID[taskID] = nil
+            workerEventConsumerTasksByTaskID[taskID]?.cancel()
+            workerEventConsumerTasksByTaskID[taskID] = nil
+        }
+
+        for runningTask in runningTasks where !runningTask.status.isTerminal {
+            runningTask.status = .cancelled
+            runningTask.finishedAt = Date()
+        }
+
+        activeWorkersByTaskID.removeAll()
+        runningTasks.removeAll()
     }
 
     // MARK: - Stream consumption

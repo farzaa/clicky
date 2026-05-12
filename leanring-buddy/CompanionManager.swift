@@ -178,13 +178,18 @@ final class CompanionManager: ObservableObject {
     /// linger) or on cancellation.
     @Published var captionBubbleVisible: Bool = false
 
+    /// True only while the live agent is intentionally waiting for a page,
+    /// upload, modal, or other async UI transition. The overlay uses this to
+    /// keep the hourglass visible even while the spoken caption says "waiting."
+    @Published var isShowingWaitingAnimation: Bool = false
+
     /// Scheduled task that flips `captionBubbleVisible` back to false a
     /// few seconds after the narration queue drains. Cancelled if a new
     /// chunk arrives in the meantime so consecutive chunks read as a
     /// continuous bubble rather than blinking off and on.
     private var captionBubbleFadeOutTask: Task<Void, Never>?
 
-    /// Background coding-agent task lifecycle. Held here (not in AppDelegate)
+    /// Background agent task lifecycle. Held here (not in AppDelegate)
     /// so CompanionManager can wire its announcement handler into the same
     /// TTS pipeline it already owns. AppDelegate reads this property to
     /// hand it to the AgentTaskPanelManager.
@@ -618,6 +623,7 @@ final class CompanionManager: ObservableObject {
 
     func stop() {
         DotDebugLogger.log("app.stop", "stopping companion manager", metadata: interactionStateLogMetadata())
+        agentTaskManager.terminateAllRunningWorkersForAppShutdown()
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
@@ -638,12 +644,19 @@ final class CompanionManager: ObservableObject {
     /// release would (media-command short-circuit first, then the agent
     /// loop with screenshot). Used by both the typed text-command panel
     /// (cmd+shift+space) and the `dot://debug?transcript=…` URL.
-    func runTranscriptThroughAgentLoop(transcript: String, source: String) {
+    func runTranscriptThroughAgentLoop(
+        transcript: String,
+        source: String,
+        includeConversationHistory: Bool = true,
+        persistConversationHistory: Bool = true
+    ) {
         let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTranscript.isEmpty else { return }
         DotDebugLogger.log("transcript.input", "received transcript", metadata: [
             "source": source,
-            "transcriptLength": trimmedTranscript.count
+            "transcriptLength": trimmedTranscript.count,
+            "includeConversationHistory": includeConversationHistory,
+            "persistConversationHistory": persistConversationHistory
         ])
         lastTranscript = trimmedTranscript
         if handleDirectLocalMediaCommandIfRecognized(transcript: trimmedTranscript) {
@@ -662,7 +675,9 @@ final class CompanionManager: ObservableObject {
         }
         routeTranscriptToExplicitAgentCommandOrInlineLoop(
             transcript: trimmedTranscript,
-            source: source
+            source: source,
+            includeConversationHistory: includeConversationHistory,
+            persistConversationHistory: persistConversationHistory
         )
     }
 
@@ -1182,6 +1197,245 @@ final class CompanionManager: ObservableObject {
     /// often sees a half-rendered screen and makes the wrong call next.
     private static let interStepSettlingDelayNanoseconds: UInt64 = 500_000_000  // 500ms
 
+    private static func latencyMilliseconds(from timeInterval: TimeInterval) -> Int {
+        return Int((timeInterval * 1_000).rounded())
+    }
+
+    private static func shouldExposeLongTermMemoryTool(for transcript: String) -> Bool {
+        let normalizedTranscript = transcript.lowercased()
+        let directMemoryIntentMarkers = [
+            "remember",
+            "forget",
+            "memory",
+            "memories",
+            "from now on",
+            "next time",
+            "usually",
+            "preference",
+            "prefer",
+            "always",
+            "never",
+            "like before",
+            "as before",
+            "same as before",
+            "last time",
+            "previously",
+            "earlier"
+        ]
+        if directMemoryIntentMarkers.contains(where: { memoryIntentMarker in
+            normalizedTranscript.contains(memoryIntentMarker)
+        }) {
+            return true
+        }
+
+        let userScopedLookupMarkers = [
+            "what's my",
+            "what is my",
+            "where's my",
+            "where is my",
+            "who's my",
+            "who is my",
+            "my usual",
+            "my default",
+            "my workspace",
+            "my linear",
+            "my slack",
+            "my gmail",
+            "my email",
+            "my calendar",
+            "my repo",
+            "my project",
+            "my account",
+            "my browser",
+            "my editor",
+            "the way i"
+        ]
+        return userScopedLookupMarkers.contains(where: { userScopedLookupMarker in
+            normalizedTranscript.contains(userScopedLookupMarker)
+        })
+    }
+
+    private static func companionVoiceResponseSystemPromptForTurn(
+        shouldExposeLongTermMemoryTool: Bool
+    ) -> String {
+        guard !shouldExposeLongTermMemoryTool else {
+            return companionVoiceResponseSystemPrompt
+        }
+        return companionVoiceResponseSystemPrompt + """
+
+        long-term memory is not available in this turn because the user's request did not ask for remembered context. rely on the current screen and the conversation history already included in messages. do not try to call the memory tool.
+        """
+    }
+
+    private enum IntermediateToolFeedback {
+        case silent
+        case captionOnly(String)
+        case spoken(String)
+    }
+
+    private static func intermediateFeedbackForToolTurn(
+        toolUseBlocks: [AgentToolUseBlock],
+        modelNarration: String
+    ) -> IntermediateToolFeedback {
+        let decodedToolCalls = toolUseBlocks.compactMap { toolUseBlock in
+            AgentToolDefinitions.decodeToolCall(from: toolUseBlock)
+        }
+
+        if decodedToolCalls.contains(where: { decodedToolCall in
+            if case .bailOut = decodedToolCall {
+                return true
+            }
+            return false
+        }) {
+            return .spoken(modelNarration.isEmpty ? "need input" : modelNarration)
+        }
+
+        var uniqueCaptionPhrases: [String] = []
+        for decodedToolCall in decodedToolCalls {
+            guard let captionPhrase = programmaticCaption(for: decodedToolCall) else {
+                continue
+            }
+            guard !uniqueCaptionPhrases.contains(captionPhrase) else {
+                continue
+            }
+            uniqueCaptionPhrases.append(captionPhrase)
+        }
+
+        guard !uniqueCaptionPhrases.isEmpty else { return .silent }
+        return .captionOnly(uniqueCaptionPhrases.prefix(2).joined(separator: ", "))
+    }
+
+    private static func programmaticCaption(for agentToolCall: AgentToolCall) -> String? {
+        switch agentToolCall {
+        case .pointAtElement:
+            return "pointing"
+
+        case .clickElement(_, let label, _):
+            if let spokenLabel = shortSpokenLabel(label) {
+                return "clicking \(spokenLabel)"
+            }
+            return "clicking"
+
+        case .typeText(let text):
+            if let spokenText = shortSpokenTypedText(text) {
+                return "typing \(spokenText)"
+            }
+            return "typing"
+
+        case .fillTextField(_, let label, _, let text, _):
+            if let spokenLabel = shortSpokenLabel(label) {
+                return "typing in \(spokenLabel)"
+            }
+            if let spokenText = shortSpokenTypedText(text) {
+                return "typing \(spokenText)"
+            }
+            return "typing"
+
+        case .fillAndSubmit:
+            return "submitting"
+
+        case .pressKeystroke(let spec):
+            return "pressing \(shortKeystrokeDescription(spec))"
+
+        case .scroll(let direction, _):
+            return "scrolling \(direction.rawValue)"
+
+        case .waitForSeconds:
+            return "waiting"
+
+        case .openURL(let urlString), .navigateBrowserToURL(let urlString):
+            if let host = URL(string: urlString)?.host,
+               !host.isEmpty {
+                return "opening \(host)"
+            }
+            return "opening page"
+
+        case .openApplication(let nameOrBundleIdentifier):
+            if let spokenName = shortSpokenLabel(nameOrBundleIdentifier) {
+                return "opening \(spokenName)"
+            }
+            return "opening app"
+
+        case .openLocalPath:
+            return "opening file"
+
+        case .createZipArchive:
+            return "creating zip"
+
+        case .chooseFileOrFolder:
+            return "choosing file"
+
+        case .switchSpace:
+            return "switching spaces"
+
+        case .showMissionControl:
+            return "showing spaces"
+
+        case .openNewBrowserTab:
+            return "opening new tab"
+
+        case .closeCurrentBrowserTab:
+            return "closing tab"
+
+        case .switchBrowserTab:
+            return "switching tabs"
+
+        case .browserHistoryBack:
+            return "going back"
+
+        case .browserHistoryForward:
+            return "going forward"
+
+        case .mediaControl(let mediaCommand):
+            return mediaCommand.rawValue.replacingOccurrences(of: "_", with: " ")
+
+        case .bailOut:
+            return "need input"
+
+        case .getForegroundDocumentContext,
+             .runLocalCommand,
+             .memory:
+            return nil
+        }
+    }
+
+    private static func shortSpokenLabel(_ label: String?) -> String? {
+        guard let label else { return nil }
+        let collapsedLabel = label
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !collapsedLabel.isEmpty else { return nil }
+        if collapsedLabel.count <= 28 {
+            return collapsedLabel
+        }
+        return String(collapsedLabel.prefix(25)).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
+    }
+
+    private static func shortSpokenTypedText(_ text: String) -> String? {
+        let collapsedText = text
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !collapsedText.isEmpty,
+              collapsedText.count <= 24,
+              !collapsedText.contains("\"") else {
+            return nil
+        }
+        let sensitiveMarkers = ["password", "token", "secret", "api key", "credit card", "cvv"]
+        guard !sensitiveMarkers.contains(where: { sensitiveMarker in
+            collapsedText.lowercased().contains(sensitiveMarker)
+        }) else {
+            return nil
+        }
+        return collapsedText
+    }
+
+    private static func shortKeystrokeDescription(_ spec: String) -> String {
+        return spec
+            .replacingOccurrences(of: "+", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
 
     /// System prompt for the tool-use agent loop. Tool descriptions live in
     /// the tool schemas (see AgentToolDefinitions) — this prompt covers
@@ -1198,8 +1452,8 @@ final class CompanionManager: ObservableObject {
     end the turn (no tool calls in your response, just text) only when (a) the original request is fully complete and the screen reflects that, OR (b) you call the bail_out tool because you genuinely need the user to clarify or the next action would be destructive.
 
     style:
-    - emit ONE short sentence of spoken narration per turn — the user hears it via TTS while your tools execute. examples: "going to drive", "clicking the new button", "all yours".
-    - if the user explicitly asks for a long explanation, go deeper — no length limit. otherwise keep it tight.
+    - for intermediate tool-use turns, you may omit text entirely. dot announces tools programmatically ("clicking submit", "opening new tab", "typing") so don't spend tokens narrating tool plumbing.
+    - final no-tool replies are the real answer. do not truncate them unless the user asked for brevity.
     - all lowercase, casual, warm. no emojis, no lists, no bullets, no markdown — write for the ear.
     - never say "simply" or "just".
     - don't read the user's screen verbatim — describe what you're doing or what you see conversationally.
@@ -1224,6 +1478,8 @@ final class CompanionManager: ObservableObject {
     - to switch macOS Spaces / virtual desktops, use switch_space with direction=next or previous. NEVER press_keystroke('cmd+space') — that's Spotlight. NEVER press_keystroke('space') — that's the spacebar. NEVER press_keystroke('cmd+arrow') — that's text navigation. switch_space posts the system-default ctrl+→/← shortcut Mission Control actually listens for. if the destination is more than one Space away, chain multiple switch_space calls. if the user wants to see all Spaces at once, use show_mission_control instead.
     - if the user asks to open an app that's on a different Space, prefer open_app: macOS auto-switches to the Space where the app lives as part of activation, so you almost never need a manual switch_space first.
     - safe to auto-execute end-to-end: opening URLs, opening apps, focusing fields, scrolling, switching tabs, typing into drafts, creating new docs/files. just do them.
+    - cart prep boundary: if the user explicitly asks you to add food/items to a cart but not check out, you may navigate the live website, choose reasonable defaults when the request allows it, and add the requested item to the cart. stop once the cart is prepared. never pay, place the order, submit checkout, or click final purchase/confirm buttons.
+    - snackpass cart prep: do not loop through guessed paths like snackpass.co/tp-tea, /order, or /stores. use the exact store URL when provided in the user's message or dot hint; otherwise use a direct google search URL for the exact store plus "snackpass" and open the real order.snackpass.co store result.
     - needs explicit user confirmation: sending a message or email, paying or buying, deleting data, closing unsaved work, changing account / security settings. don't auto-execute those — call bail_out and explain.
     - if a target is genuinely ambiguous and you can't tell which element to click, call bail_out and explain.
 
@@ -1360,16 +1616,16 @@ final class CompanionManager: ObservableObject {
         return false
     }
 
-    // MARK: - Explicit Background Agent Task Routing
+    // MARK: - Background Agent Task Routing
 
-    /// Routes finalized transcripts through one explicit escape hatch:
-    /// requests that start with "dot agent ..." spawn a background coding
-    /// agent. Everything else stays in Dot's live inline loop so browser,
-    /// app, file-picker, and authenticated-session work cannot be silently
-    /// misrouted into a headless worker.
+    /// Routes finalized transcripts. Live desktop-control requests stay in the
+    /// inline screenshot loop. Only explicit `dot agent ...` requests run in
+    /// Claude Code.
     private func routeTranscriptToExplicitAgentCommandOrInlineLoop(
         transcript: String,
-        source: String
+        source: String,
+        includeConversationHistory: Bool = true,
+        persistConversationHistory: Bool = true
     ) {
         if agentTaskManager.hasActiveTask {
             if Self.isProbableCancellationPhrase(transcript: transcript) {
@@ -1379,34 +1635,77 @@ final class CompanionManager: ObservableObject {
             }
         }
 
-        guard let explicitAgentRequest = Self.extractExplicitAgentRequest(from: transcript) else {
-            DotDebugLogger.log("agent.route", "no explicit dot agent prefix; running inline loop", metadata: [
+        if let explicitAgentRequest = Self.extractExplicitAgentRequest(from: transcript) {
+            startBackgroundAgentTask(
+                originalTranscript: transcript,
+                backgroundAgentRequest: explicitAgentRequest,
+                source: source,
+                includeConversationHistory: includeConversationHistory,
+                persistConversationHistory: persistConversationHistory
+            )
+            return
+        }
+
+        DotDebugLogger.log("agent.route", "no background task route matched; running inline loop", metadata: [
+            "source": source,
+            "includeConversationHistory": includeConversationHistory,
+            "persistConversationHistory": persistConversationHistory
+        ])
+        sendTranscriptToClaudeWithScreenshot(
+            transcript: transcript,
+            source: source,
+            includeConversationHistory: includeConversationHistory,
+            persistConversationHistory: persistConversationHistory
+        )
+    }
+
+    private func startBackgroundAgentTask(
+        originalTranscript: String,
+        backgroundAgentRequest: String,
+        source: String,
+        includeConversationHistory: Bool = true,
+        persistConversationHistory: Bool = true
+    ) {
+        guard !backgroundAgentRequest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            DotDebugLogger.log("agent.route", "empty background task request; running inline loop", metadata: [
                 "source": source
             ])
-            sendTranscriptToClaudeWithScreenshot(transcript: transcript, source: source)
+            sendTranscriptToClaudeWithScreenshot(
+                transcript: originalTranscript,
+                source: source,
+                includeConversationHistory: includeConversationHistory,
+                persistConversationHistory: persistConversationHistory
+            )
             return
         }
 
         currentResponseTask?.cancel()
         cancelPerStepNarrationQueue()
         Task { @MainActor in
-            let foregroundDocumentContext = await Self.captureForegroundDocumentContext()
+            let foregroundDocumentContext: ForegroundDocumentContextSnapshot?
+            if Self.shouldIncludeForegroundContextInBackgroundTask(backgroundAgentRequest) {
+                foregroundDocumentContext = await Self.captureForegroundDocumentContext()
+            } else {
+                foregroundDocumentContext = nil
+            }
             let brief = Self.makeExplicitAgentTaskBrief(
-                originalTranscript: transcript,
-                explicitAgentRequest: explicitAgentRequest,
-                foregroundDocumentContext: foregroundDocumentContext
+                originalTranscript: originalTranscript,
+                explicitAgentRequest: backgroundAgentRequest,
+                foregroundDocumentContext: foregroundDocumentContext,
+                originatingSource: source
             )
 
-            DotDebugLogger.log("agent.route", "explicit dot agent command; starting background task", metadata: [
+            DotDebugLogger.log("agent.route", "starting background task", metadata: [
                 "title": brief.oneLineTitle,
                 "workingDir": brief.workingDirectoryURL.path,
                 "source": source,
-                "foregroundContextHasDocument": foregroundDocumentContext.hasDocumentReference
+                "route": "explicit_dot_agent_prefix",
+                "foregroundContextHasDocument": foregroundDocumentContext?.hasDocumentReference ?? false
             ])
 
             await agentTaskManager.startTask(brief: brief)
 
-            if Self.explicitAgentRequestAsksForCursorWindow(explicitAgentRequest) {
+            if Self.explicitAgentRequestAsksForCursorWindow(backgroundAgentRequest) {
                 let openPathResult = await CompanionComputerController.openLocalPath(
                     rawPath: brief.workingDirectoryURL.path,
                     applicationNameOrBundleIdentifier: "Cursor",
@@ -1442,16 +1741,42 @@ final class CompanionManager: ObservableObject {
         return explicitAgentRequest.isEmpty ? nil : explicitAgentRequest
     }
 
+    private static func shouldIncludeForegroundContextInBackgroundTask(_ backgroundAgentRequest: String) -> Bool {
+        let normalizedRequest = normalizeDirectCommandTranscript(backgroundAgentRequest)
+        let currentContextMarkers = [
+            "this page",
+            "current page",
+            "this tab",
+            "current tab",
+            "this pdf",
+            "current pdf",
+            "the pdf",
+            "this paper",
+            "current paper",
+            "this document",
+            "current document",
+            "frontmost",
+            "open page",
+            "open document",
+            "shown on screen",
+            "on screen"
+        ]
+        return currentContextMarkers.contains { currentContextMarker in
+            normalizedRequest.contains(currentContextMarker)
+        }
+    }
+
     private static func makeExplicitAgentTaskBrief(
         originalTranscript: String,
         explicitAgentRequest: String,
-        foregroundDocumentContext: ForegroundDocumentContextSnapshot
+        foregroundDocumentContext: ForegroundDocumentContextSnapshot?,
+        originatingSource: String
     ) -> AgentTaskBrief {
         let oneLineTitle = makeExplicitAgentTaskTitle(from: explicitAgentRequest)
         let workingDirectoryURL = AgentTaskManager.makeWorkingDirectoryURL(forTitle: oneLineTitle)
         let additionalDirectoryURLs = deduplicatedExistingDirectoryURLs(
             extractAdditionalDirectoryURLs(from: explicitAgentRequest)
-                + foregroundDocumentContext.additionalDirectoryURLs
+                + (foregroundDocumentContext?.additionalDirectoryURLs ?? [])
         )
         let additionalDirectoryInstruction: String
         if additionalDirectoryURLs.isEmpty {
@@ -1465,14 +1790,32 @@ final class CompanionManager: ObservableObject {
             \(directoryList)
             """
         }
+        let taskModeInstruction = """
+        This is an explicit background coding-agent request. Complete the coding, file, or research work the user asked for, using the generated task directory as the default workspace.
+        """
+        let foregroundContextInstruction: String
+        if let foregroundDocumentContext {
+            foregroundContextInstruction = """
+            Foreground context captured when the request started:
+            \(foregroundDocumentContext.backgroundAgentInstructionText)
+
+            If the foreground context includes a document text excerpt, use that captured excerpt directly. Do not refetch localhost, private-network, file, or app-internal URLs with server-side web tools unless the captured context is insufficient.
+            """
+        } else {
+            foregroundContextInstruction = """
+            No foreground browser/page/document context was included because the request did not refer to the current page, tab, PDF, document, or on-screen content. Do not infer the task is about whatever tab happens to be open.
+            """
+        }
         let detailedInstructions = """
-        Complete the user's explicit background coding-agent request.
+        Complete the user's background agent request.
 
         Request:
         \(explicitAgentRequest)
 
-        Foreground context captured when the request started:
-        \(foregroundDocumentContext.backgroundAgentInstructionText)
+        Task mode:
+        \(taskModeInstruction)
+
+        \(foregroundContextInstruction)
 
         Work from the generated Dot task directory unless the user supplied a specific path. If the user supplied a local path, inspect and work with that path directly. If access to a path is blocked, explain the exact path and permission issue in the final summary instead of guessing.
 
@@ -1488,6 +1831,7 @@ final class CompanionManager: ObservableObject {
             detailedInstructions: detailedInstructions,
             workingDirectoryURL: workingDirectoryURL,
             additionalDirectoryURLs: additionalDirectoryURLs,
+            originatingSource: originatingSource,
             estimatedDurationDescription: "a few minutes",
             maxToolCallSteps: AgentTaskBrief.defaultMaxToolCallSteps,
             maxWallClockSeconds: AgentTaskBrief.defaultMaxWallClockSeconds
@@ -1606,11 +1950,15 @@ final class CompanionManager: ObservableObject {
             if let frontmostWindowTitle {
                 lines.append("window_title: \(frontmostWindowTitle)")
             }
-            if let browserURL {
-                lines.append("browser_url: \(browserURL)")
-            }
             if let accessibilityDocumentReference {
                 lines.append("document_reference: \(accessibilityDocumentReference)")
+            }
+            if let browserURL {
+                let browserURLLabel = (
+                    accessibilityDocumentReference != nil
+                        && accessibilityDocumentReference != browserURL
+                ) ? "browser_url_best_effort" : "browser_url"
+                lines.append("\(browserURLLabel): \(browserURL)")
             }
             if let localDocumentPath {
                 lines.append("local_document_path: \(localDocumentPath)")
@@ -1633,13 +1981,17 @@ final class CompanionManager: ObservableObject {
             if let frontmostWindowTitle {
                 lines.append("- Window title: \(frontmostWindowTitle)")
             }
-            if let browserURL {
-                lines.append("- Current browser URL: \(browserURL)")
-            }
             if let localDocumentPath {
                 lines.append("- Local document path: \(localDocumentPath)")
             } else if let accessibilityDocumentReference {
                 lines.append("- Document reference: \(accessibilityDocumentReference)")
+            }
+            if let browserURL {
+                let browserURLLabel = (
+                    accessibilityDocumentReference != nil
+                        && accessibilityDocumentReference != browserURL
+                ) ? "Browser URL (best effort)" : "Current browser URL"
+                lines.append("- \(browserURLLabel): \(browserURL)")
             }
             if let selectedText {
                 lines.append("- Selected text excerpt:\n\(Self.truncatedContextText(selectedText, maximumCharacterCount: 2_000))")
@@ -1695,12 +2047,12 @@ final class CompanionManager: ObservableObject {
         let browserURL = await currentBrowserURLViaAppleScriptIfSupported(
             bundleIdentifier: frontmostBundleIdentifier
         )
+        let documentReferenceForContent = axDocumentFields.documentReference ?? browserURL
         let localDocumentPath = localDocumentPath(
-            fromDocumentReference: browserURL
-                ?? axDocumentFields.documentReference
+            fromDocumentReference: documentReferenceForContent
         )
         let documentTextExcerpt = await documentTextExcerpt(
-            browserURL: browserURL,
+            browserURL: documentReferenceForContent,
             localDocumentPath: localDocumentPath
         )
         let capturedContext = ForegroundDocumentContextSnapshot(
@@ -1726,6 +2078,7 @@ final class CompanionManager: ObservableObject {
             "hasLocalDocumentPath": localDocumentPath != nil,
             "hasDocumentTextExcerpt": documentTextExcerpt != nil,
             "documentTextExcerptLength": documentTextExcerpt?.count ?? 0,
+            "documentReferenceForContent": documentReferenceForContent ?? "nil",
             "selectedTextLength": axDocumentFields.selectedText?.count ?? 0
         ])
         return capturedContext
@@ -2268,29 +2621,77 @@ final class CompanionManager: ObservableObject {
                 "got it. starting \(titleLower). \(durationLower)."
             )
 
-        case .rejectedBecauseTooManyTasks(_, let maxConcurrentTaskCount):
+        case .rejectedBecauseTooManyTasks(let rejectedBrief, let maxConcurrentTaskCount):
             speakBackgroundTaskAnnouncementLine(
-                "i already have \(maxConcurrentTaskCount) coding agents running. cancel one before starting another."
+                "i already have \(maxConcurrentTaskCount) background agents running. cancel one before starting another."
+            )
+            publishBackgroundTaskOutcomeIfNeeded(
+                brief: rejectedBrief,
+                status: .failed,
+                finalSpokenText: "",
+                errorDescription: "Too many background agents are already running."
             )
 
-        case .rejectedBecauseWorkerNotInstalled(let workerInstallInstruction):
+        case .rejectedBecauseWorkerNotInstalled(let rejectedBrief, let workerInstallInstruction):
             speakBackgroundTaskAnnouncementLine(workerInstallInstruction)
+            publishBackgroundTaskOutcomeIfNeeded(
+                brief: rejectedBrief,
+                status: .failed,
+                finalSpokenText: "",
+                errorDescription: workerInstallInstruction
+            )
 
-        case .taskCompleted(let brief, _):
+        case .taskCompleted(let brief, let finalSummary):
             speakBackgroundTaskAnnouncementLine(
                 "done with \(brief.oneLineTitle.lowercased()). check the panel for results."
             )
+            publishBackgroundTaskOutcomeIfNeeded(
+                brief: brief,
+                status: .completed,
+                finalSpokenText: finalSummary,
+                errorDescription: nil
+            )
 
-        case .taskFailed(let brief, _):
+        case .taskFailed(let brief, let failureReason):
             speakBackgroundTaskAnnouncementLine(
                 "hit a snag on \(brief.oneLineTitle.lowercased()). check the panel for details."
+            )
+            publishBackgroundTaskOutcomeIfNeeded(
+                brief: brief,
+                status: .failed,
+                finalSpokenText: "",
+                errorDescription: failureReason
             )
 
         case .taskCancelled(let brief):
             speakBackgroundTaskAnnouncementLine(
                 "cancelled \(brief.oneLineTitle.lowercased())."
             )
+            publishBackgroundTaskOutcomeIfNeeded(
+                brief: brief,
+                status: .cancelled,
+                finalSpokenText: "",
+                errorDescription: nil
+            )
         }
+    }
+
+    private func publishBackgroundTaskOutcomeIfNeeded(
+        brief: AgentTaskBrief,
+        status: AgentLoopOutcome.Status,
+        finalSpokenText: String,
+        errorDescription: String?
+    ) {
+        guard let originatingSource = brief.originatingSource else {
+            return
+        }
+        agentLoopOutcomePublisher.send(AgentLoopOutcome(
+            source: originatingSource,
+            status: status,
+            finalSpokenText: finalSpokenText,
+            stepsExecuted: 0,
+            errorDescription: errorDescription
+        ))
     }
 
     private func speakBackgroundTaskAnnouncementLine(_ line: String) {
@@ -2314,18 +2715,36 @@ final class CompanionManager: ObservableObject {
     /// step budget is exhausted. The accumulated spoken text from every step
     /// is fed into the per-step TTS narration queue in real time.
     /// See docs/agent-loop-tool-use-migration.md.
-    private func sendTranscriptToClaudeWithScreenshot(transcript: String, source: String) {
+    private func sendTranscriptToClaudeWithScreenshot(
+        transcript: String,
+        source: String,
+        includeConversationHistory: Bool = true,
+        persistConversationHistory: Bool = true
+    ) {
         currentResponseTask?.cancel()
         cancelPerStepNarrationQueue()
+        let transcriptForAgent = Self.transcriptWithInlineTaskHints(transcript)
+        let shouldExposeLongTermMemoryTool = Self.shouldExposeLongTermMemoryTool(for: transcript)
+        let agentSystemPrompt = Self.companionVoiceResponseSystemPromptForTurn(
+            shouldExposeLongTermMemoryTool: shouldExposeLongTermMemoryTool
+        )
+        let agentToolPayloads = AgentToolDefinitions.apiPayloadList(
+            includingMemoryTool: shouldExposeLongTermMemoryTool
+        )
         DotDebugLogger.log("response.pipeline", "starting tool-use agent loop", metadata: [
             "source": source,
             "transcriptLength": transcript.count,
             "conversationHistoryCount": conversationHistory.count,
-            "maxSteps": Self.maxAgentStepsPerUserTurn
+            "includeConversationHistory": includeConversationHistory,
+            "persistConversationHistory": persistConversationHistory,
+            "maxSteps": Self.maxAgentStepsPerUserTurn,
+            "memoryToolExposed": shouldExposeLongTermMemoryTool,
+            "toolCount": agentToolPayloads.count
         ])
         currentAgentLoopSource = source
 
         currentResponseTask = Task {
+            let pipelineStartedAt = Date()
             voiceState = .processing
 
             var baselineUserMouseLocation = NSEvent.mouseLocation
@@ -2333,6 +2752,14 @@ final class CompanionManager: ObservableObject {
             var stepsExecuted = 0
             var didCancelDueToUserMouseMove = false
             var didBailOutEarly = false
+            var initialScreenCaptureDurationMs = 0
+            var totalScreenCaptureDurationMs = 0
+            var totalClaudeRequestDurationMs = 0
+            var totalToolExecutionDurationMs = 0
+            var totalSettlingDurationMs = 0
+            var firstClaudeResponseAt: Date?
+            var firstNarrationEnqueuedAt: Date?
+            var memoryToolCallCount = 0
 
             // Tracks the most recent `click_element` coordinate so we can
             // refuse consecutive same-coord clicks. Required for Electron
@@ -2348,18 +2775,32 @@ final class CompanionManager: ObservableObject {
             do {
                 var apiMessages: [[String: Any]] = []
 
-                // Prior cross-turn history (text-only — same as the legacy
-                // path's `conversationHistory` plumbing).
-                for historyEntry in conversationHistory {
-                    apiMessages.append(["role": "user", "content": historyEntry.userTranscript])
-                    apiMessages.append(["role": "assistant", "content": historyEntry.assistantResponse])
+                if includeConversationHistory {
+                    // Prior cross-turn history (text-only — same as the legacy
+                    // path's `conversationHistory` plumbing).
+                    for historyEntry in conversationHistory {
+                        apiMessages.append(["role": "user", "content": historyEntry.userTranscript])
+                        apiMessages.append(["role": "assistant", "content": historyEntry.assistantResponse])
+                    }
+                } else {
+                    DotDebugLogger.log("agent.loop", "skipping conversation history for isolated turn", metadata: [
+                        "source": source,
+                        "conversationHistoryCount": conversationHistory.count
+                    ])
                 }
 
                 // Initial user message: screen(s) + transcript.
+                let initialScreenCaptureStartedAt = Date()
                 var currentScreenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                let measuredInitialScreenCaptureDurationMs = Self.latencyMilliseconds(
+                    from: Date().timeIntervalSince(initialScreenCaptureStartedAt)
+                )
+                initialScreenCaptureDurationMs = measuredInitialScreenCaptureDurationMs
+                totalScreenCaptureDurationMs += measuredInitialScreenCaptureDurationMs
                 DotDebugLogger.log("agent.loop", "captured screens for initial step", metadata: [
                     "step": 0,
-                    "screenCount": currentScreenCaptures.count
+                    "screenCount": currentScreenCaptures.count,
+                    "durationMs": measuredInitialScreenCaptureDurationMs
                 ])
                 guard !Task.isCancelled else { return }
 
@@ -2368,14 +2809,14 @@ final class CompanionManager: ObservableObject {
                     "content": Self.buildUserMessageContentBlocks(
                         screenCaptures: currentScreenCaptures,
                         toolResults: [],
-                        trailingText: transcript
+                        trailingText: transcriptForAgent
                     )
                 ])
 
                 stepLoop: while stepsExecuted < Self.maxAgentStepsPerUserTurn {
                     guard !Task.isCancelled else { return }
 
-                    voiceState = .processing
+                    voiceState = elevenLabsTTSClient.isPlaying ? .responding : .processing
                     if stepsExecuted > 0 {
                         clearDetectedElementLocation()
                     }
@@ -2390,17 +2831,26 @@ final class CompanionManager: ObservableObject {
                     // instead of 10. Stripping cuts that to a flat per-step cost.
                     let messagesWithStaleScreenshotsStripped =
                         Self.stripStaleScreenshotsFromAgentMessages(apiMessages)
+                    let claudeRequestStartedAt = Date()
                     let turnResponse = try await claudeAPI.runAgentTurnWithToolUse(
-                        systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                        systemPrompt: agentSystemPrompt,
                         messages: messagesWithStaleScreenshotsStripped,
-                        tools: AgentToolDefinitions.apiPayloadList
+                        tools: agentToolPayloads
                     )
+                    let claudeRequestDurationMs = Self.latencyMilliseconds(
+                        from: Date().timeIntervalSince(claudeRequestStartedAt)
+                    )
+                    totalClaudeRequestDurationMs += claudeRequestDurationMs
+                    if firstClaudeResponseAt == nil {
+                        firstClaudeResponseAt = Date()
+                    }
                     stepsExecuted += 1
                     DotDebugLogger.log("agent.loop", "tool-use response received", metadata: [
                         "step": stepsExecuted - 1,
                         "textBlockCount": turnResponse.textBlocks.count,
                         "toolUseBlockCount": turnResponse.toolUseBlocks.count,
-                        "stopReason": turnResponse.stopReason ?? "unknown"
+                        "stopReason": turnResponse.stopReason ?? "unknown",
+                        "durationMs": claudeRequestDurationMs
                     ])
 
                     guard !Task.isCancelled else { return }
@@ -2412,29 +2862,62 @@ final class CompanionManager: ObservableObject {
                         "content": turnResponse.rawAssistantContentBlocks
                     ])
 
-                    // Speak any text blocks via the per-step narration queue.
+                    // Final no-tool responses are the user's actual answer,
+                    // so preserve the model's wording and speak it. Intermediate
+                    // tool turns use deterministic, tiny captions derived from
+                    // the tool calls; memory/context plumbing stays silent.
                     let combinedStepNarration = turnResponse.textBlocks
                         .joined(separator: " ")
                         .trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !combinedStepNarration.isEmpty {
-                        enqueueStepNarrationChunk(combinedStepNarration)
-                        if accumulatedSpokenText.isEmpty {
-                            accumulatedSpokenText = combinedStepNarration
-                        } else {
-                            accumulatedSpokenText += " " + combinedStepNarration
-                        }
-                    }
 
                     // No tool_use blocks → task complete.
                     if turnResponse.toolUseBlocks.isEmpty {
+                        if !combinedStepNarration.isEmpty {
+                            if firstNarrationEnqueuedAt == nil {
+                                firstNarrationEnqueuedAt = Date()
+                            }
+                            enqueueStepNarrationChunk(combinedStepNarration)
+                            if accumulatedSpokenText.isEmpty {
+                                accumulatedSpokenText = combinedStepNarration
+                            } else {
+                                accumulatedSpokenText += " " + combinedStepNarration
+                            }
+                        }
                         DotDebugLogger.log("agent.loop", "stopping — no tool_use returned", metadata: [
                             "stepsExecuted": stepsExecuted
                         ])
                         break stepLoop
                     }
 
+                    let intermediateFeedback = Self.intermediateFeedbackForToolTurn(
+                        toolUseBlocks: turnResponse.toolUseBlocks,
+                        modelNarration: combinedStepNarration
+                    )
+                    switch intermediateFeedback {
+                    case .spoken(let intermediateNarration):
+                        if firstNarrationEnqueuedAt == nil {
+                            firstNarrationEnqueuedAt = Date()
+                        }
+                        enqueueStepNarrationChunk(intermediateNarration)
+                        if accumulatedSpokenText.isEmpty {
+                            accumulatedSpokenText = intermediateNarration
+                        } else {
+                            accumulatedSpokenText += " " + intermediateNarration
+                        }
+
+                    case .captionOnly(let intermediateCaption):
+                        showCaptionOnlyStepFeedback(intermediateCaption)
+
+                    case .silent:
+                        DotDebugLogger.log("agent.loop", "suppressed intermediate tool narration", metadata: [
+                            "step": stepsExecuted - 1,
+                            "toolUseBlockCount": turnResponse.toolUseBlocks.count
+                        ])
+                    }
+
                     // Execute each tool call and collect tool_result blocks.
                     var toolResultBlocks: [[String: Any]] = []
+                    var shouldCaptureFreshScreenBeforeNextStep = false
                     for toolUseBlock in turnResponse.toolUseBlocks {
                         guard !Task.isCancelled else { return }
 
@@ -2481,27 +2964,38 @@ final class CompanionManager: ObservableObject {
                             mostRecentClickCoordinateAcrossSteps = nil
                         }
 
+                        if case .memory = decodedToolCall {
+                            memoryToolCallCount += 1
+                        }
+                        let toolExecutionStartedAt = Date()
                         let executionResult = await executeAgentToolCall(
                             decodedToolCall,
                             originatingScreenCaptures: currentScreenCaptures
                         )
+                        shouldCaptureFreshScreenBeforeNextStep =
+                            shouldCaptureFreshScreenBeforeNextStep
+                            || executionResult.shouldCaptureFreshScreenAfterExecution
 
-                        // Capture macOS Accessibility state right after the
-                        // action and append it to the tool_result. This is
-                        // how the model gets unambiguous ground truth about
-                        // whether the action took effect for native apps —
-                        // "focused=AXTextArea value=''" tells the model the
-                        // input is ready without it having to infer focus
-                        // from a screenshot. Returns empty for Electron
-                        // apps whose renderer is opaque to AX; in that
-                        // case the same-coord click guard above is the
-                        // signal that breaks the click loop.
-                        //
-                        // The 80ms wait lets the target app update its AX
-                        // tree after handling our CGEvent.
-                        try? await Task.sleep(nanoseconds: 80_000_000)
-                        let postActionAccessibilitySnapshot = CompanionAccessibilityStateSnapshot.capture()
-                        let accessibilityDescription = postActionAccessibilitySnapshot.compactDescription
+                        let postActionAccessibilitySnapshot: CompanionAccessibilityStateSnapshot?
+                        if executionResult.shouldCaptureFreshScreenAfterExecution {
+                            // Capture macOS Accessibility state right after
+                            // UI-changing actions and append it to the
+                            // tool_result. This is how the model gets
+                            // unambiguous ground truth about whether an
+                            // action took effect for native apps.
+                            //
+                            // The 80ms wait lets the target app update its
+                            // AX tree after handling our CGEvent.
+                            try? await Task.sleep(nanoseconds: 80_000_000)
+                            postActionAccessibilitySnapshot = CompanionAccessibilityStateSnapshot.capture()
+                        } else {
+                            postActionAccessibilitySnapshot = nil
+                        }
+                        let toolExecutionDurationMs = Self.latencyMilliseconds(
+                            from: Date().timeIntervalSince(toolExecutionStartedAt)
+                        )
+                        totalToolExecutionDurationMs += toolExecutionDurationMs
+                        let accessibilityDescription = postActionAccessibilitySnapshot?.compactDescription ?? ""
                         let toolResultContent: String
                         if accessibilityDescription.isEmpty {
                             toolResultContent = executionResult.toolResultContent
@@ -2511,8 +3005,10 @@ final class CompanionManager: ObservableObject {
                         DotDebugLogger.log("agent.loop", "tool_result composed", metadata: [
                             "tool": toolUseBlock.toolName,
                             "axIncluded": !accessibilityDescription.isEmpty,
-                            "axFrontmost": postActionAccessibilitySnapshot.frontmostApplicationName ?? "nil",
-                            "axFocusedRole": postActionAccessibilitySnapshot.focusedElementRole ?? "nil"
+                            "axFrontmost": postActionAccessibilitySnapshot?.frontmostApplicationName ?? "nil",
+                            "axFocusedRole": postActionAccessibilitySnapshot?.focusedElementRole ?? "nil",
+                            "freshScreenNeeded": executionResult.shouldCaptureFreshScreenAfterExecution,
+                            "durationMs": toolExecutionDurationMs
                         ])
 
                         toolResultBlocks.append([
@@ -2532,6 +3028,22 @@ final class CompanionManager: ObservableObject {
                         break stepLoop
                     }
 
+                    if !shouldCaptureFreshScreenBeforeNextStep {
+                        DotDebugLogger.log("agent.loop", "skipping fresh screen capture after non-visual tools", metadata: [
+                            "step": stepsExecuted,
+                            "toolResultCount": toolResultBlocks.count
+                        ])
+                        apiMessages.append([
+                            "role": "user",
+                            "content": Self.buildUserMessageContentBlocks(
+                                screenCaptures: [],
+                                toolResults: toolResultBlocks,
+                                trailingText: nil
+                            )
+                        ])
+                        continue stepLoop
+                    }
+
                     // Re-baseline mouse and run the settling + mouse-move
                     // check before the next API call. AXPress doesn't move
                     // the cursor; coordinate-click fallback warps it back.
@@ -2540,7 +3052,11 @@ final class CompanionManager: ObservableObject {
                     // measure user-driven movement during the settling
                     // window.
                     baselineUserMouseLocation = NSEvent.mouseLocation
+                    let settlingStartedAt = Date()
                     try? await Task.sleep(nanoseconds: Self.interStepSettlingDelayNanoseconds)
+                    totalSettlingDurationMs += Self.latencyMilliseconds(
+                        from: Date().timeIntervalSince(settlingStartedAt)
+                    )
                     guard !Task.isCancelled else { return }
 
                     let currentMouseLocation = NSEvent.mouseLocation
@@ -2563,10 +3079,16 @@ final class CompanionManager: ObservableObject {
 
                     // Capture the post-action screen and build the next user
                     // message (tool_results + image).
+                    let nextScreenCaptureStartedAt = Date()
                     currentScreenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                    let nextScreenCaptureDurationMs = Self.latencyMilliseconds(
+                        from: Date().timeIntervalSince(nextScreenCaptureStartedAt)
+                    )
+                    totalScreenCaptureDurationMs += nextScreenCaptureDurationMs
                     DotDebugLogger.log("agent.loop", "captured screens for next step", metadata: [
                         "step": stepsExecuted,
-                        "screenCount": currentScreenCaptures.count
+                        "screenCount": currentScreenCaptures.count,
+                        "durationMs": nextScreenCaptureDurationMs
                     ])
                     guard !Task.isCancelled else { return }
 
@@ -2591,9 +3113,11 @@ final class CompanionManager: ObservableObject {
                     enqueueStepNarrationChunk(spokenCancellationNote)
                 }
 
+                let modelLoopFinishedAt = Date()
                 await saveConversationAndSpeakResponse(
                     transcript: transcript,
-                    spokenText: accumulatedSpokenText
+                    spokenText: accumulatedSpokenText,
+                    shouldPersistConversationHistory: persistConversationHistory
                 )
 
                 DotDebugLogger.log("agent.loop", "finished", metadata: [
@@ -2602,7 +3126,22 @@ final class CompanionManager: ObservableObject {
                     "cancelledByMouseMove": didCancelDueToUserMouseMove,
                     "bailedOut": didBailOutEarly,
                     "finalSpokenTextLength": accumulatedSpokenText.count,
-                    "protocol": "tool_use"
+                    "protocol": "tool_use",
+                    "totalDurationMs": Self.latencyMilliseconds(from: Date().timeIntervalSince(pipelineStartedAt)),
+                    "modelLoopDurationMs": Self.latencyMilliseconds(from: modelLoopFinishedAt.timeIntervalSince(pipelineStartedAt)),
+                    "initialScreenCaptureDurationMs": initialScreenCaptureDurationMs,
+                    "totalScreenCaptureDurationMs": totalScreenCaptureDurationMs,
+                    "totalClaudeRequestDurationMs": totalClaudeRequestDurationMs,
+                    "totalToolExecutionDurationMs": totalToolExecutionDurationMs,
+                    "totalSettlingDurationMs": totalSettlingDurationMs,
+                    "timeToFirstClaudeResponseMs": firstClaudeResponseAt.map {
+                        Self.latencyMilliseconds(from: $0.timeIntervalSince(pipelineStartedAt))
+                    } ?? -1,
+                    "timeToFirstNarrationMs": firstNarrationEnqueuedAt.map {
+                        Self.latencyMilliseconds(from: $0.timeIntervalSince(pipelineStartedAt))
+                    } ?? -1,
+                    "memoryToolExposed": shouldExposeLongTermMemoryTool,
+                    "memoryToolCallCount": memoryToolCallCount
                 ])
                 self.agentLoopOutcomePublisher.send(AgentLoopOutcome(
                     source: source,
@@ -2678,6 +3217,27 @@ final class CompanionManager: ObservableObject {
     }
 
     /// Builds a `user`-role content-block list: any tool_result blocks first
+    private static func transcriptWithInlineTaskHints(_ transcript: String) -> String {
+        let normalizedTranscript = normalizeDirectCommandTranscript(transcript)
+        guard normalizedTranscript.contains("snackpass") else {
+            return transcript
+        }
+
+        if normalizedTranscript.contains("tp tea") || normalizedTranscript.contains("tptea") {
+            return """
+            \(transcript)
+
+            [dot live-task hint: this is a foreground UI cart-prep task, not a background task. For TP TEA Berkeley on Snackpass, open the real store URL directly: https://order.snackpass.co/TP-TEA-(Berkeley-2383-Telegraph-Ave)-5deaa0f39bb37200f43f7768 . Do not cycle guessed paths like snackpass.co/tp-tea, /order, or /stores. Add a reasonable boba or milk-tea item to the cart if possible, then stop before checkout/payment.]
+            """
+        }
+
+        return """
+        \(transcript)
+
+        [dot live-task hint: this is a foreground UI cart-prep task, not a background task. For Snackpass, use a direct Google search URL for the exact store plus "Snackpass" if you do not already see the store page. Do not cycle guessed Snackpass paths. Stop once the requested item is in cart; never check out or pay.]
+        """
+    }
+
     /// (matches Anthropic's "tool_result must precede subsequent content"
     /// convention), then one image+label pair per screen capture, then an
     /// optional trailing text block (used for the very first user turn to
@@ -2763,6 +3323,17 @@ final class CompanionManager: ObservableObject {
     private struct AgentToolExecutionResult {
         let toolResultContent: String
         let didTriggerBailOut: Bool
+        let shouldCaptureFreshScreenAfterExecution: Bool
+
+        init(
+            toolResultContent: String,
+            didTriggerBailOut: Bool,
+            shouldCaptureFreshScreenAfterExecution: Bool = true
+        ) {
+            self.toolResultContent = toolResultContent
+            self.didTriggerBailOut = didTriggerBailOut
+            self.shouldCaptureFreshScreenAfterExecution = shouldCaptureFreshScreenAfterExecution
+        }
     }
 
     /// Dispatches one decoded tool call. point_at_element and bail_out are
@@ -2782,7 +3353,8 @@ final class CompanionManager: ObservableObject {
             ) else {
                 return AgentToolExecutionResult(
                     toolResultContent: "error: could not map (\(Int(coordinate.x)), \(Int(coordinate.y))) to a screen position",
-                    didTriggerBailOut: false
+                    didTriggerBailOut: false,
+                    shouldCaptureFreshScreenAfterExecution: false
                 )
             }
             // Switching to .idle makes the blue cursor visible so it can fly
@@ -2793,7 +3365,8 @@ final class CompanionManager: ObservableObject {
             DotAnalytics.trackElementPointed(elementLabel: label)
             return AgentToolExecutionResult(
                 toolResultContent: "pointed at \(label ?? "element")",
-                didTriggerBailOut: false
+                didTriggerBailOut: false,
+                shouldCaptureFreshScreenAfterExecution: false
             )
 
         case .bailOut(let reason):
@@ -3066,11 +3639,6 @@ final class CompanionManager: ObservableObject {
                 direction: scrollDirection,
                 magnitude: scrollAmount.scrollLineMagnitude
             )
-            // The overlay's afterimage-trail animation runs ~260ms total
-            // (burst → linger → fade). Yield long enough for it to play
-            // through plus a tiny buffer so the next agent step doesn't
-            // re-fire mid-trail.
-            try? await Task.sleep(nanoseconds: 300_000_000)
             DotDebugLogger.log("computer.actions", "scroll action completed", metadata: [
                 "direction": scrollDirection.rawValue,
                 "amount": scrollAmount.rawValue
@@ -3086,6 +3654,8 @@ final class CompanionManager: ObservableObject {
                 "requestedSeconds": requestedSeconds,
                 "waitSeconds": waitSeconds
             ])
+            isShowingWaitingAnimation = true
+            defer { isShowingWaitingAnimation = false }
             try? await Task.sleep(nanoseconds: UInt64(waitSeconds) * 1_000_000_000)
             DotDebugLogger.log("computer.actions", "wait action completed", metadata: [
                 "waitSeconds": waitSeconds
@@ -3162,7 +3732,8 @@ final class CompanionManager: ObservableObject {
             }
             return AgentToolExecutionResult(
                 toolResultContent: memoryDispatchResult.toolResultText,
-                didTriggerBailOut: false
+                didTriggerBailOut: false,
+                shouldCaptureFreshScreenAfterExecution: false
             )
         }
     }
@@ -3206,49 +3777,61 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    private func saveConversationAndSpeakResponse(transcript: String, spokenText: String) async {
-        // Append the new exchange to the running thread, then persist so a
-        // crash/quit before next launch loses at most this single turn.
-        conversationHistory.append(ConversationExchange(
-            userTranscript: transcript,
-            assistantResponse: spokenText,
-            recordedAt: Date()
-        ))
-        DotConversationHistoryStore.persistExchanges(conversationHistory)
+    private func saveConversationAndSpeakResponse(
+        transcript: String,
+        spokenText: String,
+        shouldPersistConversationHistory: Bool = true
+    ) async {
+        if shouldPersistConversationHistory {
+            // Append the new exchange to the running thread, then persist so a
+            // crash/quit before next launch loses at most this single turn.
+            conversationHistory.append(ConversationExchange(
+                userTranscript: transcript,
+                assistantResponse: spokenText,
+                recordedAt: Date()
+            ))
+            DotConversationHistoryStore.persistExchanges(conversationHistory)
 
-        // Fire compaction if EITHER the entry count or the estimated token
-        // count is over its soft cap. Token-based is the primary trigger
-        // (correctly accounts for variable-length turns); entry-count is a
-        // defense-in-depth safety against degenerate cases where the
-        // estimator is way off. Compaction is fire-and-forget so it
-        // doesn't delay TTS playback.
-        let estimatedTokenCount = estimateTotalTokensInConversationHistory()
-        let isOverEntryCountCap = conversationHistory.count > Self.conversationHistorySoftCapEntryCount
-        let isOverTokenCountCap = estimatedTokenCount > Self.conversationHistorySoftCapTokenCount
-        if (isOverEntryCountCap || isOverTokenCountCap), conversationHistoryCompactionTask == nil {
-            DotDebugLogger.log("conversation.history", "compaction triggered by overflow", metadata: [
-                "entryCount": conversationHistory.count,
-                "estimatedTokenCount": estimatedTokenCount,
-                "trigger": isOverTokenCountCap ? "tokens" : "entries"
-            ])
-            conversationHistoryCompactionTask = Task { @MainActor [weak self] in
-                await self?.compactOldestConversationHistoryEntries()
-                self?.conversationHistoryCompactionTask = nil
+            // Fire compaction if EITHER the entry count or the estimated token
+            // count is over its soft cap. Token-based is the primary trigger
+            // (correctly accounts for variable-length turns); entry-count is a
+            // defense-in-depth safety against degenerate cases where the
+            // estimator is way off. Compaction is fire-and-forget so it
+            // doesn't delay TTS playback.
+            let estimatedTokenCount = estimateTotalTokensInConversationHistory()
+            let isOverEntryCountCap = conversationHistory.count > Self.conversationHistorySoftCapEntryCount
+            let isOverTokenCountCap = estimatedTokenCount > Self.conversationHistorySoftCapTokenCount
+            if (isOverEntryCountCap || isOverTokenCountCap), conversationHistoryCompactionTask == nil {
+                DotDebugLogger.log("conversation.history", "compaction triggered by overflow", metadata: [
+                    "entryCount": conversationHistory.count,
+                    "estimatedTokenCount": estimatedTokenCount,
+                    "trigger": isOverTokenCountCap ? "tokens" : "entries"
+                ])
+                conversationHistoryCompactionTask = Task { @MainActor [weak self] in
+                    await self?.compactOldestConversationHistoryEntries()
+                    self?.conversationHistoryCompactionTask = nil
+                }
             }
+
+            // Track turns since last sleep-cycle consolidation so the scheduler
+            // knows whether there's enough new material to justify a Haiku
+            // pass. Persisted across launches via UserDefaults.
+            let priorTurnCounter = UserDefaults.standard.integer(forKey: Self.sleepCycleTurnsSinceLastRunUserDefaultsKey)
+            UserDefaults.standard.set(priorTurnCounter + 1, forKey: Self.sleepCycleTurnsSinceLastRunUserDefaultsKey)
+
+            print("🧠 Conversation history: \(conversationHistory.count) exchanges")
+            DotDebugLogger.log("response.history", "saved conversation exchange", metadata: [
+                "conversationHistoryCount": conversationHistory.count,
+                "spokenTextLength": spokenText.count,
+                "transcriptLength": transcript.count
+            ])
+        } else {
+            DotDebugLogger.log("response.history", "skipped saving isolated conversation exchange", metadata: [
+                "conversationHistoryCount": conversationHistory.count,
+                "spokenTextLength": spokenText.count,
+                "transcriptLength": transcript.count
+            ])
         }
-
-        // Track turns since last sleep-cycle consolidation so the scheduler
-        // knows whether there's enough new material to justify a Haiku
-        // pass. Persisted across launches via UserDefaults.
-        let priorTurnCounter = UserDefaults.standard.integer(forKey: Self.sleepCycleTurnsSinceLastRunUserDefaultsKey)
-        UserDefaults.standard.set(priorTurnCounter + 1, forKey: Self.sleepCycleTurnsSinceLastRunUserDefaultsKey)
-
-        print("🧠 Conversation history: \(conversationHistory.count) exchanges")
-        DotDebugLogger.log("response.history", "saved conversation exchange", metadata: [
-            "conversationHistoryCount": conversationHistory.count,
-            "spokenTextLength": spokenText.count,
-            "transcriptLength": transcript.count
-        ])
 
         DotAnalytics.trackAIResponseReceived(response: spokenText)
 
@@ -3554,6 +4137,32 @@ final class CompanionManager: ObservableObject {
         startStepNarrationProcessorIfNotRunning()
     }
 
+    /// Shows low-stakes tool progress next to Dot without speaking it. Routine
+    /// clicks, typing, waits, and navigation are useful visual state but become
+    /// noisy when every one goes through TTS.
+    private func showCaptionOnlyStepFeedback(_ captionText: String) {
+        let trimmedCaptionText = captionText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedCaptionText.isEmpty else { return }
+
+        captionBubbleFadeOutTask?.cancel()
+        captionBubbleFadeOutTask = nil
+        captionBubbleText = trimmedCaptionText
+        captionBubbleVisible = true
+
+        DotDebugLogger.log("caption.step", "showing caption-only tool feedback", metadata: [
+            "captionLength": trimmedCaptionText.count
+        ])
+
+        captionBubbleFadeOutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard !Task.isCancelled else { return }
+            guard self?.captionBubbleText == trimmedCaptionText else { return }
+            self?.captionBubbleVisible = false
+            self?.captionBubbleText = ""
+            self?.captionBubbleFadeOutTask = nil
+        }
+    }
+
     private func startStepNarrationProcessorIfNotRunning() {
         guard perStepNarrationProcessingTask == nil else { return }
         perStepNarrationProcessingTask = Task { @MainActor [weak self] in
@@ -3570,6 +4179,7 @@ final class CompanionManager: ObservableObject {
                     // continuous bubble rather than blinking off and on.
                     strongSelf.captionBubbleFadeOutTask?.cancel()
                     strongSelf.captionBubbleFadeOutTask = nil
+                    strongSelf.voiceState = .responding
                     strongSelf.captionBubbleText = nextChunk
                     strongSelf.captionBubbleVisible = true
                     try await strongSelf.elevenLabsTTSClient.speakText(nextChunk)
@@ -3627,6 +4237,7 @@ final class CompanionManager: ObservableObject {
         captionBubbleFadeOutTask = nil
         captionBubbleVisible = false
         captionBubbleText = ""
+        isShowingWaitingAnimation = false
     }
 
     private func scheduleVoiceStateSafetyResetIfNeeded() {

@@ -107,7 +107,7 @@ enum BuddyNavigationMode {
 // Each screen gets its own BlueCursorView. The view checks whether
 // the cursor is currently on THIS screen and only shows the buddy
 // triangle when it is. During voice interaction, the triangle is
-// replaced by a waveform (listening), spinner (processing), or
+// replaced by a waveform (listening), hourglass (processing), or
 // streaming text bubble (responding).
 struct BlueCursorView: View {
     let screenFrame: CGRect
@@ -375,7 +375,7 @@ struct BlueCursorView: View {
             }
 
             // Blue dot cursor — shown when idle or while TTS is playing (responding).
-            // All three states (dot, waveform, spinner) stay in the view tree
+            // All three states (dot, waveform, hourglass) stay in the view tree
             // permanently and cross-fade via opacity so SwiftUI doesn't remove/re-insert
             // them (which caused a visible cursor "pop").
             //
@@ -407,7 +407,7 @@ struct BlueCursorView: View {
             }
 
             // Blue dot cursor — shown when idle or while TTS is playing (responding).
-            // All three states (dot, waveform, spinner) stay in the view tree
+            // All three states (dot, waveform, hourglass) stay in the view tree
             // permanently and cross-fade via opacity so SwiftUI doesn't remove/re-insert
             // them (which caused a visible cursor "pop").
             //
@@ -419,7 +419,13 @@ struct BlueCursorView: View {
                 .frame(width: 14, height: 14)
                 .shadow(color: DS.Colors.overlayCursorBlue, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
                 .scaleEffect(buddyFlightScale * clickPulseScale * scrollSquashScale)
-                .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
+                .opacity(
+                    buddyIsVisibleOnThisScreen
+                    && (companionManager.voiceState == .idle
+                        || (companionManager.voiceState == .responding && !companionManager.isShowingWaitingAnimation))
+                    ? cursorOpacity
+                    : 0
+                )
                 .position(cursorPosition)
                 .animation(
                     buddyNavigationMode == .followingCursor
@@ -440,9 +446,14 @@ struct BlueCursorView: View {
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
 
-            // Blue spinner — shown while the AI is processing (transcription + Claude + waiting for TTS)
-            BlueCursorSpinnerView()
-                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing ? cursorOpacity : 0)
+            // Blue hourglass — shown while the AI is processing or waiting.
+            BlueCursorWaitingHourglassView()
+                .opacity(
+                    buddyIsVisibleOnThisScreen
+                    && (companionManager.voiceState == .processing || companionManager.isShowingWaitingAnimation)
+                    ? cursorOpacity
+                    : 0
+                )
                 .position(cursorPosition)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
@@ -920,34 +931,121 @@ private struct BlueCursorWaveformView: View {
     }
 }
 
-// MARK: - Blue Cursor Spinner
+// MARK: - Blue Cursor Waiting Hourglass
 
-/// A small blue spinning indicator that replaces the triangle cursor
-/// while the AI is processing a voice input.
-private struct BlueCursorSpinnerView: View {
-    @State private var isSpinning = false
+/// A compact figure-eight/hourglass that replaces the blue dot while Dot is
+/// processing. The falling bead gives long waits a visible "still working"
+/// signal without requiring another state variable or prompt instruction.
+private struct BlueCursorWaitingHourglassView: View {
+    private let animationDurationSeconds: TimeInterval = 1.55
 
     var body: some View {
-        Circle()
-            .trim(from: 0.15, to: 0.85)
-            .stroke(
-                AngularGradient(
-                    colors: [
-                        DS.Colors.overlayCursorBlue.opacity(0.0),
-                        DS.Colors.overlayCursorBlue
-                    ],
-                    center: .center
-                ),
-                style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
-            )
-            .frame(width: 14, height: 14)
-            .rotationEffect(.degrees(isSpinning ? 360 : 0))
-            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.6), radius: 6, x: 0, y: 0)
-            .onAppear {
-                withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) {
-                    isSpinning = true
-                }
-            }
+        TimelineView(.animation(minimumInterval: 1.0 / 45.0)) { timelineContext in
+            let progress = animationProgress(for: timelineContext.date)
+            BlueCursorWaitingHourglassFrame(progress: progress)
+        }
+    }
+
+    private func animationProgress(for date: Date) -> CGFloat {
+        let rawProgress = date.timeIntervalSinceReferenceDate
+            .truncatingRemainder(dividingBy: animationDurationSeconds) / animationDurationSeconds
+        return CGFloat(rawProgress)
+    }
+}
+
+private struct BlueCursorWaitingHourglassFrame: View {
+    let progress: CGFloat
+
+    private var easedSandProgress: CGFloat {
+        smoothStep(progress)
+    }
+
+    private var flipProgress: CGFloat {
+        smoothStep(clamped((progress - 0.82) / 0.18))
+    }
+
+    private var topSandScale: CGFloat {
+        max(0.35, 1.0 - easedSandProgress * 0.55)
+    }
+
+    private var bottomSandScale: CGFloat {
+        0.45 + easedSandProgress * 0.65
+    }
+
+    var body: some View {
+        ZStack {
+            BlueCursorFigureEightShape()
+                .stroke(
+                    DS.Colors.overlayCursorBlue,
+                    style: StrokeStyle(lineWidth: 2.15, lineCap: .round, lineJoin: .round)
+                )
+                .frame(width: 15, height: 18)
+                .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.65), radius: 6, x: 0, y: 0)
+
+            Circle()
+                .fill(DS.Colors.overlayCursorBlue.opacity(0.9))
+                .frame(width: 3.2, height: 3.2)
+                .scaleEffect(topSandScale)
+                .offset(y: -4.6)
+
+            Circle()
+                .fill(DS.Colors.overlayCursorBlue.opacity(0.95))
+                .frame(width: 2.6, height: 2.6)
+                .offset(y: -4.3 + easedSandProgress * 8.6)
+                .opacity(progress < 0.82 ? 1 : 0)
+
+            Circle()
+                .fill(DS.Colors.overlayCursorBlue.opacity(0.9))
+                .frame(width: 3.2, height: 3.2)
+                .scaleEffect(bottomSandScale)
+                .offset(y: 4.7)
+        }
+        .frame(width: 20, height: 22)
+        .rotationEffect(.degrees(Double(flipProgress) * 180.0))
+        .scaleEffect(0.96 + 0.06 * sin(Double(progress) * .pi * 2.0))
+    }
+
+    private func clamped(_ value: CGFloat) -> CGFloat {
+        min(max(value, 0), 1)
+    }
+
+    private func smoothStep(_ value: CGFloat) -> CGFloat {
+        let clampedValue = clamped(value)
+        return clampedValue * clampedValue * (3 - 2 * clampedValue)
+    }
+}
+
+private struct BlueCursorFigureEightShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let top = CGPoint(x: rect.midX, y: rect.minY + 1.3)
+        let bottom = CGPoint(x: rect.midX, y: rect.maxY - 1.3)
+        let left = rect.minX + 1.2
+        let right = rect.maxX - 1.2
+
+        var path = Path()
+        path.move(to: center)
+        path.addCurve(
+            to: top,
+            control1: CGPoint(x: left, y: rect.midY - 1.1),
+            control2: CGPoint(x: left, y: rect.minY + 1.4)
+        )
+        path.addCurve(
+            to: center,
+            control1: CGPoint(x: right, y: rect.minY + 1.4),
+            control2: CGPoint(x: right, y: rect.midY - 1.1)
+        )
+        path.addCurve(
+            to: bottom,
+            control1: CGPoint(x: left, y: rect.midY + 1.1),
+            control2: CGPoint(x: left, y: rect.maxY - 1.4)
+        )
+        path.addCurve(
+            to: center,
+            control1: CGPoint(x: right, y: rect.maxY - 1.4),
+            control2: CGPoint(x: right, y: rect.midY + 1.1)
+        )
+        return path
     }
 }
 

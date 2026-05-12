@@ -9,9 +9,10 @@
 import Combine
 import Foundation
 
-/// The structured request produced from an explicit `dot agent ...` command
-/// and handed to an `AgentWorker` to execute. A brief is immutable once
-/// created; mutable lifecycle state lives on `AgentTask`.
+/// The structured request produced from an explicit `dot agent ...` command or
+/// deterministic personal-task route and handed to an `AgentWorker` to execute.
+/// A brief is immutable once created; mutable lifecycle state lives on
+/// `AgentTask`.
 struct AgentTaskBrief: Identifiable, Equatable {
     let id: UUID
     let oneLineTitle: String
@@ -19,12 +20,13 @@ struct AgentTaskBrief: Identifiable, Equatable {
     let detailedInstructions: String
     let workingDirectoryURL: URL
     let additionalDirectoryURLs: [URL]
+    let originatingSource: String?
     let estimatedDurationDescription: String
     let maxToolCallSteps: Int
     let maxWallClockSeconds: Int
 
-    static let defaultMaxToolCallSteps: Int = 75
-    static let defaultMaxWallClockSeconds: Int = 1800
+    static let defaultMaxToolCallSteps: Int = 120
+    static let defaultMaxWallClockSeconds: Int = 2700
 }
 
 /// One unit of progress emitted by a worker. The panel renders these as

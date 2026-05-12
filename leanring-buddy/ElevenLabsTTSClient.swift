@@ -31,6 +31,7 @@ final class ElevenLabsTTSClient {
     /// Sends `text` to ElevenLabs TTS and plays the resulting audio.
     /// Throws on network or decoding errors. Cancellation-safe.
     func speakText(_ text: String) async throws {
+        let requestStartedAt = Date()
         var request = URLRequest(url: proxyURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -50,7 +51,11 @@ final class ElevenLabsTTSClient {
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
+        DotDebugLogger.log("tts.elevenlabs", "request started", metadata: [
+            "textLength": text.count
+        ])
         let (data, response) = try await session.data(for: request)
+        let requestDurationMs = Int((Date().timeIntervalSince(requestStartedAt) * 1_000).rounded())
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw NSError(domain: "ElevenLabsTTS", code: -1,
@@ -65,9 +70,18 @@ final class ElevenLabsTTSClient {
 
         try Task.checkCancellation()
 
+        DotDebugLogger.log("tts.elevenlabs", "audio received", metadata: [
+            "textLength": text.count,
+            "audioKilobytes": data.count / 1024,
+            "requestDurationMs": requestDurationMs
+        ])
         let player = try AVAudioPlayer(data: data)
         self.audioPlayer = player
         player.play()
+        DotDebugLogger.log("tts.elevenlabs", "playback started", metadata: [
+            "audioDurationSeconds": player.duration,
+            "audioKilobytes": data.count / 1024
+        ])
         print("🔊 ElevenLabs TTS: playing \(data.count / 1024)KB audio")
     }
 
@@ -80,9 +94,16 @@ final class ElevenLabsTTSClient {
     /// Returns immediately if nothing is playing. Used by per-step narration
     /// to play chunks back-to-back without overlapping.
     func awaitPlaybackCompletion() async {
+        let playbackWaitStartedAt = Date()
+        let didStartWithActivePlayback = audioPlayer?.isPlaying == true
         while audioPlayer?.isPlaying == true {
             if Task.isCancelled { return }
             try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        if didStartWithActivePlayback {
+            DotDebugLogger.log("tts.elevenlabs", "playback completed", metadata: [
+                "waitDurationMs": Int((Date().timeIntervalSince(playbackWaitStartedAt) * 1_000).rounded())
+            ])
         }
     }
 

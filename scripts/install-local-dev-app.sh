@@ -8,6 +8,7 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_directory="${project_root}/leanring-buddy"
 build_directory="${project_root}/build"
+source_snapshot_directory="${build_directory}/source-snapshot"
 app_name="Dot"
 bundle_identifier="net.vibe-research.dot"
 build_app_path="${build_directory}/${app_name}.app"
@@ -52,8 +53,9 @@ set_plist_string_value() {
 echo "Building ${app_name} for ${swift_target_triple}"
 echo "Signing with ${codesign_identity}"
 
-rm -rf "${build_app_path}"
+rm -rf "${build_app_path}" "${source_snapshot_directory}"
 mkdir -p "${macos_directory}" "${resources_directory}"
+ditto "${source_directory}" "${source_snapshot_directory}"
 
 if [[ "${DOT_INCLUDE_RESTRICTED_ENTITLEMENTS:-}" != "1" ]]; then
     signing_entitlements_path="${build_directory}/${app_name}.local-dev.entitlements"
@@ -67,7 +69,7 @@ fi
 swift_source_files=()
 while IFS= read -r swift_source_file_path; do
     swift_source_files+=("${swift_source_file_path}")
-done < <(find "${source_directory}" -name "*.swift" -type f)
+done < <(find "${source_snapshot_directory}" -name "*.swift" -type f)
 
 xcrun swiftc \
     -swift-version 5 \

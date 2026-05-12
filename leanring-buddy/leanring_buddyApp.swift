@@ -124,19 +124,37 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
     /// Recognizes `dot://debug?transcript=…` URLs and feeds the decoded
     /// transcript through the same dispatch path as a real push-to-talk
-    /// release. Returns true if the URL was a debug URL (handled or empty),
-    /// false otherwise so the caller falls through to other URL handlers.
+    /// release. Add `isolated=1` for deterministic local tests that should
+    /// skip persisted conversation history. Returns true if the URL was a
+    /// debug URL (handled or empty), false otherwise so the caller falls
+    /// through to other URL handlers.
     /// Local-dev surface — unauthenticated; gate or remove before shipping.
     private func handleDebugTranscriptURLIfMatch(_ incomingURL: URL) -> Bool {
         guard incomingURL.scheme?.lowercased() == "dot" else { return false }
         guard incomingURL.host?.lowercased() == "debug" else { return false }
         let urlComponents = URLComponents(url: incomingURL, resolvingAgainstBaseURL: false)
         let transcriptQueryValue = urlComponents?.queryItems?.first(where: { $0.name == "transcript" })?.value ?? ""
+        let isolatedQueryValue = urlComponents?.queryItems?.first(where: { $0.name == "isolated" })?.value ?? ""
+        let shouldIncludeConversationHistory = !Self.isTruthyDebugQueryValue(isolatedQueryValue)
         let trimmedTranscript = transcriptQueryValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTranscript.isEmpty else { return true }
         print("🧪 Dot: debug URL fired transcript \"\(trimmedTranscript)\"")
-        companionManager.runTranscriptThroughAgentLoop(transcript: trimmedTranscript, source: "debug-url")
+        companionManager.runTranscriptThroughAgentLoop(
+            transcript: trimmedTranscript,
+            source: shouldIncludeConversationHistory ? "debug-url" : "debug-url-isolated",
+            includeConversationHistory: shouldIncludeConversationHistory,
+            persistConversationHistory: shouldIncludeConversationHistory
+        )
         return true
+    }
+
+    private static func isTruthyDebugQueryValue(_ queryValue: String) -> Bool {
+        let normalizedQueryValue = queryValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return normalizedQueryValue == "1"
+            || normalizedQueryValue == "true"
+            || normalizedQueryValue == "yes"
     }
 
     /// Registers the app as a login item so it launches automatically on

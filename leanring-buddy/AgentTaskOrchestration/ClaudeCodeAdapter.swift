@@ -34,6 +34,23 @@ final class ClaudeCodeAdapter: AgentWorker {
         NSString(string: "~/.claude/local/claude").expandingTildeInPath
     ]
 
+    /// Explicit coding agents should stay headless and code-focused. Dot
+    /// captures foreground page/PDF context before spawning the worker, so
+    /// the worker normally does not need browser-control tools.
+    nonisolated private static let codingAgentAllowedToolNames: [String] = [
+        "Read",
+        "Write",
+        "Edit",
+        "MultiEdit",
+        "Glob",
+        "Grep",
+        "LS",
+        "TodoWrite",
+        "WebFetch",
+        "WebSearch",
+        "Bash"
+    ]
+
     private static var cachedResolvedBinaryPath: String?
 
     /// Walks the candidate paths and returns the first one that exists and
@@ -200,15 +217,17 @@ final class ClaudeCodeAdapter: AgentWorker {
         // exit when done). `--input-format=stream-json` lets us write JSON
         // user-message lines to stdin; `--output-format=stream-json` makes Claude
         // Code emit one structured event per line on stdout. `--max-turns` caps
-        // the tool-call budget. `--permission-mode=acceptEdits` lets the agent
-        // make file edits without prompting; we deliberately do NOT pass
-        // `--dangerously-skip-permissions`.
+        // the tool-call budget. Background workers run in a generated task
+        // workspace, so they must be able to use explicitly allowed coding
+        // tools without an interactive approval prompt. Live browser/app work
+        // stays in Dot's foreground computer-use loop.
         var arguments = [
             "--print",
             "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--verbose",
-            "--permission-mode", "acceptEdits",
+            "--permission-mode", "bypassPermissions",
+            "--allowedTools", Self.codingAgentAllowedToolNames.joined(separator: ","),
             "--max-turns", String(brief.maxToolCallSteps)
         ]
         if !brief.additionalDirectoryURLs.isEmpty {
@@ -578,6 +597,13 @@ final class ClaudeCodeAdapter: AgentWorker {
         if runningProcess.isRunning {
             kill(runningProcess.processIdentifier, SIGKILL)
         }
+    }
+
+    func terminateImmediatelyForAppShutdown() {
+        guard let runningProcess, runningProcess.isRunning else {
+            return
+        }
+        runningProcess.terminate()
     }
 
     // MARK: - Event yielding helpers

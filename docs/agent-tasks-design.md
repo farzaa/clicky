@@ -1,17 +1,17 @@
 # Background Agent Tasks: Dot as a Conductor for External Coding Agents
 
-Status: **Implemented explicit-prefix v1.**
+Status: **Implemented explicit-prefix background coding agents.**
 
 ## Goal
 
-Let the user explicitly say things like *"dot agent reimplement this paper and give me an interactive demo"* and have Dot run that as a long-lived background coding task on the user's Mac — without making normal Dot requests unpredictable.
+Let the user explicitly say things like *"dot agent reimplement this paper and give me an interactive demo"* and have Dot run that as a long-lived background coding task on the user's Mac. Non-prefixed requests stay in Dot's normal live computer-use loop.
 
 Dot's edge is voice + screen + ambient surface. We use that to orchestrate existing best-in-class coding agents rather than reimplementing them.
 
 ## Non-goals (v1)
 
 - Cloud execution. Tasks run on the user's machine.
-- Live browser/app automation in background agents. Normal Dot handles live UI/session work inline.
+- Broad live browser/app automation in background agents. Normal Dot handles UI/session work inline.
 - Existing-repo cwd inference from frontmost IDEs. v1 uses auto-named task directories and tells the worker to inspect user-supplied paths when possible.
 - Vibe-id Anthropic passthrough. v1 uses the user's installed Claude Code CLI auth.
 - Codex CLI fallback. v1 ships Claude Code support only; the adapter protocol is shaped so adding Codex is a single new file in v2.
@@ -26,10 +26,10 @@ Dot's edge is voice + screen + ambient surface. We use that to orchestrate exist
 │  CompanionManager                                    │
 │   ↓ transcript finalized                             │
 │   ↓ explicit prefix check                            │
-│   │     ↳ only "dot agent ..." spawns a worker       │
+│   │     ↳ dot agent prefix spawns                    │
 │   ↓                                                  │
-│   ↓ no prefix → existing live inline tool-use loop   │
-│   ↓ prefix → AgentTaskManager.startTask(brief)       │
+│   ↓ no route → existing live inline tool-use loop    │
+│   ↓ background route → AgentTaskManager.startTask    │
 │                                                      │
 │  AgentTaskManager (multi-task coding agents)         │
 │   - owns AgentTask state + history                   │
@@ -54,7 +54,7 @@ The boundary that matters is **the `AgentWorker` protocol**. Everything above it
 
 ### `AgentTaskBrief`
 
-What the user wants, converted from an explicit `dot agent ...` command into something a coding agent can act on.
+What the user wants, converted from an explicit `dot agent ...` command into something a background agent can act on.
 
 ```swift
 struct AgentTaskBrief {
@@ -65,8 +65,8 @@ struct AgentTaskBrief {
     let workingDirectoryURL: URL              // auto-named, e.g. ~/Desktop/Dot Tasks/...
     let additionalDirectoryURLs: [URL]        // explicit user-supplied paths exposed through --add-dir
     let estimatedDurationDescription: String  // "about 10 minutes" — surfaced via TTS
-    let maxToolCallSteps: Int                 // budget cap, default 75
-    let maxWallClockSeconds: Int              // budget cap, default 1800
+    let maxToolCallSteps: Int                 // budget cap, default 120
+    let maxWallClockSeconds: Int              // budget cap, default 2700
 }
 ```
 
@@ -114,10 +114,13 @@ We invoke Claude Code as:
 
 ```bash
 claude -p --output-format=stream-json --input-format=stream-json \
-       --permission-mode=acceptEdits \
-       --cwd <workingDirectoryURL> \
+       --permission-mode=bypassPermissions \
+       --allowedTools <comma-separated allowlist> \
+       --max-turns <brief.maxToolCallSteps> \
        <<<"<one-shot brief>"
 ```
+
+Explicit coding tasks get code/search/shell tools and stay headless. Browser/app UI work remains in Dot's live inline loop.
 
 We read stdout line-by-line; each line is a JSON object of the form:
 
@@ -145,12 +148,12 @@ Detection: `which claude || command -v claude || stat ~/.npm-global/bin/claude /
 
 ## Explicit command routing
 
-Dot does not infer background-agent intent. The only background trigger is a leading `dot agent ...` command. This removes the LLM route classifier entirely:
+Dot does not use an LLM or keyword classifier to infer background-agent intent. The only background trigger is a leading `dot agent ...` command:
 
 - `submit my homework to the course site` → normal Dot live inline loop
 - `click the save button in Chrome` → normal Dot live inline loop
-- `dot agent build me a CS185 test harness` → background coding agent
-- `dot agent inspect /Users/mark/Desktop/project and summarize failing tests` → background coding agent
+- `dot agent build me a CS185 test harness` -> background agent
+- `dot agent inspect /Users/mark/Desktop/project and summarize failing tests` -> background agent
 
 The prefix is intentionally blunt. It gives the user a reliable mental model and prevents long-running coding agents from appearing when the user expected Dot to operate the current browser/app session.
 
@@ -199,12 +202,13 @@ Visual style follows `DS` design system tokens.
 2. Existing dictation pipeline finalizes the transcript on key-up.
 3. `handleDirectLocalMediaCommandIfRecognized` returns false (no match).
 4. `CompanionManager` detects the explicit `dot agent` prefix.
-5. `CompanionManager` builds an `AgentTaskBrief` directly from the stripped request.
-6. `AgentTaskManager` creates the working dir, `git init`s, writes `INSTRUCTIONS.md`, and asks `ClaudeCodeAdapter.spawn(brief:)`.
-7. `SubagentDotOverlayManager` shows a colored dot for the new coding agent.
-8. User clicks a dot to open `AgentTaskPanelManager` for that task's output.
-9. Events stream in. Each `assistantMessage` event optionally goes to TTS for the *first* one only — subsequent messages go to the panel silently to avoid TTS-spam during a 10-minute task.
-10. On `workerCompleted`, Dot speaks one summary line and posts a macOS notification.
+5. `CompanionManager` captures best-effort foreground page/PDF/document context, preferring the Accessibility document reference for content extraction when it differs from a stale browser URL.
+6. `CompanionManager` builds an `AgentTaskBrief` directly from the stripped request and captured context. If a text excerpt was captured, the worker is told to use it directly instead of refetching localhost/private/file/app-internal URLs.
+7. `AgentTaskManager` creates the working dir, `git init`s, writes `INSTRUCTIONS.md`, and asks `ClaudeCodeAdapter.spawn(brief:)`.
+8. `SubagentDotOverlayManager` shows a colored dot for the new coding agent.
+9. User clicks a dot to open `AgentTaskPanelManager` for that task's output.
+10. Events stream in. Each `assistantMessage` event optionally goes to TTS for the *first* one only — subsequent messages go to the panel silently to avoid TTS-spam during a 10-minute task.
+11. On `workerCompleted`, Dot speaks one summary line and posts a macOS notification.
 
 Mid-run voice interrupt:
 - User holds push-to-talk again, says *"actually use JAX instead of PyTorch."*
@@ -214,11 +218,12 @@ Mid-run voice interrupt:
 
 ## Budgets + guardrails
 
-- Step budget (`maxToolCallSteps`): default 75. Worker self-honors via Claude Code's `--max-turns`.
-- Wall clock (`maxWallClockSeconds`): default 1800 (30 min). Enforced by a `Task.sleep` cancellation watchdog in `AgentTaskManager`.
+- Step budget (`maxToolCallSteps`): default 120. Worker self-honors via Claude Code's `--max-turns`.
+- Wall clock (`maxWallClockSeconds`): default 2700 (45 min). Enforced by a `Task.sleep` cancellation watchdog in `AgentTaskManager`.
 - Generated task state is always under `~/Desktop/Dot Tasks/`. Workers may inspect or edit user-supplied paths when Claude Code permissions allow it; if access is blocked, the worker should report the exact path and blocker.
-- `--permission-mode=acceptEdits` is the default. We do NOT pass `--dangerously-skip-permissions`.
-- Auto-`git init` + commit before spawning, so the user can `git diff` / `git reset --hard` to roll the whole task back.
+- `--permission-mode=bypassPermissions` and an explicit allowed-tool set are used for background agents so they do not block on invisible approval prompts.
+- Explicit coding agents get headless code/search/shell tools only.
+- Auto-`git init` before spawning, so the generated task directory has rollback affordance through ordinary git commands.
 
 ## Risks
 
