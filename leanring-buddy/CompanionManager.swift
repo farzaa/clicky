@@ -8,8 +8,10 @@
 //
 
 import AVFoundation
+import ApplicationServices
 import Combine
 import CoreGraphics
+import Darwin
 import Foundation
 
 #if canImport(PostHog)
@@ -47,6 +49,43 @@ struct AgentLoopOutcome {
     let stepsExecuted: Int
     /// Best-effort description when status is .failed. nil otherwise.
     let errorDescription: String?
+}
+
+private final class LocalCommandDataAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func append(_ newData: Data) {
+        guard !newData.isEmpty else { return }
+        lock.lock()
+        data.append(newData)
+        lock.unlock()
+    }
+
+    func snapshot() -> Data {
+        lock.lock()
+        let copiedData = data
+        lock.unlock()
+        return copiedData
+    }
+}
+
+private final class LocalCommandTimeoutState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var timedOut = false
+
+    func markTimedOut() {
+        lock.lock()
+        timedOut = true
+        lock.unlock()
+    }
+
+    func snapshot() -> Bool {
+        lock.lock()
+        let copiedTimedOut = timedOut
+        lock.unlock()
+        return copiedTimedOut
+    }
 }
 
 @MainActor
@@ -1127,6 +1166,10 @@ final class CompanionManager: ObservableObject {
     // MARK: - Companion Prompt
 
     private static let maxAgentStepsPerUserTurn = 40
+    private static let localCommandDefaultTimeoutSeconds = 15
+    private static let localCommandMaximumTimeoutSeconds = 30
+    private static let localCommandOutputMaximumCharacterCount = 12_000
+    private static let createdZipArchiveMaximumByteCount: UInt64 = 100 * 1024 * 1024
 
     /// Hardware-mouse movement (in points) that we treat as the user
     /// reclaiming control. 40pt is loose enough to ignore micro-jiggle on
@@ -1167,6 +1210,12 @@ final class CompanionManager: ObservableObject {
     - typing AND sending/submitting (sending a Slack DM, posting to a channel, submitting a search, submitting a form the user explicitly asked you to send): use fill_and_submit — same as fill_text_field plus a configurable submit keystroke (default `return`) at the end. only use when the user explicitly asked you to send/submit/post — never auto-submit. for `cmd+return` apps pass submit_keystroke="cmd+return".
     - for opening a URL or going to a website, ALWAYS use open_url. it routes through macOS's default-browser handler so it works no matter which app is focused, including when no browser is open yet. NEVER simulate cmd+L + typing for URL navigation — that silently fails when focus isn't already on a browser.
     - for launching or activating a native app (Spotify, Slack, VS Code, Notion, Mail, etc.), use open_app. it's atomic and reliable — don't try to click dock icons or drive Spotlight via cmd+space + typing.
+    - if the user refers to "this page", "this pdf", "the current paper", "the current project", or the frontmost document, use get_foreground_document_context before acting on that context.
+    - to open an existing local file or folder, especially a generated project folder in Cursor/VS Code, use open_local_path.
+    - for local file/code work needed by a live task, use run_local_command instead of visually driving Finder. good uses: inspect a folder, run tests, create a zip/archive, check filenames. keep commands short, bounded, and non-destructive.
+    - when an upload requires a zip with specific file/folder names inside it, use create_zip_archive. it lets you map existing source paths to exact archive paths without narrating shell output or building temporary folders by hand.
+    - when a website or app opens a macOS upload/choose dialog, use choose_file_or_folder with the exact local path. click the upload/choose button first so the file picker is frontmost, then call choose_file_or_folder.
+    - when waiting for a page load, upload, autograder, app launch, or modal transition, use wait_for_seconds, then observe the next screen. don't guess that async work finished.
     - if you can encode a search/destination into a URL (youtube.com/results?search_query=lo-fi+beats, google.com/search?q=swift+arrays, drive.google.com), prefer open_url with that direct URL over open_url + click + type — fewer steps and zero focus dependencies.
     - for other browser-chrome operations (opening a new tab, closing a tab, switching tabs, history), use the dedicated browser tools (open_new_tab, close_tab, switch_tab, browser_back, browser_forward). only use these when a browser is the frontmost app — they send keyboard shortcuts that would go to the wrong app otherwise.
     - for media (pause/play/skip), use media_control — works even if the music app is hidden.
@@ -1337,21 +1386,37 @@ final class CompanionManager: ObservableObject {
             return
         }
 
-        let brief = Self.makeExplicitAgentTaskBrief(
-            originalTranscript: transcript,
-            explicitAgentRequest: explicitAgentRequest
-        )
-
-        DotDebugLogger.log("agent.route", "explicit dot agent command; starting background task", metadata: [
-            "title": brief.oneLineTitle,
-            "workingDir": brief.workingDirectoryURL.path,
-            "source": source
-        ])
-
         currentResponseTask?.cancel()
         cancelPerStepNarrationQueue()
         Task { @MainActor in
+            let foregroundDocumentContext = await Self.captureForegroundDocumentContext()
+            let brief = Self.makeExplicitAgentTaskBrief(
+                originalTranscript: transcript,
+                explicitAgentRequest: explicitAgentRequest,
+                foregroundDocumentContext: foregroundDocumentContext
+            )
+
+            DotDebugLogger.log("agent.route", "explicit dot agent command; starting background task", metadata: [
+                "title": brief.oneLineTitle,
+                "workingDir": brief.workingDirectoryURL.path,
+                "source": source,
+                "foregroundContextHasDocument": foregroundDocumentContext.hasDocumentReference
+            ])
+
             await agentTaskManager.startTask(brief: brief)
+
+            if Self.explicitAgentRequestAsksForCursorWindow(explicitAgentRequest) {
+                let openPathResult = await CompanionComputerController.openLocalPath(
+                    rawPath: brief.workingDirectoryURL.path,
+                    applicationNameOrBundleIdentifier: "Cursor",
+                    preferNewApplicationInstance: true
+                )
+                DotDebugLogger.log("agent.route", "cursor project window requested", metadata: [
+                    "workingDir": brief.workingDirectoryURL.path,
+                    "didOpen": openPathResult.didOpen,
+                    "errorDescription": openPathResult.errorDescription ?? ""
+                ])
+            }
         }
     }
 
@@ -1378,11 +1443,15 @@ final class CompanionManager: ObservableObject {
 
     private static func makeExplicitAgentTaskBrief(
         originalTranscript: String,
-        explicitAgentRequest: String
+        explicitAgentRequest: String,
+        foregroundDocumentContext: ForegroundDocumentContextSnapshot
     ) -> AgentTaskBrief {
         let oneLineTitle = makeExplicitAgentTaskTitle(from: explicitAgentRequest)
         let workingDirectoryURL = AgentTaskManager.makeWorkingDirectoryURL(forTitle: oneLineTitle)
-        let additionalDirectoryURLs = extractAdditionalDirectoryURLs(from: explicitAgentRequest)
+        let additionalDirectoryURLs = deduplicatedExistingDirectoryURLs(
+            extractAdditionalDirectoryURLs(from: explicitAgentRequest)
+                + foregroundDocumentContext.additionalDirectoryURLs
+        )
         let additionalDirectoryInstruction: String
         if additionalDirectoryURLs.isEmpty {
             additionalDirectoryInstruction = "No additional local directories were detected in the request."
@@ -1400,6 +1469,9 @@ final class CompanionManager: ObservableObject {
 
         Request:
         \(explicitAgentRequest)
+
+        Foreground context captured when the request started:
+        \(foregroundDocumentContext.backgroundAgentInstructionText)
 
         Work from the generated Dot task directory unless the user supplied a specific path. If the user supplied a local path, inspect and work with that path directly. If access to a path is blocked, explain the exact path and permission issue in the final summary instead of guessing.
 
@@ -1471,6 +1543,439 @@ final class CompanionManager: ObservableObject {
         }
 
         return Array(directoryURLs.prefix(6))
+    }
+
+    private static func deduplicatedExistingDirectoryURLs(_ directoryURLs: [URL]) -> [URL] {
+        var seenPaths: Set<String> = []
+        var result: [URL] = []
+
+        for directoryURL in directoryURLs {
+            let standardizedURL = directoryURL.standardizedFileURL
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: standardizedURL.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue,
+                  !seenPaths.contains(standardizedURL.path) else {
+                continue
+            }
+            seenPaths.insert(standardizedURL.path)
+            result.append(standardizedURL)
+        }
+
+        return Array(result.prefix(6))
+    }
+
+    private static func explicitAgentRequestAsksForCursorWindow(_ explicitAgentRequest: String) -> Bool {
+        let normalizedRequest = explicitAgentRequest.lowercased()
+        guard normalizedRequest.contains("cursor") else { return false }
+        return normalizedRequest.contains("open")
+            || normalizedRequest.contains("launch")
+            || normalizedRequest.contains("window")
+    }
+
+    private struct ForegroundDocumentContextSnapshot {
+        let frontmostApplicationName: String?
+        let frontmostBundleIdentifier: String?
+        let frontmostWindowTitle: String?
+        let accessibilityDocumentReference: String?
+        let browserURL: String?
+        let selectedText: String?
+        let localDocumentPath: String?
+
+        var hasDocumentReference: Bool {
+            browserURL != nil || accessibilityDocumentReference != nil || localDocumentPath != nil
+        }
+
+        var additionalDirectoryURLs: [URL] {
+            guard let localDocumentPath else { return [] }
+            let documentURL = URL(fileURLWithPath: localDocumentPath).standardizedFileURL
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: documentURL.path, isDirectory: &isDirectory) else {
+                return []
+            }
+            return [isDirectory.boolValue ? documentURL : documentURL.deletingLastPathComponent()]
+        }
+
+        var toolResultText: String {
+            var lines: [String] = []
+            lines.append("frontmost_app: \(frontmostApplicationName ?? "unknown")")
+            if let frontmostBundleIdentifier {
+                lines.append("bundle_id: \(frontmostBundleIdentifier)")
+            }
+            if let frontmostWindowTitle {
+                lines.append("window_title: \(frontmostWindowTitle)")
+            }
+            if let browserURL {
+                lines.append("browser_url: \(browserURL)")
+            }
+            if let accessibilityDocumentReference {
+                lines.append("document_reference: \(accessibilityDocumentReference)")
+            }
+            if let localDocumentPath {
+                lines.append("local_document_path: \(localDocumentPath)")
+            }
+            if let selectedText {
+                lines.append("selected_text:\n\(Self.truncatedContextText(selectedText, maximumCharacterCount: 4_000))")
+            }
+            if lines.count <= 2 {
+                lines.append("note: no URL, document path, or selected text was available from the frontmost app")
+            }
+            return lines.joined(separator: "\n")
+        }
+
+        var backgroundAgentInstructionText: String {
+            var lines: [String] = []
+            lines.append("- Frontmost app: \(frontmostApplicationName ?? "unknown")")
+            if let frontmostWindowTitle {
+                lines.append("- Window title: \(frontmostWindowTitle)")
+            }
+            if let browserURL {
+                lines.append("- Current browser URL: \(browserURL)")
+            }
+            if let localDocumentPath {
+                lines.append("- Local document path: \(localDocumentPath)")
+            } else if let accessibilityDocumentReference {
+                lines.append("- Document reference: \(accessibilityDocumentReference)")
+            }
+            if let selectedText {
+                lines.append("- Selected text excerpt:\n\(Self.truncatedContextText(selectedText, maximumCharacterCount: 2_000))")
+            }
+            if !hasDocumentReference && selectedText == nil {
+                lines.append("- No current URL, document path, or selected text was recoverable from the frontmost app.")
+            }
+            return lines.joined(separator: "\n")
+        }
+
+        private static func truncatedContextText(
+            _ text: String,
+            maximumCharacterCount: Int
+        ) -> String {
+            let singleTrimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard singleTrimmedText.count > maximumCharacterCount else {
+                return singleTrimmedText
+            }
+            return String(singleTrimmedText.prefix(maximumCharacterCount)) + "\n[... truncated ...]"
+        }
+    }
+
+    private struct ForegroundAXDocumentFields {
+        let windowTitle: String?
+        let documentReference: String?
+        let selectedText: String?
+    }
+
+    private static func captureForegroundDocumentContext() async -> ForegroundDocumentContextSnapshot {
+        let frontmostApplication = NSWorkspace.shared.frontmostApplication
+        let frontmostApplicationName = frontmostApplication?.localizedName
+        let frontmostBundleIdentifier = frontmostApplication?.bundleIdentifier
+        let accessibilitySnapshot = CompanionAccessibilityStateSnapshot.capture()
+        let axDocumentFields = captureForegroundAXDocumentFields(
+            processIdentifier: frontmostApplication?.processIdentifier
+        )
+        let browserURL = await currentBrowserURLViaAppleScriptIfSupported(
+            bundleIdentifier: frontmostBundleIdentifier
+        )
+        let localDocumentPath = localDocumentPath(
+            fromDocumentReference: browserURL
+                ?? axDocumentFields.documentReference
+        )
+        let capturedContext = ForegroundDocumentContextSnapshot(
+            frontmostApplicationName: frontmostApplicationName,
+            frontmostBundleIdentifier: frontmostBundleIdentifier,
+            frontmostWindowTitle: axDocumentFields.windowTitle
+                ?? accessibilitySnapshot.frontmostWindowTitle,
+            accessibilityDocumentReference: axDocumentFields.documentReference,
+            browserURL: browserURL,
+            selectedText: axDocumentFields.selectedText,
+            localDocumentPath: localDocumentPath
+        )
+
+        DotDebugLogger.log("foreground.context", "captured", metadata: [
+            "frontmost": frontmostApplicationName ?? "nil",
+            "bundleID": frontmostBundleIdentifier ?? "nil",
+            "hasBrowserURL": browserURL != nil,
+            "hasDocumentReference": axDocumentFields.documentReference != nil,
+            "hasLocalDocumentPath": localDocumentPath != nil,
+            "selectedTextLength": axDocumentFields.selectedText?.count ?? 0
+        ])
+        return capturedContext
+    }
+
+    private static func captureForegroundAXDocumentFields(
+        processIdentifier: pid_t?
+    ) -> ForegroundAXDocumentFields {
+        guard let processIdentifier else {
+            return ForegroundAXDocumentFields(
+                windowTitle: nil,
+                documentReference: nil,
+                selectedText: nil
+            )
+        }
+
+        let applicationAXElement = AXUIElementCreateApplication(processIdentifier)
+        let focusedWindow = copyAXElementAttribute(
+            from: applicationAXElement,
+            attributeName: kAXFocusedWindowAttribute
+        ) ?? copyFirstAXWindow(from: applicationAXElement)
+        let windowTitle = focusedWindow.flatMap {
+            copyAXStringAttribute(from: $0, attributeName: kAXTitleAttribute)
+        }
+        let documentReference = focusedWindow.flatMap {
+            copyAXPrintableAttribute(from: $0, attributeName: kAXDocumentAttribute)
+        } ?? copyAXPrintableAttribute(
+            from: applicationAXElement,
+            attributeName: kAXDocumentAttribute
+        )
+
+        let focusedElement = copyFocusedAXElement(
+            applicationAXElement: applicationAXElement,
+            focusedWindow: focusedWindow
+        )
+        let selectedText = focusedElement.flatMap {
+            copyAXPrintableAttribute(from: $0, attributeName: kAXSelectedTextAttribute)
+        }
+
+        return ForegroundAXDocumentFields(
+            windowTitle: windowTitle,
+            documentReference: documentReference,
+            selectedText: selectedText
+        )
+    }
+
+    private static func copyFocusedAXElement(
+        applicationAXElement: AXUIElement,
+        focusedWindow: AXUIElement?
+    ) -> AXUIElement? {
+        let systemWideElement = AXUIElementCreateSystemWide()
+        if let focusedElement = copyAXElementAttribute(
+            from: systemWideElement,
+            attributeName: kAXFocusedUIElementAttribute
+        ) {
+            return focusedElement
+        }
+        if let focusedElement = copyAXElementAttribute(
+            from: applicationAXElement,
+            attributeName: kAXFocusedUIElementAttribute
+        ) {
+            return focusedElement
+        }
+        if let focusedWindow,
+           let focusedElement = copyAXElementAttribute(
+               from: focusedWindow,
+               attributeName: kAXFocusedUIElementAttribute
+           ) {
+            return focusedElement
+        }
+        return nil
+    }
+
+    private static func copyFirstAXWindow(from applicationAXElement: AXUIElement) -> AXUIElement? {
+        var rawValue: AnyObject?
+        let copyStatus = AXUIElementCopyAttributeValue(
+            applicationAXElement,
+            kAXWindowsAttribute as CFString,
+            &rawValue
+        )
+        guard copyStatus == .success,
+              let windows = rawValue as? [AXUIElement] else {
+            return nil
+        }
+        return windows.first
+    }
+
+    private static func copyAXElementAttribute(
+        from element: AXUIElement,
+        attributeName: String
+    ) -> AXUIElement? {
+        var rawValue: AnyObject?
+        let copyStatus = AXUIElementCopyAttributeValue(
+            element,
+            attributeName as CFString,
+            &rawValue
+        )
+        guard copyStatus == .success,
+              let rawValue,
+              CFGetTypeID(rawValue) == AXUIElementGetTypeID() else {
+            return nil
+        }
+        return (rawValue as! AXUIElement)
+    }
+
+    private static func copyAXStringAttribute(
+        from element: AXUIElement,
+        attributeName: String
+    ) -> String? {
+        var rawValue: AnyObject?
+        let copyStatus = AXUIElementCopyAttributeValue(
+            element,
+            attributeName as CFString,
+            &rawValue
+        )
+        guard copyStatus == .success else { return nil }
+        return rawValue as? String
+    }
+
+    private static func copyAXPrintableAttribute(
+        from element: AXUIElement,
+        attributeName: String
+    ) -> String? {
+        var rawValue: AnyObject?
+        let copyStatus = AXUIElementCopyAttributeValue(
+            element,
+            attributeName as CFString,
+            &rawValue
+        )
+        guard copyStatus == .success, let rawValue else { return nil }
+        if let stringValue = rawValue as? String {
+            return stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? nil
+                : stringValue
+        }
+        if let urlValue = rawValue as? URL {
+            return urlValue.absoluteString
+        }
+        return String(describing: rawValue)
+    }
+
+    private static func currentBrowserURLViaAppleScriptIfSupported(
+        bundleIdentifier: String?
+    ) async -> String? {
+        guard let bundleIdentifier else { return nil }
+        let chromiumBrowserBundleIdentifiers: Set<String> = [
+            "com.google.Chrome",
+            "com.google.Chrome.canary",
+            "com.brave.Browser",
+            "com.microsoft.edgemac",
+            "company.thebrowser.Browser",
+            "org.chromium.Chromium",
+            "com.vivaldi.Vivaldi"
+        ]
+
+        let appleScript: String?
+        if bundleIdentifier == "com.apple.Safari"
+            || bundleIdentifier == "com.apple.SafariTechnologyPreview" {
+            appleScript = """
+            tell application id "\(bundleIdentifier)"
+                if (count of windows) is 0 then return ""
+                return URL of current tab of front window
+            end tell
+            """
+        } else if chromiumBrowserBundleIdentifiers.contains(bundleIdentifier) {
+            appleScript = """
+            tell application id "\(bundleIdentifier)"
+                if (count of windows) is 0 then return ""
+                return URL of active tab of front window
+            end tell
+            """
+        } else {
+            appleScript = nil
+        }
+
+        guard let appleScript else { return nil }
+        let scriptOutput = await runAppleScriptReturningString(appleScript, timeoutSeconds: 2)
+        let trimmedOutput = scriptOutput?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmedOutput?.isEmpty == false) ? trimmedOutput : nil
+    }
+
+    private nonisolated static func runAppleScriptReturningString(
+        _ appleScript: String,
+        timeoutSeconds: Int
+    ) async -> String? {
+        await Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            process.arguments = ["-e", appleScript]
+
+            let standardOutputPipe = Pipe()
+            let standardErrorPipe = Pipe()
+            let standardOutputAccumulator = LocalCommandDataAccumulator()
+            let standardErrorAccumulator = LocalCommandDataAccumulator()
+            let timeoutState = LocalCommandTimeoutState()
+            process.standardOutput = standardOutputPipe
+            process.standardError = standardErrorPipe
+
+            standardOutputPipe.fileHandleForReading.readabilityHandler = { fileHandle in
+                standardOutputAccumulator.append(fileHandle.availableData)
+            }
+            standardErrorPipe.fileHandleForReading.readabilityHandler = { fileHandle in
+                standardErrorAccumulator.append(fileHandle.availableData)
+            }
+
+            let timeoutWorkItem = DispatchWorkItem {
+                timeoutState.markTimedOut()
+                guard process.isRunning else { return }
+                process.terminate()
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) {
+                    if process.isRunning {
+                        Darwin.kill(process.processIdentifier, SIGKILL)
+                    }
+                }
+            }
+            DispatchQueue.global(qos: .utility).asyncAfter(
+                deadline: .now() + .seconds(max(1, timeoutSeconds)),
+                execute: timeoutWorkItem
+            )
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                timeoutWorkItem.cancel()
+                standardOutputPipe.fileHandleForReading.readabilityHandler = nil
+                standardErrorPipe.fileHandleForReading.readabilityHandler = nil
+                DotDebugLogger.log("foreground.context", "osascript failed to start", metadata: [
+                    "error": error.localizedDescription
+                ])
+                return nil
+            }
+
+            timeoutWorkItem.cancel()
+            standardOutputPipe.fileHandleForReading.readabilityHandler = nil
+            standardErrorPipe.fileHandleForReading.readabilityHandler = nil
+            standardOutputAccumulator.append(standardOutputPipe.fileHandleForReading.readDataToEndOfFile())
+            standardErrorAccumulator.append(standardErrorPipe.fileHandleForReading.readDataToEndOfFile())
+
+            if timeoutState.snapshot() {
+                DotDebugLogger.log("foreground.context", "osascript timed out")
+                return nil
+            }
+
+            guard process.terminationStatus == 0 else {
+                let standardError = String(
+                    data: standardErrorAccumulator.snapshot(),
+                    encoding: .utf8
+                ) ?? ""
+                DotDebugLogger.log("foreground.context", "osascript failed", metadata: [
+                    "exitCode": process.terminationStatus,
+                    "stderr": standardError.trimmingCharacters(in: .whitespacesAndNewlines)
+                ])
+                return nil
+            }
+
+            return String(
+                data: standardOutputAccumulator.snapshot(),
+                encoding: .utf8
+            )
+        }.value
+    }
+
+    private static func localDocumentPath(fromDocumentReference documentReference: String?) -> String? {
+        guard let documentReference else { return nil }
+        let trimmedReference = documentReference.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedReference.isEmpty else { return nil }
+
+        let candidatePath: String?
+        if trimmedReference.lowercased().hasPrefix("file://"),
+           let fileURL = URL(string: trimmedReference) {
+            candidatePath = fileURL.path
+        } else if trimmedReference.hasPrefix("/") {
+            candidatePath = (trimmedReference as NSString).expandingTildeInPath
+        } else {
+            candidatePath = nil
+        }
+
+        guard let candidatePath else { return nil }
+        let standardizedPath = URL(fileURLWithPath: candidatePath).standardizedFileURL.path
+        return FileManager.default.fileExists(atPath: standardizedPath) ? standardizedPath : nil
     }
 
     /// Detects short transcripts that read as "cancel the running task."
@@ -2147,23 +2652,57 @@ final class CompanionManager: ObservableObject {
                 didTriggerBailOut: false
             )
 
-        case .openURL(let url):
-            await performComputerControlActions(
-                [.openURL(url)],
-                screenCaptures: originatingScreenCaptures
-            )
+        case .getForegroundDocumentContext:
+            let foregroundDocumentContext = await Self.captureForegroundDocumentContext()
             return AgentToolExecutionResult(
-                toolResultContent: "opened url \(url)",
+                toolResultContent: foregroundDocumentContext.toolResultText,
                 didTriggerBailOut: false
             )
 
-        case .openApplication(let nameOrBundleIdentifier):
-            await performComputerControlActions(
-                [.openApplication(nameOrBundleIdentifier: nameOrBundleIdentifier)],
-                screenCaptures: originatingScreenCaptures
+        case .openLocalPath(let path, let applicationNameOrBundleIdentifier, let preferNewApplicationInstance):
+            let openPathResult = await CompanionComputerController.openLocalPath(
+                rawPath: path,
+                applicationNameOrBundleIdentifier: applicationNameOrBundleIdentifier,
+                preferNewApplicationInstance: preferNewApplicationInstance
+            )
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            if openPathResult.didOpen {
+                let appSuffix = openPathResult.resolvedApplicationName.map { " in \($0)" } ?? ""
+                return AgentToolExecutionResult(
+                    toolResultContent: "opened \(openPathResult.openedPath)\(appSuffix)",
+                    didTriggerBailOut: false
+                )
+            }
+            return AgentToolExecutionResult(
+                toolResultContent: "error: \(openPathResult.errorDescription ?? "could not open \(openPathResult.openedPath)")",
+                didTriggerBailOut: false
+            )
+
+        case .runLocalCommand(let workingDirectoryPath, let command, let timeoutSeconds):
+            let commandResult = await executeRunLocalCommandTool(
+                workingDirectoryPath: workingDirectoryPath,
+                command: command,
+                requestedTimeoutSeconds: timeoutSeconds
             )
             return AgentToolExecutionResult(
-                toolResultContent: "opened app \(nameOrBundleIdentifier)",
+                toolResultContent: commandResult,
+                didTriggerBailOut: false
+            )
+
+        case .createZipArchive(let outputPath, let entries):
+            let archiveResult = await executeCreateZipArchiveTool(
+                outputPath: outputPath,
+                entries: entries
+            )
+            return AgentToolExecutionResult(
+                toolResultContent: archiveResult,
+                didTriggerBailOut: false
+            )
+
+        case .chooseFileOrFolder(let path):
+            let chooserResult = await executeChooseFileOrFolderTool(path: path)
+            return AgentToolExecutionResult(
+                toolResultContent: chooserResult,
                 didTriggerBailOut: false
             )
 
@@ -2289,6 +2828,21 @@ final class CompanionManager: ObservableObject {
             ])
             return AgentToolExecutionResult(
                 toolResultContent: "scrolled \(scrollDirection.rawValue) (\(scrollAmount.rawValue))",
+                didTriggerBailOut: false
+            )
+
+        case .waitForSeconds(let requestedSeconds):
+            let waitSeconds = min(max(requestedSeconds, 1), 30)
+            DotDebugLogger.log("computer.actions", "wait action requested", metadata: [
+                "requestedSeconds": requestedSeconds,
+                "waitSeconds": waitSeconds
+            ])
+            try? await Task.sleep(nanoseconds: UInt64(waitSeconds) * 1_000_000_000)
+            DotDebugLogger.log("computer.actions", "wait action completed", metadata: [
+                "waitSeconds": waitSeconds
+            ])
+            return AgentToolExecutionResult(
+                toolResultContent: "waited \(waitSeconds) second(s)",
                 didTriggerBailOut: false
             )
 
@@ -3147,6 +3701,576 @@ final class CompanionManager: ObservableObject {
         DotDebugLogger.log("computer.actions", "finished actions", metadata: [
             "actionCount": actions.count
         ])
+    }
+
+    private struct LocalCommandExecutionResult {
+        let exitCode: Int32
+        let standardOutput: String
+        let standardError: String
+        let didTimeOut: Bool
+    }
+
+    private func executeRunLocalCommandTool(
+        workingDirectoryPath: String,
+        command: String,
+        requestedTimeoutSeconds: Int
+    ) async -> String {
+        let trimmedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedCommand.isEmpty else {
+            return "error: run_local_command rejected an empty command"
+        }
+        guard let workingDirectoryURL = Self.existingDirectoryURL(from: workingDirectoryPath) else {
+            return "error: run_local_command cwd does not exist or is not a directory: \(workingDirectoryPath)"
+        }
+        if let rejectionReason = Self.localCommandRejectionReason(for: trimmedCommand) {
+            DotDebugLogger.log("local.command", "command rejected", metadata: [
+                "cwd": workingDirectoryURL.path,
+                "command": trimmedCommand,
+                "reason": rejectionReason
+            ])
+            return "error: run_local_command rejected command: \(rejectionReason)"
+        }
+
+        let timeoutSeconds = min(
+            max(
+                requestedTimeoutSeconds > 0 ? requestedTimeoutSeconds : Self.localCommandDefaultTimeoutSeconds,
+                1
+            ),
+            Self.localCommandMaximumTimeoutSeconds
+        )
+        DotDebugLogger.log("local.command", "command started", metadata: [
+            "cwd": workingDirectoryURL.path,
+            "command": trimmedCommand,
+            "timeoutSeconds": timeoutSeconds
+        ])
+
+        do {
+            let executionResult = try await Self.runLocalShellCommand(
+                command: trimmedCommand,
+                workingDirectoryURL: workingDirectoryURL,
+                timeoutSeconds: timeoutSeconds
+            )
+            let mergedOutput = Self.truncatedLocalCommandOutput(
+                standardOutput: executionResult.standardOutput,
+                standardError: executionResult.standardError,
+                maximumCharacterCount: Self.localCommandOutputMaximumCharacterCount
+            )
+            DotDebugLogger.log("local.command", "command completed", metadata: [
+                "cwd": workingDirectoryURL.path,
+                "command": trimmedCommand,
+                "exitCode": executionResult.exitCode,
+                "timedOut": executionResult.didTimeOut,
+                "outputCharacterCount": mergedOutput.count
+            ])
+            let statusLine = executionResult.didTimeOut
+                ? "run_local_command timed out after \(timeoutSeconds)s"
+                : "run_local_command exit_code=\(executionResult.exitCode)"
+            if mergedOutput.isEmpty {
+                return "\(statusLine)\n(no output)"
+            }
+            return "\(statusLine)\n\(mergedOutput)"
+        } catch {
+            DotDebugLogger.log("local.command", "command failed to start", metadata: [
+                "cwd": workingDirectoryURL.path,
+                "command": trimmedCommand,
+                "error": error.localizedDescription
+            ])
+            return "error: run_local_command failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func executeCreateZipArchiveTool(
+        outputPath: String,
+        entries: [AgentZipArchiveEntry]
+    ) async -> String {
+        guard !entries.isEmpty else {
+            return "error: create_zip_archive requires at least one entry"
+        }
+        guard let outputURL = Self.normalizedZipOutputURL(from: outputPath) else {
+            return "error: create_zip_archive output_path must be a .zip path: \(outputPath)"
+        }
+
+        let fileManager = FileManager.default
+        let stagingRootURL = fileManager.temporaryDirectory
+            .appendingPathComponent("DotZipArchive-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? fileManager.removeItem(at: stagingRootURL)
+        }
+
+        do {
+            try fileManager.createDirectory(
+                at: stagingRootURL,
+                withIntermediateDirectories: true
+            )
+            for entry in entries {
+                guard let sourceURL = Self.existingFileOrDirectoryURL(from: entry.sourcePath) else {
+                    return "error: create_zip_archive source does not exist: \(entry.sourcePath)"
+                }
+                guard let relativeArchivePath = Self.validRelativeArchivePath(entry.archivePath) else {
+                    return "error: create_zip_archive invalid archive_path: \(entry.archivePath)"
+                }
+
+                let destinationURL = stagingRootURL.appendingPathComponent(relativeArchivePath)
+                let destinationParentURL = destinationURL.deletingLastPathComponent()
+                try fileManager.createDirectory(
+                    at: destinationParentURL,
+                    withIntermediateDirectories: true
+                )
+                guard !fileManager.fileExists(atPath: destinationURL.path) else {
+                    return "error: create_zip_archive duplicate archive_path: \(entry.archivePath)"
+                }
+                try fileManager.copyItem(at: sourceURL, to: destinationURL)
+            }
+
+            let outputParentURL = outputURL.deletingLastPathComponent()
+            try fileManager.createDirectory(
+                at: outputParentURL,
+                withIntermediateDirectories: true
+            )
+            if fileManager.fileExists(atPath: outputURL.path) {
+                try fileManager.removeItem(at: outputURL)
+            }
+
+            DotDebugLogger.log("zip.archive", "archive creation started", metadata: [
+                "outputPath": outputURL.path,
+                "entryCount": entries.count
+            ])
+            let zipResult = try await Self.runZipProcess(
+                outputURL: outputURL,
+                stagingRootURL: stagingRootURL
+            )
+            guard zipResult.exitCode == 0 else {
+                DotDebugLogger.log("zip.archive", "archive creation failed", metadata: [
+                    "outputPath": outputURL.path,
+                    "exitCode": zipResult.exitCode,
+                    "stderr": zipResult.standardError
+                ])
+                return "error: create_zip_archive failed with exit_code=\(zipResult.exitCode)\n\(zipResult.standardError)"
+            }
+
+            let archiveByteCount = try Self.fileByteCount(at: outputURL)
+            DotDebugLogger.log("zip.archive", "archive creation completed", metadata: [
+                "outputPath": outputURL.path,
+                "entryCount": entries.count,
+                "byteCount": archiveByteCount
+            ])
+            if archiveByteCount > Self.createdZipArchiveMaximumByteCount {
+                return "created zip archive at \(outputURL.path), but warning: size is \(Self.humanReadableByteCount(archiveByteCount)), above the usual 100 MB upload limit"
+            }
+            return "created zip archive at \(outputURL.path) (\(Self.humanReadableByteCount(archiveByteCount)))"
+        } catch {
+            DotDebugLogger.log("zip.archive", "archive creation threw", metadata: [
+                "outputPath": outputURL.path,
+                "error": error.localizedDescription
+            ])
+            return "error: create_zip_archive failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func executeChooseFileOrFolderTool(path: String) async -> String {
+        guard let selectedURL = Self.existingFileOrDirectoryURL(from: path) else {
+            return "error: choose_file_or_folder path does not exist: \(path)"
+        }
+        guard let openGoToFolderSheetKeystroke = CompanionComputerController.parseKeystroke(fromKeySpec: "cmd+shift+g"),
+              let selectAllTextKeystroke = CompanionComputerController.parseKeystroke(fromKeySpec: "cmd+a"),
+              let moveIntoDirectoryContentsKeystroke = CompanionComputerController.parseKeystroke(fromKeySpec: "right"),
+              let confirmSelectionKeystroke = CompanionComputerController.parseKeystroke(fromKeySpec: "return") else {
+            return "error: choose_file_or_folder could not build file-picker keystrokes"
+        }
+        var selectedPathIsDirectory: ObjCBool = false
+        FileManager.default.fileExists(atPath: selectedURL.path, isDirectory: &selectedPathIsDirectory)
+
+        DotDebugLogger.log("file.picker", "choose path requested", metadata: [
+            "path": selectedURL.path
+        ])
+        if let screenContainingPointer = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main {
+            let focusLocation = CGPoint(
+                x: screenContainingPointer.frame.midX,
+                y: screenContainingPointer.frame.midY
+            )
+            CompanionComputerController.focusWindow(atAppKitScreenLocation: focusLocation)
+            try? await Task.sleep(nanoseconds: 180_000_000)
+        }
+        CompanionComputerController.pressKeystroke(openGoToFolderSheetKeystroke)
+        try? await Task.sleep(nanoseconds: 250_000_000)
+        CompanionComputerController.pressKeystroke(selectAllTextKeystroke)
+        try? await Task.sleep(nanoseconds: 80_000_000)
+
+        let pathToOpenInGoToFolder = selectedPathIsDirectory.boolValue
+            ? selectedURL.path
+            : selectedURL.deletingLastPathComponent().path
+        CompanionComputerController.typeText(pathToOpenInGoToFolder)
+        try? await Task.sleep(nanoseconds: 120_000_000)
+        CompanionComputerController.pressKeystroke(confirmSelectionKeystroke)
+        try? await Task.sleep(nanoseconds: 700_000_000)
+
+        if !selectedPathIsDirectory.boolValue {
+            // NSOpenPanel's "Go to Folder" path field is folder-oriented; a
+            // full file path often opens the parent folder without selecting
+            // the file. After opening the parent, the parent folder is still
+            // selected in column view, so move into the contents column before
+            // type-selecting the basename and confirming.
+            CompanionComputerController.pressKeystroke(moveIntoDirectoryContentsKeystroke)
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            CompanionComputerController.typeText(selectedURL.lastPathComponent)
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+
+        CompanionComputerController.pressKeystroke(confirmSelectionKeystroke)
+        try? await Task.sleep(nanoseconds: 900_000_000)
+        DotDebugLogger.log("file.picker", "choose path completed", metadata: [
+            "path": selectedURL.path
+        ])
+        return "selected \(selectedURL.path) in the frontmost file chooser"
+    }
+
+    private nonisolated static func existingFileOrDirectoryURL(from path: String) -> URL? {
+        let expandedPath = (path as NSString).expandingTildeInPath
+        let candidateURL = URL(fileURLWithPath: expandedPath).standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: candidateURL.path, isDirectory: &isDirectory) else {
+            return nil
+        }
+        return candidateURL
+    }
+
+    private nonisolated static func existingDirectoryURL(from path: String) -> URL? {
+        guard let candidateURL = existingFileOrDirectoryURL(from: path) else {
+            return nil
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: candidateURL.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return nil
+        }
+        return candidateURL
+    }
+
+    private nonisolated static func normalizedZipOutputURL(from path: String) -> URL? {
+        let expandedPath = (path as NSString).expandingTildeInPath
+        let candidateURL = URL(fileURLWithPath: expandedPath).standardizedFileURL
+        guard candidateURL.pathExtension.lowercased() == "zip" else {
+            return nil
+        }
+        return candidateURL
+    }
+
+    private nonisolated static func validRelativeArchivePath(_ archivePath: String) -> String? {
+        let trimmedArchivePath = archivePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedArchivePath.isEmpty,
+              !trimmedArchivePath.hasPrefix("/"),
+              !trimmedArchivePath.hasPrefix("~"),
+              !trimmedArchivePath.contains("\0") else {
+            return nil
+        }
+
+        let pathComponents = trimmedArchivePath
+            .split(separator: "/", omittingEmptySubsequences: false)
+            .map(String.init)
+        guard !pathComponents.isEmpty,
+              pathComponents.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+            return nil
+        }
+        return pathComponents.joined(separator: "/")
+    }
+
+    private nonisolated static func fileByteCount(at fileURL: URL) throws -> UInt64 {
+        let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        if let fileSize = attributes[.size] as? NSNumber {
+            return fileSize.uint64Value
+        }
+        return 0
+    }
+
+    private nonisolated static func humanReadableByteCount(_ byteCount: UInt64) -> String {
+        ByteCountFormatter.string(
+            fromByteCount: Int64(byteCount),
+            countStyle: .file
+        )
+    }
+
+    private nonisolated static func localCommandRejectionReason(for command: String) -> String? {
+        let forbiddenShellFragments = ["\n", "\r", ";", "&&", "||", "|", "`", "$(", "<", ">", "&"]
+        if let forbiddenFragment = forbiddenShellFragments.first(where: { command.contains($0) }) {
+            return "shell fragment \"\(forbiddenFragment)\" is not allowed"
+        }
+
+        let commandTokens = command
+            .split(whereSeparator: { $0 == " " || $0 == "\t" })
+            .map(String.init)
+        guard let firstToken = commandTokens.first else {
+            return "empty command"
+        }
+        let executableName = URL(fileURLWithPath: firstToken).lastPathComponent.lowercased()
+        let blockedExecutables: Set<String> = [
+            "rm", "rmdir", "mv", "sudo", "chmod", "chown", "kill", "killall", "pkill",
+            "launchctl", "diskutil", "dd", "mkfs", "brew", "curl", "wget", "ssh", "scp", "rsync"
+        ]
+        if blockedExecutables.contains(executableName) {
+            return "\(executableName) is not allowed"
+        }
+
+        let readOnlyExecutables: Set<String> = [
+            "ls", "pwd", "cat", "head", "tail", "wc", "du", "file", "stat", "grep", "rg"
+        ]
+        if readOnlyExecutables.contains(executableName) {
+            return nil
+        }
+
+        switch executableName {
+        case "find":
+            let blockedFindOptions: Set<String> = ["-delete", "-exec", "-execdir"]
+            if let blockedOption = commandTokens.first(where: { blockedFindOptions.contains($0.lowercased()) }) {
+                return "find option \(blockedOption) is not allowed"
+            }
+            return nil
+        case "sed":
+            if let blockedOption = commandTokens.first(where: { $0.lowercased() == "-i" || $0.lowercased().hasPrefix("-i.") }) {
+                return "sed in-place edit option \(blockedOption) is not allowed"
+            }
+            return nil
+        case "zip":
+            let blockedZipOptions: Set<String> = ["-d", "-m", "--delete", "--move"]
+            if let blockedOption = commandTokens.first(where: { blockedZipOptions.contains($0.lowercased()) }) {
+                return "zip option \(blockedOption) is not allowed"
+            }
+            return nil
+        case "git":
+            guard commandTokens.count >= 2 else {
+                return "git requires a read-only subcommand"
+            }
+            let allowedGitSubcommands: Set<String> = ["status", "diff", "log", "show", "rev-parse", "branch"]
+            let gitSubcommand = commandTokens[1].lowercased()
+            return allowedGitSubcommands.contains(gitSubcommand)
+                ? nil
+                : "git subcommand \(gitSubcommand) is not allowed"
+        case "python", "python3":
+            guard commandTokens.count >= 3,
+                  commandTokens[1] == "-m",
+                  ["pytest", "unittest"].contains(commandTokens[2].lowercased()) else {
+                return "\(executableName) is only allowed for -m pytest or -m unittest"
+            }
+            return nil
+        case "pytest":
+            return nil
+        case "npm":
+            guard commandTokens.count >= 2 else {
+                return "npm requires a test command"
+            }
+            if commandTokens[1].lowercased() == "test" {
+                return nil
+            }
+            if commandTokens.count >= 3,
+               commandTokens[1].lowercased() == "run",
+               commandTokens[2].lowercased().contains("test") {
+                return nil
+            }
+            return "npm is only allowed for test scripts"
+        case "yarn", "pnpm":
+            guard commandTokens.count >= 2 else {
+                return "\(executableName) requires a test command"
+            }
+            if commandTokens[1].lowercased().contains("test") {
+                return nil
+            }
+            if commandTokens.count >= 3,
+               commandTokens[1].lowercased() == "run",
+               commandTokens[2].lowercased().contains("test") {
+                return nil
+            }
+            return "\(executableName) is only allowed for test scripts"
+        case "swift":
+            guard commandTokens.count >= 2,
+                  commandTokens[1].lowercased() == "test" else {
+                return "swift is only allowed for swift test"
+            }
+            return nil
+        case "make":
+            guard commandTokens.dropFirst().contains(where: { ["test", "check"].contains($0.lowercased()) }) else {
+                return "make is only allowed for test/check targets"
+            }
+            return nil
+        default:
+            return "\(executableName) is not on the local command allowlist"
+        }
+    }
+
+    private nonisolated static func runZipProcess(
+        outputURL: URL,
+        stagingRootURL: URL
+    ) async throws -> LocalCommandExecutionResult {
+        try await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+            process.arguments = ["-qry", outputURL.path, "."]
+            process.currentDirectoryURL = stagingRootURL
+
+            let standardOutputPipe = Pipe()
+            let standardErrorPipe = Pipe()
+            let standardOutputAccumulator = LocalCommandDataAccumulator()
+            let standardErrorAccumulator = LocalCommandDataAccumulator()
+            let timeoutState = LocalCommandTimeoutState()
+            process.standardOutput = standardOutputPipe
+            process.standardError = standardErrorPipe
+
+            standardOutputPipe.fileHandleForReading.readabilityHandler = { fileHandle in
+                standardOutputAccumulator.append(fileHandle.availableData)
+            }
+            standardErrorPipe.fileHandleForReading.readabilityHandler = { fileHandle in
+                standardErrorAccumulator.append(fileHandle.availableData)
+            }
+
+            let timeoutWorkItem = DispatchWorkItem {
+                timeoutState.markTimedOut()
+                guard process.isRunning else { return }
+                process.terminate()
+                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.0) {
+                    if process.isRunning {
+                        Darwin.kill(process.processIdentifier, SIGKILL)
+                    }
+                }
+            }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(
+                deadline: .now() + .seconds(60),
+                execute: timeoutWorkItem
+            )
+
+            do {
+                try process.run()
+            } catch {
+                timeoutWorkItem.cancel()
+                standardOutputPipe.fileHandleForReading.readabilityHandler = nil
+                standardErrorPipe.fileHandleForReading.readabilityHandler = nil
+                throw error
+            }
+
+            process.waitUntilExit()
+            timeoutWorkItem.cancel()
+            standardOutputPipe.fileHandleForReading.readabilityHandler = nil
+            standardErrorPipe.fileHandleForReading.readabilityHandler = nil
+            standardOutputAccumulator.append(standardOutputPipe.fileHandleForReading.readDataToEndOfFile())
+            standardErrorAccumulator.append(standardErrorPipe.fileHandleForReading.readDataToEndOfFile())
+
+            let standardOutput = String(
+                data: standardOutputAccumulator.snapshot(),
+                encoding: .utf8
+            ) ?? ""
+            let standardError = String(
+                data: standardErrorAccumulator.snapshot(),
+                encoding: .utf8
+            ) ?? ""
+            return LocalCommandExecutionResult(
+                exitCode: process.terminationStatus,
+                standardOutput: standardOutput,
+                standardError: standardError,
+                didTimeOut: timeoutState.snapshot()
+            )
+        }.value
+    }
+
+    private nonisolated static func runLocalShellCommand(
+        command: String,
+        workingDirectoryURL: URL,
+        timeoutSeconds: Int
+    ) async throws -> LocalCommandExecutionResult {
+        try await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            process.arguments = ["-lc", command]
+            process.currentDirectoryURL = workingDirectoryURL
+
+            let standardOutputPipe = Pipe()
+            let standardErrorPipe = Pipe()
+            let standardOutputAccumulator = LocalCommandDataAccumulator()
+            let standardErrorAccumulator = LocalCommandDataAccumulator()
+            let timeoutState = LocalCommandTimeoutState()
+            process.standardOutput = standardOutputPipe
+            process.standardError = standardErrorPipe
+
+            standardOutputPipe.fileHandleForReading.readabilityHandler = { fileHandle in
+                standardOutputAccumulator.append(fileHandle.availableData)
+            }
+            standardErrorPipe.fileHandleForReading.readabilityHandler = { fileHandle in
+                standardErrorAccumulator.append(fileHandle.availableData)
+            }
+
+            let timeoutWorkItem = DispatchWorkItem {
+                timeoutState.markTimedOut()
+                guard process.isRunning else { return }
+                process.terminate()
+                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.0) {
+                    if process.isRunning {
+                        Darwin.kill(process.processIdentifier, SIGKILL)
+                    }
+                }
+            }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(
+                deadline: .now() + .seconds(timeoutSeconds),
+                execute: timeoutWorkItem
+            )
+
+            do {
+                try process.run()
+            } catch {
+                timeoutWorkItem.cancel()
+                standardOutputPipe.fileHandleForReading.readabilityHandler = nil
+                standardErrorPipe.fileHandleForReading.readabilityHandler = nil
+                throw error
+            }
+
+            process.waitUntilExit()
+            timeoutWorkItem.cancel()
+            standardOutputPipe.fileHandleForReading.readabilityHandler = nil
+            standardErrorPipe.fileHandleForReading.readabilityHandler = nil
+            standardOutputAccumulator.append(standardOutputPipe.fileHandleForReading.readDataToEndOfFile())
+            standardErrorAccumulator.append(standardErrorPipe.fileHandleForReading.readDataToEndOfFile())
+
+            let standardOutput = String(
+                data: standardOutputAccumulator.snapshot(),
+                encoding: .utf8
+            ) ?? ""
+            let standardError = String(
+                data: standardErrorAccumulator.snapshot(),
+                encoding: .utf8
+            ) ?? ""
+            return LocalCommandExecutionResult(
+                exitCode: process.terminationStatus,
+                standardOutput: standardOutput,
+                standardError: standardError,
+                didTimeOut: timeoutState.snapshot()
+            )
+        }.value
+    }
+
+    private nonisolated static func truncatedLocalCommandOutput(
+        standardOutput: String,
+        standardError: String,
+        maximumCharacterCount: Int
+    ) -> String {
+        var sections: [String] = []
+        let trimmedStandardOutput = standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedStandardError = standardError.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedStandardOutput.isEmpty {
+            sections.append("stdout:\n\(trimmedStandardOutput)")
+        }
+        if !trimmedStandardError.isEmpty {
+            sections.append("stderr:\n\(trimmedStandardError)")
+        }
+        let combinedOutput = sections.joined(separator: "\n\n")
+        guard combinedOutput.count > maximumCharacterCount else {
+            return combinedOutput
+        }
+        let prefixCount = maximumCharacterCount / 2
+        let suffixCount = maximumCharacterCount - prefixCount
+        let prefixText = String(combinedOutput.prefix(prefixCount))
+        let suffixText = String(combinedOutput.suffix(suffixCount))
+        return """
+        \(prefixText)
+
+        [... output truncated to \(maximumCharacterCount) characters ...]
+
+        \(suffixText)
+        """
     }
 
     /// Opens a URL via NSWorkspace, which routes it through the user's default

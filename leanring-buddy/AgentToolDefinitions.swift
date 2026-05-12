@@ -82,8 +82,14 @@ enum AgentToolCall {
     case fillAndSubmit(coordinate: CGPoint, label: String?, screen: Int?, text: String, clearExisting: Bool, submitKeystrokeSpec: String)
     case pressKeystroke(spec: String)
     case scroll(direction: AgentScrollDirection, amount: AgentScrollAmount)
+    case waitForSeconds(Int)
     case openURL(String)
     case openApplication(nameOrBundleIdentifier: String)
+    case getForegroundDocumentContext
+    case openLocalPath(path: String, applicationNameOrBundleIdentifier: String?, preferNewApplicationInstance: Bool)
+    case runLocalCommand(workingDirectoryPath: String, command: String, timeoutSeconds: Int)
+    case createZipArchive(outputPath: String, entries: [AgentZipArchiveEntry])
+    case chooseFileOrFolder(path: String)
     case switchSpace(direction: CompanionComputerController.SpaceSwitchDirection)
     case showMissionControl
     case navigateBrowserToURL(String)
@@ -101,6 +107,11 @@ enum AgentToolCall {
     case memory(input: [String: Any])
 }
 
+struct AgentZipArchiveEntry {
+    let sourcePath: String
+    let archivePath: String
+}
+
 enum AgentToolDefinitions {
 
     /// Single source of truth for the tool catalog exposed to Claude. Order
@@ -114,8 +125,14 @@ enum AgentToolDefinitions {
         fillAndSubmitTool,
         pressKeystrokeTool,
         scrollTool,
+        waitForSecondsTool,
         openURLTool,
         openApplicationTool,
+        getForegroundDocumentContextTool,
+        openLocalPathTool,
+        runLocalCommandTool,
+        createZipArchiveTool,
+        chooseFileOrFolderTool,
         switchSpaceTool,
         showMissionControlTool,
         navigateBrowserTool,
@@ -297,6 +314,21 @@ enum AgentToolDefinitions {
         ]
     )
 
+    private static let waitForSecondsTool = AgentToolDefinition(
+        name: "wait_for_seconds",
+        description: "Wait briefly before observing the screen again. Use for page loads, uploads, autograders, app launches, modal transitions, or any job whose result is expected to appear after a short delay. Prefer this over repeatedly clicking refresh or guessing that an async operation is done.",
+        inputSchema: [
+            "type": "object",
+            "properties": [
+                "seconds": [
+                    "type": "integer",
+                    "description": "Seconds to wait. Keep it short; values are clamped by the app to 1-30 seconds."
+                ]
+            ],
+            "required": ["seconds"]
+        ]
+    )
+
     private static let pressKeystrokeTool = AgentToolDefinition(
         name: "press_keystroke",
         description: "Press a single keystroke or modifier shortcut. Use for special keys (backspace, return, escape, tab, arrows, home/end, page up/down, function keys) or modifier combos (cmd+a, cmd+shift+z, ctrl+space). Letters and digits are also valid spec values. Combine modifiers with +. For browser navigation, prefer navigate_browser / open_new_tab / etc — they're more reliable.",
@@ -339,6 +371,109 @@ enum AgentToolDefinitions {
                 ]
             ],
             "required": ["name"]
+        ]
+    )
+
+    private static let getForegroundDocumentContextTool = AgentToolDefinition(
+        name: "get_foreground_document_context",
+        description: "Return best-effort context for the user's frontmost app/document: app name, window title, current browser URL when available, AX document URL/path when available, and selected text when available. Use when the user says \"this page\", \"this pdf\", \"the current paper\", \"the current project\", or asks you to base local/coding work on what is currently open.",
+        inputSchema: [
+            "type": "object",
+            "properties": [:] as [String: Any]
+        ]
+    )
+
+    private static let openLocalPathTool = AgentToolDefinition(
+        name: "open_local_path",
+        description: "Open an existing local file or folder, optionally in a specific app. Use this to open a generated project folder in Cursor or VS Code, open a PDF in Preview, or reveal a local artifact for the user. This routes through NSWorkspace instead of Finder clicks or Spotlight keystrokes.",
+        inputSchema: [
+            "type": "object",
+            "properties": [
+                "path": [
+                    "type": "string",
+                    "description": "Existing local file or folder path. Use an absolute path or ~/... path."
+                ],
+                "app": [
+                    "type": "string",
+                    "description": "Optional app name or bundle identifier, e.g. \"Cursor\", \"Visual Studio Code\", \"Preview\". Omit to use the default app."
+                ],
+                "new_window": [
+                    "type": "boolean",
+                    "description": "If true and an app is provided, ask macOS to launch a new application instance/window instead of reusing an existing one. Use for requests like \"new Cursor window\"."
+                ]
+            ],
+            "required": ["path"]
+        ]
+    )
+
+    private static let runLocalCommandTool = AgentToolDefinition(
+        name: "run_local_command",
+        description: "Run one bounded local command for file/code inspection, tests, or packaging work needed by the user's live task. Use this instead of Finder when you need to inspect a project folder, run tests, or create a zip. The app enforces a working directory, a short timeout, output caps, and a conservative command allowlist. Do NOT use for destructive operations, installs, network fetches, long builds, daemons, or background processes. If the command is rejected, choose a simpler read/test/archive command.",
+        inputSchema: [
+            "type": "object",
+            "properties": [
+                "cwd": [
+                    "type": "string",
+                    "description": "Existing local directory to run the command in. Use an absolute path or ~/... path."
+                ],
+                "command": [
+                    "type": "string",
+                    "description": "Single command line to run, e.g. \"ls\", \"find . -maxdepth 2 -type f\", \"python3 -m pytest\", \"zip -r ../submission.zip . -x .git/* __pycache__/*\". Shell chaining, redirection, backgrounding, installs, sudo, deletes, and destructive commands are rejected."
+                ],
+                "timeout_seconds": [
+                    "type": "integer",
+                    "description": "Optional timeout, capped at 30 seconds. Default 15."
+                ]
+            ],
+            "required": ["cwd", "command"]
+        ]
+    )
+
+    private static let createZipArchiveTool = AgentToolDefinition(
+        name: "create_zip_archive",
+        description: "Create a zip archive from existing local files/folders with explicit archive paths. Use when a website expects a submission/upload zip and the included folders need specific names, e.g. source /Users/me/project/src as archive path src, or source /Users/me/project/exp/runA as archive path exp/s2_ifql. This is safer and clearer than shell mkdir/cp/zip. It only copies existing files into a temporary staging folder, zips that folder, and returns the output zip path.",
+        inputSchema: [
+            "type": "object",
+            "properties": [
+                "output_path": [
+                    "type": "string",
+                    "description": "Destination .zip file path. Use an absolute path or ~/... path. Parent directories are created if needed; an existing zip at this path is replaced."
+                ],
+                "entries": [
+                    "type": "array",
+                    "description": "Files or folders to include in the archive, each with the exact path it should have inside the zip.",
+                    "items": [
+                        "type": "object",
+                        "properties": [
+                            "source_path": [
+                                "type": "string",
+                                "description": "Existing local file or folder path to copy into the archive."
+                            ],
+                            "archive_path": [
+                                "type": "string",
+                                "description": "Relative path inside the zip, e.g. src, README.md, exp/s2_ifql. Must not be absolute and must not contain . or .. path components."
+                            ]
+                        ],
+                        "required": ["source_path", "archive_path"]
+                    ]
+                ]
+            ],
+            "required": ["output_path", "entries"]
+        ]
+    )
+
+    private static let chooseFileOrFolderTool = AgentToolDefinition(
+        name: "choose_file_or_folder",
+        description: "Choose an existing local file or folder in the frontmost macOS Open/Choose dialog. Use after clicking a website/app upload or choose-file button. It drives the standard file picker directly: for files it opens the parent folder, moves into the contents column, type-selects the basename, then confirms. This is much more reliable than clicking through Finder visually. If no file picker is frontmost, click the upload/choose button first.",
+        inputSchema: [
+            "type": "object",
+            "properties": [
+                "path": [
+                    "type": "string",
+                    "description": "Existing local file or folder path to choose. Use an absolute path or ~/... path."
+                ]
+            ],
+            "required": ["path"]
         ]
     )
 
@@ -535,6 +670,9 @@ enum AgentToolDefinitions {
             let amountRawValue = (toolUseBlock.inputArguments["amount"] as? String)?.lowercased() ?? "medium"
             let scrollAmount = AgentScrollAmount(rawValue: amountRawValue) ?? .medium
             return .scroll(direction: scrollDirection, amount: scrollAmount)
+        case "wait_for_seconds":
+            let secondsValue = decodeOptionalInt(toolUseBlock.inputArguments["seconds"]) ?? 5
+            return .waitForSeconds(secondsValue)
         case "open_url":
             guard let urlValue = toolUseBlock.inputArguments["url"] as? String,
                   !urlValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
@@ -545,6 +683,50 @@ enum AgentToolDefinitions {
             return .openApplication(
                 nameOrBundleIdentifier: nameValue.trimmingCharacters(in: .whitespacesAndNewlines)
             )
+        case "get_foreground_document_context":
+            return .getForegroundDocumentContext
+        case "open_local_path":
+            guard let pathValue = toolUseBlock.inputArguments["path"] as? String,
+                  !pathValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return .openLocalPath(
+                path: pathValue.trimmingCharacters(in: .whitespacesAndNewlines),
+                applicationNameOrBundleIdentifier: decodeOptionalString(toolUseBlock.inputArguments["app"]),
+                preferNewApplicationInstance: (toolUseBlock.inputArguments["new_window"] as? Bool) ?? false
+            )
+        case "run_local_command":
+            guard let workingDirectoryValue = toolUseBlock.inputArguments["cwd"] as? String,
+                  let commandValue = toolUseBlock.inputArguments["command"] as? String else { return nil }
+            let timeoutSeconds = decodeOptionalInt(toolUseBlock.inputArguments["timeout_seconds"]) ?? 15
+            return .runLocalCommand(
+                workingDirectoryPath: workingDirectoryValue.trimmingCharacters(in: .whitespacesAndNewlines),
+                command: commandValue.trimmingCharacters(in: .whitespacesAndNewlines),
+                timeoutSeconds: timeoutSeconds
+            )
+        case "create_zip_archive":
+            guard let outputPathValue = toolUseBlock.inputArguments["output_path"] as? String,
+                  let rawEntries = toolUseBlock.inputArguments["entries"] as? [[String: Any]],
+                  !outputPathValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !rawEntries.isEmpty else { return nil }
+            let decodedEntries = rawEntries.compactMap { rawEntry -> AgentZipArchiveEntry? in
+                guard let sourcePathValue = rawEntry["source_path"] as? String,
+                      let archivePathValue = rawEntry["archive_path"] as? String else { return nil }
+                let trimmedSourcePath = sourcePathValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                let trimmedArchivePath = archivePathValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmedSourcePath.isEmpty, !trimmedArchivePath.isEmpty else { return nil }
+                return AgentZipArchiveEntry(
+                    sourcePath: trimmedSourcePath,
+                    archivePath: trimmedArchivePath
+                )
+            }
+            guard decodedEntries.count == rawEntries.count else { return nil }
+            return .createZipArchive(
+                outputPath: outputPathValue.trimmingCharacters(in: .whitespacesAndNewlines),
+                entries: decodedEntries
+            )
+        case "choose_file_or_folder":
+            guard let pathValue = toolUseBlock.inputArguments["path"] as? String,
+                  !pathValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return .chooseFileOrFolder(path: pathValue.trimmingCharacters(in: .whitespacesAndNewlines))
         case "switch_space":
             guard let directionValue = toolUseBlock.inputArguments["direction"] as? String,
                   let parsedDirection = CompanionComputerController.SpaceSwitchDirection(

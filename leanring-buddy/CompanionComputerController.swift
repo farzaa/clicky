@@ -311,6 +311,21 @@ enum CompanionComputerController {
         ])
     }
 
+    static func focusWindow(atAppKitScreenLocation appKitScreenLocation: CGPoint) {
+        let eventLocation = quartzEventLocation(forAppKitScreenLocation: appKitScreenLocation)
+        DotDebugLogger.log("computer.controller", "focus click requested", metadata: [
+            "appKitX": Int(appKitScreenLocation.x),
+            "appKitY": Int(appKitScreenLocation.y),
+            "quartzX": Int(eventLocation.x),
+            "quartzY": Int(eventLocation.y)
+        ])
+        postCoordinateClickPreservingHardwareCursor(atQuartzEventLocation: eventLocation)
+        DotDebugLogger.log("computer.controller", "focus click completed", metadata: [
+            "quartzX": Int(eventLocation.x),
+            "quartzY": Int(eventLocation.y)
+        ])
+    }
+
     private static func performAccessibilityPress(atQuartzEventLocation eventLocation: CGPoint) -> Bool {
         let systemWideElement = AXUIElementCreateSystemWide()
         var targetElement: AXUIElement?
@@ -663,6 +678,16 @@ enum CompanionComputerController {
         let errorDescription: String?
     }
 
+    /// Result of opening a concrete local file/folder, optionally with a
+    /// specific application. Used for workflows like "open this project in
+    /// Cursor" without driving Finder, Spotlight, or Dock UI.
+    struct OpenLocalPathResult {
+        let didOpen: Bool
+        let openedPath: String
+        let resolvedApplicationName: String?
+        let errorDescription: String?
+    }
+
     /// Opens a URL via NSWorkspace, which routes it to the user's default
     /// browser (or any app registered for that scheme) and handles activation,
     /// new-tab creation, and focus. Reliable regardless of which app is
@@ -778,6 +803,104 @@ enum CompanionComputerController {
                 ])
                 openApplicationContinuation.resume(returning: OpenApplicationResult(
                     didOpen: true,
+                    resolvedApplicationName: resolvedApplicationDisplayName,
+                    errorDescription: nil
+                ))
+            }
+        }
+    }
+
+    /// Opens an existing file/folder using the default app or a specific app.
+    /// This covers "open the generated project in Cursor" and "open that PDF"
+    /// directly through Launch Services, which is much less fragile than a
+    /// Finder/Spotlight click path.
+    static func openLocalPath(
+        rawPath: String,
+        applicationNameOrBundleIdentifier rawApplicationNameOrBundleIdentifier: String?,
+        preferNewApplicationInstance: Bool
+    ) async -> OpenLocalPathResult {
+        let expandedPath = (rawPath.trimmingCharacters(in: .whitespacesAndNewlines) as NSString)
+            .expandingTildeInPath
+        let resolvedPathURL = URL(fileURLWithPath: expandedPath).standardizedFileURL
+
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolvedPathURL.path, isDirectory: &isDirectory) else {
+            return OpenLocalPathResult(
+                didOpen: false,
+                openedPath: resolvedPathURL.path,
+                resolvedApplicationName: nil,
+                errorDescription: "path does not exist: \(resolvedPathURL.path)"
+            )
+        }
+
+        let trimmedApplicationNameOrBundleIdentifier = rawApplicationNameOrBundleIdentifier?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        DotDebugLogger.log("computer.controller", "open local path requested", metadata: [
+            "path": resolvedPathURL.path,
+            "application": trimmedApplicationNameOrBundleIdentifier ?? "default"
+        ])
+
+        guard let applicationNameOrBundleIdentifier = trimmedApplicationNameOrBundleIdentifier,
+              !applicationNameOrBundleIdentifier.isEmpty else {
+            let didOpen = NSWorkspace.shared.open(resolvedPathURL)
+            DotDebugLogger.log("computer.controller", "open local path with default app completed", metadata: [
+                "path": resolvedPathURL.path,
+                "didOpen": didOpen
+            ])
+            return OpenLocalPathResult(
+                didOpen: didOpen,
+                openedPath: resolvedPathURL.path,
+                resolvedApplicationName: nil,
+                errorDescription: didOpen ? nil : "macOS could not open \(resolvedPathURL.path)"
+            )
+        }
+
+        guard let resolvedApplicationURL = resolveApplicationURL(
+            forNameOrBundleIdentifier: applicationNameOrBundleIdentifier
+        ) else {
+            return OpenLocalPathResult(
+                didOpen: false,
+                openedPath: resolvedPathURL.path,
+                resolvedApplicationName: applicationNameOrBundleIdentifier,
+                errorDescription: "couldn't find an app named \"\(applicationNameOrBundleIdentifier)\""
+            )
+        }
+
+        let openConfiguration = NSWorkspace.OpenConfiguration()
+        openConfiguration.activates = true
+        openConfiguration.createsNewApplicationInstance = preferNewApplicationInstance
+
+        return await withCheckedContinuation { openPathContinuation in
+            NSWorkspace.shared.open(
+                [resolvedPathURL],
+                withApplicationAt: resolvedApplicationURL,
+                configuration: openConfiguration
+            ) { runningApplication, openError in
+                if let openError {
+                    DotDebugLogger.log("computer.controller", "open local path with app failed", metadata: [
+                        "path": resolvedPathURL.path,
+                        "applicationURL": resolvedApplicationURL.path,
+                        "error": openError.localizedDescription
+                    ])
+                    openPathContinuation.resume(returning: OpenLocalPathResult(
+                        didOpen: false,
+                        openedPath: resolvedPathURL.path,
+                        resolvedApplicationName: applicationNameOrBundleIdentifier,
+                        errorDescription: openError.localizedDescription
+                    ))
+                    return
+                }
+
+                let resolvedApplicationDisplayName = runningApplication?.localizedName
+                    ?? applicationNameOrBundleIdentifier
+                DotDebugLogger.log("computer.controller", "open local path with app completed", metadata: [
+                    "path": resolvedPathURL.path,
+                    "applicationURL": resolvedApplicationURL.path,
+                    "resolvedDisplayName": resolvedApplicationDisplayName
+                ])
+                openPathContinuation.resume(returning: OpenLocalPathResult(
+                    didOpen: true,
+                    openedPath: resolvedPathURL.path,
                     resolvedApplicationName: resolvedApplicationDisplayName,
                     errorDescription: nil
                 ))
