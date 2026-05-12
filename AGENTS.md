@@ -5,16 +5,16 @@
 
 ## Overview
 
-macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to Claude. Claude responds with text (streamed via SSE) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements Claude references on any connected monitor.
+macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to Claude. Claude responds with text (streamed) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements Claude references on any connected monitor.
 
-All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in the app.
+Claude runs **locally** via the user's installed Claude Code CLI, authenticated against their Claude Max subscription. AssemblyAI and ElevenLabs API keys live on a Cloudflare Worker proxy. No Anthropic API key is required anywhere.
 
 ## Architecture
 
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via Cloudflare Worker proxy with SSE streaming
+- **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via the local `claude` CLI subprocess (Claude Max subscription quota)
 - **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with Apple Speech as the local fallback
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
@@ -26,16 +26,33 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 
 ### API Proxy (Cloudflare Worker)
 
-The app never calls external APIs directly. All requests go through a Cloudflare Worker (`worker/src/index.ts`) that holds the real API keys as secrets.
+AssemblyAI and ElevenLabs both go through a Cloudflare Worker (`worker/src/index.ts`) that holds their API keys as secrets. Claude does **not** — it runs as a local subprocess (see "Claude via local CLI" below).
 
 | Route | Upstream | Purpose |
 |-------|----------|---------|
-| `POST /chat` | `api.anthropic.com/v1/messages` | Claude vision + streaming chat |
 | `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
 | `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Fetches a short-lived (480s) AssemblyAI websocket token |
 
-Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`
+Worker secrets: `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`
 Worker vars: `ELEVENLABS_VOICE_ID`
+
+### Claude via local CLI
+
+`ClaudeAgentRunner.swift` spawns the locally installed `claude` binary as
+a subprocess in stream-json mode for each push-to-talk request. The user
+message — including the screenshot(s) as base64 image content blocks —
+is written to the subprocess's stdin, and the streaming JSON output is
+parsed for `text_delta` chunks the same way the SSE stream was parsed
+before.
+
+Binary discovery checks `ClaudeBinaryPath` in `Info.plist` first, then
+common install locations (`~/.claude/local/claude`, `/opt/homebrew/bin/claude`,
+`/usr/local/bin/claude`, `~/.local/bin/claude`, `~/.npm-global/bin/claude`,
+`/usr/bin/claude`), and finally falls back to `command -v claude` in a
+login shell so non-standard installs (nvm/asdf/mise) still work.
+
+The subprocess runs with `--permission-mode plan` so Claude cannot
+invoke tools that modify the user's filesystem.
 
 ### Key Architecture Decisions
 
@@ -66,13 +83,13 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `AppleSpeechTranscriptionProvider.swift` | ~147 | Local fallback transcription provider backed by Apple's Speech framework. |
 | `BuddyAudioConversionSupport.swift` | ~108 | Audio conversion helpers. Converts live mic buffers to PCM16 mono audio. |
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
-| `ClaudeAPI.swift` | ~291 | Claude vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
+| `ClaudeAgentRunner.swift` | ~295 | Local `claude` CLI subprocess driver. Same public surface as the previous `ClaudeAPI` (so call sites are unchanged), but spawns the locally installed Claude Code binary in `--input-format stream-json --output-format stream-json --include-partial-messages` mode and parses the streamed `text_delta` events. Authenticates via the user's Claude Max subscription. |
 | `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
 | `ClickyAnalytics.swift` | ~55 | No-op analytics shim. The PostHog integration was removed in this fork; the functions remain so call sites compile unchanged. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
-| `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
+| `worker/src/index.ts` | ~110 | Cloudflare Worker proxy. Two routes: `/tts` (ElevenLabs) and `/transcribe-token` (AssemblyAI temp token). |
 
 ## Build & Run
 
@@ -95,7 +112,6 @@ cd worker
 npm install
 
 # Add secrets
-npx wrangler secret put ANTHROPIC_API_KEY
 npx wrangler secret put ASSEMBLYAI_API_KEY
 npx wrangler secret put ELEVENLABS_API_KEY
 
@@ -105,6 +121,14 @@ npx wrangler deploy
 # Local dev (create worker/.dev.vars with your keys)
 npx wrangler dev
 ```
+
+## Claude Code (local)
+
+Clicky drives the locally installed `claude` CLI for AI responses.
+Install it once from <https://claude.com/claude-code>, run `claude`
+to authenticate against the user's Claude Max subscription, and then
+Clicky finds the binary automatically. Override the binary path via
+the `ClaudeBinaryPath` key in `Info.plist` if needed.
 
 ## Code Style & Conventions
 
@@ -193,5 +217,12 @@ changing what the app sends to third parties — be deliberate about it.
   `ElementLocationDetector.swift`, and `OpenAIAudioTranscriptionProvider.swift`
   could have been configured to call OpenAI / Anthropic directly with
   in-bundle API keys, bypassing the Cloudflare Worker. All three were
-  deleted to enforce the worker-proxy invariant: nothing sensitive ships
-  in the app binary.
+  deleted to enforce the invariant that no third-party API keys ship in
+  the app binary.
+- **Claude moved off the Anthropic API onto the local CLI.** Instead of
+  proxying requests through the Worker to `api.anthropic.com`, Clicky
+  now spawns the user's locally installed `claude` binary
+  (`ClaudeAgentRunner.swift`) and pipes a stream-json user message into
+  it. This lets the Claude Max subscription cover the cost — no
+  pay-per-token API access is needed. The Worker's `/chat` route and the
+  `ANTHROPIC_API_KEY` secret were removed.
