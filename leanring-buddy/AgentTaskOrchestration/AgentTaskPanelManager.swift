@@ -8,6 +8,7 @@
 //
 
 import AppKit
+import Combine
 import SwiftUI
 
 private class AgentTaskKeyablePanel: NSPanel {
