@@ -13,6 +13,7 @@ import Combine
 import CoreGraphics
 import Darwin
 import Foundation
+import PDFKit
 
 #if canImport(PostHog)
 import PostHog
@@ -1580,6 +1581,7 @@ final class CompanionManager: ObservableObject {
         let browserURL: String?
         let selectedText: String?
         let localDocumentPath: String?
+        let documentTextExcerpt: String?
 
         var hasDocumentReference: Bool {
             browserURL != nil || accessibilityDocumentReference != nil || localDocumentPath != nil
@@ -1616,6 +1618,9 @@ final class CompanionManager: ObservableObject {
             if let selectedText {
                 lines.append("selected_text:\n\(Self.truncatedContextText(selectedText, maximumCharacterCount: 4_000))")
             }
+            if let documentTextExcerpt {
+                lines.append("document_text_excerpt:\n\(Self.truncatedContextText(documentTextExcerpt, maximumCharacterCount: 6_000))")
+            }
             if lines.count <= 2 {
                 lines.append("note: no URL, document path, or selected text was available from the frontmost app")
             }
@@ -1639,7 +1644,10 @@ final class CompanionManager: ObservableObject {
             if let selectedText {
                 lines.append("- Selected text excerpt:\n\(Self.truncatedContextText(selectedText, maximumCharacterCount: 2_000))")
             }
-            if !hasDocumentReference && selectedText == nil {
+            if let documentTextExcerpt {
+                lines.append("- Document text excerpt:\n\(Self.truncatedContextText(documentTextExcerpt, maximumCharacterCount: 6_000))")
+            }
+            if !hasDocumentReference && selectedText == nil && documentTextExcerpt == nil {
                 lines.append("- No current URL, document path, or selected text was recoverable from the frontmost app.")
             }
             return lines.joined(separator: "\n")
@@ -1663,13 +1671,26 @@ final class CompanionManager: ObservableObject {
         let selectedText: String?
     }
 
+    private struct TopmostNonDotWindowOwnerSnapshot {
+        let processIdentifier: pid_t
+        let applicationName: String?
+        let windowTitle: String?
+    }
+
     private static func captureForegroundDocumentContext() async -> ForegroundDocumentContextSnapshot {
-        let frontmostApplication = NSWorkspace.shared.frontmostApplication
-        let frontmostApplicationName = frontmostApplication?.localizedName
-        let frontmostBundleIdentifier = frontmostApplication?.bundleIdentifier
+        let rawFrontmostApplication = NSWorkspace.shared.frontmostApplication
+        let fallbackWindowOwner = shouldUseTopmostNonDotWindowOwner(
+            insteadOf: rawFrontmostApplication
+        ) ? topmostVisibleNonDotWindowOwner() : nil
+        let contextApplication = fallbackWindowOwner
+            .flatMap { NSRunningApplication(processIdentifier: $0.processIdentifier) }
+            ?? rawFrontmostApplication
+        let frontmostApplicationName = contextApplication?.localizedName
+            ?? fallbackWindowOwner?.applicationName
+        let frontmostBundleIdentifier = contextApplication?.bundleIdentifier
         let accessibilitySnapshot = CompanionAccessibilityStateSnapshot.capture()
         let axDocumentFields = captureForegroundAXDocumentFields(
-            processIdentifier: frontmostApplication?.processIdentifier
+            processIdentifier: contextApplication?.processIdentifier
         )
         let browserURL = await currentBrowserURLViaAppleScriptIfSupported(
             bundleIdentifier: frontmostBundleIdentifier
@@ -1678,26 +1699,89 @@ final class CompanionManager: ObservableObject {
             fromDocumentReference: browserURL
                 ?? axDocumentFields.documentReference
         )
+        let documentTextExcerpt = await documentTextExcerpt(
+            browserURL: browserURL,
+            localDocumentPath: localDocumentPath
+        )
         let capturedContext = ForegroundDocumentContextSnapshot(
             frontmostApplicationName: frontmostApplicationName,
             frontmostBundleIdentifier: frontmostBundleIdentifier,
             frontmostWindowTitle: axDocumentFields.windowTitle
+                ?? fallbackWindowOwner?.windowTitle
                 ?? accessibilitySnapshot.frontmostWindowTitle,
             accessibilityDocumentReference: axDocumentFields.documentReference,
             browserURL: browserURL,
             selectedText: axDocumentFields.selectedText,
-            localDocumentPath: localDocumentPath
+            localDocumentPath: localDocumentPath,
+            documentTextExcerpt: documentTextExcerpt
         )
 
         DotDebugLogger.log("foreground.context", "captured", metadata: [
             "frontmost": frontmostApplicationName ?? "nil",
             "bundleID": frontmostBundleIdentifier ?? "nil",
+            "rawFrontmost": rawFrontmostApplication?.localizedName ?? "nil",
+            "usedTopmostWindowFallback": fallbackWindowOwner != nil,
             "hasBrowserURL": browserURL != nil,
             "hasDocumentReference": axDocumentFields.documentReference != nil,
             "hasLocalDocumentPath": localDocumentPath != nil,
+            "hasDocumentTextExcerpt": documentTextExcerpt != nil,
+            "documentTextExcerptLength": documentTextExcerpt?.count ?? 0,
             "selectedTextLength": axDocumentFields.selectedText?.count ?? 0
         ])
         return capturedContext
+    }
+
+    private static func shouldUseTopmostNonDotWindowOwner(
+        insteadOf frontmostApplication: NSRunningApplication?
+    ) -> Bool {
+        guard let frontmostApplication else { return true }
+        return frontmostApplication.processIdentifier == ProcessInfo.processInfo.processIdentifier
+            || frontmostApplication.bundleIdentifier == Bundle.main.bundleIdentifier
+            || frontmostApplication.localizedName == "Dot"
+    }
+
+    private static func topmostVisibleNonDotWindowOwner() -> TopmostNonDotWindowOwnerSnapshot? {
+        guard let windowInfoList = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else {
+            return nil
+        }
+
+        let currentProcessIdentifier = ProcessInfo.processInfo.processIdentifier
+        for windowInfo in windowInfoList {
+            let windowLayer = windowInfo[kCGWindowLayer as String] as? Int ?? Int.max
+            guard windowLayer == 0 else { continue }
+
+            guard let ownerProcessIdentifierNumber = windowInfo[kCGWindowOwnerPID as String] as? NSNumber else {
+                continue
+            }
+            let ownerProcessIdentifier = ownerProcessIdentifierNumber.int32Value
+            guard ownerProcessIdentifier != currentProcessIdentifier else {
+                continue
+            }
+
+            let ownerName = windowInfo[kCGWindowOwnerName as String] as? String
+            guard ownerName != "Dot" else {
+                continue
+            }
+
+            if let boundsDictionary = windowInfo[kCGWindowBounds as String] as? [String: Any] {
+                let bounds = CGRect(dictionaryRepresentation: boundsDictionary as CFDictionary) ?? .zero
+                guard bounds.width >= 120, bounds.height >= 80 else {
+                    continue
+                }
+            }
+
+            let windowTitle = windowInfo[kCGWindowName as String] as? String
+            return TopmostNonDotWindowOwnerSnapshot(
+                processIdentifier: ownerProcessIdentifier,
+                applicationName: ownerName,
+                windowTitle: windowTitle
+            )
+        }
+
+        return nil
     }
 
     private static func captureForegroundAXDocumentFields(
@@ -1956,6 +2040,171 @@ final class CompanionManager: ObservableObject {
                 encoding: .utf8
             )
         }.value
+    }
+
+    private static func documentTextExcerpt(
+        browserURL: String?,
+        localDocumentPath: String?
+    ) async -> String? {
+        if let localDocumentPath,
+           let localDocumentExcerpt = documentTextExcerptFromLocalPath(localDocumentPath) {
+            return localDocumentExcerpt
+        }
+
+        guard let browserURL,
+              let url = URL(string: browserURL),
+              ["http", "https", "file"].contains(url.scheme?.lowercased() ?? "") else {
+            return nil
+        }
+
+        if url.isFileURL {
+            return documentTextExcerptFromLocalPath(url.path)
+        }
+
+        do {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 5
+            request.setValue(
+                "Dot foreground context fetcher",
+                forHTTPHeaderField: "User-Agent"
+            )
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let contentType = (response as? HTTPURLResponse)?
+                .value(forHTTPHeaderField: "Content-Type")?
+                .lowercased()
+            return documentTextExcerpt(
+                from: data,
+                sourcePathExtension: url.pathExtension,
+                contentType: contentType
+            )
+        } catch {
+            DotDebugLogger.log("foreground.context", "document fetch failed", metadata: [
+                "url": browserURL,
+                "error": error.localizedDescription
+            ])
+            return nil
+        }
+    }
+
+    private static func documentTextExcerptFromLocalPath(_ path: String) -> String? {
+        let fileURL = URL(fileURLWithPath: path).standardizedFileURL
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            return nil
+        }
+
+        do {
+            let fileAttributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+            let fileSize = (fileAttributes[.size] as? NSNumber)?.intValue ?? 0
+            guard fileSize <= 12_000_000 else {
+                DotDebugLogger.log("foreground.context", "local document too large for excerpt", metadata: [
+                    "path": fileURL.path,
+                    "byteCount": fileSize
+                ])
+                return nil
+            }
+            let data = try Data(contentsOf: fileURL)
+            return documentTextExcerpt(
+                from: data,
+                sourcePathExtension: fileURL.pathExtension,
+                contentType: nil
+            )
+        } catch {
+            DotDebugLogger.log("foreground.context", "local document read failed", metadata: [
+                "path": fileURL.path,
+                "error": error.localizedDescription
+            ])
+            return nil
+        }
+    }
+
+    private static func documentTextExcerpt(
+        from data: Data,
+        sourcePathExtension: String,
+        contentType: String?
+    ) -> String? {
+        let lowercasePathExtension = sourcePathExtension.lowercased()
+        let isPDF = lowercasePathExtension == "pdf"
+            || contentType?.contains("application/pdf") == true
+        if isPDF {
+            guard data.count <= 12_000_000,
+                  let pdfDocument = PDFDocument(data: data) else {
+                return nil
+            }
+            return truncatedDocumentExcerpt(pdfText(from: pdfDocument))
+        }
+
+        let cappedData = Data(data.prefix(2_000_000))
+        guard let decodedText = String(data: cappedData, encoding: .utf8)
+            ?? String(data: cappedData, encoding: .isoLatin1) else {
+            return nil
+        }
+
+        let isHTML = lowercasePathExtension == "html"
+            || lowercasePathExtension == "htm"
+            || contentType?.contains("text/html") == true
+            || decodedText.localizedCaseInsensitiveContains("<html")
+        let plainText = isHTML
+            ? plainTextFromHTML(decodedText)
+            : decodedText
+        return truncatedDocumentExcerpt(plainText)
+    }
+
+    private static func pdfText(from pdfDocument: PDFDocument) -> String {
+        var pageTexts: [String] = []
+        for pageIndex in 0..<pdfDocument.pageCount {
+            guard let page = pdfDocument.page(at: pageIndex),
+                  let pageText = page.string,
+                  !pageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                continue
+            }
+            pageTexts.append(pageText)
+            if pageTexts.joined(separator: "\n\n").count >= 8_000 {
+                break
+            }
+        }
+        return pageTexts.joined(separator: "\n\n")
+    }
+
+    private static func plainTextFromHTML(_ html: String) -> String {
+        var text = html
+        text = text.replacingOccurrences(
+            of: #"(?is)<script\b[^>]*>.*?</script>"#,
+            with: " ",
+            options: .regularExpression
+        )
+        text = text.replacingOccurrences(
+            of: #"(?is)<style\b[^>]*>.*?</style>"#,
+            with: " ",
+            options: .regularExpression
+        )
+        text = text.replacingOccurrences(
+            of: #"(?s)<[^>]+>"#,
+            with: " ",
+            options: .regularExpression
+        )
+        let entityReplacements: [(String, String)] = [
+            ("&nbsp;", " "),
+            ("&amp;", "&"),
+            ("&lt;", "<"),
+            ("&gt;", ">"),
+            ("&quot;", "\""),
+            ("&#39;", "'")
+        ]
+        for (encodedEntity, decodedCharacter) in entityReplacements {
+            text = text.replacingOccurrences(of: encodedEntity, with: decodedCharacter)
+        }
+        return text
+    }
+
+    private static func truncatedDocumentExcerpt(_ text: String) -> String? {
+        let collapsedWhitespace = text
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !collapsedWhitespace.isEmpty else { return nil }
+        if collapsedWhitespace.count > 8_000 {
+            return String(collapsedWhitespace.prefix(8_000)) + " [...]"
+        }
+        return collapsedWhitespace
     }
 
     private static func localDocumentPath(fromDocumentReference documentReference: String?) -> String? {
