@@ -76,12 +76,16 @@ Tail it while testing push-to-talk, transcription, Claude responses, TTS, or cli
 
 The log records raw shortcut transitions, dictation state changes, permission refreshes, AssemblyAI websocket lifecycle, Claude/TTS boundaries, and computer-control actions. It logs transcript and response lengths instead of full spoken text.
 
+### Safety runbook
+
+Operational rollback, endpoint smoke checks, and server-side kill-switch steps live in [docs/safety-runbook.md](docs/safety-runbook.md).
+
 ### Permissions the app needs
 
 - **Microphone** — for push-to-talk voice capture
 - **Accessibility** — for clicking/type/media actions and Accessibility API control
 - **Input Monitoring** — for detecting the global keyboard shortcut (Control + Option)
-- **Screen Recording** — for taking screenshots when you use the hotkey
+- **Screen Recording** — for fresh screenshots during a voice or typed turn; Dot does not continuously record your screen
 - **Screen Content** — for ScreenCaptureKit access
 
 ## Architecture

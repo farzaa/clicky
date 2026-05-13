@@ -27,6 +27,56 @@ struct CompanionPanelView: View {
         }
     }
 
+    private var serverSafetyModeMessages: [String] {
+        let flags = accountManager.clientFeatureFlags
+        var messages: [String] = []
+        if !flags.agentToolsEnabled {
+            messages.append("Computer-control tools are off. Dot can still answer without clicking or typing.")
+        }
+        if !flags.backgroundAgentsEnabled {
+            messages.append("Background coding agents are off.")
+        }
+        if !flags.memoryEnabled {
+            messages.append("Long-term memory is off.")
+        }
+        if !flags.ttsEnabled {
+            messages.append("ElevenLabs voice is off; Dot will use the Mac system voice.")
+        }
+        return messages
+    }
+
+    private var serverSafetyModeSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.shield.fill")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.warning)
+                Text("Server safe mode")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(serverSafetyModeMessages, id: \.self) { message in
+                    Text(message)
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                .fill(DS.Colors.warning.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                .stroke(DS.Colors.warning.opacity(0.16), lineWidth: 1)
+        )
+    }
+
     // MARK: - Remote control toggle + audit row
     //
     // Off by default. Flipping on opens a WebSocket to vibe-id and starts
@@ -131,6 +181,14 @@ struct CompanionPanelView: View {
             permissionsCopySection
                 .padding(.top, 16)
                 .padding(.horizontal, 16)
+
+            if !serverSafetyModeMessages.isEmpty {
+                Spacer()
+                    .frame(height: 10)
+
+                serverSafetyModeSection
+                    .padding(.horizontal, 16)
+            }
 
             if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
                 Spacer()
@@ -400,10 +458,17 @@ struct CompanionPanelView: View {
     @ViewBuilder
     private var permissionsCopySection: some View {
         if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            Text("Hold Control+Option to talk.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Hold Control+Option to talk.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Text("Each turn sends your transcript and a fresh screenshot through Vibe Research to Claude.")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         } else if companionManager.allPermissionsGranted {
             Text("You're all set. Hit Start to meet Dot.")
                 .font(.system(size: 12, weight: .medium))
@@ -433,9 +498,9 @@ struct CompanionPanelView: View {
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("Nothing runs in the background. Dot will only take a screenshot when you press the hot key. So, you can give that permission in peace. If you are still sus, eh, I can't do much there champ.")
+                Text("Dot does not continuously record your screen. When you press the hotkey, that turn sends your transcript and a fresh screenshot through Vibe Research to Claude.")
                     .font(.system(size: 11))
-                    .foregroundColor(Color(red: 0.9, green: 0.4, blue: 0.4))
+                    .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1148,6 +1213,9 @@ struct CompanionPanelView: View {
     private var statusText: String {
         if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
             return "Setup"
+        }
+        if !serverSafetyModeMessages.isEmpty {
+            return "Safe mode"
         }
         if !companionManager.isOverlayVisible {
             return "Ready"
