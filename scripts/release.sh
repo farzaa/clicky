@@ -16,7 +16,7 @@ export PATH="/opt/homebrew/bin:$PATH"
 #   6. Signs the DMG with your Sparkle EdDSA key
 #   7. Generates/updates appcast.xml automatically
 #   8. Creates a GitHub Release with the DMG attached
-#   9. Pushes the updated appcast.xml to the releases repo (makesomething-mac-app)
+#   9. Pushes the updated appcast feed files to the source repo
 #
 # Usage:
 #   ./scripts/release.sh              Auto-bumps: 1.5 → 1.6, build 6 → 7
@@ -42,6 +42,7 @@ EXPORT_DIR="${BUILD_DIR}/export"
 DMG_OUTPUT_DIR="${BUILD_DIR}/dmg"
 RELEASES_DIR="${PROJECT_DIR}/releases"  # where generate_appcast reads DMGs from
 DMG_BACKGROUND="${PROJECT_DIR}/dmg-background.png"
+WEBSITE_APPCAST_PATH="${PROJECT_DIR}/website/dot/appcast.xml"
 
 GITHUB_REPO="Clamepending/dot"
 
@@ -248,6 +249,7 @@ echo "📡 Generating appcast.xml..."
     --download-url-prefix "https://github.com/${GITHUB_REPO}/releases/download/${TAG}/" \
     -o "${PROJECT_DIR}/appcast.xml" \
     "${RELEASES_DIR}"
+cp "${PROJECT_DIR}/appcast.xml" "${WEBSITE_APPCAST_PATH}"
 
 echo "✅ appcast.xml updated"
 
@@ -262,16 +264,19 @@ gh release create "${TAG}" "${DMG_PATH}" \
     --notes "Dot v${MARKETING_VERSION}" \
     --latest
 
-# ── Step 9: Push appcast.xml to the releases repo ───────────────────────────
-# The appcast lives in makesomething-mac-app (the releases repo), not in the
-# source code repo. We clone it to a temp dir, copy the new appcast, and push.
+# ── Step 9: Push appcast files to the source repo ───────────────────────────
+# Root appcast.xml keeps currently-installed builds alive while they migrate
+# from the raw GitHub feed. website/dot/appcast.xml is the stable future feed
+# served at https://dot.vibe-research.net/appcast.xml.
 
 echo "📝 Pushing appcast.xml to ${GITHUB_REPO}..."
 RELEASES_REPO_DIR=$(mktemp -d)
 git clone --depth 1 "https://github.com/${GITHUB_REPO}.git" "${RELEASES_REPO_DIR}" 2>&1 | tail -2
 cp "${PROJECT_DIR}/appcast.xml" "${RELEASES_REPO_DIR}/appcast.xml"
+mkdir -p "${RELEASES_REPO_DIR}/website/dot"
+cp "${WEBSITE_APPCAST_PATH}" "${RELEASES_REPO_DIR}/website/dot/appcast.xml"
 cd "${RELEASES_REPO_DIR}"
-git add appcast.xml
+git add appcast.xml website/dot/appcast.xml
 git commit -m "Update appcast.xml for v${MARKETING_VERSION}" || echo "   (no changes to commit)"
 git push || echo "   (push failed — you may need to push manually)"
 cd "${PROJECT_DIR}"

@@ -55,6 +55,7 @@ Source lives in a separate repo (`~/Desktop/projects/vibe-id/`, `github.com/Clam
 | `POST /transcribe-token` | bearer + quota | AssemblyAI temp token — quota charged per session |
 
 There is no per-project worker. The macOS app's `DotProxyBaseURL` and `VibeIdBaseURL` both point at `https://api.accounts.vibe-research.net`. Adding a new project (Swarmlab next) is one INSERT into vibe-id's `projects` table and a `project=…` parameter from that project's client.
+`GET /auth/me` also returns Dot client feature flags (`agent_tools_enabled`, `background_agents_enabled`, `memory_enabled`, `tts_enabled`, `remote_control_enabled`) so risky behavior can be disabled server-side without shipping a new app build.
 
 ### Key Architecture Decisions
 
@@ -144,6 +145,7 @@ open leanring-buddy.xcodeproj
 ```
 
 **Do NOT run `xcodebuild` from the terminal** — it invalidates TCC (Transparency, Consent, and Control) permissions and the app will need to re-request screen recording, accessibility, etc. Prefer Xcode Cmd+R or `scripts/install-local-dev-app.sh`.
+Run `scripts/check-release-boundaries.sh` before non-release commits. `appcast.xml` and `website/dot/appcast.xml` are release artifacts; only update them via `scripts/release.sh` or with `DOT_RELEASE=1` set intentionally.
 
 ## Backend
 

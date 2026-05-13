@@ -38,7 +38,21 @@ The script checks GitHub for the latest release (e.g. `v1.5`, build 6) and autom
 6. Signs the DMG with the Sparkle EdDSA key
 7. Generates `appcast.xml` for Sparkle auto-updates
 8. Creates a GitHub Release with the DMG attached
-9. Pushes the updated `appcast.xml` to the releases repo
+9. Pushes the updated root `appcast.xml` and stable website feed copy at `website/dot/appcast.xml`
+
+## Safety checks
+
+```bash
+./scripts/check-release-boundaries.sh
+DOT_APPCAST_URL=https://raw.githubusercontent.com/Clamepending/dot/main/appcast.xml ./scripts/smoke-release.sh 2.8
+```
+
+`check-release-boundaries.sh` blocks accidental `appcast.xml` edits unless
+`DOT_RELEASE=1` is set or the commit is the release script's appcast commit.
+`smoke-release.sh` verifies the appcast, latest-download redirect, GitHub asset,
+and local `/Applications/Dot.app` version when installed.
+After the first stable feed migration, run `./scripts/smoke-release.sh <version>`
+without `DOT_APPCAST_URL`; it should parse `https://dot.vibe-research.net/appcast.xml`.
 
 ### One-time setup (prerequisites)
 

@@ -154,4 +154,28 @@ enum DotAnalytics {
         ])
         #endif
     }
+
+    static func trackInferenceEndpointResult(
+        endpoint: String,
+        statusCode: Int,
+        durationMs: Int,
+        provider: String,
+        model: String? = nil
+    ) {
+        #if canImport(PostHog)
+        var properties: [String: Any] = [
+            "endpoint": endpoint,
+            "status_code": statusCode,
+            "status_class": "\(statusCode / 100)xx",
+            "duration_ms": durationMs,
+            "provider": provider,
+            "app_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
+            "app_build": Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown",
+        ]
+        if let model {
+            properties["model"] = model
+        }
+        PostHogSDK.shared.capture("inference_endpoint_result", properties: properties)
+        #endif
+    }
 }

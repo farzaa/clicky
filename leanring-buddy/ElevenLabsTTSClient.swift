@@ -73,6 +73,13 @@ final class ElevenLabsTTSClient {
 
         guard (200...299).contains(httpResponse.statusCode) else {
             let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
+            DotAnalytics.trackInferenceEndpointResult(
+                endpoint: "tts",
+                statusCode: httpResponse.statusCode,
+                durationMs: requestDurationMs,
+                provider: "elevenlabs",
+                model: "eleven_flash_v2_5"
+            )
             if let insufficientCreditsError = VibeIdUserFacingError.insufficientCreditsErrorIfApplicable(
                 statusCode: httpResponse.statusCode,
                 responseBody: errorBody,
@@ -91,6 +98,13 @@ final class ElevenLabsTTSClient {
             "audioKilobytes": data.count / 1024,
             "requestDurationMs": requestDurationMs
         ])
+        DotAnalytics.trackInferenceEndpointResult(
+            endpoint: "tts",
+            statusCode: httpResponse.statusCode,
+            durationMs: requestDurationMs,
+            provider: "elevenlabs",
+            model: "eleven_flash_v2_5"
+        )
         let player = try AVAudioPlayer(data: data)
         player.volume = Float(clampedVolume)
         self.audioPlayer = player

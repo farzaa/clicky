@@ -93,6 +93,11 @@ final class RemoteCommandSubscriber: ObservableObject {
     /// Exponential reconnect backoff state. Reset on a successful connect.
     private var currentReconnectBackoffSeconds: TimeInterval = 0
 
+    /// Server-side project feature flag. Defaults to true until /auth/me returns
+    /// so existing local preferences do not get cleared by a transient startup
+    /// fetch failure.
+    private var isRemoteControlAllowedByServer = true
+
     private static let baseReconnectBackoffSeconds: TimeInterval = 1.0
     private static let maximumReconnectBackoffSeconds: TimeInterval = 60.0
     /// When the subscriber connects, any events with created_at older than
@@ -126,6 +131,15 @@ final class RemoteCommandSubscriber: ObservableObject {
     /// Called from the menu bar panel when the user flips the toggle.
     /// Idempotent.
     func setRemoteControlEnabled(_ shouldEnableRemoteControl: Bool) {
+        guard isRemoteControlAllowedByServer else {
+            UserDefaults.standard.set(
+                false,
+                forKey: Self.remoteControlEnabledUserDefaultsKey
+            )
+            lastErrorDescription = "Remote control is disabled by the server."
+            stopConnectionLoop()
+            return
+        }
         UserDefaults.standard.set(
             shouldEnableRemoteControl,
             forKey: Self.remoteControlEnabledUserDefaultsKey
@@ -135,6 +149,24 @@ final class RemoteCommandSubscriber: ObservableObject {
         } else {
             stopConnectionLoop()
         }
+    }
+
+    func setServerAllowsRemoteControl(_ shouldAllowRemoteControl: Bool) {
+        guard shouldAllowRemoteControl != isRemoteControlAllowedByServer else { return }
+        isRemoteControlAllowedByServer = shouldAllowRemoteControl
+
+        if shouldAllowRemoteControl {
+            lastErrorDescription = nil
+            if UserDefaults.standard.bool(forKey: Self.remoteControlEnabledUserDefaultsKey) {
+                startConnectionLoopIfNeeded()
+            }
+            return
+        }
+
+        UserDefaults.standard.set(false, forKey: Self.remoteControlEnabledUserDefaultsKey)
+        lastErrorDescription = "Remote control is disabled by the server."
+        stopConnectionLoop()
+        DotDebugLogger.log("remote.subscriber", "stopped by server feature flag")
     }
 
     func dismissColdBootReplayBanner() {

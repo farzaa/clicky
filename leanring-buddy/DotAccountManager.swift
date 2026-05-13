@@ -21,6 +21,7 @@ final class DotAccountManager: ObservableObject {
     @Published private(set) var dailyChatLimit: Int? = nil
     @Published private(set) var todayChatCount: Int = 0
     @Published private(set) var creditsBalance: Int? = nil
+    @Published private(set) var clientFeatureFlags = DotClientFeatureFlags()
     @Published private(set) var lastErrorMessage: String? = nil
 
     private static let projectId = "dot"
@@ -102,6 +103,8 @@ final class DotAccountManager: ObservableObject {
         userPictureURL = nil
         dailyChatLimit = nil
         todayChatCount = 0
+        creditsBalance = nil
+        clientFeatureFlags = DotClientFeatureFlags()
     }
 
     func refreshCurrentUser() async {
@@ -130,7 +133,13 @@ final class DotAccountManager: ObservableObject {
             }
 
             let parsed = try JSONDecoder().decode(AuthMeResponse.self, from: data)
-            applyAccountSnapshot(user: parsed.user, quotas: parsed.quotas ?? [:], usageForCurrentProject: parsed.usage_today_by_project[Self.projectId] ?? [:], creditsBalance: parsed.credits_balance)
+            applyAccountSnapshot(
+                user: parsed.user,
+                quotas: parsed.quotas ?? [:],
+                usageForCurrentProject: parsed.usage_today_by_project[Self.projectId] ?? [:],
+                creditsBalance: parsed.credits_balance,
+                clientFeatureFlags: parsed.client_config?.feature_flags
+            )
         } catch {
             lastErrorMessage = "Couldn't reach the identity server: \(error.localizedDescription)"
         }
@@ -171,7 +180,13 @@ final class DotAccountManager: ObservableObject {
                 lastErrorMessage = "Couldn't save your sign-in to the macOS Keychain. Try again, and click Always Allow if macOS asks for your password."
                 return
             }
-            applyAccountSnapshot(user: parsed.user, quotas: parsed.quotas ?? [:], usageForCurrentProject: [:], creditsBalance: nil)
+            applyAccountSnapshot(
+                user: parsed.user,
+                quotas: parsed.quotas ?? [:],
+                usageForCurrentProject: [:],
+                creditsBalance: nil,
+                clientFeatureFlags: nil
+            )
             isSignedIn = true
             await refreshCurrentUser()
         } catch {
@@ -188,7 +203,13 @@ final class DotAccountManager: ObservableObject {
         _ = try? await urlSession.data(for: request)
     }
 
-    private func applyAccountSnapshot(user: VibeIdUser, quotas: [String: Int], usageForCurrentProject: [String: Int], creditsBalance: Int?) {
+    private func applyAccountSnapshot(
+        user: VibeIdUser,
+        quotas: [String: Int],
+        usageForCurrentProject: [String: Int],
+        creditsBalance: Int?,
+        clientFeatureFlags: DotClientFeatureFlags?
+    ) {
         userEmail = user.email
         userDisplayName = user.display_name
         if let pictureURLString = user.picture_url, let pictureURL = URL(string: pictureURLString) {
@@ -203,6 +224,36 @@ final class DotAccountManager: ObservableObject {
         if let creditsBalance {
             self.creditsBalance = creditsBalance
         }
+        if let clientFeatureFlags {
+            self.clientFeatureFlags = clientFeatureFlags
+        }
+    }
+}
+
+struct DotClientFeatureFlags: Decodable, Equatable {
+    var agentToolsEnabled: Bool = true
+    var backgroundAgentsEnabled: Bool = true
+    var memoryEnabled: Bool = true
+    var ttsEnabled: Bool = true
+    var remoteControlEnabled: Bool = false
+
+    private enum CodingKeys: String, CodingKey {
+        case agentToolsEnabled = "agent_tools_enabled"
+        case backgroundAgentsEnabled = "background_agents_enabled"
+        case memoryEnabled = "memory_enabled"
+        case ttsEnabled = "tts_enabled"
+        case remoteControlEnabled = "remote_control_enabled"
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        agentToolsEnabled = try container.decodeIfPresent(Bool.self, forKey: .agentToolsEnabled) ?? true
+        backgroundAgentsEnabled = try container.decodeIfPresent(Bool.self, forKey: .backgroundAgentsEnabled) ?? true
+        memoryEnabled = try container.decodeIfPresent(Bool.self, forKey: .memoryEnabled) ?? true
+        ttsEnabled = try container.decodeIfPresent(Bool.self, forKey: .ttsEnabled) ?? true
+        remoteControlEnabled = try container.decodeIfPresent(Bool.self, forKey: .remoteControlEnabled) ?? false
     }
 }
 
@@ -217,6 +268,11 @@ private struct AuthMeResponse: Decodable {
     let quotas: [String: Int]?
     let usage_today_by_project: [String: [String: Int]]
     let credits_balance: Int?
+    let client_config: VibeIdClientConfig?
+}
+
+private struct VibeIdClientConfig: Decodable {
+    let feature_flags: DotClientFeatureFlags?
 }
 
 private struct VibeIdUser: Decodable {

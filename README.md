@@ -20,73 +20,26 @@ The rest of this README is for hacking on the source.
 
 - macOS 14.2+ (for ScreenCaptureKit)
 - Xcode 15+
-- Node.js 20.3+ (for the Cloudflare Worker)
-- A [Cloudflare](https://cloudflare.com) account (free tier works)
-- API keys for: [Anthropic](https://console.anthropic.com), [AssemblyAI](https://www.assemblyai.com), [ElevenLabs](https://elevenlabs.io)
-- A [Google Cloud](https://console.cloud.google.com) OAuth 2.0 client (for the Sign in with Google flow)
+- The separate [`vibe-id`](https://github.com/Clamepending/vibe-id) backend if you need to change auth, credits, or inference routing
 
-### 1. Set up the Cloudflare Worker
+### 1. Backend
 
-The Worker is the inference gateway. It holds the upstream API keys, handles Google OAuth, mints install tokens for the macOS app, and meters per-user usage in a D1 database.
+There is no per-project Worker in this repo. Dot talks to the central `vibe-id` service at `https://api.accounts.vibe-research.net` for Google sign-in, `/auth/me`, `/chat`, `/tts`, and `/transcribe-token`.
 
 ```bash
-cd worker
+cd ~/Desktop/projects/vibe-id/worker
 npm install
+npm exec tsc -- --noEmit
+npm exec wrangler -- deploy --dry-run
 ```
 
-Create the D1 database and wire its id into `wrangler.toml`:
+Deploy `vibe-id` only from that repo, after its production smoke checks pass.
 
-```bash
-npx wrangler d1 create dot-proxy
-# Copy the printed database_id into wrangler.toml under [[d1_databases]]
-npx wrangler d1 execute dot-proxy --file=schema.sql
-```
+### 2. Run a local backend if needed
 
-Add your secrets:
+For backend development, run `vibe-id` locally and point `DotProxyBaseURL` / `VibeIdBaseURL` in `leanring-buddy/Info.plist` at that local server. The checked-in app defaults to production `vibe-id`.
 
-```bash
-npx wrangler secret put ANTHROPIC_API_KEY
-npx wrangler secret put ASSEMBLYAI_API_KEY
-npx wrangler secret put ELEVENLABS_API_KEY
-npx wrangler secret put GOOGLE_OAUTH_CLIENT_ID
-npx wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET
-npx wrangler secret put DOT_ADMIN_TOKEN     # optional fallback for legacy per-project admin routes
-```
-
-Configure the public URLs in `wrangler.toml` under `[vars]`:
-
-```toml
-[vars]
-ELEVENLABS_VOICE_ID = "your-voice-id-here"
-WORKER_PUBLIC_URL = "https://api.dot.vibe-research.net"
-WEBSITE_PUBLIC_URL = "https://dot.vibe-research.net"
-APP_URL_SCHEME = "dot"
-```
-
-Deploy it:
-
-```bash
-npx wrangler deploy
-```
-
-### 2. Configure Google OAuth
-
-In [Google Cloud Console](https://console.cloud.google.com/apis/credentials):
-- Create an OAuth 2.0 Client ID (type: **Web application**)
-- Authorized redirect URIs: `https://api.dot.vibe-research.net/auth/callback`
-- Save the client id and secret — these are the `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` you set in the Worker.
-
-### 3. Run the Worker locally (for development)
-
-```bash
-cd worker
-cp .dev.vars.example .dev.vars   # then fill in your keys
-npx wrangler dev
-```
-
-This starts a local server (usually `http://127.0.0.1:8787`) that behaves like the deployed Worker. The checked-in local dev app reads `DotProxyBaseURL` from `leanring-buddy/Info.plist`, which defaults to `http://127.0.0.1:8787`. Change that one plist value to your deployed Worker URL when you're not using `wrangler dev`.
-
-### 4. Open in Xcode and run
+### 3. Open in Xcode and run
 
 ```bash
 open leanring-buddy.xcodeproj
@@ -99,7 +52,7 @@ In Xcode:
 
 The app builds as **Dot** with bundle ID `net.vibe-research.dot`. It appears in your menu bar (not the dock). Click the icon to open the panel, sign in with Google, grant the permissions it asks for, and you're good.
 
-### 5. Install locally without Xcode
+### 4. Install locally without Xcode
 
 ```bash
 ./scripts/install-local-dev-app.sh

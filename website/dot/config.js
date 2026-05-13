@@ -4,9 +4,8 @@ window.DOT_CONFIG = {
   // for every Vibe Research project.
   vibeIdBaseURL: "https://api.accounts.vibe-research.net",
 
-  // Per-project inference proxy. Currently only the macOS app talks to this
-  // directly; kept here in case the website later needs to call /chat or /tts.
-  workerBaseURL: "https://api.dot.vibe-research.net",
+  // Same central service also fronts Dot inference endpoints when needed.
+  workerBaseURL: "https://api.accounts.vibe-research.net",
 
   // The latest macOS download. Replace once you cut a real release on GitHub.
   downloadDmgURL: "https://github.com/Clamepending/dot/releases/latest/download/Dot.dmg",

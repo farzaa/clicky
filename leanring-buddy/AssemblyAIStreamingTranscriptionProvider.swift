@@ -69,6 +69,7 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
 
     /// Calls the Cloudflare Worker to get a short-lived AssemblyAI token.
     private func fetchTemporaryToken() async throws -> String {
+        let requestStartedAt = Date()
         var request = URLRequest(url: URL(string: Self.tokenProxyURL)!)
         request.httpMethod = "POST"
         if let installToken = DotInstallTokenStore.currentInstallToken() {
@@ -81,6 +82,14 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
               (200...299).contains(httpResponse.statusCode) else {
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
             let body = String(data: data, encoding: .utf8) ?? "unknown"
+            let requestDurationMs = Int((Date().timeIntervalSince(requestStartedAt) * 1_000).rounded())
+            DotAnalytics.trackInferenceEndpointResult(
+                endpoint: "transcribe-token",
+                statusCode: statusCode,
+                durationMs: requestDurationMs,
+                provider: "assemblyai",
+                model: "u3-rt-pro"
+            )
             DotDebugLogger.log("assemblyai.provider", "temporary token request failed", metadata: [
                 "statusCode": statusCode,
                 "bodyLength": body.count
@@ -99,6 +108,14 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
 
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let token = json["token"] as? String else {
+            let requestDurationMs = Int((Date().timeIntervalSince(requestStartedAt) * 1_000).rounded())
+            DotAnalytics.trackInferenceEndpointResult(
+                endpoint: "transcribe-token",
+                statusCode: httpResponse.statusCode,
+                durationMs: requestDurationMs,
+                provider: "assemblyai",
+                model: "u3-rt-pro"
+            )
             DotDebugLogger.log("assemblyai.provider", "temporary token response was invalid", metadata: [
                 "bodyLength": data.count
             ])
@@ -107,6 +124,14 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
             )
         }
 
+        let requestDurationMs = Int((Date().timeIntervalSince(requestStartedAt) * 1_000).rounded())
+        DotAnalytics.trackInferenceEndpointResult(
+            endpoint: "transcribe-token",
+            statusCode: httpResponse.statusCode,
+            durationMs: requestDurationMs,
+            provider: "assemblyai",
+            model: "u3-rt-pro"
+        )
         return token
     }
 }

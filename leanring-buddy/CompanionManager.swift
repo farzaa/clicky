@@ -234,6 +234,8 @@ final class CompanionManager: ObservableObject {
         return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
     }()
 
+    private var clientFeatureFlags = DotClientFeatureFlags()
+
     /// Cross-turn conversation thread. Persisted to disk after every turn
     /// (see `DotConversationHistoryStore`) and reloaded on launch so the
     /// model can carry a continuous thread across app restarts. Capped at
@@ -719,10 +721,26 @@ final class CompanionManager: ObservableObject {
         voiceStateSafetyResetTask = nil
     }
 
+    func applyClientFeatureFlags(_ updatedClientFeatureFlags: DotClientFeatureFlags) {
+        guard updatedClientFeatureFlags != clientFeatureFlags else { return }
+        clientFeatureFlags = updatedClientFeatureFlags
+        DotDebugLogger.log("client.flags", "updated", metadata: [
+            "agentToolsEnabled": updatedClientFeatureFlags.agentToolsEnabled,
+            "backgroundAgentsEnabled": updatedClientFeatureFlags.backgroundAgentsEnabled,
+            "memoryEnabled": updatedClientFeatureFlags.memoryEnabled,
+            "ttsEnabled": updatedClientFeatureFlags.ttsEnabled,
+            "remoteControlEnabled": updatedClientFeatureFlags.remoteControlEnabled
+        ])
+
+        if !updatedClientFeatureFlags.ttsEnabled {
+            elevenLabsTTSClient.stopPlayback()
+        }
+    }
+
     /// Feeds a transcript through the same dispatch as a real push-to-talk
     /// release would (media-command short-circuit first, then the agent
     /// loop with screenshot). Used by both the typed text-command panel
-    /// (cmd+shift+space) and the `dot://debug?transcript=…` URL.
+    /// (cmd+shift+space) and the optional local-dev debug URL.
     func runTranscriptThroughAgentLoop(
         transcript: String,
         source: String,
@@ -1305,6 +1323,7 @@ final class CompanionManager: ObservableObject {
     /// stop speech, actions, and the visible response immediately.
     private static let userMouseMoveCancellationThresholdInPoints: CGFloat = 12
     private static let syntheticMouseInterruptionSuppressionSeconds: TimeInterval = 0.22
+    private static let mouseInterruptionHandoffCaptionDurationNanoseconds: UInt64 = 2_300_000_000
 
     /// Pause between one step's last action and the next step's screen
     /// capture so animations / page loads can settle. Without this, Claude
@@ -1839,6 +1858,10 @@ final class CompanionManager: ObservableObject {
         }
 
         if let explicitAgentRequest = Self.extractExplicitAgentRequest(from: transcript) {
+            guard clientFeatureFlags.backgroundAgentsEnabled else {
+                rejectBackgroundAgentBecauseDisabled(source: source)
+                return
+            }
             startBackgroundAgentTask(
                 originalTranscript: transcript,
                 backgroundAgentRequest: explicitAgentRequest,
@@ -1851,6 +1874,10 @@ final class CompanionManager: ObservableObject {
         }
 
         if let personalBackgroundTaskRequest = Self.extractPersonalBackgroundTaskRequest(from: transcript) {
+            guard clientFeatureFlags.backgroundAgentsEnabled else {
+                rejectBackgroundAgentBecauseDisabled(source: source)
+                return
+            }
             startBackgroundAgentTask(
                 originalTranscript: transcript,
                 backgroundAgentRequest: personalBackgroundTaskRequest,
@@ -1873,6 +1900,21 @@ final class CompanionManager: ObservableObject {
             includeConversationHistory: includeConversationHistory,
             persistConversationHistory: persistConversationHistory
         )
+    }
+
+    private func rejectBackgroundAgentBecauseDisabled(source: String) {
+        let message = "Background agents are temporarily disabled."
+        DotDebugLogger.log("agent.route", "background task rejected by server feature flag", metadata: [
+            "source": source
+        ])
+        speakSystemVoiceFallback(message)
+        agentLoopOutcomePublisher.send(AgentLoopOutcome(
+            source: source,
+            status: .failed,
+            finalSpokenText: message,
+            stepsExecuted: 0,
+            errorDescription: "background agents disabled by server"
+        ))
     }
 
     private func startBackgroundAgentTask(
@@ -3075,13 +3117,15 @@ final class CompanionManager: ObservableObject {
         cancelPerStepNarrationQueue()
         stopResponseMouseInterruptionMonitor()
         let transcriptForAgent = Self.transcriptWithInlineTaskHints(transcript)
-        let shouldExposeLongTermMemoryTool = Self.shouldExposeLongTermMemoryTool(for: transcript)
+        let shouldExposeLongTermMemoryTool =
+            clientFeatureFlags.memoryEnabled
+            && Self.shouldExposeLongTermMemoryTool(for: transcript)
         let agentSystemPrompt = Self.companionVoiceResponseSystemPromptForTurn(
             shouldExposeLongTermMemoryTool: shouldExposeLongTermMemoryTool
         )
-        let agentToolPayloads = AgentToolDefinitions.apiPayloadList(
-            includingMemoryTool: shouldExposeLongTermMemoryTool
-        )
+        let agentToolPayloads = clientFeatureFlags.agentToolsEnabled
+            ? AgentToolDefinitions.apiPayloadList(includingMemoryTool: shouldExposeLongTermMemoryTool)
+            : []
         DotDebugLogger.log("response.pipeline", "starting tool-use agent loop", metadata: [
             "source": source,
             "transcriptLength": transcript.count,
@@ -3090,6 +3134,7 @@ final class CompanionManager: ObservableObject {
             "persistConversationHistory": persistConversationHistory,
             "maxSteps": Self.maxAgentStepsPerUserTurn,
             "memoryToolExposed": shouldExposeLongTermMemoryTool,
+            "agentToolsEnabled": clientFeatureFlags.agentToolsEnabled,
             "toolCount": agentToolPayloads.count
         ])
         currentAgentLoopSource = source
@@ -4443,7 +4488,7 @@ final class CompanionManager: ObservableObject {
                 ])
                 let speechText = ResponseSpeechTextFormatter.speechText(from: spokenText)
                 if !speechText.isEmpty {
-                    try await elevenLabsTTSClient.speakText(speechText, volume: speechVolume)
+                    try await speakTextUsingConfiguredVoicePath(speechText)
                     guard !Task.isCancelled else { return }
                     voiceState = .responding
                     DotDebugLogger.log("tts", "playback started")
@@ -4927,9 +4972,11 @@ final class CompanionManager: ObservableObject {
                     }
                     let speechText = ResponseSpeechTextFormatter.speechText(from: nextChunk.speechText)
                     if !speechText.isEmpty {
-                        try await strongSelf.elevenLabsTTSClient.speakText(speechText, volume: strongSelf.speechVolume)
+                        try await strongSelf.speakTextUsingConfiguredVoicePath(speechText)
                         if Task.isCancelled { break }
-                        await strongSelf.elevenLabsTTSClient.awaitPlaybackCompletion()
+                        if strongSelf.clientFeatureFlags.ttsEnabled {
+                            await strongSelf.elevenLabsTTSClient.awaitPlaybackCompletion()
+                        }
                     }
                 } catch is CancellationError {
                     break
@@ -5185,7 +5232,7 @@ final class CompanionManager: ObservableObject {
         scheduleTransientHideIfNeeded()
 
         captionBubbleFadeOutTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 1_300_000_000)
+            try? await Task.sleep(nanoseconds: Self.mouseInterruptionHandoffCaptionDurationNanoseconds)
             guard !Task.isCancelled else { return }
             self?.captionBubbleVisible = false
             self?.captionBubbleText = ""
@@ -5320,6 +5367,18 @@ final class CompanionManager: ObservableObject {
         systemSpeechSynthesizer = synthesizer
         synthesizer.startSpeaking(utterance)
         voiceState = .responding
+    }
+
+    private func speakTextUsingConfiguredVoicePath(_ speechText: String) async throws {
+        if clientFeatureFlags.ttsEnabled {
+            try await elevenLabsTTSClient.speakText(speechText, volume: speechVolume)
+            return
+        }
+
+        DotDebugLogger.log("tts.elevenlabs", "skipped because tts feature flag is disabled", metadata: [
+            "textLength": speechText.count
+        ])
+        speakSystemVoiceFallback(speechText)
     }
 
     private func presentInsufficientCreditsMessage() {

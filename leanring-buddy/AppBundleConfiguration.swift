@@ -26,6 +26,18 @@ enum AppBundleConfiguration {
         return trimmedValue.isEmpty ? nil : trimmedValue
     }
 
+    static func boolValue(forKey key: String, defaultValue: Bool = false) -> Bool {
+        if let value = Bundle.main.object(forInfoDictionaryKey: key) as? Bool {
+            return value
+        }
+
+        if let value = stringValue(forKey: key)?.lowercased() {
+            return value == "1" || value == "true" || value == "yes"
+        }
+
+        return defaultValue
+    }
+
     static func proxyBaseURLString() -> String {
         let configuredProxyBaseURL = stringValue(forKey: "DotProxyBaseURL")
             ?? "http://127.0.0.1:8787"

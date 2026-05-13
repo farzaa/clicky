@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  dot-sanity:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Shell script syntax
+        run: |
+          for script in scripts/*.sh; do
+            bash -n "$script"
+          done
+
+      - name: Swift typecheck
+        run: |
+          swift_files="$(find leanring-buddy -name '*.swift' -type f | sort)"
+          xcrun swiftc -typecheck -sdk "$(xcrun --show-sdk-path)" $swift_files
+
+      - name: Release boundary check
+        run: scripts/check-release-boundaries.sh
+
+      - name: Whitespace check
+        run: git diff --check

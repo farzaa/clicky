@@ -158,6 +158,8 @@ class ClaudeAPI {
         let payloadMB = Double(bodyData.count) / 1_048_576.0
         print("🌐 Claude streaming request: \(String(format: "%.1f", payloadMB))MB, \(images.count) image(s)")
 
+        let requestStartedAt = Date()
+
         // Use bytes streaming for SSE (Server-Sent Events)
         let (byteStream, response) = try await session.bytes(for: request)
 
@@ -176,6 +178,14 @@ class ClaudeAPI {
                 errorBodyChunks.append(line)
             }
             let errorBody = errorBodyChunks.joined(separator: "\n")
+            let requestDurationMs = Int((Date().timeIntervalSince(requestStartedAt) * 1_000).rounded())
+            DotAnalytics.trackInferenceEndpointResult(
+                endpoint: "chat",
+                statusCode: httpResponse.statusCode,
+                durationMs: requestDurationMs,
+                provider: "anthropic",
+                model: model
+            )
             if let insufficientCreditsError = VibeIdUserFacingError.insufficientCreditsErrorIfApplicable(
                 statusCode: httpResponse.statusCode,
                 responseBody: errorBody,
@@ -277,7 +287,7 @@ class ClaudeAPI {
             lastTool["cache_control"] = ["type": "ephemeral"]
             toolsWithCacheBreakpoint[toolsWithCacheBreakpoint.count - 1] = lastTool
         }
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model,
             // 2048 (was 1024) gives the model headroom to emit multiple
             // tool_use blocks in one response — narration + 2-3 structured
@@ -285,9 +295,11 @@ class ClaudeAPI {
             // model implicitly truncate to a single tool per turn.
             "max_tokens": 2048,
             "system": systemBlocks,
-            "messages": messages,
-            "tools": toolsWithCacheBreakpoint
+            "messages": messages
         ]
+        if !toolsWithCacheBreakpoint.isEmpty {
+            body["tools"] = toolsWithCacheBreakpoint
+        }
 
         let bodyData = try JSONSerialization.data(withJSONObject: body)
         request.httpBody = bodyData
@@ -411,14 +423,16 @@ class ClaudeAPI {
             lastTool["cache_control"] = ["type": "ephemeral"]
             toolsWithCacheBreakpoint[toolsWithCacheBreakpoint.count - 1] = lastTool
         }
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model,
             "max_tokens": 2048,
             "stream": true,
             "system": systemBlocks,
-            "messages": messages,
-            "tools": toolsWithCacheBreakpoint
+            "messages": messages
         ]
+        if !toolsWithCacheBreakpoint.isEmpty {
+            body["tools"] = toolsWithCacheBreakpoint
+        }
 
         let bodyData = try JSONSerialization.data(withJSONObject: body)
         request.httpBody = bodyData
@@ -556,6 +570,13 @@ class ClaudeAPI {
         }
 
         let requestDurationMs = Int((Date().timeIntervalSince(requestStartedAt) * 1_000).rounded())
+        DotAnalytics.trackInferenceEndpointResult(
+            endpoint: "chat",
+            statusCode: httpResponse.statusCode,
+            durationMs: requestDurationMs,
+            provider: "anthropic",
+            model: model
+        )
         DotDebugLogger.log("claude.api", "streaming tool-use response usage", metadata: [
             "inputTokens": inputTokens,
             "outputTokens": outputTokens,

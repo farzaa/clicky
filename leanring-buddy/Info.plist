@@ -1,15 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<dict>
-	<key>LSUIElement</key>
-	<true/>
-	<key>SUFeedURL</key>
-	<string>https://raw.githubusercontent.com/Clamepending/dot/main/appcast.xml</string>
-	<key>SUPublicEDKey</key>
-	<string>d85ztKO0MmXaeqnUByMDCg15FEZogYpjDamJU24iJvk=</string>
-	<key>VoiceTranscriptionProvider</key>
-	<string>assemblyai</string>
+	<dict>
+		<key>LSUIElement</key>
+		<true/>
+		<key>SUFeedURL</key>
+		<string>https://dot.vibe-research.net/appcast.xml</string>
+		<key>SUPublicEDKey</key>
+		<string>d85ztKO0MmXaeqnUByMDCg15FEZogYpjDamJU24iJvk=</string>
+		<key>EnableDebugURLCommands</key>
+		<false/>
+		<key>VoiceTranscriptionProvider</key>
+		<string>assemblyai</string>
 	<key>DotProxyBaseURL</key>
 	<string>https://api.accounts.vibe-research.net</string>
 	<key>VibeIdBaseURL</key>

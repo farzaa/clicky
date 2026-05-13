@@ -36,6 +36,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
     private var textCommandPanelManager: TextCommandPanelManager?
     private var textCommandToggleSubscription: AnyCancellable?
+    private var clientFeatureFlagsSubscription: AnyCancellable?
     private var agentTaskPanelManager: AgentTaskPanelManager?
     private var subagentDotOverlayManager: SubagentDotOverlayManager?
     private let companionManager = CompanionManager()
@@ -90,6 +91,15 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
                 agentTaskPanelManager: agentTaskPanelManager
             )
         }
+        clientFeatureFlagsSubscription = accountManager.$clientFeatureFlags
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] clientFeatureFlags in
+                self?.companionManager.applyClientFeatureFlags(clientFeatureFlags)
+                self?.remoteCommandSubscriber.setServerAllowsRemoteControl(
+                    clientFeatureFlags.remoteControlEnabled
+                )
+            }
 
         companionManager.start()
         // Auto-open the panel if the user has work to do — sign-in is the
@@ -110,7 +120,8 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     /// Receives `dot://` URLs that macOS routes back to the app after the user
     /// finishes Google sign-in in the browser. Forwards them to the account
     /// manager which exchanges the code for an install token. Also routes
-    /// `dot://debug?transcript=…` URLs into the agent loop for local testing.
+    /// `dot://debug?transcript=…` URLs into the agent loop for local testing
+    /// only when the app bundle explicitly enables that development surface.
     func application(_ application: NSApplication, open urls: [URL]) {
         for incomingURL in urls {
             if handleDebugTranscriptURLIfMatch(incomingURL) {
@@ -129,8 +140,10 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     /// skip persisted conversation history. Returns true if the URL was a
     /// debug URL (handled or empty), false otherwise so the caller falls
     /// through to other URL handlers.
-    /// Local-dev surface — unauthenticated; gate or remove before shipping.
     private func handleDebugTranscriptURLIfMatch(_ incomingURL: URL) -> Bool {
+        guard AppBundleConfiguration.boolValue(forKey: "EnableDebugURLCommands") else {
+            return false
+        }
         guard incomingURL.scheme?.lowercased() == "dot" else { return false }
         guard incomingURL.host?.lowercased() == "debug" else { return false }
         let urlComponents = URLComponents(url: incomingURL, resolvingAgainstBaseURL: false)
