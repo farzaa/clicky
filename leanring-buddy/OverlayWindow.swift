@@ -665,6 +665,14 @@ struct BlueCursorView: View {
 
     @ViewBuilder
     private var captionBubbleContent: some View {
+        if shouldUseCompactCaptionBubble {
+            compactCaptionBubbleContent
+        } else {
+            regularCaptionBubbleContent
+        }
+    }
+
+    private var regularCaptionBubbleContent: some View {
         VStack(alignment: .leading, spacing: 7) {
             captionBubbleTextViewport
 
@@ -683,6 +691,25 @@ struct BlueCursorView: View {
         }
         .frame(maxWidth: captionBubbleMaximumWidth, alignment: .leading)
     }
+
+    private var compactCaptionBubbleContent: some View {
+        Text(Self.controlHandoffCompactCaptionText)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundColor(.white.opacity(0.94))
+            .lineLimit(2)
+            .lineSpacing(1)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(width: Self.controlHandoffCompactCaptionWidth, alignment: .leading)
+    }
+
+    private var shouldUseCompactCaptionBubble: Bool {
+        companionManager.captionBubbleText.trimmingCharacters(in: .whitespacesAndNewlines)
+            == Self.controlHandoffCaptionText
+    }
+
+    private static let controlHandoffCaptionText = "handing back control since you moved your cursor"
+    private static let controlHandoffCompactCaptionText = "handing back control\nsince you moved your cursor"
+    private static let controlHandoffCompactCaptionWidth: CGFloat = 210
 
     private var captionBubbleTextViewport: some View {
         ZStack(alignment: .topLeading) {
