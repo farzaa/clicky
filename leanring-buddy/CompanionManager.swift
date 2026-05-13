@@ -5146,7 +5146,7 @@ final class CompanionManager: ObservableObject {
         isHandlingMouseInterruption = true
         didRequestMouseInterruptionForCurrentTurn = true
 
-        DotDebugLogger.log("response.mouse", "user moved mouse; handing back control", metadata: [
+        DotDebugLogger.log("response.mouse", "handing back control since the user moved the cursor", metadata: [
             "mouseDelta": Double(mouseDelta),
             "baselineX": Double(baselineLocation.x),
             "baselineY": Double(baselineLocation.y),
@@ -5170,7 +5170,7 @@ final class CompanionManager: ObservableObject {
         clearDetectedElementLocation()
         isShowingWaitingAnimation = false
         voiceState = .idle
-        captionBubbleText = "handing back control"
+        captionBubbleText = "handing back control since you moved your cursor"
         captionBubbleVisible = true
         scheduleTransientHideIfNeeded()
 
