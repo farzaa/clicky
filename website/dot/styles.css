@@ -108,17 +108,46 @@ a:hover { text-decoration: underline; }
   color: var(--text-primary);
 }
 .brand-dot {
+  --eye-width: 1.55px;
+  --eye-height: 4.2px;
+  --eye-left-offset: -2.7px;
+  --eye-right-offset: 1.15px;
+  --eye-top-offset: -3px;
+  position: relative;
+  display: inline-block;
+  flex: 0 0 auto;
   width: 14px;
   height: 14px;
   border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 0 12px rgba(96, 165, 250, 0.6);
 }
+.brand-dot::before,
+.brand-dot::after {
+  content: "";
+  position: absolute;
+  top: calc(50% + var(--eye-top-offset));
+  width: var(--eye-width);
+  height: var(--eye-height);
+  border-radius: 999px;
+  background: rgba(2, 10, 18, 0.72);
+}
+.brand-dot::before {
+  left: calc(50% + var(--eye-left-offset));
+}
+.brand-dot::after {
+  left: calc(50% + var(--eye-right-offset));
+}
 .brand-large {
   font-size: 28px;
   margin: 32px 0 0;
 }
 .brand-large .brand-dot {
+  --eye-width: 2.45px;
+  --eye-height: 6.6px;
+  --eye-left-offset: -4.25px;
+  --eye-right-offset: 1.8px;
+  --eye-top-offset: -4.75px;
   width: 22px;
   height: 22px;
   box-shadow: 0 0 18px rgba(96, 165, 250, 0.7);

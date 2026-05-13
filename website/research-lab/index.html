@@ -83,18 +83,44 @@
       gap: 10px;
     }
     .project-marker-dot {
-      width: 10px;
-      height: 10px;
+      width: 18px;
+      height: 18px;
+      flex: 0 0 18px;
+      position: relative;
+      display: inline-block;
       border-radius: 50%;
       background: var(--accent);
       box-shadow: 0 0 10px rgba(96, 165, 250, 0.55);
     }
     .project-marker-square {
-      width: 10px;
-      height: 10px;
-      border-radius: 2px;
+      width: 18px;
+      height: 18px;
+      flex: 0 0 18px;
+      position: relative;
+      display: inline-block;
+      border-radius: 4px;
       background: #f97316;
       box-shadow: 0 0 10px rgba(249, 115, 22, 0.55);
+    }
+    .project-marker-dot::before,
+    .project-marker-dot::after,
+    .project-marker-square::before,
+    .project-marker-square::after {
+      content: "";
+      position: absolute;
+      top: 5px;
+      width: 2px;
+      height: 5.5px;
+      border-radius: 999px;
+      background: rgba(2, 10, 18, 0.74);
+    }
+    .project-marker-dot::before,
+    .project-marker-square::before {
+      left: 5.6px;
+    }
+    .project-marker-dot::after,
+    .project-marker-square::after {
+      left: 10.4px;
     }
     .project-marker-a {
       display: inline-flex;
