@@ -469,7 +469,8 @@ enum CompanionComputerController {
         mediaKeyEvent?.cgEvent?.post(tap: .cghidEventTap)
     }
 
-    static func typeText(_ text: String) {
+    @MainActor
+    static func typeText(_ text: String, shouldContinue: (@MainActor () -> Bool)? = nil) {
         let currentLayoutIdentifier = CompanionKeyboardLayoutMap.shared.currentInputSourceIdentifier
         DotDebugLogger.log("computer.controller", "typing requested", metadata: [
             "characterCount": text.count,
@@ -491,6 +492,13 @@ enum CompanionComputerController {
         let eventSource = CGEventSource(stateID: .combinedSessionState)
 
         for character in text {
+            guard shouldContinue?() ?? true else {
+                DotDebugLogger.log("computer.controller", "typing aborted", metadata: [
+                    "characterCount": text.count
+                ])
+                return
+            }
+
             if let keystrokeInfo = CompanionKeyboardLayoutMap.shared.keystroke(producing: character) {
                 let keyDownEvent = CGEvent(
                     keyboardEventSource: eventSource,

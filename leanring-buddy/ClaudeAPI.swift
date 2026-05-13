@@ -176,6 +176,13 @@ class ClaudeAPI {
                 errorBodyChunks.append(line)
             }
             let errorBody = errorBodyChunks.joined(separator: "\n")
+            if let insufficientCreditsError = VibeIdUserFacingError.insufficientCreditsErrorIfApplicable(
+                statusCode: httpResponse.statusCode,
+                responseBody: errorBody,
+                fallbackEndpoint: "chat"
+            ) {
+                throw insufficientCreditsError
+            }
             throw NSError(
                 domain: "ClaudeAPI",
                 code: httpResponse.statusCode,
@@ -226,6 +233,15 @@ class ClaudeAPI {
         let toolUseBlocks: [AgentToolUseBlock]
         let rawAssistantContentBlocks: [[String: Any]]
         let stopReason: String?
+    }
+
+    private struct StreamingToolUseContentBlock {
+        let index: Int
+        var type: String
+        var text: String = ""
+        var toolUseID: String?
+        var toolName: String?
+        var inputJSONString: String = ""
     }
 
     /// One turn of the tool-use agent loop. Sends `messages` + `tools` to
@@ -297,6 +313,13 @@ class ClaudeAPI {
 
         guard (200...299).contains(httpResponse.statusCode) else {
             let responseString = String(data: data, encoding: .utf8) ?? "Unknown error"
+            if let insufficientCreditsError = VibeIdUserFacingError.insufficientCreditsErrorIfApplicable(
+                statusCode: httpResponse.statusCode,
+                responseBody: responseString,
+                fallbackEndpoint: "chat"
+            ) {
+                throw insufficientCreditsError
+            }
             throw NSError(
                 domain: "ClaudeAPI",
                 code: httpResponse.statusCode,
@@ -364,6 +387,243 @@ class ClaudeAPI {
         )
     }
 
+    /// Streaming variant of `runAgentTurnWithToolUse`. It reconstructs the
+    /// same final assistant content blocks for the agent loop, while surfacing
+    /// text deltas immediately for perceived-latency wins.
+    func runAgentTurnWithToolUseStreaming(
+        systemPrompt: String,
+        messages: [[String: Any]],
+        tools: [[String: Any]],
+        onTextDelta: @MainActor @Sendable (_ textDelta: String, _ accumulatedText: String) -> Void,
+        onToolUseStarted: @MainActor @Sendable () -> Void
+    ) async throws -> ToolUseTurnResponse {
+        var request = makeAPIRequest()
+        request.setValue("context-management-2025-06-27", forHTTPHeaderField: "anthropic-beta")
+
+        let systemBlocks: [[String: Any]] = [[
+            "type": "text",
+            "text": systemPrompt,
+            "cache_control": ["type": "ephemeral"]
+        ]]
+        var toolsWithCacheBreakpoint = tools
+        if !toolsWithCacheBreakpoint.isEmpty {
+            var lastTool = toolsWithCacheBreakpoint[toolsWithCacheBreakpoint.count - 1]
+            lastTool["cache_control"] = ["type": "ephemeral"]
+            toolsWithCacheBreakpoint[toolsWithCacheBreakpoint.count - 1] = lastTool
+        }
+        let body: [String: Any] = [
+            "model": model,
+            "max_tokens": 2048,
+            "stream": true,
+            "system": systemBlocks,
+            "messages": messages,
+            "tools": toolsWithCacheBreakpoint
+        ]
+
+        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        request.httpBody = bodyData
+        let payloadMB = Double(bodyData.count) / 1_048_576.0
+        print("🌐 Claude streaming tool-use request: \(String(format: "%.1f", payloadMB))MB, messages=\(messages.count), tools=\(tools.count)")
+        let requestStartedAt = Date()
+        DotDebugLogger.log("claude.api", "streaming tool-use request started", metadata: [
+            "payloadMB": String(format: "%.2f", payloadMB),
+            "messageCount": messages.count,
+            "toolCount": tools.count
+        ])
+
+        let (byteStream, response) = try await session.bytes(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(
+                domain: "ClaudeAPI",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid HTTP response"]
+            )
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            var errorBodyChunks: [String] = []
+            for try await line in byteStream.lines {
+                errorBodyChunks.append(line)
+            }
+            let errorBody = errorBodyChunks.joined(separator: "\n")
+            if let insufficientCreditsError = VibeIdUserFacingError.insufficientCreditsErrorIfApplicable(
+                statusCode: httpResponse.statusCode,
+                responseBody: errorBody,
+                fallbackEndpoint: "chat"
+            ) {
+                throw insufficientCreditsError
+            }
+            throw NSError(
+                domain: "ClaudeAPI",
+                code: httpResponse.statusCode,
+                userInfo: [NSLocalizedDescriptionKey: "API Error (\(httpResponse.statusCode)): \(errorBody)"]
+            )
+        }
+
+        var contentBlocksByIndex: [Int: StreamingToolUseContentBlock] = [:]
+        var accumulatedResponseText = ""
+        var stopReason: String?
+        var inputTokens = 0
+        var outputTokens = 0
+        var cacheCreationTokens = 0
+        var cacheReadTokens = 0
+
+        for try await line in byteStream.lines {
+            guard line.hasPrefix("data: ") else { continue }
+            let jsonString = String(line.dropFirst(6))
+            guard jsonString != "[DONE]" else { break }
+            guard let jsonData = jsonString.data(using: .utf8),
+                  let eventPayload = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+                  let eventType = eventPayload["type"] as? String else {
+                continue
+            }
+
+            switch eventType {
+            case "message_start":
+                if let message = eventPayload["message"] as? [String: Any],
+                   let usage = message["usage"] as? [String: Any] {
+                    inputTokens = usage["input_tokens"] as? Int ?? inputTokens
+                    cacheCreationTokens = usage["cache_creation_input_tokens"] as? Int ?? cacheCreationTokens
+                    cacheReadTokens = usage["cache_read_input_tokens"] as? Int ?? cacheReadTokens
+                }
+
+            case "content_block_start":
+                guard let index = eventPayload["index"] as? Int,
+                      let contentBlock = eventPayload["content_block"] as? [String: Any],
+                      let blockType = contentBlock["type"] as? String else {
+                    continue
+                }
+
+                var block = StreamingToolUseContentBlock(index: index, type: blockType)
+                if blockType == "text" {
+                    block.text = contentBlock["text"] as? String ?? ""
+                    if !block.text.isEmpty {
+                        accumulatedResponseText += block.text
+                        await onTextDelta(block.text, accumulatedResponseText)
+                    }
+                } else if blockType == "tool_use" {
+                    block.toolUseID = contentBlock["id"] as? String
+                    block.toolName = contentBlock["name"] as? String
+                    await onToolUseStarted()
+                }
+                contentBlocksByIndex[index] = block
+
+            case "content_block_delta":
+                guard let index = eventPayload["index"] as? Int,
+                      let delta = eventPayload["delta"] as? [String: Any],
+                      let deltaType = delta["type"] as? String else {
+                    continue
+                }
+
+                var block = contentBlocksByIndex[index] ?? StreamingToolUseContentBlock(index: index, type: "text")
+                if deltaType == "text_delta",
+                   let textDelta = delta["text"] as? String {
+                    block.type = "text"
+                    block.text += textDelta
+                    accumulatedResponseText += textDelta
+                    contentBlocksByIndex[index] = block
+                    await onTextDelta(textDelta, accumulatedResponseText)
+                } else if deltaType == "input_json_delta",
+                          let partialJSON = delta["partial_json"] as? String {
+                    block.type = "tool_use"
+                    block.inputJSONString += partialJSON
+                    contentBlocksByIndex[index] = block
+                }
+
+            case "message_delta":
+                if let delta = eventPayload["delta"] as? [String: Any] {
+                    stopReason = delta["stop_reason"] as? String ?? stopReason
+                }
+                if let usage = eventPayload["usage"] as? [String: Any] {
+                    outputTokens = usage["output_tokens"] as? Int ?? outputTokens
+                }
+
+            case "message_stop":
+                break
+
+            case "error":
+                let errorPayload = eventPayload["error"] as? [String: Any]
+                let errorMessage = errorPayload?["message"] as? String ?? "Unknown streaming Claude error"
+                throw NSError(
+                    domain: "ClaudeAPI",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: errorMessage]
+                )
+
+            default:
+                continue
+            }
+        }
+
+        let requestDurationMs = Int((Date().timeIntervalSince(requestStartedAt) * 1_000).rounded())
+        DotDebugLogger.log("claude.api", "streaming tool-use response usage", metadata: [
+            "inputTokens": inputTokens,
+            "outputTokens": outputTokens,
+            "cacheCreationInputTokens": cacheCreationTokens,
+            "cacheReadInputTokens": cacheReadTokens,
+            "requestDurationMs": requestDurationMs
+        ])
+
+        var contentArray: [[String: Any]] = []
+        var collectedTextBlocks: [String] = []
+        var collectedToolUseBlocks: [AgentToolUseBlock] = []
+
+        for index in contentBlocksByIndex.keys.sorted() {
+            guard let block = contentBlocksByIndex[index] else { continue }
+            switch block.type {
+            case "text":
+                let trimmedText = block.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmedText.isEmpty else { continue }
+                contentArray.append([
+                    "type": "text",
+                    "text": block.text
+                ])
+                collectedTextBlocks.append(trimmedText)
+
+            case "tool_use":
+                guard let toolUseID = block.toolUseID,
+                      let toolName = block.toolName else {
+                    continue
+                }
+                let inputArguments: [String: Any]
+                if block.inputJSONString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    inputArguments = [:]
+                } else {
+                    guard let inputData = block.inputJSONString.data(using: .utf8),
+                          let parsedInput = try? JSONSerialization.jsonObject(with: inputData) as? [String: Any] else {
+                        throw NSError(
+                            domain: "ClaudeAPI",
+                            code: -1,
+                            userInfo: [NSLocalizedDescriptionKey: "Streaming tool_use input was not valid JSON for \(toolName)"]
+                        )
+                    }
+                    inputArguments = parsedInput
+                }
+                contentArray.append([
+                    "type": "tool_use",
+                    "id": toolUseID,
+                    "name": toolName,
+                    "input": inputArguments
+                ])
+                collectedToolUseBlocks.append(AgentToolUseBlock(
+                    toolUseID: toolUseID,
+                    toolName: toolName,
+                    inputArguments: inputArguments
+                ))
+
+            default:
+                continue
+            }
+        }
+
+        return ToolUseTurnResponse(
+            textBlocks: collectedTextBlocks,
+            toolUseBlocks: collectedToolUseBlocks,
+            rawAssistantContentBlocks: contentArray,
+            stopReason: stopReason
+        )
+    }
+
     /// Summarize a chunk of past conversation via Haiku 4.5 for cheap,
     /// fast compaction of the cross-turn `conversationHistory` buffer when
     /// it grows beyond its soft cap. The returned text replaces N old
@@ -391,6 +651,13 @@ class ClaudeAPI {
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let responseBodyText = String(data: data, encoding: .utf8) ?? "Unknown error"
+            if let insufficientCreditsError = VibeIdUserFacingError.insufficientCreditsErrorIfApplicable(
+                statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1,
+                responseBody: responseBodyText,
+                fallbackEndpoint: "chat"
+            ) {
+                throw insufficientCreditsError
+            }
             throw NSError(
                 domain: "ClaudeAPI",
                 code: (response as? HTTPURLResponse)?.statusCode ?? -1,
@@ -444,6 +711,13 @@ class ClaudeAPI {
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let responseBodyText = String(data: data, encoding: .utf8) ?? "Unknown error"
+            if let insufficientCreditsError = VibeIdUserFacingError.insufficientCreditsErrorIfApplicable(
+                statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1,
+                responseBody: responseBodyText,
+                fallbackEndpoint: "chat"
+            ) {
+                throw insufficientCreditsError
+            }
             throw NSError(
                 domain: "ClaudeAPI",
                 code: (response as? HTTPURLResponse)?.statusCode ?? -1,
@@ -519,6 +793,13 @@ class ClaudeAPI {
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let responseString = String(data: data, encoding: .utf8) ?? "Unknown error"
+            if let insufficientCreditsError = VibeIdUserFacingError.insufficientCreditsErrorIfApplicable(
+                statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1,
+                responseBody: responseString,
+                fallbackEndpoint: "chat"
+            ) {
+                throw insufficientCreditsError
+            }
             throw NSError(
                 domain: "ClaudeAPI",
                 code: (response as? HTTPURLResponse)?.statusCode ?? -1,

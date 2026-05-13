@@ -100,6 +100,9 @@ enum AgentToolCall {
     case browserHistoryBack
     case browserHistoryForward
     case mediaControl(CompanionMediaControlCommand)
+    case listVideoMonitorDevices
+    case createVideoMonitor(source: VideoMemoryMonitorSource, ioID: String?, triggerCondition: String, actionInstruction: String, semanticKeywords: String?)
+    case stopVideoMonitor(taskID: String)
     case bailOut(reason: String)
     /// Anthropic's predefined memory tool (memory_20250818). The input dict
     /// is passed straight through to `DotMemoryStore.dispatch` — Anthropic
@@ -152,6 +155,9 @@ enum AgentToolDefinitions {
         browserBackTool,
         browserForwardTool,
         mediaControlTool,
+        listVideoMonitorDevicesTool,
+        createVideoMonitorTool,
+        stopVideoMonitorTool,
         bailOutTool
     ]
 
@@ -675,6 +681,62 @@ enum AgentToolDefinitions {
         ]
     )
 
+    private static let listVideoMonitorDevicesTool = AgentToolDefinition(
+        name: "list_video_monitor_devices",
+        description: "List VideoMemory devices and active monitor tasks. Use before creating a monitor if the user did not specify screen vs camera, if you need a concrete io_id, or if you need to inspect currently running video monitors.",
+        inputSchema: [
+            "type": "object",
+            "properties": [:] as [String: Any]
+        ]
+    )
+
+    private static let createVideoMonitorTool = AgentToolDefinition(
+        name: "create_video_monitor",
+        description: "Create a visible VideoMemory binary monitor. Use for requests like 'tell me when you see X', 'wake me when X happens', or 'if you see me on YouTube, tell me to get back to work'. This always creates monitor_type=binary so inference stays local and fast. Put only the visual condition in trigger_condition; put what Dot should say/do when it fires in action_instruction. Use source=screen for screen/app/browser conditions such as YouTube, source=facetime for FaceTime camera, source=camera for a generic camera, or source=device with io_id when a specific VideoMemory device is known. For screen/app triggers, describe the actual visual state, not a bare word match; for example use 'the YouTube website, app, or video player is open on the screen' rather than 'YouTube is visible on the screen'.",
+        inputSchema: [
+            "type": "object",
+            "properties": [
+                "source": [
+                    "type": "string",
+                    "enum": ["auto", "screen", "facetime", "camera", "device"],
+                    "description": "Which video input to monitor. Use screen for visible desktop/app/browser content; facetime for the user's built-in camera; camera for the best available camera; device when io_id is provided."
+                ],
+                "io_id": [
+                    "type": "string",
+                    "description": "Optional exact VideoMemory io_id, e.g. browser_facetime or 0. Required only when source=device."
+                ],
+                "trigger_condition": [
+                    "type": "string",
+                    "description": "The visual condition VideoMemory should evaluate locally as a true/false criterion. Do not include the follow-up action here. For screen monitors, avoid bare text-visible criteria that could fire on Dot's own transcript or confirmation text."
+                ],
+                "action_instruction": [
+                    "type": "string",
+                    "description": "What Dot should say or do when the binary monitor fires. Example: 'Tell the user: get back to work.'"
+                ],
+                "semantic_keywords": [
+                    "type": "string",
+                    "description": "Optional short comma-separated visual nouns for the local semantic prefilter. Leave empty unless the user explicitly asked for semantic filtering or the target is a concrete object class."
+                ]
+            ],
+            "required": ["source", "trigger_condition", "action_instruction"]
+        ]
+    )
+
+    private static let stopVideoMonitorTool = AgentToolDefinition(
+        name: "stop_video_monitor",
+        description: "Stop a running VideoMemory monitor task by task_id. This shuts down the task so it no longer spends local inference on the video feed, but keeps VideoMemory history.",
+        inputSchema: [
+            "type": "object",
+            "properties": [
+                "task_id": [
+                    "type": "string",
+                    "description": "VideoMemory task_id to stop."
+                ]
+            ],
+            "required": ["task_id"]
+        ]
+    )
+
     private static let bailOutTool = AgentToolDefinition(
         name: "bail_out",
         description: "Use when you're stuck and need user input. Examples: the previous action didn't produce the screen change you expected and you don't have a different approach, the target element is genuinely ambiguous and you can't tell which one to click, the task requires a destructive or sensitive action you shouldn't auto-execute. Calling this tool ends the turn — speak a clear text block explaining what you need from the user.",
@@ -849,6 +911,28 @@ enum AgentToolDefinitions {
             guard let rawCommand = toolUseBlock.inputArguments["command"] as? String,
                   let mediaCommand = CompanionMediaControlCommand(controlTagValue: rawCommand) else { return nil }
             return .mediaControl(mediaCommand)
+        case "list_video_monitor_devices":
+            return .listVideoMonitorDevices
+        case "create_video_monitor":
+            guard let triggerCondition = toolUseBlock.inputArguments["trigger_condition"] as? String,
+                  let actionInstruction = toolUseBlock.inputArguments["action_instruction"] as? String else {
+                return nil
+            }
+            let rawSource = (toolUseBlock.inputArguments["source"] as? String) ?? "auto"
+            let source = VideoMemoryMonitorSource(
+                rawValue: rawSource.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            ) ?? .auto
+            return .createVideoMonitor(
+                source: source,
+                ioID: decodeOptionalString(toolUseBlock.inputArguments["io_id"]),
+                triggerCondition: triggerCondition,
+                actionInstruction: actionInstruction,
+                semanticKeywords: decodeOptionalString(toolUseBlock.inputArguments["semantic_keywords"])
+            )
+        case "stop_video_monitor":
+            guard let taskID = toolUseBlock.inputArguments["task_id"] as? String,
+                  !taskID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return .stopVideoMonitor(taskID: taskID.trimmingCharacters(in: .whitespacesAndNewlines))
         case "bail_out":
             let reason = decodeOptionalString(toolUseBlock.inputArguments["reason"]) ?? "no reason given"
             return .bailOut(reason: reason)

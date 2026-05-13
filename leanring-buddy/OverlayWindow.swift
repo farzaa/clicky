@@ -92,6 +92,13 @@ struct CaptionBubbleSizePreferenceKey: PreferenceKey {
     }
 }
 
+struct CaptionBubbleContentSizePreferenceKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
+    }
+}
+
 /// The buddy's behavioral mode. Controls whether it follows the cursor,
 /// is flying toward a detected UI element, or is pointing at an element.
 enum BuddyNavigationMode {
@@ -197,6 +204,8 @@ struct BlueCursorView: View {
     /// horizontally next to the cursor (the position() modifier wants
     /// the bubble's center, not its corner).
     @State private var captionBubbleSize: CGSize = .zero
+    @State private var captionBubbleContentHeight: CGFloat = 0
+    @State private var captionBubbleScrollOffset: CGFloat = 0
 
     // MARK: - Onboarding Video Layout
 
@@ -300,18 +309,12 @@ struct BlueCursorView: View {
             if buddyIsVisibleOnThisScreen
                 && companionManager.captionBubbleVisible
                 && !companionManager.captionBubbleText.isEmpty {
-                Text(companionManager.captionBubbleText)
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundColor(.white)
-                    .lineSpacing(3)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: Self.captionBubbleMaxWidth, alignment: .leading)
+                captionBubbleContent
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color.black.opacity(0.78))
+                            .fill(Color.black.opacity(0.92))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                                     .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
@@ -325,8 +328,7 @@ struct BlueCursorView: View {
                         }
                     )
                     .position(
-                        x: cursorPosition.x + Self.captionBubbleHorizontalOffsetInPoints + (captionBubbleSize.width / 2),
-                        y: cursorPosition.y + Self.captionBubbleVerticalOffsetInPoints + (captionBubbleSize.height / 2)
+                        captionBubblePosition(for: captionBubbleSize)
                     )
                     .opacity(companionManager.captionBubbleVisible ? 1.0 : 0.0)
                     .animation(.spring(response: 0.25, dampingFraction: 0.75, blendDuration: 0), value: cursorPosition)
@@ -524,6 +526,15 @@ struct BlueCursorView: View {
                 directionUnitVector: companionManager.mostRecentScrollDirectionUnitVector
             )
         }
+        .onChange(of: companionManager.captionBubbleScrollCommandSequence) { _ in
+            applyCaptionBubbleScrollCommand()
+        }
+        .onChange(of: companionManager.captionBubbleVisible) { isVisible in
+            if !isVisible {
+                captionBubbleScrollOffset = 0
+                captionBubbleContentHeight = 0
+            }
+        }
     }
 
     /// Fast afterimage trail to mirror the instant scroll-wheel event.
@@ -571,9 +582,117 @@ struct BlueCursorView: View {
     // TTS caption bubble tuning. Bubble lives just below-right of the Dot
     // so it doesn't collide with the small navigation-pointer bubble
     // (which sits at +18y to the right).
-    private static let captionBubbleMaxWidth: CGFloat = 320
+    private static let captionBubbleMaxWidth: CGFloat = 560
     private static let captionBubbleHorizontalOffsetInPoints: CGFloat = 16
     private static let captionBubbleVerticalOffsetInPoints: CGFloat = 28
+    private static let captionBubbleScreenMarginInPoints: CGFloat = 12
+    private static let captionBubbleKeyboardScrollStepInPoints: CGFloat = 54
+
+    private var captionBubbleMaximumWidth: CGFloat {
+        max(220, min(Self.captionBubbleMaxWidth, screenFrame.width - (Self.captionBubbleScreenMarginInPoints * 2)))
+    }
+
+    private var captionBubbleMaximumHeight: CGFloat {
+        let usableScreenHeight = max(180, screenFrame.height - 96)
+        return min(usableScreenHeight, max(220, screenFrame.height * 0.68))
+    }
+
+    private var captionBubbleContentExceedsMaximumHeight: Bool {
+        captionBubbleContentHeight > captionBubbleMaximumHeight + 1
+    }
+
+    private var captionBubbleMaximumScrollOffset: CGFloat {
+        max(0, captionBubbleContentHeight - captionBubbleMaximumHeight)
+    }
+
+    @ViewBuilder
+    private var captionBubbleContent: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            captionBubbleTextViewport
+
+            if captionBubbleContentExceedsMaximumHeight {
+                Text("use ↑/↓ to scroll")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.white.opacity(0.52))
+                    .frame(maxWidth: captionBubbleMaximumWidth, alignment: .trailing)
+            }
+        }
+        .frame(maxWidth: captionBubbleMaximumWidth, alignment: .leading)
+    }
+
+    private var captionBubbleTextViewport: some View {
+        ZStack(alignment: .topLeading) {
+            MarkdownResponseTextView(markdownText: companionManager.captionBubbleText)
+                .frame(maxWidth: captionBubbleMaximumWidth, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .background(
+                    GeometryReader { geometryProxy in
+                        Color.clear.preference(
+                            key: CaptionBubbleContentSizePreferenceKey.self,
+                            value: geometryProxy.size
+                        )
+                    }
+                )
+                .offset(y: -captionBubbleScrollOffset)
+        }
+        .frame(maxWidth: captionBubbleMaximumWidth, alignment: .topLeading)
+        .frame(
+            height: captionBubbleContentExceedsMaximumHeight ? captionBubbleMaximumHeight : nil,
+            alignment: .topLeading
+        )
+        .clipped()
+        .onPreferenceChange(CaptionBubbleContentSizePreferenceKey.self) { newSize in
+            captionBubbleContentHeight = newSize.height
+            if captionBubbleContentExceedsMaximumHeight {
+                captionBubbleScrollOffset = captionBubbleMaximumScrollOffset
+            } else {
+                captionBubbleScrollOffset = 0
+            }
+        }
+    }
+
+    private func applyCaptionBubbleScrollCommand() {
+        guard captionBubbleContentExceedsMaximumHeight else {
+            captionBubbleScrollOffset = 0
+            return
+        }
+
+        let scrollDirectionSteps = companionManager.captionBubbleScrollDirectionSteps
+        if scrollDirectionSteps <= -10_000 {
+            captionBubbleScrollOffset = 0
+            return
+        }
+        if scrollDirectionSteps >= 10_000 {
+            captionBubbleScrollOffset = captionBubbleMaximumScrollOffset
+            return
+        }
+
+        let requestedScrollOffset = captionBubbleScrollOffset
+            + CGFloat(scrollDirectionSteps) * Self.captionBubbleKeyboardScrollStepInPoints
+        captionBubbleScrollOffset = min(
+            max(0, requestedScrollOffset),
+            captionBubbleMaximumScrollOffset
+        )
+    }
+
+    private func captionBubblePosition(for measuredBubbleSize: CGSize) -> CGPoint {
+        let desiredX = cursorPosition.x
+            + Self.captionBubbleHorizontalOffsetInPoints
+            + (measuredBubbleSize.width / 2)
+        let desiredY = cursorPosition.y
+            + Self.captionBubbleVerticalOffsetInPoints
+            + (measuredBubbleSize.height / 2)
+
+        let minimumX = Self.captionBubbleScreenMarginInPoints + (measuredBubbleSize.width / 2)
+        let maximumX = screenFrame.width - Self.captionBubbleScreenMarginInPoints - (measuredBubbleSize.width / 2)
+        let minimumY = Self.captionBubbleScreenMarginInPoints + (measuredBubbleSize.height / 2)
+        let maximumY = screenFrame.height - Self.captionBubbleScreenMarginInPoints - (measuredBubbleSize.height / 2)
+
+        return CGPoint(
+            x: min(max(desiredX, minimumX), max(minimumX, maximumX)),
+            y: min(max(desiredY, minimumY), max(minimumY, maximumY))
+        )
+    }
 
     /// Whether the buddy triangle should be visible on this screen.
     /// True when cursor is on this screen during normal following, or

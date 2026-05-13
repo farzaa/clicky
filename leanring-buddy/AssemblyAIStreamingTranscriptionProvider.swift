@@ -85,6 +85,13 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
                 "statusCode": statusCode,
                 "bodyLength": body.count
             ])
+            if let insufficientCreditsError = VibeIdUserFacingError.insufficientCreditsErrorIfApplicable(
+                statusCode: statusCode,
+                responseBody: body,
+                fallbackEndpoint: "transcribe-token"
+            ) {
+                throw insufficientCreditsError
+            }
             throw AssemblyAIStreamingTranscriptionProviderError(
                 message: "Failed to fetch AssemblyAI token (HTTP \(statusCode)): \(body)"
             )

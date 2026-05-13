@@ -20,6 +20,7 @@ private final class SubagentDotOverlayPanel: NSPanel {
 final class SubagentDotOverlayManager: NSObject {
 
     private let agentTaskManager: AgentTaskManager
+    private let videoMemoryMonitorManager: VideoMemoryMonitorManager
     private let agentTaskPanelManager: AgentTaskPanelManager
     private var hostedPanel: NSPanel?
     private var hostingView: NSHostingView<SubagentDotOverlayView>?
@@ -33,9 +34,11 @@ final class SubagentDotOverlayManager: NSObject {
 
     init(
         agentTaskManager: AgentTaskManager,
+        videoMemoryMonitorManager: VideoMemoryMonitorManager,
         agentTaskPanelManager: AgentTaskPanelManager
     ) {
         self.agentTaskManager = agentTaskManager
+        self.videoMemoryMonitorManager = videoMemoryMonitorManager
         self.agentTaskPanelManager = agentTaskPanelManager
         super.init()
         observeTaskCollections()
@@ -44,11 +47,17 @@ final class SubagentDotOverlayManager: NSObject {
     private func observeTaskCollections() {
         agentTaskManager.$runningTasks
             .combineLatest(agentTaskManager.$recentlyFinishedTasks)
+            .combineLatest(videoMemoryMonitorManager.$activeMonitors)
             .receive(on: RunLoop.main)
-            .sink { [weak self] runningTasks, recentlyFinishedTasks in
+            .sink { [weak self] taskCollections, activeVideoMonitors in
                 guard let self else { return }
+                let (runningTasks, recentlyFinishedTasks) = taskCollections
                 if runningTasks.isEmpty && recentlyFinishedTasks.isEmpty {
-                    self.hideOverlay()
+                    if activeVideoMonitors.isEmpty {
+                        self.hideOverlay()
+                    } else {
+                        self.ensureOverlayIsVisible()
+                    }
                 } else {
                     self.ensureOverlayIsVisible()
                 }
@@ -71,6 +80,7 @@ final class SubagentDotOverlayManager: NSObject {
     private func createOverlay() {
         let overlayRootView = SubagentDotOverlayView(
             agentTaskManager: agentTaskManager,
+            videoMemoryMonitorManager: videoMemoryMonitorManager,
             onTaskSelected: { [weak self] selectedTaskID in
                 self?.agentTaskPanelManager.showPanel(for: selectedTaskID)
             },
@@ -78,6 +88,14 @@ final class SubagentDotOverlayManager: NSObject {
                 Task { @MainActor in
                     await self?.agentTaskManager.deleteTask(taskID: task.id)
                     self?.agentTaskPanelManager.hidePanel()
+                }
+            },
+            onVideoMonitorSelected: { [weak self] monitor in
+                self?.videoMemoryMonitorManager.openTaskPage(taskID: monitor.taskID)
+            },
+            onVideoMonitorStopped: { [weak self] monitor in
+                Task { @MainActor in
+                    _ = await self?.videoMemoryMonitorManager.stopMonitor(taskID: monitor.taskID)
                 }
             }
         )
@@ -129,7 +147,11 @@ final class SubagentDotOverlayManager: NSObject {
         guard let chosenScreen = activeScreen else { return }
 
         let visibleFrame = chosenScreen.visibleFrame
-        let visibleTaskCount = max(1, agentTaskManager.visibleTasksForSubagentDots.count)
+        let visibleTaskCount = max(
+            1,
+            agentTaskManager.visibleTasksForSubagentDots.count
+                + videoMemoryMonitorManager.activeMonitorCountForOverlay
+        )
         let desiredOverlayHeight = CGFloat(visibleTaskCount) * approximateHeightPerDot + 20
         let maxOverlayHeight = max(minimumOverlayHeight, visibleFrame.height - 100)
         let resolvedOverlayHeight = min(maxOverlayHeight, max(minimumOverlayHeight, desiredOverlayHeight))

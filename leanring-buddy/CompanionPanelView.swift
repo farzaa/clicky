@@ -8,6 +8,7 @@
 //
 
 import AVFoundation
+import AppKit
 import SwiftUI
 
 struct CompanionPanelView: View {
@@ -137,6 +138,12 @@ struct CompanionPanelView: View {
 
                 modelPickerRow
                     .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 10)
+
+                voiceVolumeRow
+                    .padding(.horizontal, 16)
             }
 
             if !companionManager.allPermissionsGranted {
@@ -225,7 +232,7 @@ struct CompanionPanelView: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(DS.Colors.textPrimary)
 
-                Text("Inference is on the house — Anthropic, ElevenLabs, and AssemblyAI all run through Dot's server. We just need a Google account so we can show you your own usage and avoid abuse.")
+                Text("Dot uses your Vibe Research credits for Claude, ElevenLabs, and AssemblyAI. Sign in to see your balance, refill usage, and keep abuse off the shared server.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -310,9 +317,19 @@ struct CompanionPanelView: View {
                 if let creditsBalance = accountManager.creditsBalance {
                     // Credits are stored as cents; display as dollars.
                     let dollarsString = String(format: "%.2f", Double(creditsBalance) / 100.0)
-                    Text("$\(dollarsString) balance")
-                        .font(.system(size: 10))
-                        .foregroundColor(DS.Colors.textTertiary)
+                    HStack(spacing: 6) {
+                        Text("$\(dollarsString) balance")
+                            .font(.system(size: 10))
+                            .foregroundColor(DS.Colors.textTertiary)
+
+                        Button(action: openAccountRefillPage) {
+                            Text("Add credits")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(DS.Colors.blue400)
+                        }
+                        .buttonStyle(.plain)
+                        .pointerCursor()
+                    }
                 }
             }
 
@@ -328,6 +345,13 @@ struct CompanionPanelView: View {
             .buttonStyle(.plain)
             .pointerCursor()
         }
+    }
+
+    private func openAccountRefillPage() {
+        guard let accountURL = URL(string: VibeIdInsufficientCreditsError.refillAccountURLString) else {
+            return
+        }
+        NSWorkspace.shared.open(accountURL)
     }
 
     // MARK: - Header
@@ -916,6 +940,36 @@ struct CompanionPanelView: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
+    }
+
+    private var voiceVolumeRow: some View {
+        HStack(spacing: 10) {
+            Image(systemName: companionManager.isSpeechMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(companionManager.isSpeechMuted ? DS.Colors.textTertiary : DS.Colors.blue400)
+                .frame(width: 16)
+                .help(companionManager.isSpeechMuted ? "Voice muted. TTS requests are skipped." : "Voice volume")
+
+            Text("Voice")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Slider(
+                value: Binding(
+                    get: { companionManager.speechVolume },
+                    set: { companionManager.setSpeechVolume($0) }
+                ),
+                in: 0...1
+            )
+            .controlSize(.small)
+            .tint(DS.Colors.blue400)
+
+            Text(companionManager.isSpeechMuted ? "off" : "\(Int((companionManager.speechVolume * 100).rounded()))%")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundColor(DS.Colors.textTertiary)
+                .frame(width: 30, alignment: .trailing)
+        }
+        .padding(.vertical, 4)
     }
 
     // MARK: - Feedback Button

@@ -178,6 +178,12 @@ final class CompanionManager: ObservableObject {
     /// linger) or on cancellation.
     @Published var captionBubbleVisible: Bool = false
 
+    /// Incremented when the user presses an arrow/page key while a long
+    /// response caption is visible. The overlay observes the sequence and
+    /// applies `captionBubbleScrollDirectionSteps` to its local scroll offset.
+    @Published var captionBubbleScrollCommandSequence: UInt64 = 0
+    @Published var captionBubbleScrollDirectionSteps: Int = 0
+
     /// True only while the live agent is intentionally waiting for a page,
     /// upload, modal, or other async UI transition. The overlay uses this to
     /// keep the hourglass visible even while the spoken caption says "waiting."
@@ -194,6 +200,11 @@ final class CompanionManager: ObservableObject {
     /// TTS pipeline it already owns. AppDelegate reads this property to
     /// hand it to the AgentTaskPanelManager.
     let agentTaskManager = AgentTaskManager()
+
+    /// Local VideoMemory monitor lifecycle. VideoMemory owns camera/screen
+    /// inference; Dot owns monitor visibility, stop controls, and wake-up
+    /// narration when a binary monitor fires.
+    let videoMemoryMonitorManager = VideoMemoryMonitorManager()
 
     /// Display version string (e.g. "0.9") of a newer Sparkle update that's
     /// been discovered on the appcast but not yet installed. Drives the
@@ -385,6 +396,13 @@ final class CompanionManager: ObservableObject {
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
+    private var responseMouseInterruptionMonitor: Any?
+    private var responseMouseInterruptionPollingTask: Task<Void, Never>?
+    private var responseMouseInterruptionBaselineLocation: CGPoint?
+    private var responseMouseInterruptionSuppressedUntil = Date.distantPast
+    private var isHandlingMouseInterruption = false
+    private var didRequestMouseInterruptionForCurrentTurn = false
+    private var captionBubbleKeyboardScrollMonitor: Any?
 
     /// Fires once per agent-loop terminal state (completed / cancelled /
     /// failed). The `source` carries the same string the caller passed to
@@ -401,6 +419,7 @@ final class CompanionManager: ObservableObject {
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
+    private var dictationErrorCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
     /// Scheduled hide for transient cursor mode — cancelled if the user
@@ -408,13 +427,25 @@ final class CompanionManager: ObservableObject {
     private var transientHideTask: Task<Void, Never>?
     private var voiceStateSafetyResetTask: Task<Void, Never>?
 
+    private struct PerStepNarrationChunk {
+        let displayText: String
+        let speechText: String
+        let shouldUpdateCaption: Bool
+    }
+
     /// FIFO queue of per-step spoken-text chunks. Each agent-loop step
     /// appends its parsed spoken text here right before its actions execute,
     /// so the user hears narration in real time instead of one big block at
     /// the end of the turn. The consumer task plays chunks back-to-back.
-    private var perStepNarrationChunks: [String] = []
+    private var perStepNarrationChunks: [PerStepNarrationChunk] = []
     private var perStepNarrationProcessingTask: Task<Void, Never>?
     private var didEnqueueAnyPerStepNarrationForCurrentTurn = false
+    private var streamingResponseAccumulatedText = ""
+    private var pendingStreamingSpeechText = ""
+    private var didStreamTextForCurrentTurn = false
+    private var didStreamingTurnStartToolUse = false
+    private var isStreamingResponseTextInProgress = false
+    private var systemSpeechSynthesizer: NSSpeechSynthesizer?
 
     /// True when all required permissions are granted. Used by the panel to show
     /// a single "all good" state.
@@ -437,6 +468,43 @@ final class CompanionManager: ObservableObject {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
         claudeAPI.model = model
+    }
+
+    private static let speechVolumeUserDefaultsKey = "DotSpeechVolume"
+    private static let defaultSpeechVolume = 0.85
+
+    /// 0...1 voice playback volume. At exactly 0, Dot skips ElevenLabs TTS
+    /// requests entirely, which saves both quota and response latency.
+    @Published var speechVolume: Double = CompanionManager.loadPersistedSpeechVolume()
+
+    var isSpeechMuted: Bool {
+        speechVolume <= 0.0001
+    }
+
+    func setSpeechVolume(_ volume: Double) {
+        let clampedVolume = Self.clampedSpeechVolume(volume)
+        speechVolume = clampedVolume
+        UserDefaults.standard.set(clampedVolume, forKey: Self.speechVolumeUserDefaultsKey)
+        elevenLabsTTSClient.setPlaybackVolume(clampedVolume)
+        if clampedVolume <= 0 {
+            systemSpeechSynthesizer?.stopSpeaking()
+            systemSpeechSynthesizer = nil
+        }
+        DotDebugLogger.log("tts.volume", "updated speech volume", metadata: [
+            "volume": clampedVolume,
+            "muted": clampedVolume <= 0
+        ])
+    }
+
+    private static func loadPersistedSpeechVolume() -> Double {
+        guard UserDefaults.standard.object(forKey: speechVolumeUserDefaultsKey) != nil else {
+            return defaultSpeechVolume
+        }
+        return clampedSpeechVolume(UserDefaults.standard.double(forKey: speechVolumeUserDefaultsKey))
+    }
+
+    private static func clampedSpeechVolume(_ volume: Double) -> Double {
+        min(max(volume, 0), 1)
     }
 
     /// User preference for whether the Dot cursor should be shown.
@@ -504,6 +572,7 @@ final class CompanionManager: ObservableObject {
         startPermissionPolling()
         bindVoiceStateObservation()
         bindAudioPowerLevel()
+        bindDictationErrors()
         bindShortcutTransitions()
         // Phase 4: idle-aware sleep cycle that periodically compacts the
         // running thread + reviews /memories/ via Haiku. Cheap to leave
@@ -516,6 +585,12 @@ final class CompanionManager: ObservableObject {
         agentTaskManager.announcementHandler = { [weak self] announcement in
             self?.handleAgentTaskAnnouncement(announcement)
         }
+        videoMemoryMonitorManager.triggerHandler = { [weak self] monitor in
+            Task { @MainActor in
+                await self?.handleVideoMemoryMonitorTriggered(monitor)
+            }
+        }
+        videoMemoryMonitorManager.start()
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -624,6 +699,7 @@ final class CompanionManager: ObservableObject {
     func stop() {
         DotDebugLogger.log("app.stop", "stopping companion manager", metadata: interactionStateLogMetadata())
         agentTaskManager.terminateAllRunningWorkersForAppShutdown()
+        videoMemoryMonitorManager.stop()
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
@@ -634,6 +710,7 @@ final class CompanionManager: ObservableObject {
         shortcutTransitionCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
+        dictationErrorCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
         voiceStateSafetyResetTask?.cancel()
@@ -1016,31 +1093,52 @@ final class CompanionManager: ObservableObject {
             }
     }
 
+    private func bindDictationErrors() {
+        dictationErrorCancellable = buddyDictationManager.$lastErrorMessage
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] errorMessage in
+                guard let errorMessage,
+                      VibeIdUserFacingError.isInsufficientCreditsMessage(errorMessage) else {
+                    return
+                }
+                self?.presentInsufficientCreditsMessage()
+            }
+    }
+
     private func bindVoiceStateObservation() {
         voiceStateCancellable = buddyDictationManager.$isRecordingFromKeyboardShortcut
             .combineLatest(
+                buddyDictationManager.$isRecordingFromMicrophoneButton,
                 buddyDictationManager.$isFinalizingTranscript,
                 buddyDictationManager.$isPreparingToRecord
             )
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] isRecording, isFinalizing, isPreparing in
+            .sink { [weak self] isRecordingKeyboard, isRecordingMicrophoneButton, isFinalizing, isPreparing in
                 guard let self else { return }
+                let isRecording = isRecordingKeyboard || isRecordingMicrophoneButton
                 DotDebugLogger.log("dictation.observable", "recording state update", metadata: [
-                    "isRecordingKeyboard": isRecording,
+                    "isRecordingKeyboard": isRecordingKeyboard,
+                    "isRecordingMicrophoneButton": isRecordingMicrophoneButton,
                     "isFinalizing": isFinalizing,
                     "isPreparing": isPreparing,
                     "voiceState": String(describing: self.voiceState)
                 ])
-                // Don't override .responding — the AI response pipeline
-                // manages that state directly until streaming finishes.
-                guard self.voiceState != .responding else { return }
+
+                // User input wins over response playback. The previous guard
+                // skipped every dictation transition while Dot was speaking,
+                // so pressing push-to-talk during TTS could start recording
+                // while the overlay stayed in the responding-dot state instead
+                // of switching to the waveform.
+                let hasActiveDictationState = isRecording || isFinalizing || isPreparing
+                if !hasActiveDictationState && self.voiceState == .responding {
+                    return
+                }
 
                 if isFinalizing {
                     self.voiceState = .processing
-                } else if isRecording {
+                } else if isRecording || isPreparing {
                     self.voiceState = .listening
-                } else if isPreparing {
-                    self.voiceState = .processing
                 } else {
                     self.voiceState = .idle
                     // If the user pressed and released the hotkey without
@@ -1103,6 +1201,7 @@ final class CompanionManager: ObservableObject {
             currentResponseTask?.cancel()
             cancelPerStepNarrationQueue()
             clearDetectedElementLocation()
+            voiceState = .listening
             DotDebugLogger.log("shortcut.transition", "prepared for new push-to-talk session", metadata: interactionStateLogMetadata())
 
             // Dismiss the onboarding prompt if it's showing
@@ -1188,9 +1287,10 @@ final class CompanionManager: ObservableObject {
     private static let createdZipArchiveMaximumByteCount: UInt64 = 100 * 1024 * 1024
 
     /// Hardware-mouse movement (in points) that we treat as the user
-    /// reclaiming control. 40pt is loose enough to ignore micro-jiggle on
-    /// Retina displays but tight enough to catch a deliberate move.
-    private static let userMouseMoveCancellationThresholdInPoints: CGFloat = 40
+    /// reclaiming control. Keep this tight: a deliberate mouse move should
+    /// stop speech, actions, and the visible response immediately.
+    private static let userMouseMoveCancellationThresholdInPoints: CGFloat = 12
+    private static let syntheticMouseInterruptionSuppressionSeconds: TimeInterval = 0.22
 
     /// Pause between one step's last action and the next step's screen
     /// capture so animations / page loads can settle. Without this, Claude
@@ -1403,6 +1503,15 @@ final class CompanionManager: ObservableObject {
         case .mediaControl(let mediaCommand):
             return mediaCommand.rawValue.replacingOccurrences(of: "_", with: " ")
 
+        case .listVideoMonitorDevices:
+            return "checking video monitors"
+
+        case .createVideoMonitor:
+            return "starting video monitor"
+
+        case .stopVideoMonitor:
+            return "stopping video monitor"
+
         case .bailOut:
             return "need input"
 
@@ -1491,9 +1600,9 @@ final class CompanionManager: ObservableObject {
     end the turn (no tool calls in your response, just text) only when (a) the original request is fully complete and the screen reflects that, OR (b) you call the bail_out tool because you genuinely need the user to clarify or the next action would be destructive.
 
     style:
-    - for intermediate tool-use turns, you may omit text entirely. dot announces tools programmatically ("clicking submit", "opening new tab", "typing") so don't spend tokens narrating tool plumbing.
+    - for intermediate tool-use turns, emit no text before tool_use unless the user truly needs a spoken explanation first. dot announces tools programmatically ("clicking submit", "opening new tab", "typing") so don't spend tokens narrating tool plumbing.
     - final no-tool replies are the real answer. do not truncate them unless the user asked for brevity.
-    - all lowercase, casual, warm. no emojis, no lists, no bullets, no markdown — write for the ear.
+    - casual, warm, and readable. routine one-line actions should still sound natural for text-to-speech. for technical explanations, math, code, comparisons, or multi-step answers, use clean markdown when it improves the on-screen response: short headings, bullets, numbered steps, inline code, fenced code blocks, compact tables, and latex-style math delimiters (`$...$`, `$$...$$`, `\\(...\\)`, `\\[...\\]`).
     - never say "simply" or "just".
     - don't read the user's screen verbatim — describe what you're doing or what you see conversationally.
 
@@ -1516,6 +1625,8 @@ final class CompanionManager: ObservableObject {
     - if you can encode a search/destination into a URL (youtube.com/results?search_query=lo-fi+beats, google.com/search?q=swift+arrays, drive.google.com), prefer open_url with that direct URL over open_url + click + type — fewer steps and zero focus dependencies.
     - for other browser-chrome operations (opening a new tab, closing a tab, switching tabs, history), use the dedicated browser tools (open_new_tab, close_tab, switch_tab, browser_back, browser_forward). only use these when a browser is the frontmost app — they send keyboard shortcuts that would go to the wrong app otherwise.
     - for media (pause/play/skip), use media_control — works even if the music app is hidden.
+    - for visual wakeups like "tell me when you see X", "wake me when X happens", "if you see me on youtube tell me to get back to work", use create_video_monitor. this creates a visible VideoMemory binary monitor using the local fast true/false video monitor, not cloud VLM inference. keep trigger_condition strictly visual and describe the real scene/app state ("the YouTube website, app, or video player is open on the screen", "a human is visible in the FaceTime camera"). do NOT use bare keyword-visible triggers like "YouTube is visible" because those can fire on instructions, transcripts, or confirmation text. put the follow-up in action_instruction ("Tell the user: get back to work."). use source=screen for visible desktop/app/browser conditions such as YouTube or websites; use source=facetime for the built-in camera; use source=camera for the best available camera; use list_video_monitor_devices first if the device is ambiguous. do NOT create general VideoMemory monitors unless the user explicitly asks for rich notes rather than a fast local alert.
+    - if the user asks to stop a video monitor and you know the task_id, use stop_video_monitor. if you don't know it, use list_video_monitor_devices first. active monitors also show as right-edge dots; the user's x button stops the underlying VideoMemory task.
     - to scroll the page (or any scrollable view under the cursor), use scroll. \"down\" reveals what's below the fold; \"up\" reveals above. if the user wants to scroll a specific pane (sidebar, embedded list, panel that isn't where the cursor is), call point_at_element first to move the cursor there, then scroll on the next step. the blue cursor companion briefly nudges in the scroll direction so the user sees the action happen.
     - to switch macOS Spaces / virtual desktops, use switch_space with direction=next or previous. NEVER press_keystroke('cmd+space') — that's Spotlight. NEVER press_keystroke('space') — that's the spacebar. NEVER press_keystroke('cmd+arrow') — that's text navigation. switch_space posts the system-default ctrl+→/← shortcut Mission Control actually listens for. if the destination is more than one Space away, chain multiple switch_space calls. if the user wants to see all Spaces at once, use show_mission_control instead.
     - if the user asks to open an app that's on a different Space, prefer open_app: macOS auto-switches to the Space where the app lives as part of activation, so you almost never need a manual switch_space first.
@@ -2882,10 +2993,46 @@ final class CompanionManager: ObservableObject {
     private func speakBackgroundTaskAnnouncementLine(_ line: String) {
         Task { @MainActor in
             do {
-                try await elevenLabsTTSClient.speakText(line)
+                try await elevenLabsTTSClient.speakText(line, volume: speechVolume)
             } catch {
                 speakSystemVoiceFallback(line)
             }
+        }
+    }
+
+    private func handleVideoMemoryMonitorTriggered(_ monitor: VideoMemoryMonitor) async {
+        let fallbackMessage = "Video monitor triggered: \(monitor.taskDescription)"
+        let trimmedActionInstruction = monitor.actionInstruction?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let userFacingMessage = trimmedActionInstruction.isEmpty
+            ? fallbackMessage
+            : trimmedActionInstruction
+
+        DotDebugLogger.log("videomemory.monitor", "presenting monitor trigger", metadata: [
+            "taskID": monitor.taskID,
+            "ioID": monitor.ioID,
+            "messageLength": userFacingMessage.count,
+            "hasFrameEvidence": monitor.hasFrameEvidence
+        ])
+
+        captionBubbleFadeOutTask?.cancel()
+        captionBubbleFadeOutTask = nil
+        captionBubbleText = userFacingMessage
+        captionBubbleVisible = true
+        if !isOverlayVisible {
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+        keepCaptionBubbleVisibleUntilUserMouseMove()
+
+        do {
+            let speechText = ResponseSpeechTextFormatter.speechText(from: userFacingMessage)
+            if !speechText.isEmpty {
+                try await elevenLabsTTSClient.speakText(speechText, volume: speechVolume)
+                voiceState = .responding
+            }
+        } catch {
+            speakSystemVoiceFallback(userFacingMessage)
         }
     }
 
@@ -2908,6 +3055,7 @@ final class CompanionManager: ObservableObject {
     ) {
         currentResponseTask?.cancel()
         cancelPerStepNarrationQueue()
+        stopResponseMouseInterruptionMonitor()
         let transcriptForAgent = Self.transcriptWithInlineTaskHints(transcript)
         let shouldExposeLongTermMemoryTool = Self.shouldExposeLongTermMemoryTool(for: transcript)
         let agentSystemPrompt = Self.companionVoiceResponseSystemPromptForTurn(
@@ -2931,11 +3079,11 @@ final class CompanionManager: ObservableObject {
         currentResponseTask = Task {
             let pipelineStartedAt = Date()
             voiceState = .processing
+            startResponseMouseInterruptionMonitor(reason: "agent-loop-start")
 
             var baselineUserMouseLocation = NSEvent.mouseLocation
             var accumulatedSpokenText = ""
             var stepsExecuted = 0
-            var didCancelDueToUserMouseMove = false
             var didBailOutEarly = false
             var initialScreenCaptureDurationMs = 0
             var totalScreenCaptureDurationMs = 0
@@ -3025,11 +3173,25 @@ final class CompanionManager: ObservableObject {
                     let messagesWithStaleScreenshotsStripped =
                         Self.stripStaleScreenshotsFromAgentMessages(apiMessages)
                     let claudeRequestStartedAt = Date()
-                    let turnResponse = try await claudeAPI.runAgentTurnWithToolUse(
+                    resetStreamingResponseStateForNextAgentTurn()
+                    let turnResponse = try await claudeAPI.runAgentTurnWithToolUseStreaming(
                         systemPrompt: agentSystemPrompt,
                         messages: messagesWithStaleScreenshotsStripped,
-                        tools: agentToolPayloads
+                        tools: agentToolPayloads,
+                        onTextDelta: { [weak self] textDelta, accumulatedText in
+                            self?.handleStreamingAgentTextDelta(
+                                textDelta,
+                                accumulatedText: accumulatedText
+                            )
+                        },
+                        onToolUseStarted: { [weak self] in
+                            self?.handleStreamingToolUseStarted()
+                        }
                     )
+                    let didStreamTextThisTurn = didStreamTextForCurrentTurn
+                    let shouldFlushStreamedSpeech = !didStreamingTurnStartToolUse
+                        && turnResponse.toolUseBlocks.isEmpty
+                    finishStreamingAgentTextResponse(shouldFlushSpeech: shouldFlushStreamedSpeech)
                     let claudeRequestDurationMs = Self.latencyMilliseconds(
                         from: Date().timeIntervalSince(claudeRequestStartedAt)
                     )
@@ -3042,6 +3204,7 @@ final class CompanionManager: ObservableObject {
                         "step": stepsExecuted - 1,
                         "textBlockCount": turnResponse.textBlocks.count,
                         "toolUseBlockCount": turnResponse.toolUseBlocks.count,
+                        "streamedText": didStreamTextThisTurn,
                         "stopReason": turnResponse.stopReason ?? "unknown",
                         "durationMs": claudeRequestDurationMs
                     ])
@@ -3069,7 +3232,9 @@ final class CompanionManager: ObservableObject {
                             if firstNarrationEnqueuedAt == nil {
                                 firstNarrationEnqueuedAt = Date()
                             }
-                            enqueueStepNarrationChunk(combinedStepNarration)
+                            if !didStreamTextThisTurn {
+                                enqueueStepNarrationChunk(combinedStepNarration)
+                            }
                             if accumulatedSpokenText.isEmpty {
                                 accumulatedSpokenText = combinedStepNarration
                             } else {
@@ -3185,6 +3350,7 @@ final class CompanionManager: ObservableObject {
                             decodedToolCall,
                             originatingScreenCaptures: currentScreenCaptures
                         )
+                        guard !Task.isCancelled else { return }
                         shouldCaptureFreshScreenBeforeNextStep =
                             shouldCaptureFreshScreenBeforeNextStep
                             || executionResult.shouldCaptureFreshScreenAfterExecution
@@ -3285,8 +3451,20 @@ final class CompanionManager: ObservableObject {
                             "currentX": Double(currentMouseLocation.x),
                             "currentY": Double(currentMouseLocation.y)
                         ])
-                        didCancelDueToUserMouseMove = true
-                        break stepLoop
+                        handleUserMouseInterruption(
+                            mouseDelta: mouseDelta,
+                            baselineLocation: baselineUserMouseLocation,
+                            currentLocation: currentMouseLocation
+                        )
+                        self.agentLoopOutcomePublisher.send(AgentLoopOutcome(
+                            source: source,
+                            status: .cancelled,
+                            finalSpokenText: accumulatedSpokenText,
+                            stepsExecuted: stepsExecuted,
+                            errorDescription: nil
+                        ))
+                        self.currentAgentLoopSource = nil
+                        return
                     }
 
                     // Capture the post-action screen and build the next user
@@ -3314,28 +3492,18 @@ final class CompanionManager: ObservableObject {
                     ])
                 }
 
-                if didCancelDueToUserMouseMove {
-                    let cancellationNote = "let me know when you want me to take over again."
-                    let spokenCancellationNote = accumulatedSpokenText.isEmpty
-                        ? "okay, you took the mouse back. \(cancellationNote)"
-                        : cancellationNote
-                    accumulatedSpokenText = accumulatedSpokenText.isEmpty
-                        ? spokenCancellationNote
-                        : accumulatedSpokenText + " " + spokenCancellationNote
-                    enqueueStepNarrationChunk(spokenCancellationNote)
-                }
-
                 let modelLoopFinishedAt = Date()
                 await saveConversationAndSpeakResponse(
                     transcript: transcript,
                     spokenText: accumulatedSpokenText,
                     shouldPersistConversationHistory: persistConversationHistory
                 )
+                guard !Task.isCancelled else { return }
 
                 DotDebugLogger.log("agent.loop", "finished", metadata: [
                     "source": source,
                     "stepsExecuted": stepsExecuted,
-                    "cancelledByMouseMove": didCancelDueToUserMouseMove,
+                    "cancelledByMouseMove": false,
                     "bailedOut": didBailOutEarly,
                     "finalSpokenTextLength": accumulatedSpokenText.count,
                     "protocol": "tool_use",
@@ -3357,7 +3525,7 @@ final class CompanionManager: ObservableObject {
                 ])
                 self.agentLoopOutcomePublisher.send(AgentLoopOutcome(
                     source: source,
-                    status: didCancelDueToUserMouseMove ? .cancelled : .completed,
+                    status: .completed,
                     finalSpokenText: accumulatedSpokenText,
                     stepsExecuted: stepsExecuted,
                     errorDescription: nil
@@ -3366,7 +3534,8 @@ final class CompanionManager: ObservableObject {
                 DotDebugLogger.log("agent.loop", "cancelled mid-step", metadata: [
                     "source": source,
                     "stepsExecuted": stepsExecuted,
-                    "protocol": "tool_use"
+                    "protocol": "tool_use",
+                    "cancelledByMouseMove": didRequestMouseInterruptionForCurrentTurn
                 ])
                 self.agentLoopOutcomePublisher.send(AgentLoopOutcome(
                     source: source,
@@ -3389,7 +3558,8 @@ final class CompanionManager: ObservableObject {
                         "source": source,
                         "error": error.localizedDescription,
                         "stepsExecuted": stepsExecuted,
-                        "protocol": "tool_use"
+                        "protocol": "tool_use",
+                        "cancelledByMouseMove": didRequestMouseInterruptionForCurrentTurn
                     ])
                     self.agentLoopOutcomePublisher.send(AgentLoopOutcome(
                         source: source,
@@ -3402,6 +3572,7 @@ final class CompanionManager: ObservableObject {
                 }
 
                 DotAnalytics.trackResponseError(error: error.localizedDescription)
+                stopResponseMouseInterruptionMonitor()
                 print("⚠️ Tool-use agent loop error: \(error)")
                 DotDebugLogger.log("agent.loop", "failed", metadata: [
                     "source": source,
@@ -3995,6 +4166,45 @@ final class CompanionManager: ObservableObject {
                 didTriggerBailOut: false
             )
 
+        case .listVideoMonitorDevices:
+            let videoMemoryState = await videoMemoryMonitorManager.listVideoMemoryStateForTool()
+            return AgentToolExecutionResult(
+                toolResultContent: videoMemoryState,
+                didTriggerBailOut: false,
+                shouldCaptureFreshScreenAfterExecution: false
+            )
+
+        case .createVideoMonitor(let source, let ioID, let triggerCondition, let actionInstruction, let semanticKeywords):
+            let result = await videoMemoryMonitorManager.createBinaryMonitor(
+                source: source,
+                ioID: ioID,
+                triggerCondition: triggerCondition,
+                actionInstruction: actionInstruction,
+                semanticKeywords: semanticKeywords
+            )
+            switch result {
+            case .success(let creationResult):
+                return AgentToolExecutionResult(
+                    toolResultContent: creationResult.toolResultText,
+                    didTriggerBailOut: false,
+                    shouldCaptureFreshScreenAfterExecution: false
+                )
+            case .failure(let error):
+                return AgentToolExecutionResult(
+                    toolResultContent: "error: failed to create VideoMemory monitor: \(error.localizedDescription)",
+                    didTriggerBailOut: false,
+                    shouldCaptureFreshScreenAfterExecution: false
+                )
+            }
+
+        case .stopVideoMonitor(let taskID):
+            let stopResult = await videoMemoryMonitorManager.stopMonitor(taskID: taskID)
+            return AgentToolExecutionResult(
+                toolResultContent: stopResult,
+                didTriggerBailOut: false,
+                shouldCaptureFreshScreenAfterExecution: false
+            )
+
         case .scroll(let scrollDirection, let scrollAmount):
             await performComputerControlActions(
                 [.scroll(direction: scrollDirection, amount: scrollAmount)],
@@ -4199,6 +4409,7 @@ final class CompanionManager: ObservableObject {
         if didEnqueueAnyPerStepNarrationForCurrentTurn {
             DotDebugLogger.log("tts", "awaiting per-step narration completion")
             await perStepNarrationProcessingTask?.value
+            guard !Task.isCancelled else { return }
             voiceState = .responding
             DotDebugLogger.log("tts", "per-step narration completed")
             didEnqueueAnyPerStepNarrationForCurrentTurn = false
@@ -4212,16 +4423,24 @@ final class CompanionManager: ObservableObject {
                 DotDebugLogger.log("tts", "starting ElevenLabs playback", metadata: [
                     "spokenTextLength": spokenText.count
                 ])
-                try await elevenLabsTTSClient.speakText(spokenText)
-                voiceState = .responding
-                DotDebugLogger.log("tts", "playback started")
+                let speechText = ResponseSpeechTextFormatter.speechText(from: spokenText)
+                if !speechText.isEmpty {
+                    try await elevenLabsTTSClient.speakText(speechText, volume: speechVolume)
+                    guard !Task.isCancelled else { return }
+                    voiceState = .responding
+                    DotDebugLogger.log("tts", "playback started")
+                }
             } catch {
                 DotAnalytics.trackTTSError(error: error.localizedDescription)
                 print("⚠️ ElevenLabs TTS error: \(error)")
                 DotDebugLogger.log("tts", "playback failed", metadata: [
                     "error": error.localizedDescription
                 ])
-                speakSystemVoiceFallback(spokenText)
+                if VibeIdUserFacingError.insufficientCreditsErrorIfApplicable(error) != nil {
+                    presentInsufficientCreditsMessage()
+                    return
+                }
+                speakSystemVoiceFallback(ResponseSpeechTextFormatter.speechText(from: spokenText))
             }
         }
     }
@@ -4485,13 +4704,160 @@ final class CompanionManager: ObservableObject {
     private func enqueueStepNarrationChunk(_ stepSpokenText: String) {
         let trimmedChunk = stepSpokenText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedChunk.isEmpty else { return }
-        perStepNarrationChunks.append(trimmedChunk)
+
+        perStepNarrationChunks.append(PerStepNarrationChunk(
+            displayText: trimmedChunk,
+            speechText: trimmedChunk,
+            shouldUpdateCaption: true
+        ))
+
         didEnqueueAnyPerStepNarrationForCurrentTurn = true
         DotDebugLogger.log("tts.step", "enqueued chunk", metadata: [
             "chunkLength": trimmedChunk.count,
             "queueDepth": perStepNarrationChunks.count
         ])
         startStepNarrationProcessorIfNotRunning()
+    }
+
+    private func resetStreamingResponseStateForNextAgentTurn() {
+        streamingResponseAccumulatedText = ""
+        pendingStreamingSpeechText = ""
+        didStreamTextForCurrentTurn = false
+        didStreamingTurnStartToolUse = false
+        isStreamingResponseTextInProgress = false
+    }
+
+    private func handleStreamingAgentTextDelta(_ textDelta: String, accumulatedText: String) {
+        guard !textDelta.isEmpty else { return }
+        didStreamTextForCurrentTurn = true
+        isStreamingResponseTextInProgress = true
+        streamingResponseAccumulatedText = accumulatedText
+        updateCaptionBubbleForStreamingMarkdown(accumulatedText)
+
+        // Tool turns should stay quiet; the deterministic tool-feedback path
+        // below will describe actions. The system prompt tells the model not
+        // to emit text before tools, but this guard prevents extra TTS if it
+        // does anyway.
+        guard !didStreamingTurnStartToolUse else { return }
+        pendingStreamingSpeechText += textDelta
+        flushStreamingSpeechChunks(force: false)
+    }
+
+    private func handleStreamingToolUseStarted() {
+        didStreamingTurnStartToolUse = true
+        pendingStreamingSpeechText = ""
+        DotDebugLogger.log("agent.loop", "streaming turn started tool_use; suppressing streamed speech")
+    }
+
+    private func finishStreamingAgentTextResponse(shouldFlushSpeech: Bool) {
+        isStreamingResponseTextInProgress = false
+        if shouldFlushSpeech {
+            flushStreamingSpeechChunks(force: true)
+        } else {
+            pendingStreamingSpeechText = ""
+        }
+    }
+
+    private func updateCaptionBubbleForStreamingMarkdown(_ accumulatedMarkdownText: String) {
+        let normalizedMarkdownText = accumulatedMarkdownText
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedMarkdownText.isEmpty else { return }
+
+        captionBubbleText = normalizedMarkdownText
+        captionBubbleVisible = true
+        startCaptionBubbleKeyboardScrollMonitorIfNeeded()
+        voiceState = .responding
+    }
+
+    private func enqueueStreamingSpeechChunk(_ speechChunkText: String) {
+        let trimmedSpeechChunkText = speechChunkText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSpeechChunkText.isEmpty else { return }
+
+        perStepNarrationChunks.append(PerStepNarrationChunk(
+            displayText: "",
+            speechText: trimmedSpeechChunkText,
+            shouldUpdateCaption: false
+        ))
+        didEnqueueAnyPerStepNarrationForCurrentTurn = true
+        DotDebugLogger.log("tts.step", "enqueued streaming speech chunk", metadata: [
+            "speechLength": trimmedSpeechChunkText.count,
+            "queueDepth": perStepNarrationChunks.count
+        ])
+        startStepNarrationProcessorIfNotRunning()
+    }
+
+    private func flushStreamingSpeechChunks(force: Bool) {
+        while let splitPoint = Self.streamingSpeechSplitPoint(
+            in: pendingStreamingSpeechText,
+            force: force
+        ) {
+            let speechChunk = String(pendingStreamingSpeechText[..<splitPoint])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            pendingStreamingSpeechText = String(pendingStreamingSpeechText[splitPoint...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if !speechChunk.isEmpty {
+                enqueueStreamingSpeechChunk(speechChunk)
+            }
+
+            if !force {
+                break
+            }
+        }
+    }
+
+    private static func streamingSpeechSplitPoint(
+        in text: String,
+        force: Bool
+    ) -> String.Index? {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else { return nil }
+
+        if force {
+            return text.endIndex
+        }
+
+        let minimumChunkCharacterCount = 90
+        let maximumChunkCharacterCount = 360
+        if text.count < minimumChunkCharacterCount {
+            return nil
+        }
+
+        var characterOffset = 0
+        var previousCharacter: Character?
+        for currentIndex in text.indices {
+            let currentCharacter = text[currentIndex]
+            characterOffset += 1
+
+            let nextIndex = text.index(after: currentIndex)
+            let nextCharacter = nextIndex < text.endIndex ? text[nextIndex] : nil
+            let isSentenceBoundary =
+                (currentCharacter == "." || currentCharacter == "!" || currentCharacter == "?")
+                && (nextCharacter == nil || nextCharacter?.isWhitespace == true)
+            let isParagraphBoundary = currentCharacter == "\n" && previousCharacter == "\n"
+
+            if characterOffset >= minimumChunkCharacterCount,
+               isSentenceBoundary || isParagraphBoundary {
+                return nextIndex
+            }
+
+            previousCharacter = currentCharacter
+        }
+
+        guard text.count >= maximumChunkCharacterCount else { return nil }
+
+        let hardLimitIndex = text.index(
+            text.startIndex,
+            offsetBy: min(maximumChunkCharacterCount, text.count),
+            limitedBy: text.endIndex
+        ) ?? text.endIndex
+        let prefixText = String(text[..<hardLimitIndex])
+        if let lastSpaceRange = prefixText.range(of: " ", options: .backwards),
+           lastSpaceRange.upperBound > text.index(text.startIndex, offsetBy: minimumChunkCharacterCount / 2) {
+            return lastSpaceRange.upperBound
+        }
+        return hardLimitIndex
     }
 
     /// Shows low-stakes tool progress next to Dot without speaking it. Routine
@@ -4528,7 +4894,8 @@ final class CompanionManager: ObservableObject {
                 guard let strongSelf = self else { break }
                 do {
                     DotDebugLogger.log("tts.step", "playing chunk", metadata: [
-                        "chunkLength": nextChunk.count
+                        "displayLength": nextChunk.displayText.count,
+                        "speechLength": nextChunk.speechText.count
                     ])
                     // Show the caption BEFORE TTS starts so the visible
                     // text and the audio start together. Cancels any
@@ -4537,11 +4904,17 @@ final class CompanionManager: ObservableObject {
                     strongSelf.captionBubbleFadeOutTask?.cancel()
                     strongSelf.captionBubbleFadeOutTask = nil
                     strongSelf.voiceState = .responding
-                    strongSelf.captionBubbleText = nextChunk
-                    strongSelf.captionBubbleVisible = true
-                    try await strongSelf.elevenLabsTTSClient.speakText(nextChunk)
-                    if Task.isCancelled { break }
-                    await strongSelf.elevenLabsTTSClient.awaitPlaybackCompletion()
+                    if nextChunk.shouldUpdateCaption {
+                        strongSelf.captionBubbleText = nextChunk.displayText
+                        strongSelf.captionBubbleVisible = true
+                        strongSelf.startCaptionBubbleKeyboardScrollMonitorIfNeeded()
+                    }
+                    let speechText = ResponseSpeechTextFormatter.speechText(from: nextChunk.speechText)
+                    if !speechText.isEmpty {
+                        try await strongSelf.elevenLabsTTSClient.speakText(speechText, volume: strongSelf.speechVolume)
+                        if Task.isCancelled { break }
+                        await strongSelf.elevenLabsTTSClient.awaitPlaybackCompletion()
+                    }
                 } catch is CancellationError {
                     break
                 } catch {
@@ -4549,13 +4922,29 @@ final class CompanionManager: ObservableObject {
                     DotDebugLogger.log("tts.step", "playback failed", metadata: [
                         "error": error.localizedDescription
                     ])
+                    if VibeIdUserFacingError.insufficientCreditsErrorIfApplicable(error) != nil {
+                        DotAnalytics.trackTTSError(error: error.localizedDescription)
+                        strongSelf.presentInsufficientCreditsMessage()
+                        strongSelf.currentResponseTask?.cancel()
+                        break
+                    }
                 }
             }
-            // Queue drained — let the final chunk linger so the user
-            // has time to finish reading, then fade out. The task is
-            // stored on self so a new chunk arriving in the meantime
-            // can cancel the fade-out and keep the bubble alive.
-            self?.scheduleCaptionBubbleFadeOut()
+            guard !Task.isCancelled,
+                  self?.didRequestMouseInterruptionForCurrentTurn != true else {
+                self?.perStepNarrationProcessingTask = nil
+                return
+            }
+
+            guard self?.isStreamingResponseTextInProgress != true else {
+                self?.perStepNarrationProcessingTask = nil
+                return
+            }
+
+            // Queue drained. Keep the final response visible until the user
+            // moves the mouse, which is also the explicit "hand control back"
+            // signal for an active turn.
+            self?.keepCaptionBubbleVisibleUntilUserMouseMove()
             self?.perStepNarrationProcessingTask = nil
         }
     }
@@ -4574,7 +4963,228 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    private func dequeueNextStepNarrationChunk() -> String? {
+    private func keepCaptionBubbleVisibleUntilUserMouseMove() {
+        captionBubbleFadeOutTask?.cancel()
+        captionBubbleFadeOutTask = nil
+        startCaptionBubbleKeyboardScrollMonitorIfNeeded()
+        if responseMouseInterruptionMonitor == nil {
+            startResponseMouseInterruptionMonitor(reason: "final-caption-visible")
+        }
+        DotDebugLogger.log("caption.step", "final caption remains visible until mouse movement", metadata: [
+            "captionLength": captionBubbleText.count
+        ])
+    }
+
+    private func startCaptionBubbleKeyboardScrollMonitorIfNeeded() {
+        guard captionBubbleKeyboardScrollMonitor == nil else { return }
+
+        captionBubbleKeyboardScrollMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: .keyDown
+        ) { [weak self] event in
+            Task { @MainActor in
+                self?.handleCaptionBubbleKeyboardScrollEvent(event)
+            }
+        }
+
+        DotDebugLogger.log("caption.scroll", "started keyboard scroll monitor")
+    }
+
+    private func stopCaptionBubbleKeyboardScrollMonitor() {
+        if let captionBubbleKeyboardScrollMonitor {
+            NSEvent.removeMonitor(captionBubbleKeyboardScrollMonitor)
+        }
+        captionBubbleKeyboardScrollMonitor = nil
+    }
+
+    private func handleCaptionBubbleKeyboardScrollEvent(_ event: NSEvent) {
+        guard captionBubbleVisible,
+              !captionBubbleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
+
+        let modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard !modifierFlags.contains(.command),
+              !modifierFlags.contains(.option),
+              !modifierFlags.contains(.control),
+              !modifierFlags.contains(.shift) else {
+            return
+        }
+
+        let scrollDirectionSteps: Int?
+        switch event.keyCode {
+        case 126: // Up Arrow
+            scrollDirectionSteps = -1
+        case 125: // Down Arrow
+            scrollDirectionSteps = 1
+        case 116: // Page Up
+            scrollDirectionSteps = -5
+        case 121: // Page Down
+            scrollDirectionSteps = 5
+        case 115: // Home
+            scrollDirectionSteps = -10_000
+        case 119: // End
+            scrollDirectionSteps = 10_000
+        default:
+            scrollDirectionSteps = nil
+        }
+
+        guard let scrollDirectionSteps else { return }
+        captionBubbleScrollDirectionSteps = scrollDirectionSteps
+        captionBubbleScrollCommandSequence &+= 1
+        DotDebugLogger.log("caption.scroll", "keyboard scroll requested", metadata: [
+            "steps": scrollDirectionSteps,
+            "sequence": Int(captionBubbleScrollCommandSequence)
+        ])
+    }
+
+    private func startResponseMouseInterruptionMonitor(reason: String) {
+        responseMouseInterruptionBaselineLocation = NSEvent.mouseLocation
+        didRequestMouseInterruptionForCurrentTurn = false
+        isHandlingMouseInterruption = false
+        responseMouseInterruptionSuppressedUntil = Date()
+        startResponseMouseInterruptionPollingTaskIfNeeded()
+
+        guard responseMouseInterruptionMonitor == nil else {
+            DotDebugLogger.log("response.mouse", "reset interruption monitor baseline", metadata: [
+                "reason": reason,
+                "baselineX": Double(responseMouseInterruptionBaselineLocation?.x ?? 0),
+                "baselineY": Double(responseMouseInterruptionBaselineLocation?.y ?? 0)
+            ])
+            return
+        }
+
+        responseMouseInterruptionMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleResponseMouseEvent()
+            }
+        }
+
+        DotDebugLogger.log("response.mouse", "started interruption monitor", metadata: [
+            "reason": reason,
+            "thresholdPoints": Double(Self.userMouseMoveCancellationThresholdInPoints),
+            "baselineX": Double(responseMouseInterruptionBaselineLocation?.x ?? 0),
+            "baselineY": Double(responseMouseInterruptionBaselineLocation?.y ?? 0)
+        ])
+    }
+
+    private func startResponseMouseInterruptionPollingTaskIfNeeded() {
+        guard responseMouseInterruptionPollingTask == nil else { return }
+
+        responseMouseInterruptionPollingTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                guard !Task.isCancelled else { return }
+                _ = self?.shouldContinueCurrentComputerActionAfterMouseCheck()
+            }
+        }
+    }
+
+    private func stopResponseMouseInterruptionMonitor() {
+        stopCaptionBubbleKeyboardScrollMonitor()
+        if let responseMouseInterruptionMonitor {
+            NSEvent.removeMonitor(responseMouseInterruptionMonitor)
+        }
+        responseMouseInterruptionMonitor = nil
+        responseMouseInterruptionPollingTask?.cancel()
+        responseMouseInterruptionPollingTask = nil
+        responseMouseInterruptionBaselineLocation = nil
+        responseMouseInterruptionSuppressedUntil = Date.distantPast
+        isHandlingMouseInterruption = false
+    }
+
+    private func resetResponseMouseInterruptionBaselineToCurrentLocation() {
+        responseMouseInterruptionBaselineLocation = NSEvent.mouseLocation
+    }
+
+    private func suppressMouseInterruptionForSyntheticPointerEvents(seconds: TimeInterval? = nil) {
+        let suppressionSeconds = seconds ?? Self.syntheticMouseInterruptionSuppressionSeconds
+        responseMouseInterruptionSuppressedUntil = max(
+            responseMouseInterruptionSuppressedUntil,
+            Date().addingTimeInterval(suppressionSeconds)
+        )
+    }
+
+    private func handleResponseMouseEvent() {
+        _ = shouldContinueCurrentComputerActionAfterMouseCheck()
+    }
+
+    private func shouldContinueCurrentComputerActionAfterMouseCheck() -> Bool {
+        guard currentResponseTask?.isCancelled != true else { return false }
+        guard responseMouseInterruptionMonitor != nil else { return true }
+        guard Date() >= responseMouseInterruptionSuppressedUntil else {
+            resetResponseMouseInterruptionBaselineToCurrentLocation()
+            return true
+        }
+        guard let baselineLocation = responseMouseInterruptionBaselineLocation else {
+            resetResponseMouseInterruptionBaselineToCurrentLocation()
+            return true
+        }
+
+        let currentMouseLocation = NSEvent.mouseLocation
+        let mouseDelta = hypot(
+            currentMouseLocation.x - baselineLocation.x,
+            currentMouseLocation.y - baselineLocation.y
+        )
+        guard mouseDelta >= Self.userMouseMoveCancellationThresholdInPoints else { return true }
+
+        handleUserMouseInterruption(
+            mouseDelta: mouseDelta,
+            baselineLocation: baselineLocation,
+            currentLocation: currentMouseLocation
+        )
+        return false
+    }
+
+    private func handleUserMouseInterruption(
+        mouseDelta: CGFloat,
+        baselineLocation: CGPoint,
+        currentLocation: CGPoint
+    ) {
+        guard !isHandlingMouseInterruption else { return }
+        isHandlingMouseInterruption = true
+        didRequestMouseInterruptionForCurrentTurn = true
+
+        DotDebugLogger.log("response.mouse", "user moved mouse; handing back control", metadata: [
+            "mouseDelta": Double(mouseDelta),
+            "baselineX": Double(baselineLocation.x),
+            "baselineY": Double(baselineLocation.y),
+            "currentX": Double(currentLocation.x),
+            "currentY": Double(currentLocation.y),
+            "voiceState": String(describing: voiceState),
+            "responseTaskActive": currentResponseTask != nil
+        ])
+
+        currentResponseTask?.cancel()
+        elevenLabsTTSClient.stopPlayback()
+        systemSpeechSynthesizer?.stopSpeaking()
+        systemSpeechSynthesizer = nil
+        resetStreamingResponseStateForNextAgentTurn()
+        perStepNarrationChunks.removeAll()
+        perStepNarrationProcessingTask?.cancel()
+        perStepNarrationProcessingTask = nil
+        didEnqueueAnyPerStepNarrationForCurrentTurn = false
+        captionBubbleFadeOutTask?.cancel()
+        captionBubbleFadeOutTask = nil
+        clearDetectedElementLocation()
+        isShowingWaitingAnimation = false
+        voiceState = .idle
+        captionBubbleText = "handing back control"
+        captionBubbleVisible = true
+        scheduleTransientHideIfNeeded()
+
+        captionBubbleFadeOutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_300_000_000)
+            guard !Task.isCancelled else { return }
+            self?.captionBubbleVisible = false
+            self?.captionBubbleText = ""
+            self?.captionBubbleFadeOutTask = nil
+            self?.stopResponseMouseInterruptionMonitor()
+        }
+    }
+
+    private func dequeueNextStepNarrationChunk() -> PerStepNarrationChunk? {
         guard !perStepNarrationChunks.isEmpty else { return nil }
         return perStepNarrationChunks.removeFirst()
     }
@@ -4586,6 +5196,9 @@ final class CompanionManager: ObservableObject {
     /// turn doesn't linger on screen.
     private func cancelPerStepNarrationQueue() {
         elevenLabsTTSClient.stopPlayback()
+        systemSpeechSynthesizer?.stopSpeaking()
+        systemSpeechSynthesizer = nil
+        resetStreamingResponseStateForNextAgentTurn()
         perStepNarrationChunks.removeAll()
         perStepNarrationProcessingTask?.cancel()
         perStepNarrationProcessingTask = nil
@@ -4595,6 +5208,7 @@ final class CompanionManager: ObservableObject {
         captionBubbleVisible = false
         captionBubbleText = ""
         isShowingWaitingAnimation = false
+        stopResponseMouseInterruptionMonitor()
     }
 
     private func scheduleVoiceStateSafetyResetIfNeeded() {
@@ -4651,6 +5265,7 @@ final class CompanionManager: ObservableObject {
     /// if the user starts another push-to-talk interaction.
     private func scheduleTransientHideIfNeeded() {
         guard !isDotCursorEnabled && isOverlayVisible else { return }
+        guard !captionBubbleVisible else { return }
 
         transientHideTask?.cancel()
         DotDebugLogger.log("overlay.transient", "scheduled transient hide")
@@ -4682,10 +5297,46 @@ final class CompanionManager: ObservableObject {
     /// credits problem.
     private func speakSystemVoiceFallback(_ utterance: String) {
         guard !utterance.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard !isSpeechMuted else {
+            DotDebugLogger.log("tts.system", "fallback speech skipped because volume is muted", metadata: [
+                "utteranceLength": utterance.count
+            ])
+            return
+        }
 
+        systemSpeechSynthesizer?.stopSpeaking()
         let synthesizer = NSSpeechSynthesizer()
+        synthesizer.volume = Float(speechVolume)
+        systemSpeechSynthesizer = synthesizer
         synthesizer.startSpeaking(utterance)
         voiceState = .responding
+    }
+
+    private func presentInsufficientCreditsMessage() {
+        let displayMessage = VibeIdInsufficientCreditsError.markdownMessage
+        let spokenMessage = VibeIdInsufficientCreditsError.spokenMessage
+
+        transientHideTask?.cancel()
+        stopResponseMouseInterruptionMonitor()
+        resetStreamingResponseStateForNextAgentTurn()
+        captionBubbleFadeOutTask?.cancel()
+        captionBubbleFadeOutTask = nil
+        clearDetectedElementLocation()
+        isShowingWaitingAnimation = false
+
+        if !isOverlayVisible {
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+
+        captionBubbleText = displayMessage
+        captionBubbleVisible = true
+        keepCaptionBubbleVisibleUntilUserMouseMove()
+
+        DotDebugLogger.log("billing.credits", "presented insufficient credits message", metadata: [
+            "messageLength": displayMessage.count
+        ])
+        speakSystemVoiceFallback(spokenMessage)
     }
 
     /// True when the error looks like the agent-loop Task was cancelled —
@@ -4705,6 +5356,11 @@ final class CompanionManager: ObservableObject {
     }
 
     private func speakResponsePipelineErrorFallback(for error: Error) {
+        if VibeIdUserFacingError.insufficientCreditsErrorIfApplicable(error) != nil {
+            presentInsufficientCreditsMessage()
+            return
+        }
+
         if Self.isScreenCaptureTCCError(error) {
             markScreenContentCaptureUnavailable(
                 reason: "screen capture failed during response pipeline",
@@ -4823,14 +5479,21 @@ final class CompanionManager: ObservableObject {
                     from: estimatedBlueCursorStartLocation,
                     to: mappedClickLocation.globalLocation
                 )
-                try? await Task.sleep(nanoseconds: blueCursorFlightDelayNanoseconds)
+                do {
+                    try await Task.sleep(nanoseconds: blueCursorFlightDelayNanoseconds)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
 
                 // Visual + audible feedback fires in sync with the click so
                 // the cursor squash and the "tink" sound land on the impact.
                 clickPulseToken = UUID()
                 NSSound(named: "Tink")?.play()
 
+                suppressMouseInterruptionForSyntheticPointerEvents()
                 CompanionComputerController.click(atAppKitScreenLocation: mappedClickLocation.globalLocation)
+                resetResponseMouseInterruptionBaselineToCurrentLocation()
                 estimatedBlueCursorStartLocation = mappedClickLocation.globalLocation
                 print("🖱️ Computer control: clicked \"\(elementLabel ?? "element")\" at (\(Int(coordinate.x)), \(Int(coordinate.y)))")
                 DotDebugLogger.log("computer.actions", "click action completed", metadata: [
@@ -4841,7 +5504,11 @@ final class CompanionManager: ObservableObject {
                     "globalX": Int(mappedClickLocation.globalLocation.x),
                     "globalY": Int(mappedClickLocation.globalLocation.y)
                 ])
-                try? await Task.sleep(nanoseconds: 180_000_000)
+                do {
+                    try await Task.sleep(nanoseconds: 180_000_000)
+                } catch {
+                    return
+                }
 
             case .mediaControl(let mediaControlCommand):
                 DotDebugLogger.log("computer.actions", "media action requested", metadata: [
@@ -4852,18 +5519,32 @@ final class CompanionManager: ObservableObject {
                 DotDebugLogger.log("computer.actions", "media action completed", metadata: [
                     "command": mediaControlCommand.rawValue
                 ])
-                try? await Task.sleep(nanoseconds: 120_000_000)
+                do {
+                    try await Task.sleep(nanoseconds: 120_000_000)
+                } catch {
+                    return
+                }
 
             case .typeText(let text):
                 DotDebugLogger.log("computer.actions", "type action requested", metadata: [
                     "characterCount": text.count
                 ])
-                CompanionComputerController.typeText(text)
+                CompanionComputerController.typeText(
+                    text,
+                    shouldContinue: { [weak self] in
+                        self?.shouldContinueCurrentComputerActionAfterMouseCheck() ?? false
+                    }
+                )
+                guard !Task.isCancelled else { return }
                 print("⌨️ Computer control: typed \(text.count) character(s)")
                 DotDebugLogger.log("computer.actions", "type action completed", metadata: [
                     "characterCount": text.count
                 ])
-                try? await Task.sleep(nanoseconds: 80_000_000)
+                do {
+                    try await Task.sleep(nanoseconds: 80_000_000)
+                } catch {
+                    return
+                }
 
             case .keyPress(let keystroke):
                 DotDebugLogger.log("computer.actions", "key action requested", metadata: [
@@ -4874,7 +5555,11 @@ final class CompanionManager: ObservableObject {
                 DotDebugLogger.log("computer.actions", "key action completed", metadata: [
                     "keystroke": keystroke.humanReadableDescription
                 ])
-                try? await Task.sleep(nanoseconds: 80_000_000)
+                do {
+                    try await Task.sleep(nanoseconds: 80_000_000)
+                } catch {
+                    return
+                }
 
             case .scroll(let scrollDirection, let scrollAmount):
                 DotDebugLogger.log("computer.actions", "scroll action requested", metadata: [
@@ -4889,10 +5574,12 @@ final class CompanionManager: ObservableObject {
                 // .onChange reads the direction the moment the token bumps.
                 mostRecentScrollDirectionUnitVector = scrollDirection.visualHintUnitVector
                 scrollAnimationTriggerToken = UUID()
+                suppressMouseInterruptionForSyntheticPointerEvents(seconds: 0.25)
                 CompanionComputerController.scrollWheel(
                     direction: scrollDirection,
                     magnitude: scrollAmount.scrollLineMagnitude
                 )
+                resetResponseMouseInterruptionBaselineToCurrentLocation()
                 DotDebugLogger.log("computer.actions", "scroll action completed", metadata: [
                     "direction": scrollDirection.rawValue,
                     "amount": scrollAmount.rawValue
@@ -4902,7 +5589,11 @@ final class CompanionManager: ObservableObject {
                 DotDebugLogger.log("computer.actions", "pause action", metadata: [
                     "milliseconds": milliseconds
                 ])
-                try? await Task.sleep(nanoseconds: UInt64(max(0, milliseconds)) * 1_000_000)
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(max(0, milliseconds)) * 1_000_000)
+                } catch {
+                    return
+                }
 
             case .openURL(let urlString):
                 await executeOpenURL(urlString: urlString)

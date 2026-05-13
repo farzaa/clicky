@@ -1085,6 +1085,10 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     }
 
     private func userFacingErrorMessage(from error: Error, fallback: String) -> String {
+        if let billingMessage = VibeIdUserFacingError.plainMessageIfApplicable(error) {
+            return billingMessage
+        }
+
         if let localizedError = error as? LocalizedError,
            let errorDescription = localizedError.errorDescription?
             .trimmingCharacters(in: .whitespacesAndNewlines),

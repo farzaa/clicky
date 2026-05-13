@@ -10,8 +10,11 @@ import SwiftUI
 struct SubagentDotOverlayView: View {
 
     @ObservedObject var agentTaskManager: AgentTaskManager
+    @ObservedObject var videoMemoryMonitorManager: VideoMemoryMonitorManager
     var onTaskSelected: (UUID) -> Void
     var onTaskDeleted: (AgentTask) -> Void
+    var onVideoMonitorSelected: (VideoMemoryMonitor) -> Void
+    var onVideoMonitorStopped: (VideoMemoryMonitor) -> Void
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 10) {
@@ -24,6 +27,19 @@ struct SubagentDotOverlayView: View {
                     },
                     onDeleted: {
                         onTaskDeleted(task)
+                    }
+                )
+            }
+
+            ForEach(videoMemoryMonitorManager.activeMonitors) { monitor in
+                VideoMemoryMonitorDotButton(
+                    monitor: monitor,
+                    dotColor: colorForVideoMonitor(monitor),
+                    onSelected: {
+                        onVideoMonitorSelected(monitor)
+                    },
+                    onStopped: {
+                        onVideoMonitorStopped(monitor)
                     }
                 )
             }
@@ -51,6 +67,19 @@ struct SubagentDotOverlayView: View {
         }
         let stableIndex = stableValue % palette.count
         return palette[stableIndex]
+    }
+
+    private func colorForVideoMonitor(_ monitor: VideoMemoryMonitor) -> Color {
+        let palette: [Color] = [
+            Color(hex: "#38BDF8"),
+            Color(hex: "#2DD4BF"),
+            Color(hex: "#F59E0B"),
+            Color(hex: "#84CC16")
+        ]
+        let stableValue = monitor.taskID.unicodeScalars.reduce(0) { runningValue, scalar in
+            (runningValue + Int(scalar.value)) % palette.count
+        }
+        return palette[stableValue % palette.count]
     }
 }
 
@@ -156,6 +185,77 @@ private struct SubagentDotButton: View {
                 .foregroundColor(.white.opacity(0.75))
         case .queued, .planning, .running:
             EmptyView()
+        }
+    }
+}
+
+private struct VideoMemoryMonitorDotButton: View {
+
+    let monitor: VideoMemoryMonitor
+    let dotColor: Color
+    let onSelected: () -> Void
+    let onStopped: () -> Void
+
+    @State private var isPulsing: Bool = false
+    @State private var isHovered: Bool = false
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Button(action: onSelected) {
+                ZStack {
+                    Circle()
+                        .stroke(dotColor.opacity(isPulsing ? 0.18 : 0.42), lineWidth: 6)
+                        .frame(width: isPulsing ? 42 : 30, height: isPulsing ? 42 : 30)
+                        .blur(radius: 0.5)
+
+                    Circle()
+                        .fill(dotColor)
+                        .frame(width: isHovered ? 28 : 24, height: isHovered ? 28 : 24)
+                        .shadow(color: dotColor.opacity(0.55), radius: 9)
+                        .overlay(
+                            Circle()
+                                .stroke(Color.white.opacity(isHovered ? 0.72 : 0.34), lineWidth: 1)
+                        )
+
+                    Image(systemName: monitor.ioID.contains("screen") ? "display" : "video.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.black.opacity(0.70))
+                }
+                .frame(width: 46, height: 46)
+                .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .help("Video monitor \(monitor.taskID): \(monitor.displayTitle)")
+
+            if isHovered {
+                Button(action: onStopped) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(width: 15, height: 15)
+                        .background(DS.Colors.destructive)
+                        .clipShape(Circle())
+                        .overlay(
+                            Circle()
+                                .stroke(Color.white.opacity(0.55), lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .help("Stop VideoMemory monitor")
+                .offset(x: -1, y: -1)
+            }
+        }
+        .frame(width: 46, height: 46)
+        .animation(.spring(response: 0.18, dampingFraction: 0.68), value: isHovered)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.05).repeatForever(autoreverses: true)) {
+                isPulsing = true
+            }
         }
     }
 }

@@ -86,6 +86,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         if let agentTaskPanelManager {
             subagentDotOverlayManager = SubagentDotOverlayManager(
                 agentTaskManager: companionManager.agentTaskManager,
+                videoMemoryMonitorManager: companionManager.videoMemoryMonitorManager,
                 agentTaskPanelManager: agentTaskPanelManager
             )
         }

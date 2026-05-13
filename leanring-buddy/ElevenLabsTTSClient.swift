@@ -30,7 +30,15 @@ final class ElevenLabsTTSClient {
 
     /// Sends `text` to ElevenLabs TTS and plays the resulting audio.
     /// Throws on network or decoding errors. Cancellation-safe.
-    func speakText(_ text: String) async throws {
+    func speakText(_ text: String, volume: Double = 1.0) async throws {
+        let clampedVolume = Self.clampedPlaybackVolume(volume)
+        guard clampedVolume > 0 else {
+            DotDebugLogger.log("tts.elevenlabs", "request skipped because speech volume is muted", metadata: [
+                "textLength": text.count
+            ])
+            return
+        }
+
         let requestStartedAt = Date()
         var request = URLRequest(url: proxyURL)
         request.httpMethod = "POST"
@@ -52,7 +60,8 @@ final class ElevenLabsTTSClient {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         DotDebugLogger.log("tts.elevenlabs", "request started", metadata: [
-            "textLength": text.count
+            "textLength": text.count,
+            "volume": clampedVolume
         ])
         let (data, response) = try await session.data(for: request)
         let requestDurationMs = Int((Date().timeIntervalSince(requestStartedAt) * 1_000).rounded())
@@ -64,6 +73,13 @@ final class ElevenLabsTTSClient {
 
         guard (200...299).contains(httpResponse.statusCode) else {
             let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
+            if let insufficientCreditsError = VibeIdUserFacingError.insufficientCreditsErrorIfApplicable(
+                statusCode: httpResponse.statusCode,
+                responseBody: errorBody,
+                fallbackEndpoint: "tts"
+            ) {
+                throw insufficientCreditsError
+            }
             throw NSError(domain: "ElevenLabsTTS", code: httpResponse.statusCode,
                           userInfo: [NSLocalizedDescriptionKey: "TTS API error (\(httpResponse.statusCode)): \(errorBody)"])
         }
@@ -76,13 +92,23 @@ final class ElevenLabsTTSClient {
             "requestDurationMs": requestDurationMs
         ])
         let player = try AVAudioPlayer(data: data)
+        player.volume = Float(clampedVolume)
         self.audioPlayer = player
         player.play()
         DotDebugLogger.log("tts.elevenlabs", "playback started", metadata: [
             "audioDurationSeconds": player.duration,
-            "audioKilobytes": data.count / 1024
+            "audioKilobytes": data.count / 1024,
+            "volume": clampedVolume
         ])
         print("🔊 ElevenLabs TTS: playing \(data.count / 1024)KB audio")
+    }
+
+    func setPlaybackVolume(_ volume: Double) {
+        let clampedVolume = Self.clampedPlaybackVolume(volume)
+        audioPlayer?.volume = Float(clampedVolume)
+        if clampedVolume <= 0 {
+            stopPlayback()
+        }
     }
 
     /// Whether TTS audio is currently playing back.
@@ -111,5 +137,9 @@ final class ElevenLabsTTSClient {
     func stopPlayback() {
         audioPlayer?.stop()
         audioPlayer = nil
+    }
+
+    private static func clampedPlaybackVolume(_ volume: Double) -> Double {
+        min(max(volume, 0), 1)
     }
 }
