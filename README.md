@@ -50,7 +50,7 @@ npx wrangler secret put ASSEMBLYAI_API_KEY
 npx wrangler secret put ELEVENLABS_API_KEY
 npx wrangler secret put GOOGLE_OAUTH_CLIENT_ID
 npx wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET
-npx wrangler secret put DOT_ADMIN_TOKEN     # any random string — used for admin pages
+npx wrangler secret put DOT_ADMIN_TOKEN     # optional fallback for legacy per-project admin routes
 ```
 
 Configure the public URLs in `wrangler.toml` under `[vars]`:

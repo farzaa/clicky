@@ -15,16 +15,17 @@
 
     <section class="hero" style="margin-top: 36px;">
       <h1>Admin</h1>
-      <p>Paste your <code>DOT_ADMIN_TOKEN</code> below — it's stored only in this browser, only as long as the tab is open. The token is sent as <code>X-Admin-Token</code> on every admin call.</p>
+      <p>Sign in with the whitelisted Google account to view usage and users.</p>
     </section>
 
-    <section class="section">
+    <section class="section" id="authSection">
       <div class="card">
         <div class="stack">
-          <input id="adminTokenInput" class="input" type="password" placeholder="DOT_ADMIN_TOKEN" autocomplete="off" />
+          <p id="authStatus" class="muted" style="margin: 0;">Checking sign-in…</p>
           <div class="row" style="gap: 8px;">
-            <button id="loadButton" class="button">Load</button>
-            <button id="clearButton" class="button secondary">Clear</button>
+            <a id="signInButton" class="button" href="#" style="display: none;">Sign in with Google</a>
+            <button id="refreshButton" class="button" style="display: none;">Refresh</button>
+            <button id="signOutButton" class="button secondary" style="display: none;">Sign out</button>
           </div>
         </div>
         <p id="errorBox" class="error" style="display: none;"></p>
@@ -78,7 +79,9 @@
       var config = window.DOT_CONFIG || {};
       var vibeIdBaseURL = (config.vibeIdBaseURL || "").replace(/\/$/, "");
 
-      var ADMIN_TOKEN_STORAGE_KEY = "dot.adminToken";
+      var PROJECT_ID_FOR_AUTH = "dot";
+      var TOKEN_STORAGE_KEY = "vibeResearch.installToken";
+      var EMAIL_STORAGE_KEY = "vibeResearch.email";
 
       function showErrorMessage(messageText) {
         var errorBox = document.getElementById("errorBox");
@@ -87,6 +90,53 @@
       }
       function clearErrorMessage() {
         document.getElementById("errorBox").style.display = "none";
+      }
+      function setVisibility(elementId, visible) {
+        document.getElementById(elementId).style.display = visible ? "" : "none";
+      }
+
+      function consumeAuthCallbackFragmentIfPresent() {
+        if (!window.location.hash) return;
+        var fragmentParameters = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+        var receivedToken = fragmentParameters.get("token");
+        var receivedEmail = fragmentParameters.get("email");
+        if (receivedToken) {
+          localStorage.setItem(TOKEN_STORAGE_KEY, receivedToken);
+          if (receivedEmail) localStorage.setItem(EMAIL_STORAGE_KEY, receivedEmail);
+          history.replaceState(null, "", window.location.pathname + window.location.search);
+        }
+      }
+
+      function buildSignInUrl() {
+        var returnTo = window.location.origin.replace(/\/$/, "") + window.location.pathname;
+        return vibeIdBaseURL + "/auth/start?project=" + encodeURIComponent(PROJECT_ID_FOR_AUTH) +
+          "&return_to=" + encodeURIComponent(returnTo);
+      }
+
+      function hideAdminTables() {
+        setVisibility("usersSection", false);
+        setVisibility("usageSection", false);
+      }
+
+      function showSignedOut() {
+        hideAdminTables();
+        document.getElementById("authStatus").textContent = "Not signed in.";
+        document.getElementById("signInButton").setAttribute("href", buildSignInUrl());
+        setVisibility("signInButton", true);
+        setVisibility("refreshButton", false);
+        setVisibility("signOutButton", false);
+      }
+
+      function showSignedIn(emailAddress) {
+        document.getElementById("authStatus").textContent = "Signed in as " + emailAddress + ".";
+        setVisibility("signInButton", false);
+        setVisibility("refreshButton", true);
+        setVisibility("signOutButton", true);
+      }
+
+      function clearStoredAuth() {
+        localStorage.removeItem(TOKEN_STORAGE_KEY);
+        localStorage.removeItem(EMAIL_STORAGE_KEY);
       }
 
       function formatUnixSeconds(unixSeconds) {
@@ -104,17 +154,45 @@
 
       async function loadAdminData() {
         clearErrorMessage();
-        var enteredToken = document.getElementById("adminTokenInput").value.trim();
-        if (!enteredToken) { showErrorMessage("Paste an admin token first."); return; }
-        sessionStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, enteredToken);
+        var installToken = localStorage.getItem(TOKEN_STORAGE_KEY);
+        if (!installToken) {
+          showSignedOut();
+          return;
+        }
+
+        var authorizationHeaders = { authorization: "Bearer " + installToken };
 
         try {
+          var meResponse = await fetch(vibeIdBaseURL + "/auth/me", { headers: authorizationHeaders });
+          if (meResponse.status === 401) {
+            clearStoredAuth();
+            showSignedOut();
+            showErrorMessage("Your sign-in expired. Sign in again.");
+            return;
+          }
+          if (!meResponse.ok) {
+            hideAdminTables();
+            showErrorMessage("Couldn't load your account (" + meResponse.status + ").");
+            return;
+          }
+          var meJson = await meResponse.json();
+          var signedInEmail = meJson.user && meJson.user.email ? meJson.user.email : localStorage.getItem(EMAIL_STORAGE_KEY) || "unknown account";
+          localStorage.setItem(EMAIL_STORAGE_KEY, signedInEmail);
+          showSignedIn(signedInEmail);
+
           var [usersResponse, usageResponse] = await Promise.all([
-            fetch(vibeIdBaseURL + "/admin/users", { headers: { "x-admin-token": enteredToken } }),
-            fetch(vibeIdBaseURL + "/admin/usage", { headers: { "x-admin-token": enteredToken } }),
+            fetch(vibeIdBaseURL + "/admin/users", { headers: authorizationHeaders }),
+            fetch(vibeIdBaseURL + "/admin/usage", { headers: authorizationHeaders }),
           ]);
           if (usersResponse.status === 401 || usageResponse.status === 401) {
-            showErrorMessage("Admin token rejected. Check your secret value.");
+            clearStoredAuth();
+            showSignedOut();
+            showErrorMessage("Your sign-in expired. Sign in again.");
+            return;
+          }
+          if (usersResponse.status === 403 || usageResponse.status === 403) {
+            hideAdminTables();
+            showErrorMessage("This Google account is not on the Dot admin allowlist.");
             return;
           }
           if (!usersResponse.ok) { showErrorMessage("Failed to load users (" + usersResponse.status + ")"); return; }
@@ -124,9 +202,10 @@
           var usageJson = await usageResponse.json();
           renderUsersTable(usersJson.users || []);
           renderUsageTable(usageJson.usage || []);
-          document.getElementById("usersSection").style.display = "";
-          document.getElementById("usageSection").style.display = "";
+          setVisibility("usersSection", true);
+          setVisibility("usageSection", true);
         } catch (networkError) {
+          hideAdminTables();
           showErrorMessage("Couldn't reach the identity server: " + networkError.message);
         }
       }
@@ -185,19 +264,24 @@
         });
       }
 
-      // Restore the admin token from sessionStorage so a refresh doesn't lose it.
-      var rememberedToken = sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY);
-      if (rememberedToken) {
-        document.getElementById("adminTokenInput").value = rememberedToken;
-      }
-      document.getElementById("loadButton").addEventListener("click", loadAdminData);
-      document.getElementById("clearButton").addEventListener("click", function () {
-        sessionStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
-        document.getElementById("adminTokenInput").value = "";
-        document.getElementById("usersSection").style.display = "none";
-        document.getElementById("usageSection").style.display = "none";
+      consumeAuthCallbackFragmentIfPresent();
+      document.getElementById("signInButton").setAttribute("href", buildSignInUrl());
+      document.getElementById("refreshButton").addEventListener("click", loadAdminData);
+      document.getElementById("signOutButton").addEventListener("click", async function () {
+        var installToken = localStorage.getItem(TOKEN_STORAGE_KEY);
+        if (installToken) {
+          try {
+            await fetch(vibeIdBaseURL + "/auth/signout", {
+              method: "POST",
+              headers: { authorization: "Bearer " + installToken },
+            });
+          } catch (_ignored) { /* best-effort sign-out */ }
+        }
+        clearStoredAuth();
         clearErrorMessage();
+        showSignedOut();
       });
+      loadAdminData();
     })();
   </script>
 </body>

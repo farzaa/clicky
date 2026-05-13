@@ -60,12 +60,14 @@ Edit `website/dot/config.js` and replace:
 ## Admin
 
 `admin.html` is a one-page UI you reach by typing the URL directly — there's no
-link from the rest of the site. Paste the value of the Worker secret
-`DOT_ADMIN_TOKEN` into the input. The token is held in `sessionStorage` for
-that browser tab only.
+link from the rest of the site. It uses the same Google sign-in/install-token
+flow as the account page, then calls the admin APIs with
+`Authorization: Bearer <install_token>`. The `vibe-id` backend only accepts
+that token when the signed-in Google email is in `VIBE_ID_ADMIN_EMAILS`.
 
 It calls two routes:
 - `GET /admin/users` — list users with today's usage and limits.
 - `GET /admin/usage` — last 30 days, bucketed by day + endpoint.
 
-Both require `X-Admin-Token: <DOT_ADMIN_TOKEN>`.
+Both routes still accept `X-Admin-Token: <VIBE_ID_ADMIN_TOKEN>` as a fallback
+for scripts and emergency access.
