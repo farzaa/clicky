@@ -1287,7 +1287,12 @@ final class CompanionManager: ObservableObject {
                     },
                     submitDraftText: { [weak self] finalTranscript in
                         self?.lastTranscript = finalTranscript
-                        print("🗣️ Companion received transcript: \(finalTranscript)")
+                        // Length only — never print the transcript text itself.
+                        // stdout lands in Console.app / unified logging and can
+                        // include anything the user voice-typed (passwords,
+                        // private notes, etc.). Other processes running as the
+                        // same user can read those logs.
+                        print("🗣️ Companion received transcript (length=\(finalTranscript.count))")
                         DotDebugLogger.log("dictation.final", "companion received transcript", metadata: [
                             "transcriptLength": finalTranscript.count
                         ])
@@ -4117,6 +4122,16 @@ final class CompanionManager: ObservableObject {
             )
 
         case .openLocalPath(let path, let applicationNameOrBundleIdentifier, let preferNewApplicationInstance):
+            if let openPathRejectionReason = Self.openLocalPathRejectionReason(for: path) {
+                DotDebugLogger.log("computer.actions", "open_local_path rejected", metadata: [
+                    "path": path,
+                    "reason": openPathRejectionReason
+                ])
+                return AgentToolExecutionResult(
+                    toolResultContent: "error: open_local_path rejected: \(openPathRejectionReason)",
+                    didTriggerBailOut: false
+                )
+            }
             let openPathResult = await CompanionComputerController.openLocalPath(
                 rawPath: path,
                 applicationNameOrBundleIdentifier: applicationNameOrBundleIdentifier,
@@ -4189,6 +4204,16 @@ final class CompanionManager: ObservableObject {
             )
 
         case .navigateBrowserToURL(let url):
+            if let navigateRejectionReason = Self.urlRejectionReason(for: url, context: .browserAddressBar) {
+                DotDebugLogger.log("computer.actions", "navigate_browser rejected", metadata: [
+                    "urlLength": url.count,
+                    "reason": navigateRejectionReason
+                ])
+                return AgentToolExecutionResult(
+                    toolResultContent: "error: navigate_browser rejected: \(navigateRejectionReason)",
+                    didTriggerBailOut: false
+                )
+            }
             await performComputerControlActions(
                 [.navigateBrowserToURL(url)],
                 screenCaptures: originatingScreenCaptures
@@ -4199,6 +4224,17 @@ final class CompanionManager: ObservableObject {
             )
 
         case .openNewBrowserTab(let initialURL):
+            if let initialURL,
+               let newTabRejectionReason = Self.urlRejectionReason(for: initialURL, context: .browserAddressBar) {
+                DotDebugLogger.log("computer.actions", "open_new_tab rejected", metadata: [
+                    "urlLength": initialURL.count,
+                    "reason": newTabRejectionReason
+                ])
+                return AgentToolExecutionResult(
+                    toolResultContent: "error: open_new_tab rejected: \(newTabRejectionReason)",
+                    didTriggerBailOut: false
+                )
+            }
             await performComputerControlActions(
                 [.openNewBrowserTab(initialURL: initialURL)],
                 screenCaptures: originatingScreenCaptures
@@ -4325,6 +4361,16 @@ final class CompanionManager: ObservableObject {
             )
 
         case .openURL(let urlString):
+            if let openURLRejectionReason = Self.urlRejectionReason(for: urlString, context: .launchServices) {
+                DotDebugLogger.log("computer.actions", "open_url rejected", metadata: [
+                    "urlLength": urlString.count,
+                    "reason": openURLRejectionReason
+                ])
+                return AgentToolExecutionResult(
+                    toolResultContent: "error: open_url rejected: \(openURLRejectionReason)",
+                    didTriggerBailOut: false
+                )
+            }
             DotDebugLogger.log("computer.actions", "open_url action requested", metadata: [
                 "urlLength": urlString.count
             ])
@@ -6202,6 +6248,88 @@ final class CompanionManager: ObservableObject {
         default:
             return "\(executableName) is not on the local command allowlist"
         }
+    }
+
+    /// Caller-side context for `urlRejectionReason`: navigate_browser /
+    /// open_new_tab type the URL into a browser address bar and only make
+    /// sense for http(s), while open_url routes through Launch Services and
+    /// is the right tool for `mailto:` / `tel:` user intents too.
+    enum URLOpenContext {
+        case browserAddressBar
+        case launchServices
+    }
+
+    /// Returns a rejection reason if the given URL would be dispatched to a
+    /// dangerous handler, or nil if it's allowed. We piggyback on the fact
+    /// that `CompanionComputerController.normalizeURLString` only passes
+    /// through a fixed allowlist of scheme prefixes; everything else gets
+    /// `https://` prepended and either renders harmless or fails to parse.
+    /// So our rejection only needs to cover those passed-through prefixes
+    /// that aren't safe: `file://` (local-file exfil), `ftp(s)://` (data
+    /// exfil to attacker-controlled server). For browser address bar we
+    /// also reject `mailto:`/`tel:` because those don't make sense there.
+    ///
+    /// Bare hosts like `"google.com"` or `"localhost:3000"` are allowed.
+    private nonisolated static func urlRejectionReason(
+        for rawURLString: String,
+        context: URLOpenContext
+    ) -> String? {
+        let trimmedRawURLString = rawURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedRawURLString.isEmpty else {
+            return "url is empty"
+        }
+        let lowercaseURLString = trimmedRawURLString.lowercased()
+
+        // Always-blocked: schemes the normalizer passes through that would
+        // dispatch to a dangerous handler. `file://` reads local files;
+        // `ftp(s)://` exfiltrates over a non-browser channel.
+        let alwaysBlockedSchemePrefixes = ["file://", "ftp://", "ftps://"]
+        if let blockedSchemePrefix = alwaysBlockedSchemePrefixes.first(where: {
+            lowercaseURLString.hasPrefix($0)
+        }) {
+            let schemeNameWithoutDelimiter = blockedSchemePrefix
+                .replacingOccurrences(of: "://", with: "")
+            return "scheme \"\(schemeNameWithoutDelimiter)\" is not allowed"
+        }
+
+        // Browser address bar additionally rejects opaque schemes — they
+        // either won't navigate or will pop unrelated apps mid-task.
+        if context == .browserAddressBar {
+            let browserBlockedOpaqueSchemePrefixes = ["mailto:", "tel:"]
+            if let blockedOpaquePrefix = browserBlockedOpaqueSchemePrefixes.first(where: {
+                lowercaseURLString.hasPrefix($0)
+            }) {
+                let schemeNameWithoutColon = String(blockedOpaquePrefix.dropLast())
+                return "scheme \"\(schemeNameWithoutColon)\" is not allowed in the browser address bar"
+            }
+        }
+
+        return nil
+    }
+
+    /// Returns a rejection reason if the given local path should not be
+    /// opened via Launch Services, or nil if it's allowed. Blocks file types
+    /// that execute code or install software on open: `.command`/`.tool` run
+    /// in Terminal, `.app` launches an app bundle, `.scpt`/`.applescript`/
+    /// `.scptd`/`.workflow` execute scripts, `.dmg`/`.pkg`/`.mpkg` mount /
+    /// install. A prompt injection from a screenshot could otherwise convince
+    /// the model to "open this helpful file" and silently get code execution.
+    private nonisolated static func openLocalPathRejectionReason(for rawPath: String) -> String? {
+        let trimmedRawPath = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedRawPath.isEmpty else { return "path is empty" }
+        let pathExtension = (trimmedRawPath as NSString).pathExtension.lowercased()
+        let blockedExtensions: Set<String> = [
+            "command", "tool", "terminal",
+            "app",
+            "scpt", "scptd", "applescript",
+            "workflow",
+            "dmg", "pkg", "mpkg",
+            "xpc"
+        ]
+        if blockedExtensions.contains(pathExtension) {
+            return "opening .\(pathExtension) files is not allowed because they execute code or install software"
+        }
+        return nil
     }
 
     private nonisolated static func runZipProcess(
