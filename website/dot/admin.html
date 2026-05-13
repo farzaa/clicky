@@ -8,21 +8,23 @@
 </head>
 <body class="admin-page">
   <div class="page">
-    <header class="row between">
+    <header class="admin-header">
       <a href="index.html" class="brand"><span class="brand-dot"></span> Dot · admin</a>
-      <a href="index.html" class="muted">← Home</a>
+      <a href="index.html" class="admin-home-link">← Home</a>
     </header>
 
-    <section class="hero" style="margin-top: 36px;">
-      <h1>Admin</h1>
-      <p>Sign in with the whitelisted Google account to view usage and users.</p>
+    <section class="admin-hero">
+      <div>
+        <h1>Admin</h1>
+        <p>Usage, spend, users, and release activity for Dot.</p>
+      </div>
     </section>
 
-    <section class="section" id="authSection">
-      <div class="card">
-        <div class="stack">
+    <section class="admin-auth-section" id="authSection">
+      <div class="auth-card">
+        <div class="auth-row">
           <p id="authStatus" class="muted" style="margin: 0;">Checking sign-in…</p>
-          <div class="row" style="gap: 8px;">
+          <div class="admin-actions">
             <a id="signInButton" class="button" href="#" style="display: none;">Sign in with Google</a>
             <button id="refreshButton" class="button" style="display: none;">Refresh</button>
             <button id="signOutButton" class="button secondary" style="display: none;">Sign out</button>
@@ -32,9 +34,36 @@
       </div>
     </section>
 
-    <section class="section" id="diagnosticsSection" style="display: none;">
+    <section class="section admin-section" id="diagnosticsSection" style="display: none;">
       <h2>Founder snapshot</h2>
       <div id="metricGrid" class="metric-grid"></div>
+
+      <div class="card funnel-card">
+        <div class="admin-card-header">
+          <div>
+            <h3>Activation funnel</h3>
+            <p>First-party Dot lifecycle events. Uninstalls are inferred from inactive devices.</p>
+          </div>
+          <span id="funnelWindowLabel" class="muted">last 30 days</span>
+        </div>
+        <div id="funnelIssueMap" class="funnel-issue-map"></div>
+        <div id="funnelStages" class="funnel-stages"></div>
+      </div>
+
+      <div class="dashboard-grid funnel-support-grid">
+        <div class="card">
+          <h3>Dropoffs</h3>
+          <div id="funnelDropoffs" class="stack"></div>
+        </div>
+        <div class="card">
+          <h3>Permissions</h3>
+          <div id="permissionBreakdown" class="permission-grid"></div>
+        </div>
+        <div class="card">
+          <h3>Inferred inactivity</h3>
+          <div id="churnSummary" class="stack"></div>
+        </div>
+      </div>
 
       <div class="dashboard-grid">
         <div class="card">
@@ -56,73 +85,81 @@
         </div>
       </div>
 
-      <div class="card" style="padding: 0; margin-top: 16px;">
-        <table>
-          <thead>
-            <tr>
-              <th>Day</th>
-              <th>New users</th>
-              <th>Active users</th>
-              <th>Usage events</th>
-              <th>Spend</th>
-            </tr>
-          </thead>
-          <tbody id="dailySeriesTableBody"></tbody>
-        </table>
+      <div class="card table-card">
+        <div class="table-scroll">
+          <table class="admin-table">
+            <thead>
+              <tr>
+                <th>Day</th>
+                <th>New users</th>
+                <th>Active users</th>
+                <th>Usage events</th>
+                <th>Spend</th>
+              </tr>
+            </thead>
+            <tbody id="dailySeriesTableBody"></tbody>
+          </table>
+        </div>
       </div>
 
-      <div class="card" style="padding: 0; margin-top: 16px;">
-        <table>
-          <thead>
-            <tr>
-              <th>Project</th>
-              <th>Endpoint</th>
-              <th>Active users</th>
-              <th>Events</th>
-              <th>Total amount</th>
-            </tr>
-          </thead>
-          <tbody id="usageLast24HoursTableBody"></tbody>
-        </table>
+      <div class="card table-card">
+        <div class="table-scroll">
+          <table class="admin-table">
+            <thead>
+              <tr>
+                <th>Project</th>
+                <th>Endpoint</th>
+                <th>Active users</th>
+                <th>Events</th>
+                <th>Total amount</th>
+              </tr>
+            </thead>
+            <tbody id="usageLast24HoursTableBody"></tbody>
+          </table>
+        </div>
       </div>
     </section>
 
-    <section class="section" id="usersSection" style="display: none;">
+    <section class="section admin-section" id="usersSection" style="display: none;">
       <h2>Users</h2>
-      <div class="card" style="padding: 0;">
-        <table>
-          <thead>
-            <tr>
-              <th>Email</th>
-              <th>Signed up</th>
-              <th>Status</th>
-              <th>Last seen</th>
-              <th>Balance</th>
-              <th>Spend 24h</th>
-              <th>Spend 7d</th>
-              <th>Usage 24h</th>
-            </tr>
-          </thead>
-          <tbody id="usersTableBody"></tbody>
-        </table>
+      <div class="card table-card">
+        <div class="table-scroll">
+          <table class="admin-table users-table">
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Signed up</th>
+                <th>Status</th>
+                <th>Last seen</th>
+                <th>Balance</th>
+                <th>Spend 24h</th>
+                <th>Spend 7d</th>
+                <th>Usage 24h</th>
+              </tr>
+            </thead>
+            <tbody id="usersTableBody"></tbody>
+          </table>
+        </div>
       </div>
     </section>
 
-    <section class="section" id="usageSection" style="display: none;">
+    <section class="section admin-section" id="usageSection" style="display: none;">
       <h2>Usage (last 30 days)</h2>
-      <div class="card" style="padding: 0;">
-        <table>
-          <thead>
-            <tr>
-              <th>Day</th>
-              <th>Project</th>
-              <th>Endpoint</th>
-              <th>Calls</th>
-              <th>Total amount</th>
-            </tr>
-          </thead>
-          <tbody id="usageTableBody"></tbody>
-        </table>
+      <div class="card table-card">
+        <div class="table-scroll">
+          <table class="admin-table">
+            <thead>
+              <tr>
+                <th>Day</th>
+                <th>Project</th>
+                <th>Endpoint</th>
+                <th>Calls</th>
+                <th>Total amount</th>
+              </tr>
+            </thead>
+            <tbody id="usageTableBody"></tbody>
+          </table>
+        </div>
       </div>
     </section>
 
@@ -202,7 +239,13 @@
       function formatUnixSeconds(unixSeconds) {
         if (!unixSeconds) return "—";
         var date = new Date(unixSeconds * 1000);
-        return date.toLocaleString();
+        return date.toLocaleString(undefined, {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        });
       }
 
       function formatInteger(value) {
@@ -286,6 +329,7 @@
 
       function renderDiagnostics(summaryData) {
         renderMetricGrid(summaryData);
+        renderFunnel(summaryData.funnel || null);
         renderDownloadsSummary(summaryData.downloads || {});
         renderRecentSignupsTable(summaryData.recent_signups || []);
         renderDailySeriesTable(summaryData.daily_series || []);
@@ -319,6 +363,149 @@
         }).join("");
       }
 
+      function formatPercent(percentValue) {
+        if (percentValue == null || !Number.isFinite(Number(percentValue))) return "—";
+        return Number(percentValue).toFixed(1).replace(/\.0$/, "") + "%";
+      }
+
+      function finiteNumberOrNull(rawValue) {
+        var numberValue = Number(rawValue);
+        return Number.isFinite(numberValue) ? numberValue : null;
+      }
+
+      function getDropoffHealth(dropoff) {
+        var conversionPercent = finiteNumberOrNull(dropoff.conversion_percent);
+        if (conversionPercent == null) {
+          return Number(dropoff.lost_count || 0) > 0
+            ? { className: "is-warning", label: "needs data" }
+            : { className: "is-ok", label: "ok" };
+        }
+        if (conversionPercent < 60) return { className: "is-critical", label: "critical" };
+        if (conversionPercent < 80) return { className: "is-warning", label: "watch" };
+        return { className: "is-ok", label: "healthy" };
+      }
+
+      function findWorstDropoff(dropoffs) {
+        return dropoffs.filter(function (dropoff) {
+          return Number(dropoff.lost_count || 0) > 0;
+        }).sort(function (firstDropoff, secondDropoff) {
+          var firstConversion = finiteNumberOrNull(firstDropoff.conversion_percent);
+          var secondConversion = finiteNumberOrNull(secondDropoff.conversion_percent);
+          if (firstConversion != null && secondConversion != null && firstConversion !== secondConversion) {
+            return firstConversion - secondConversion;
+          }
+          if (firstConversion != null && secondConversion == null) return -1;
+          if (firstConversion == null && secondConversion != null) return 1;
+          return Number(secondDropoff.lost_count || 0) - Number(firstDropoff.lost_count || 0);
+        })[0] || null;
+      }
+
+      function formatMetricLabel(rawLabel) {
+        return String(rawLabel || "unknown").replace(/_/g, " ");
+      }
+
+      function renderFunnel(funnelData) {
+        var funnelIssueMap = document.getElementById("funnelIssueMap");
+        var funnelStages = document.getElementById("funnelStages");
+        var funnelDropoffs = document.getElementById("funnelDropoffs");
+        var permissionBreakdown = document.getElementById("permissionBreakdown");
+        var churnSummary = document.getElementById("churnSummary");
+        document.getElementById("funnelWindowLabel").textContent = funnelData && funnelData.window ? "last " + funnelData.window : "last 30 days";
+
+        if (!funnelData) {
+          var missingText = "<p class='muted' style='margin: 0;'>Funnel metrics will appear after the updated vibe-id backend is deployed.</p>";
+          funnelIssueMap.innerHTML = missingText;
+          funnelStages.innerHTML = missingText;
+          funnelDropoffs.innerHTML = missingText;
+          permissionBreakdown.innerHTML = missingText;
+          churnSummary.innerHTML = missingText;
+          return;
+        }
+
+        var stages = funnelData.stages || [];
+        funnelStages.innerHTML = stages.map(function (stage, index) {
+          var previousStage = index > 0 ? stages[index - 1] : null;
+          var previousCount = previousStage ? Number(previousStage.count || 0) : 0;
+          var stageCount = Number(stage.count || 0);
+          var conversionText = previousStage && previousCount > 0 ? formatPercent((stageCount / previousCount) * 100) + " from prior" : stage.window || "";
+          return "<div class='funnel-stage'>" +
+            "<div class='funnel-stage-top'>" +
+              "<span>" + escapeHtml(stage.label) + "</span>" +
+              "<strong>" + formatInteger(stageCount) + "</strong>" +
+            "</div>" +
+            "<div class='funnel-stage-detail'>" +
+              "<span>" + escapeHtml(stage.detail || stage.window || "") + "</span>" +
+              "<span>" + escapeHtml(conversionText) + "</span>" +
+            "</div>" +
+          "</div>";
+        }).join("") || "<p class='muted' style='margin: 0;'>No funnel stages yet.</p>";
+
+        var dropoffs = funnelData.dropoffs || [];
+        var worstDropoff = findWorstDropoff(dropoffs);
+        if (dropoffs.length === 0) {
+          funnelIssueMap.innerHTML = "<p class='muted' style='margin: 0;'>No dropoff data yet.</p>";
+        } else {
+          var calloutHealth = worstDropoff ? getDropoffHealth(worstDropoff) : { className: "is-ok", label: "healthy" };
+          var calloutTitle = worstDropoff ? worstDropoff.label : "No obvious bottleneck";
+          var calloutDetail = worstDropoff
+            ? formatInteger(worstDropoff.lost_count) + " lost, " + formatPercent(worstDropoff.conversion_percent) + " converted"
+            : "Every tracked transition is currently healthy.";
+          var issueRows = dropoffs.map(function (dropoff) {
+            var health = getDropoffHealth(dropoff);
+            var conversionPercent = finiteNumberOrNull(dropoff.conversion_percent);
+            var barWidthPercent = conversionPercent == null ? 0 : Math.max(0, Math.min(100, conversionPercent));
+            return "<div class='funnel-issue-row " + health.className + "'>" +
+              "<div class='funnel-issue-copy'>" +
+                "<div class='funnel-issue-label'>" +
+                  "<span>" + escapeHtml(dropoff.label) + "</span>" +
+                  "<strong>" + escapeHtml(health.label) + "</strong>" +
+                "</div>" +
+                "<div class='funnel-issue-meta'>" +
+                  "<span>" + formatPercent(dropoff.conversion_percent) + " converted</span>" +
+                  "<span>" + formatInteger(dropoff.lost_count) + " lost</span>" +
+                "</div>" +
+              "</div>" +
+              "<div class='funnel-issue-bar' aria-hidden='true'><span style='width: " + barWidthPercent + "%'></span></div>" +
+            "</div>";
+          }).join("");
+          funnelIssueMap.innerHTML = "<div class='funnel-issue-callout " + calloutHealth.className + "'>" +
+              "<span>Biggest dropoff</span>" +
+              "<strong>" + escapeHtml(calloutTitle) + "</strong>" +
+              "<p>" + escapeHtml(calloutDetail) + "</p>" +
+            "</div>" +
+            "<div class='funnel-issue-list'>" + issueRows + "</div>";
+        }
+
+        funnelDropoffs.innerHTML = dropoffs.map(function (dropoff) {
+          return "<div class='compact-row dropoff-row'>" +
+            "<span>" + escapeHtml(dropoff.label) + "</span>" +
+            "<strong>" + formatInteger(dropoff.lost_count) + " lost · " + formatPercent(dropoff.conversion_percent) + "</strong>" +
+          "</div>";
+        }).join("") || "<p class='muted' style='margin: 0;'>No dropoff data yet.</p>";
+
+        var permissions = funnelData.permissions || [];
+        permissionBreakdown.innerHTML = permissions.map(function (permissionRow) {
+          return "<div class='permission-item'>" +
+            "<span>" + escapeHtml(formatMetricLabel(permissionRow.permission)) + "</span>" +
+            "<strong>" + formatInteger(permissionRow.users_30d) + "</strong>" +
+          "</div>";
+        }).join("") || "<p class='muted' style='margin: 0;'>No permission grants recorded yet.</p>";
+
+        var churn = funnelData.inferred_churn || {};
+        var churnRows = [
+          ["Active devices", formatInteger(churn.active_devices)],
+          ["Seen in 7d", formatInteger(churn.seen_devices_7d)],
+          ["Inactive 7d", formatInteger(churn.inactive_devices_7d)],
+          ["Inactive 14d", formatInteger(churn.inactive_devices_14d)],
+          ["Inactive 30d", formatInteger(churn.inactive_devices_30d)],
+          ["Signed in, never used", formatInteger(churn.signed_in_never_used_devices)],
+          ["One-and-done users", formatInteger(churn.one_and_done_users_30d)],
+        ];
+        churnSummary.innerHTML = churnRows.map(function (row) {
+          return "<div class='compact-row'><span>" + escapeHtml(row[0]) + "</span><strong>" + escapeHtml(row[1]) + "</strong></div>";
+        }).join("");
+      }
+
       function renderDownloadsSummary(downloads) {
         var downloadsSummary = document.getElementById("downloadsSummary");
         if (!downloads.ok) {
@@ -346,9 +533,9 @@
         signupRows.slice(0, 8).forEach(function (signupRow) {
           var rowElement = document.createElement("tr");
           rowElement.innerHTML =
-            "<td>" + escapeHtml(signupRow.email) + "</td>" +
-            "<td>" + formatUnixSeconds(signupRow.created_at) + "</td>" +
-            "<td>" + formatUnixSeconds(signupRow.last_seen_at) + "</td>";
+            "<td class='email-cell'>" + escapeHtml(signupRow.email) + "</td>" +
+            "<td class='date-cell'>" + formatUnixSeconds(signupRow.created_at) + "</td>" +
+            "<td class='date-cell'>" + formatUnixSeconds(signupRow.last_seen_at) + "</td>";
           tableBody.appendChild(rowElement);
         });
         if (signupRows.length === 0) {
@@ -362,11 +549,11 @@
         dailyRows.slice().reverse().forEach(function (dailyRow) {
           var rowElement = document.createElement("tr");
           rowElement.innerHTML =
-            "<td>" + escapeHtml(dailyRow.day) + "</td>" +
-            "<td>" + formatInteger(dailyRow.new_users) + "</td>" +
-            "<td>" + formatInteger(dailyRow.active_users) + "</td>" +
-            "<td>" + formatInteger(dailyRow.usage_events) + "</td>" +
-            "<td>" + formatCents(dailyRow.spent_cents) + "</td>";
+            "<td class='date-cell'>" + escapeHtml(dailyRow.day) + "</td>" +
+            "<td class='numeric-cell'>" + formatInteger(dailyRow.new_users) + "</td>" +
+            "<td class='numeric-cell'>" + formatInteger(dailyRow.active_users) + "</td>" +
+            "<td class='numeric-cell'>" + formatInteger(dailyRow.usage_events) + "</td>" +
+            "<td class='numeric-cell'>" + formatCents(dailyRow.spent_cents) + "</td>";
           tableBody.appendChild(rowElement);
         });
         if (dailyRows.length === 0) {
@@ -382,9 +569,9 @@
           rowElement.innerHTML =
             "<td>" + escapeHtml(usageRow.project_id || "—") + "</td>" +
             "<td>" + escapeHtml(usageRow.endpoint || "—") + "</td>" +
-            "<td>" + formatInteger(usageRow.active_users) + "</td>" +
-            "<td>" + formatInteger(usageRow.event_count) + "</td>" +
-            "<td>" + formatInteger(usageRow.total_amount) + "</td>";
+            "<td class='numeric-cell'>" + formatInteger(usageRow.active_users) + "</td>" +
+            "<td class='numeric-cell'>" + formatInteger(usageRow.event_count) + "</td>" +
+            "<td class='numeric-cell'>" + formatInteger(usageRow.total_amount) + "</td>";
           tableBody.appendChild(rowElement);
         });
         if (usageRows.length === 0) {
@@ -392,17 +579,16 @@
         }
       }
 
-      function summarizeUsageByProject(usageByProject) {
-        // Render as: "dot: chat 3, tts 412 · swarmlab: chat 1"
+      function renderUsageBreakdown(usageByProject) {
         if (!usageByProject || Object.keys(usageByProject).length === 0) return "—";
         return Object.entries(usageByProject).map(function (projectEntry) {
           var projectId = projectEntry[0];
           var endpoints = projectEntry[1] || {};
           var endpointSummary = Object.entries(endpoints).map(function (endpointEntry) {
-            return endpointEntry[0] + " " + endpointEntry[1];
-          }).join(", ");
-          return projectId + ": " + endpointSummary;
-        }).join(" · ");
+            return "<span class='usage-chip'><span>" + escapeHtml(endpointEntry[0]) + "</span><strong>" + formatInteger(endpointEntry[1]) + "</strong></span>";
+          }).join("");
+          return "<div class='usage-breakdown'><span class='usage-project'>" + escapeHtml(projectId) + "</span>" + endpointSummary + "</div>";
+        }).join("");
       }
 
       function renderUsersTable(userRows) {
@@ -410,15 +596,16 @@
         tableBody.innerHTML = "";
         userRows.forEach(function (userRow) {
           var rowElement = document.createElement("tr");
+          var statusClassName = userRow.status === "active" ? "status-pill" : "status-pill is-muted";
           rowElement.innerHTML =
-            "<td>" + escapeHtml(userRow.email) + "</td>" +
-            "<td>" + formatUnixSeconds(userRow.created_at) + "</td>" +
-            "<td>" + escapeHtml(userRow.status) + "</td>" +
-            "<td>" + formatUnixSeconds(userRow.last_seen_at) + "</td>" +
-            "<td>" + formatCents(userRow.balance_cents) + "</td>" +
-            "<td>" + formatCents(userRow.spent_cents_24h) + "</td>" +
-            "<td>" + formatCents(userRow.spent_cents_7d) + "</td>" +
-            "<td>" + escapeHtml(summarizeUsageByProject(userRow.usage_today_by_project)) + "</td>";
+            "<td class='email-cell'>" + escapeHtml(userRow.email) + "</td>" +
+            "<td class='date-cell'>" + formatUnixSeconds(userRow.created_at) + "</td>" +
+            "<td><span class='" + statusClassName + "'>" + escapeHtml(userRow.status) + "</span></td>" +
+            "<td class='date-cell'>" + formatUnixSeconds(userRow.last_seen_at) + "</td>" +
+            "<td class='numeric-cell'>" + formatCents(userRow.balance_cents) + "</td>" +
+            "<td class='numeric-cell'>" + formatCents(userRow.spent_cents_24h) + "</td>" +
+            "<td class='numeric-cell'>" + formatCents(userRow.spent_cents_7d) + "</td>" +
+            "<td class='usage-cell-text'>" + renderUsageBreakdown(userRow.usage_today_by_project) + "</td>";
           tableBody.appendChild(rowElement);
         });
         if (userRows.length === 0) {
@@ -432,11 +619,11 @@
         usageRows.forEach(function (usageRow) {
           var rowElement = document.createElement("tr");
           rowElement.innerHTML =
-            "<td>" + dayBucketToDateLabel(usageRow.day_bucket) + "</td>" +
+            "<td class='date-cell'>" + dayBucketToDateLabel(usageRow.day_bucket) + "</td>" +
             "<td>" + escapeHtml(usageRow.project_id || "—") + "</td>" +
             "<td>" + escapeHtml(usageRow.endpoint) + "</td>" +
-            "<td>" + usageRow.event_count + "</td>" +
-            "<td>" + usageRow.total_amount + "</td>";
+            "<td class='numeric-cell'>" + formatInteger(usageRow.event_count) + "</td>" +
+            "<td class='numeric-cell'>" + formatInteger(usageRow.total_amount) + "</td>";
           tableBody.appendChild(rowElement);
         });
         if (usageRows.length === 0) {

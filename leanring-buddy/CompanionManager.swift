@@ -847,6 +847,14 @@ final class CompanionManager: ObservableObject {
             || previouslyHadScreenRecording != hasScreenRecordingPermission
             || previouslyHadMicrophone != hasMicrophonePermission
             || previouslyHadAll != allPermissionsGranted {
+            DotAnalytics.trackPermissionSnapshot(
+                accessibility: hasAccessibilityPermission,
+                inputMonitoring: hasInputMonitoringPermission,
+                screenRecording: hasScreenRecordingPermission,
+                microphone: hasMicrophonePermission,
+                screenContent: hasScreenContentPermission,
+                allPermissionsGranted: allPermissionsGranted
+            )
             print("🔑 Permissions — accessibility: \(hasAccessibilityPermission), inputMonitoring: \(hasInputMonitoringPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
             DotDebugLogger.log("permissions.refresh", "permission state changed", metadata: [
                 "accessibility.previous": previouslyHadAccessibility,

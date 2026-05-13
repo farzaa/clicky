@@ -67,7 +67,8 @@ that token when the signed-in Google email is in `VIBE_ID_ADMIN_EMAILS`.
 
 It calls two routes:
 - `GET /admin/summary` — founder dashboard snapshot: signups, DAU/WAU/MAU,
-  spend, balances, recent signups, 14-day trend, and GitHub release downloads.
+  spend, balances, activation funnel, inferred inactivity, recent signups,
+  14-day trend, and GitHub release downloads.
 - `GET /admin/users` — list users with today's usage and limits.
 - `GET /admin/usage` — last 30 days, bucketed by day + endpoint.
 

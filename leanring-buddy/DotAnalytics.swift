@@ -36,6 +36,7 @@ enum DotAnalytics {
             "app_version": version
         ])
         #endif
+        DotFirstPartyMetrics.record("app_opened")
     }
 
     // MARK: - Onboarding
@@ -75,6 +76,7 @@ enum DotAnalytics {
         #if canImport(PostHog)
         PostHogSDK.shared.capture("all_permissions_granted")
         #endif
+        DotFirstPartyMetrics.record("all_permissions_granted")
     }
 
     /// A single permission was granted. Called when polling detects a change.
@@ -84,6 +86,28 @@ enum DotAnalytics {
             "permission": permission
         ])
         #endif
+        DotFirstPartyMetrics.record("permission_granted", dimension: permission)
+    }
+
+    static func trackPermissionSnapshot(
+        accessibility: Bool,
+        inputMonitoring: Bool,
+        screenRecording: Bool,
+        microphone: Bool,
+        screenContent: Bool,
+        allPermissionsGranted: Bool
+    ) {
+        DotFirstPartyMetrics.record(
+            "permission_snapshot",
+            properties: [
+                "accessibility": accessibility,
+                "input_monitoring": inputMonitoring,
+                "screen_recording": screenRecording,
+                "microphone": microphone,
+                "screen_content": screenContent,
+                "all_permissions_granted": allPermissionsGranted,
+            ]
+        )
     }
 
     // MARK: - Voice Interaction
@@ -93,6 +117,7 @@ enum DotAnalytics {
         #if canImport(PostHog)
         PostHogSDK.shared.capture("push_to_talk_started")
         #endif
+        DotFirstPartyMetrics.record("push_to_talk_started")
     }
 
     /// User released the shortcut — transcript is being finalized.
@@ -100,6 +125,7 @@ enum DotAnalytics {
         #if canImport(PostHog)
         PostHogSDK.shared.capture("push_to_talk_released")
         #endif
+        DotFirstPartyMetrics.record("push_to_talk_released")
     }
 
     /// Transcription completed and the user's message is being sent to the AI.
@@ -112,6 +138,9 @@ enum DotAnalytics {
             "character_count": transcript.count
         ])
         #endif
+        DotFirstPartyMetrics.record("transcript_finalized", properties: [
+            "character_count": transcript.count
+        ])
     }
 
     /// Claude responded and the response is being spoken via TTS.
@@ -123,6 +152,9 @@ enum DotAnalytics {
             "character_count": response.count
         ])
         #endif
+        DotFirstPartyMetrics.record("ai_response_received", properties: [
+            "character_count": response.count
+        ])
     }
 
     /// Claude's response included a [POINT:x,y:label] coordinate tag,
@@ -144,6 +176,7 @@ enum DotAnalytics {
             "error": error
         ])
         #endif
+        DotFirstPartyMetrics.record("response_error")
     }
 
     /// An error occurred during TTS playback.
@@ -153,6 +186,7 @@ enum DotAnalytics {
             "error": error
         ])
         #endif
+        DotFirstPartyMetrics.record("tts_error")
     }
 
     static func trackInferenceEndpointResult(
