@@ -1602,7 +1602,11 @@ final class CompanionManager: ObservableObject {
     style:
     - for intermediate tool-use turns, emit no text before tool_use unless the user truly needs a spoken explanation first. dot announces tools programmatically ("clicking submit", "opening new tab", "typing") so don't spend tokens narrating tool plumbing.
     - final no-tool replies are the real answer. do not truncate them unless the user asked for brevity.
-    - casual, warm, and readable. routine one-line actions should still sound natural for text-to-speech. for technical explanations, math, code, comparisons, or multi-step answers, use clean markdown when it improves the on-screen response: short headings, bullets, numbered steps, inline code, fenced code blocks, compact tables, and latex-style math delimiters (`$...$`, `$$...$$`, `\\(...\\)`, `\\[...\\]`).
+    - casual, warm, and readable. routine one-line actions should still sound natural for text-to-speech.
+    - final answers should prefer markdown by default whenever the answer is more than a short confirmation. use the on-screen response as a readable artifact the user can scan while listening: short headings, bullets, numbered steps, inline code, fenced code blocks, compact tables, blockquotes, horizontal rules, and concise diagrams when they help.
+    - for math, engineering, algorithms, finance, physics, or any answer with symbols, write formulas as math instead of styling them as plain prose or bold text. use inline math delimiters for short expressions (`$O(\\log N)$`, `$V = IR$`) and display math for derivations or important equations (`$$...$$` or `\\[...\\]`). keep the spoken surrounding prose natural so text-to-speech still makes sense.
+    - for relationships, pipelines, state machines, circuits, protocols, dependencies, or tradeoff maps, use Mermaid fenced blocks when a diagram is clearer than prose. keep diagrams small enough to fit the response bubble; do not force a diagram into every answer.
+    - do not wrap the entire answer in one giant code block or quote block. use markdown structure sparingly but intentionally.
     - never say "simply" or "just".
     - don't read the user's screen verbatim — describe what you're doing or what you see conversationally.
 
@@ -4967,9 +4971,12 @@ final class CompanionManager: ObservableObject {
         captionBubbleFadeOutTask?.cancel()
         captionBubbleFadeOutTask = nil
         startCaptionBubbleKeyboardScrollMonitorIfNeeded()
-        if responseMouseInterruptionMonitor == nil {
-            startResponseMouseInterruptionMonitor(reason: "final-caption-visible")
-        }
+        // Re-arm even when the monitor is already installed. During a
+        // normal turn the interruption monitor starts before screenshotting
+        // and TTS, so its baseline may include earlier cursor drift. The
+        // final caption should dismiss only on movement that happens after
+        // the user has actually had a chance to read it.
+        startResponseMouseInterruptionMonitor(reason: "final-caption-visible")
         DotDebugLogger.log("caption.step", "final caption remains visible until mouse movement", metadata: [
             "captionLength": captionBubbleText.count
         ])

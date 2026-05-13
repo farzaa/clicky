@@ -76,6 +76,10 @@ final class VideoMemoryMonitorManager: ObservableObject {
     private static let notifiedTaskIDsUserDefaultsKey = "DotVideoMemoryMonitorNotifiedTaskIDs"
     private static let dotScreenCameraID = "dot_screen"
     private static let dotScreenIOID = "browser_dot_screen"
+    private static let faceTimeCameraID = "facetime"
+    private static let faceTimeIOID = "browser_facetime"
+    private static let browserCameraStartupWaitNanoseconds: UInt64 = 8_000_000_000
+    private static let browserCameraStatusPollNanoseconds: UInt64 = 300_000_000
     private static let pollIntervalNanoseconds: UInt64 = 3_000_000_000
     private static let screenPublishIntervalNanoseconds: UInt64 = 2_000_000_000
 
@@ -374,15 +378,9 @@ final class VideoMemoryMonitorManager: ObservableObject {
     }
 
     private func preferredFaceTimeIOID() async throws -> String {
-        let devicesObject = try await requestJSONObject(path: "/api/devices")
-        let devices = Self.parseDevicesResponse(devicesObject)
-        if devices.contains(where: { $0.ioID == "browser_facetime" }) {
-            return "browser_facetime"
-        }
-        if let faceTimeDevice = devices.first(where: { $0.name.lowercased().contains("facetime") }) {
-            return faceTimeDevice.ioID
-        }
-        return try await preferredCameraIOID(from: devices)
+        try await ensureBrowserCameraRegistered(cameraID: Self.faceTimeCameraID)
+        await openBrowserCameraBridgeIfNeeded(cameraID: Self.faceTimeCameraID)
+        return Self.faceTimeIOID
     }
 
     private func preferredCameraIOID() async throws -> String {
@@ -391,8 +389,9 @@ final class VideoMemoryMonitorManager: ObservableObject {
     }
 
     private func preferredCameraIOID(from devices: [VideoMemoryDevice]) async throws -> String {
-        if devices.contains(where: { $0.ioID == "browser_facetime" }) {
-            return "browser_facetime"
+        if devices.contains(where: { $0.ioID == Self.faceTimeIOID })
+            || devices.contains(where: { $0.name.lowercased().contains("facetime") }) {
+            return try await preferredFaceTimeIOID()
         }
         if let runningCamera = devices.first(where: { $0.ingestorRunning }) {
             return runningCamera.ioID
@@ -410,6 +409,52 @@ final class VideoMemoryMonitorManager: ObservableObject {
             path: "/api/browser-camera/\(Self.dotScreenCameraID)/register",
             payload: [:]
         )
+    }
+
+    private func ensureBrowserCameraRegistered(cameraID: String) async throws {
+        _ = try await postJSONObject(
+            path: "/api/browser-camera/\(Self.urlPathEscaped(cameraID))/register",
+            payload: [:]
+        )
+    }
+
+    private func openBrowserCameraBridgeIfNeeded(cameraID: String) async {
+        if (try? await browserCameraHasFreshFrame(cameraID: cameraID)) == true {
+            return
+        }
+        if (try? await browserCameraBridgeRecentlySeen(cameraID: cameraID)) == true {
+            return
+        }
+
+        NSWorkspace.shared.open(browserCameraBridgeURL(cameraID: cameraID))
+
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        while DispatchTime.now().uptimeNanoseconds - startedAt < Self.browserCameraStartupWaitNanoseconds {
+            if Task.isCancelled { return }
+            if (try? await browserCameraHasFreshFrame(cameraID: cameraID)) == true {
+                return
+            }
+            try? await Task.sleep(nanoseconds: Self.browserCameraStatusPollNanoseconds)
+        }
+    }
+
+    private func browserCameraHasFreshFrame(cameraID: String) async throws -> Bool {
+        let status = try await requestJSONObject(path: "/api/browser-camera/\(Self.urlPathEscaped(cameraID))/status")
+        return (status["has_fresh_frame"] as? Bool) == true
+    }
+
+    private func browserCameraBridgeRecentlySeen(cameraID: String) async throws -> Bool {
+        let control = try await requestJSONObject(path: "/api/browser-camera/\(Self.urlPathEscaped(cameraID))/control")
+        return (control["bridge_recently_seen"] as? Bool) == true
+    }
+
+    private func browserCameraBridgeURL(cameraID: String) -> URL {
+        let bridgeURL = absoluteURL(path: "/browser-camera/\(Self.urlPathEscaped(cameraID))")
+        guard var components = URLComponents(url: bridgeURL, resolvingAgainstBaseURL: false) else {
+            return bridgeURL
+        }
+        components.queryItems = [URLQueryItem(name: "autostart", value: "1")]
+        return components.url ?? bridgeURL
     }
 
     private func startScreenFramePublisherIfNeeded() {
