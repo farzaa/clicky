@@ -290,7 +290,7 @@ struct CompanionPanelView: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(DS.Colors.textPrimary)
 
-                Text("Dot uses your Vibe Research credits for Claude, ElevenLabs, and AssemblyAI. Sign in to see your balance, refill usage, and keep abuse off the shared server.")
+                Text("Haiku is free and generous. Sonnet, Opus, ElevenLabs, and AssemblyAI use your Vibe Research credits. Sign in to see your balance and keep abuse off the shared server.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -973,6 +973,7 @@ struct CompanionPanelView: View {
             Spacer()
 
             HStack(spacing: 0) {
+                modelOptionButton(label: "Haiku", modelID: "claude-haiku-4-5")
                 modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
                 modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
             }

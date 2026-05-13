@@ -235,6 +235,7 @@ final class CompanionManager: ObservableObject {
     }()
 
     private var clientFeatureFlags = DotClientFeatureFlags()
+    private var creditsBalance: Int?
 
     /// Cross-turn conversation thread. Persisted to disk after every turn
     /// (see `DotConversationHistoryStore`) and reloaded on launch so the
@@ -735,6 +736,10 @@ final class CompanionManager: ObservableObject {
         if !updatedClientFeatureFlags.ttsEnabled {
             elevenLabsTTSClient.stopPlayback()
         }
+    }
+
+    func applyCreditsBalance(_ updatedCreditsBalance: Int?) {
+        creditsBalance = updatedCreditsBalance
     }
 
     /// Feeds a transcript through the same dispatch as a real push-to-talk
@@ -3124,6 +3129,7 @@ final class CompanionManager: ObservableObject {
         currentResponseTask?.cancel()
         cancelPerStepNarrationQueue()
         stopResponseMouseInterruptionMonitor()
+        let dotTurnID = UUID().uuidString
         let transcriptForAgent = Self.transcriptWithInlineTaskHints(transcript)
         let shouldExposeLongTermMemoryTool =
             clientFeatureFlags.memoryEnabled
@@ -3249,6 +3255,7 @@ final class CompanionManager: ObservableObject {
                         systemPrompt: agentSystemPrompt,
                         messages: messagesWithStaleScreenshotsStripped,
                         tools: agentToolPayloads,
+                        dotTurnID: dotTurnID,
                         onTextDelta: { [weak self] textDelta, accumulatedText in
                             self?.handleStreamingAgentTextDelta(
                                 textDelta,
@@ -5378,13 +5385,28 @@ final class CompanionManager: ObservableObject {
     }
 
     private func speakTextUsingConfiguredVoicePath(_ speechText: String) async throws {
-        if clientFeatureFlags.ttsEnabled {
-            try await elevenLabsTTSClient.speakText(speechText, volume: speechVolume)
+        let hasCreditsForHostedTTS = creditsBalance.map { $0 > 0 } ?? true
+        if clientFeatureFlags.ttsEnabled && hasCreditsForHostedTTS {
+            do {
+                try await elevenLabsTTSClient.speakText(speechText, volume: speechVolume)
+            } catch {
+                if VibeIdUserFacingError.insufficientCreditsErrorIfApplicable(error) != nil {
+                    creditsBalance = 0
+                    DotDebugLogger.log("tts.elevenlabs", "hosted TTS fell back to system voice after credits rejection", metadata: [
+                        "textLength": speechText.count
+                    ])
+                    speakSystemVoiceFallback(speechText)
+                    return
+                }
+                throw error
+            }
             return
         }
 
-        DotDebugLogger.log("tts.elevenlabs", "skipped because tts feature flag is disabled", metadata: [
-            "textLength": speechText.count
+        DotDebugLogger.log("tts.elevenlabs", "skipped hosted TTS", metadata: [
+            "textLength": speechText.count,
+            "ttsEnabled": clientFeatureFlags.ttsEnabled,
+            "creditsBalance": creditsBalance ?? -1
         ])
         speakSystemVoiceFallback(speechText)
     }

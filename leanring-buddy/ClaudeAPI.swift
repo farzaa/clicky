@@ -36,11 +36,14 @@ class ClaudeAPI {
         warmUpTLSConnectionIfNeeded()
     }
 
-    private func makeAPIRequest() -> URLRequest {
+    private func makeAPIRequest(dotTurnID: String? = nil) -> URLRequest {
         var request = URLRequest(url: apiURL)
         request.httpMethod = "POST"
         request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let dotTurnID, !dotTurnID.isEmpty {
+            request.setValue(dotTurnID, forHTTPHeaderField: "X-Dot-Turn-Id")
+        }
         // The Dot inference gateway authenticates every request with the
         // user's install token. Reading it lazily here means a freshly issued
         // token (right after sign-in) is picked up without recreating clients.
@@ -263,9 +266,10 @@ class ClaudeAPI {
     func runAgentTurnWithToolUse(
         systemPrompt: String,
         messages: [[String: Any]],
-        tools: [[String: Any]]
+        tools: [[String: Any]],
+        dotTurnID: String? = nil
     ) async throws -> ToolUseTurnResponse {
-        var request = makeAPIRequest()
+        var request = makeAPIRequest(dotTurnID: dotTurnID)
         // Opt into Anthropic's context-management beta. Required to declare
         // the memory_20250818 predefined tool in `tools`. Forwarded by the
         // vibe-id proxy via its `anthropic-beta` passthrough.
@@ -406,10 +410,11 @@ class ClaudeAPI {
         systemPrompt: String,
         messages: [[String: Any]],
         tools: [[String: Any]],
+        dotTurnID: String? = nil,
         onTextDelta: @MainActor @Sendable (_ textDelta: String, _ accumulatedText: String) -> Void,
         onToolUseStarted: @MainActor @Sendable () -> Void
     ) async throws -> ToolUseTurnResponse {
-        var request = makeAPIRequest()
+        var request = makeAPIRequest(dotTurnID: dotTurnID)
         request.setValue("context-management-2025-06-27", forHTTPHeaderField: "anthropic-beta")
 
         let systemBlocks: [[String: Any]] = [[

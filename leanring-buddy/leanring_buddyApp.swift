@@ -37,6 +37,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var textCommandPanelManager: TextCommandPanelManager?
     private var textCommandToggleSubscription: AnyCancellable?
     private var clientFeatureFlagsSubscription: AnyCancellable?
+    private var creditsBalanceSubscription: AnyCancellable?
     private var agentTaskPanelManager: AgentTaskPanelManager?
     private var subagentDotOverlayManager: SubagentDotOverlayManager?
     private let companionManager = CompanionManager()
@@ -99,6 +100,12 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
                 self?.remoteCommandSubscriber.setServerAllowsRemoteControl(
                     clientFeatureFlags.remoteControlEnabled
                 )
+            }
+        creditsBalanceSubscription = accountManager.$creditsBalance
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] creditsBalance in
+                self?.companionManager.applyCreditsBalance(creditsBalance)
             }
 
         companionManager.start()
