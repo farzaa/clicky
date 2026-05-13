@@ -5117,6 +5117,10 @@ final class CompanionManager: ObservableObject {
             resetResponseMouseInterruptionBaselineToCurrentLocation()
             return true
         }
+        if Self.isCommandKeyCurrentlyHeld() {
+            resetResponseMouseInterruptionBaselineToCurrentLocation()
+            return true
+        }
         guard let baselineLocation = responseMouseInterruptionBaselineLocation else {
             resetResponseMouseInterruptionBaselineToCurrentLocation()
             return true
@@ -5135,6 +5139,12 @@ final class CompanionManager: ObservableObject {
             currentLocation: currentMouseLocation
         )
         return false
+    }
+
+    private static func isCommandKeyCurrentlyHeld() -> Bool {
+        NSEvent.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .contains(.command)
     }
 
     private func handleUserMouseInterruption(

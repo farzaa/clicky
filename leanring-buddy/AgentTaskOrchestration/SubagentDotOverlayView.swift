@@ -7,6 +7,38 @@
 
 import SwiftUI
 
+enum SubagentDotVisualPalette {
+    static func colorForTaskID(_ taskID: UUID) -> Color {
+        let palette: [Color] = [
+            Color(hex: "#34D399"),
+            Color(hex: "#A78BFA"),
+            Color(hex: "#F472B6"),
+            Color(hex: "#FBBF24"),
+            Color(hex: "#22D3EE"),
+            Color(hex: "#FB7185"),
+            Color(hex: "#4ADE80"),
+            Color(hex: "#C084FC")
+        ]
+        let stableValue = taskID.uuidString.unicodeScalars.reduce(0) { runningValue, scalar in
+            (runningValue + Int(scalar.value)) % palette.count
+        }
+        return palette[stableValue % palette.count]
+    }
+
+    static func colorForVideoMonitorTaskID(_ taskID: String) -> Color {
+        let palette: [Color] = [
+            Color(hex: "#38BDF8"),
+            Color(hex: "#2DD4BF"),
+            Color(hex: "#F59E0B"),
+            Color(hex: "#84CC16")
+        ]
+        let stableValue = taskID.unicodeScalars.reduce(0) { runningValue, scalar in
+            (runningValue + Int(scalar.value)) % palette.count
+        }
+        return palette[stableValue % palette.count]
+    }
+}
+
 struct SubagentDotOverlayView: View {
 
     @ObservedObject var agentTaskManager: AgentTaskManager
@@ -52,34 +84,11 @@ struct SubagentDotOverlayView: View {
     }
 
     private func colorForTask(_ task: AgentTask) -> Color {
-        let palette: [Color] = [
-            Color(hex: "#34D399"),
-            Color(hex: "#A78BFA"),
-            Color(hex: "#F472B6"),
-            Color(hex: "#FBBF24"),
-            Color(hex: "#22D3EE"),
-            Color(hex: "#FB7185"),
-            Color(hex: "#4ADE80"),
-            Color(hex: "#C084FC")
-        ]
-        let stableValue = task.id.uuidString.unicodeScalars.reduce(0) { runningValue, scalar in
-            (runningValue + Int(scalar.value)) % palette.count
-        }
-        let stableIndex = stableValue % palette.count
-        return palette[stableIndex]
+        SubagentDotVisualPalette.colorForTaskID(task.id)
     }
 
     private func colorForVideoMonitor(_ monitor: VideoMemoryMonitor) -> Color {
-        let palette: [Color] = [
-            Color(hex: "#38BDF8"),
-            Color(hex: "#2DD4BF"),
-            Color(hex: "#F59E0B"),
-            Color(hex: "#84CC16")
-        ]
-        let stableValue = monitor.taskID.unicodeScalars.reduce(0) { runningValue, scalar in
-            (runningValue + Int(scalar.value)) % palette.count
-        }
-        return palette[stableValue % palette.count]
+        SubagentDotVisualPalette.colorForVideoMonitorTaskID(monitor.taskID)
     }
 }
 

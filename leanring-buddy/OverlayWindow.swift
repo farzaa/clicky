@@ -424,8 +424,7 @@ struct BlueCursorView: View {
                 .scaleEffect(buddyFlightScale * clickPulseScale * scrollSquashScale)
                 .opacity(
                     buddyIsVisibleOnThisScreen
-                    && (companionManager.voiceState == .idle
-                        || (companionManager.voiceState == .responding && !companionManager.isShowingWaitingAnimation))
+                    && companionManager.voiceState == .idle
                     ? cursorOpacity
                     : 0
                 )
@@ -441,6 +440,27 @@ struct BlueCursorView: View {
                     buddyNavigationMode == .navigatingToTarget ? nil : .easeInOut(duration: 0.3),
                     value: triangleRotationDegrees
                 )
+
+            // Talking oval — replaces the plain dot while text or TTS is
+            // streaming. It alternates between a horizontal and vertical
+            // capsule so Dot looks alive without becoming visually noisy.
+            BlueCursorTalkingOvalView()
+                .scaleEffect(buddyFlightScale * clickPulseScale)
+                .opacity(
+                    buddyIsVisibleOnThisScreen
+                    && companionManager.voiceState == .responding
+                    && !companionManager.isShowingWaitingAnimation
+                    ? cursorOpacity
+                    : 0
+                )
+                .position(cursorPosition)
+                .animation(
+                    buddyNavigationMode == .followingCursor
+                        ? .spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0)
+                        : nil,
+                    value: cursorPosition
+                )
+                .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
 
             // Blue waveform — replaces the triangle while listening
             BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel)
@@ -625,6 +645,12 @@ struct BlueCursorView: View {
                     .foregroundColor(.white.opacity(0.52))
                     .frame(maxWidth: captionBubbleMaximumWidth, alignment: .trailing)
             }
+
+            Text("hold cmd to reposition without hiding")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(.white.opacity(0.38))
+                .frame(maxWidth: captionBubbleMaximumWidth, alignment: .trailing)
+                .padding(.top, 1)
         }
         .frame(maxWidth: captionBubbleMaximumWidth, alignment: .leading)
     }
@@ -1029,6 +1055,55 @@ struct BlueCursorView: View {
             self.welcomeText.append(self.fullWelcomeMessage[index])
             currentIndex += 1
         }
+    }
+}
+
+// MARK: - Blue Cursor Talking Oval
+
+/// A compact speaking-state indicator. The horizontal/vertical oval cycle
+/// reads as a mouth moving while streamed text and TTS chunks arrive.
+private struct BlueCursorTalkingOvalView: View {
+    private let animationDurationSeconds: TimeInterval = 0.64
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 45.0)) { timelineContext in
+            let horizontalAmount = CGFloat(horizontalMouthAmount(for: timelineContext.date))
+            let verticalAmount = 1.0 - horizontalAmount
+            let width = 12.0 + horizontalAmount * 12.0
+            let height = 12.0 + verticalAmount * 10.0
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 999, style: .continuous)
+                    .fill(DS.Colors.overlayCursorBlue)
+                    .frame(width: width, height: height)
+                    .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.72), radius: 9, x: 0, y: 0)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 999, style: .continuous)
+                            .stroke(
+                                Color.white.opacity(Double(0.40 + horizontalAmount * 0.18)),
+                                lineWidth: 0.9
+                            )
+                    )
+
+                Capsule(style: .continuous)
+                    .fill(Color.white.opacity(0.42))
+                    .frame(
+                        width: max(3.5, width * 0.28),
+                        height: 2.2
+                    )
+                    .offset(x: -width * 0.14, y: -height * 0.18)
+                    .opacity(Double(0.55 + horizontalAmount * 0.20))
+            }
+            .frame(width: 30, height: 30)
+            .scaleEffect(CGFloat(0.98 + 0.05 * sin(timelineContext.date.timeIntervalSinceReferenceDate * .pi * 4.0)))
+        }
+    }
+
+    private func horizontalMouthAmount(for date: Date) -> Double {
+        let rawProgress = date.timeIntervalSinceReferenceDate
+            .truncatingRemainder(dividingBy: animationDurationSeconds) / animationDurationSeconds
+        let wave = (sin(rawProgress * .pi * 2.0) + 1.0) / 2.0
+        return wave * wave * (3.0 - 2.0 * wave)
     }
 }
 
