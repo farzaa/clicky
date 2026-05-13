@@ -171,22 +171,26 @@ struct BlueCursorView: View {
     /// an energetic "swooping" feel.
     @State private var buddyFlightScale: CGFloat = 1.0
 
-    /// Subtle uniform scale dip applied to the main dot when a scroll
-    /// fires — a quick 1.0 → 0.92 → 1.0 squash that reads as "absorbing
-    /// the scroll energy" without the dot feeling sluggish. Paired with
-    /// the afterimage trail rendered next to the dot.
-    @State private var scrollSquashScale: CGFloat = 1.0
+    /// Directional stretch applied to the main dot when a scroll fires.
+    /// Vertical scrolls stretch vertically; horizontal scrolls stretch
+    /// horizontally. Kept small so the face remains readable.
+    @State private var scrollStretchAmount: CGFloat = 0.0
 
-    /// 0.0 = no afterimage trail, 1.0 = trail fully visible. Animated
-    /// fast-in / linger / fast-out to mirror the instant scroll wheel.
-    /// Three ghost circles fan out in `scrollTrailDirection` at
-    /// increasing offsets with decreasing opacity multipliers — like
-    /// motion blur or a comet smear.
+    /// Short nudge in the scroll direction so Dot appears to guide the page
+    /// instead of only flashing a passive trail.
+    @State private var scrollNudgeOffset: CGFloat = 0.0
+
+    /// 0.0 = no trail, 1.0 = trail fully visible. Animated fast-in /
+    /// linger / fast-out to mirror the instant scroll wheel.
     @State private var scrollTrailIntensity: Double = 0.0
 
-    /// Unit vector the afterimage trail extends along (matches the
+    /// Unit vector the scroll hint extends along (matches the
     /// scroll direction). Set just before the trail intensity animates.
     @State private var scrollTrailDirection: CGVector = .zero
+
+    /// Monotonic guard so delayed fade/reset closures from an older scroll do
+    /// not cancel a newer rapid scroll animation.
+    @State private var scrollAnimationSequence: Int = 0
 
     /// Scale factor for the navigation speech bubble's pop-in entrance.
     /// Starts at 0.5 and springs to 1.0 when the first character appears.
@@ -385,29 +389,15 @@ struct BlueCursorView: View {
             // During cursor following: fast spring animation for snappy tracking.
             // During navigation: NO implicit animation — the frame-by-frame bezier
             // timer controls position directly at 60fps for a smooth arc flight.
-            // Afterimage trail ghosts rendered BEHIND the main dot so the
-            // main cursor stays on top. Each ghost is the same color +
-            // size, offset further in the scroll direction with lower
-            // opacity — reads as motion blur or a comet smear matching
-            // the instant scroll-wheel event. Driven by
-            // `scrollTrailIntensity` (animated burst → fade) and
-            // `scrollTrailDirection` (set at trigger time).
-            ForEach(1...Self.scrollAfterimageGhostCount, id: \.self) { ghostIndex in
-                let ghostOffsetMagnitude = CGFloat(ghostIndex) * Self.scrollAfterimageGhostSpacingInPoints
-                let ghostFadeRolloff = Double(ghostIndex - 1) / Double(Self.scrollAfterimageGhostCount)
-                Circle()
-                    .fill(DS.Colors.overlayCursorBlue)
-                    .frame(width: 14, height: 14)
-                    .shadow(color: DS.Colors.overlayCursorBlue, radius: 6, x: 0, y: 0)
-                    .scaleEffect(max(0.5, 1.0 - CGFloat(ghostIndex) * 0.12))
-                    .offset(
-                        x: scrollTrailDirection.dx * ghostOffsetMagnitude,
-                        y: scrollTrailDirection.dy * ghostOffsetMagnitude
-                    )
-                    .opacity(scrollTrailIntensity * (0.6 - ghostFadeRolloff * 0.45))
-                    .position(cursorPosition)
-                    .allowsHitTesting(false)
-            }
+            // Scroll whoosh rendered behind the main dot. It trails opposite
+            // the nudge direction, so the cursor reads as briefly gliding with
+            // the scroll instead of merely blinking.
+            BlueCursorScrollTrailView(
+                directionUnitVector: scrollTrailDirection,
+                intensity: scrollTrailIntensity
+            )
+            .position(cursorPosition)
+            .allowsHitTesting(false)
 
             // Blue dot cursor — shown when idle or while TTS is playing (responding).
             // All three states (dot, waveform, hourglass) stay in the view tree
@@ -420,9 +410,19 @@ struct BlueCursorView: View {
             BlueCursorFaceDotView(
                 glowRadius: 8 + (buddyFlightScale - 1.0) * 20,
                 glowOpacity: 1.0,
-                eyeOpacity: 0.68
+                eyeOpacity: 0.68,
+                eyeLookOffset: scrollEyeLookOffset
             )
-                .scaleEffect(buddyFlightScale * clickPulseScale * scrollSquashScale)
+                .scaleEffect(buddyFlightScale * clickPulseScale)
+                .scaleEffect(
+                    x: scrollDirectionalScaleX,
+                    y: scrollDirectionalScaleY,
+                    anchor: .center
+                )
+                .offset(
+                    x: scrollTrailDirection.dx * scrollNudgeOffset,
+                    y: scrollTrailDirection.dy * scrollNudgeOffset
+                )
                 .opacity(
                     buddyIsVisibleOnThisScreen
                     && companionManager.voiceState == .idle
@@ -545,7 +545,7 @@ struct BlueCursorView: View {
             }
         }
         .onChange(of: companionManager.scrollAnimationTriggerToken) { _ in
-            playScrollAfterimageTrail(
+            playScrollWhooshTrail(
                 directionUnitVector: companionManager.mostRecentScrollDirectionUnitVector
             )
         }
@@ -568,47 +568,74 @@ struct BlueCursorView: View {
         }
     }
 
-    /// Fast afterimage trail to mirror the instant scroll-wheel event.
-    /// The main dot does a tiny squash (1.0 → 0.92 → 1.0) and three
-    /// ghost copies fan out in the scroll direction with decreasing
-    /// opacity. Burst-in is fast (40ms), the trail lingers briefly
-    /// (80ms), then fades out (140ms) — total ~260ms, fast enough to
-    /// feel synced with the actual wheel scroll rather than a deliberate
-    /// animation playing after it.
-    private func playScrollAfterimageTrail(directionUnitVector: CGVector) {
+    /// Fast directional whoosh to mirror the instant scroll-wheel event.
+    /// The main dot nudges and stretches in the scroll direction while a
+    /// tapered trail lingers behind it. Total duration is still short enough
+    /// to feel attached to the wheel event, not like a separate animation.
+    private func playScrollWhooshTrail(directionUnitVector: CGVector) {
         guard directionUnitVector != .zero else { return }
 
-        // Set the trail direction BEFORE animating intensity so the
-        // ghosts know which way to fan out the moment they fade in.
+        scrollAnimationSequence += 1
+        let activeScrollAnimationSequence = scrollAnimationSequence
+
+        // Set direction before animating so both the main dot and trail move
+        // correctly on the first rendered frame.
         scrollTrailDirection = directionUnitVector
 
-        // Burst in: trail appears, main dot squashes slightly.
+        // Burst in: trail appears, Dot stretches and nudges in the visual
+        // scroll direction.
         withAnimation(.easeOut(duration: 0.04)) {
             scrollTrailIntensity = 1.0
-            scrollSquashScale = Self.scrollMainDotSquashScale
+            scrollStretchAmount = Self.scrollMainDotStretchAmount
+            scrollNudgeOffset = Self.scrollMainDotNudgeDistance
         }
 
-        // Main dot springs back to rest scale almost immediately —
-        // the squash is a flicker, not a sustained pose.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.6, blendDuration: 0)) {
-                scrollSquashScale = 1.0
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.07) {
+            guard scrollAnimationSequence == activeScrollAnimationSequence else { return }
+            withAnimation(.spring(response: 0.30, dampingFraction: 0.58, blendDuration: 0)) {
+                scrollStretchAmount = 0.0
+                scrollNudgeOffset = 0.0
             }
         }
 
         // Trail lingers briefly, then fades out.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-            withAnimation(.easeIn(duration: 0.14)) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.13) {
+            guard scrollAnimationSequence == activeScrollAnimationSequence else { return }
+            withAnimation(.easeIn(duration: 0.16)) {
                 scrollTrailIntensity = 0.0
             }
         }
     }
 
-    // Afterimage trail tuning. Tweak these to taste — they're tight on
-    // purpose so the smear feels like motion blur, not a separate beat.
-    private static let scrollAfterimageGhostCount: Int = 3
-    private static let scrollAfterimageGhostSpacingInPoints: CGFloat = 11
-    private static let scrollMainDotSquashScale: CGFloat = 0.92
+    private var scrollDirectionalScaleX: CGFloat {
+        if abs(scrollTrailDirection.dx) > abs(scrollTrailDirection.dy) {
+            return 1.0 + scrollStretchAmount
+        }
+        return 1.0 - scrollStretchAmount * 0.42
+    }
+
+    private var scrollDirectionalScaleY: CGFloat {
+        if abs(scrollTrailDirection.dy) >= abs(scrollTrailDirection.dx) {
+            return 1.0 + scrollStretchAmount
+        }
+        return 1.0 - scrollStretchAmount * 0.42
+    }
+
+    private var scrollEyeLookOffset: CGSize {
+        guard scrollStretchAmount > 0 else { return .zero }
+
+        let normalizedLookAmount = min(1.0, scrollStretchAmount / Self.scrollMainDotStretchAmount)
+        return CGSize(
+            width: -scrollTrailDirection.dx * Self.scrollEyeLookDistance * normalizedLookAmount,
+            height: -scrollTrailDirection.dy * Self.scrollEyeLookDistance * normalizedLookAmount
+        )
+    }
+
+    // Scroll whoosh tuning. Kept tight so the effect reads as a physical hint
+    // attached to the scroll event.
+    private static let scrollMainDotStretchAmount: CGFloat = 0.15
+    private static let scrollMainDotNudgeDistance: CGFloat = 7.5
+    private static let scrollEyeLookDistance: CGFloat = 2.0
 
     // TTS caption bubble tuning. Bubble lives just below-right of the Dot
     // so it doesn't collide with the small navigation-pointer bubble
@@ -1062,22 +1089,94 @@ struct BlueCursorView: View {
 
 // MARK: - Blue Cursor Speaking Glow
 
+private struct BlueCursorScrollTrailView: View {
+    let directionUnitVector: CGVector
+    let intensity: Double
+
+    private let streakCount = 4
+    private let pipCount = 3
+
+    var body: some View {
+        let intensityValue = CGFloat(intensity)
+        let isHorizontal = abs(directionUnitVector.dx) > abs(directionUnitVector.dy)
+        let perpendicular = CGVector(dx: -directionUnitVector.dy, dy: directionUnitVector.dx)
+
+        ZStack {
+            ForEach(0..<streakCount, id: \.self) { streakIndex in
+                let indexValue = CGFloat(streakIndex)
+                let depth = indexValue / CGFloat(max(streakCount - 1, 1))
+                let distance = 8.0 + indexValue * 7.2
+                let curveDirection: CGFloat = streakIndex.isMultiple(of: 2) ? -1.0 : 1.0
+                let curveOffset = curveDirection * (1.4 + depth * 2.2)
+                let length = 12.5 - depth * 4.0
+                let thickness = 3.3 - depth * 1.1
+
+                Capsule(style: .continuous)
+                    .fill(DS.Colors.overlayCursorBlue.opacity(Double(0.34 - depth * 0.18)))
+                    .frame(
+                        width: isHorizontal ? length : thickness,
+                        height: isHorizontal ? thickness : length
+                    )
+                    .offset(
+                        x: -directionUnitVector.dx * distance + perpendicular.dx * curveOffset,
+                        y: -directionUnitVector.dy * distance + perpendicular.dy * curveOffset
+                    )
+                    .scaleEffect(0.78 + intensityValue * 0.24)
+                    .opacity(intensity * Double(0.82 - depth * 0.46))
+                    .shadow(
+                        color: DS.Colors.overlayCursorBlue.opacity(0.20 + intensity * 0.25),
+                        radius: 3.0 + intensityValue * 3.0,
+                        x: 0,
+                        y: 0
+                    )
+            }
+
+            ForEach(0..<pipCount, id: \.self) { pipIndex in
+                let indexValue = CGFloat(pipIndex)
+                let distance = 14.0 + indexValue * 8.0
+                let curveDirection: CGFloat = pipIndex.isMultiple(of: 2) ? 1.0 : -1.0
+                let curveOffset = curveDirection * (5.0 + indexValue * 1.8)
+                let diameter = 3.6 - indexValue * 0.65
+
+                Circle()
+                    .fill(Color.white.opacity(0.26 + intensity * 0.28))
+                    .frame(width: diameter, height: diameter)
+                    .offset(
+                        x: -directionUnitVector.dx * distance + perpendicular.dx * curveOffset,
+                        y: -directionUnitVector.dy * distance + perpendicular.dy * curveOffset
+                    )
+                    .opacity(intensity * Double(0.72 - indexValue * 0.17))
+                    .shadow(
+                        color: DS.Colors.overlayCursorBlue.opacity(0.28 + intensity * 0.24),
+                        radius: 3.5,
+                        x: 0,
+                        y: 0
+                    )
+            }
+        }
+        .frame(width: 54, height: 54)
+    }
+}
+
 private struct BlueCursorFaceDotView: View {
     let glowRadius: CGFloat
     let glowOpacity: Double
     let eyeOpacity: Double
     let eyeHeightScale: CGFloat
+    let eyeLookOffset: CGSize
 
     init(
         glowRadius: CGFloat,
         glowOpacity: Double,
         eyeOpacity: Double,
-        eyeHeightScale: CGFloat = 1.0
+        eyeHeightScale: CGFloat = 1.0,
+        eyeLookOffset: CGSize = .zero
     ) {
         self.glowRadius = glowRadius
         self.glowOpacity = glowOpacity
         self.eyeOpacity = eyeOpacity
         self.eyeHeightScale = eyeHeightScale
+        self.eyeLookOffset = eyeLookOffset
     }
 
     var body: some View {
@@ -1102,7 +1201,7 @@ private struct BlueCursorFaceDotView: View {
                     .fill(Color(red: 0.02, green: 0.08, blue: 0.12).opacity(eyeOpacity))
                     .frame(width: 1.55, height: eyeHeight)
             }
-            .offset(y: -0.9)
+            .offset(x: eyeLookOffset.width, y: -0.9 + eyeLookOffset.height)
             .allowsHitTesting(false)
         }
         .frame(width: 14, height: 14)
