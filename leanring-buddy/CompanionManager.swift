@@ -183,6 +183,8 @@ final class CompanionManager: ObservableObject {
     /// applies `captionBubbleScrollDirectionSteps` to its local scroll offset.
     @Published var captionBubbleScrollCommandSequence: UInt64 = 0
     @Published var captionBubbleScrollDirectionSteps: Int = 0
+    @Published var captionBubbleScrollWheelCommandSequence: UInt64 = 0
+    @Published var captionBubbleScrollWheelDeltaInPoints: CGFloat = 0
 
     /// True only while the live agent is intentionally waiting for a page,
     /// upload, modal, or other async UI transition. The overlay uses this to
@@ -713,6 +715,8 @@ final class CompanionManager: ObservableObject {
         currentResponseTask = nil
         shortcutTransitionCancellable?.cancel()
         globalKeyDownCancellable?.cancel()
+        globalPushToTalkShortcutMonitor.globalKeyDownEventHandler = nil
+        globalPushToTalkShortcutMonitor.globalScrollWheelEventHandler = nil
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
         dictationErrorCancellable?.cancel()
@@ -1197,15 +1201,25 @@ final class CompanionManager: ObservableObject {
     }
 
     private func bindGlobalKeyDownEvents() {
-        globalKeyDownCancellable = globalPushToTalkShortcutMonitor
-            .globalKeyDownPublisher
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] keyDownEvent in
+        globalPushToTalkShortcutMonitor.globalKeyDownEventHandler = { [weak self] keyDownEvent in
+            MainActor.assumeIsolated {
                 self?.handleCaptionBubbleKeyboardScrollKeyDown(
                     keyCode: keyDownEvent.keyCode,
                     modifierFlagsRawValue: keyDownEvent.modifierFlagsRawValue
-                )
+                ) ?? false
             }
+        }
+        globalPushToTalkShortcutMonitor.globalScrollWheelEventHandler = { [weak self] scrollWheelEvent in
+            MainActor.assumeIsolated {
+                self?.handleCaptionBubbleScrollWheel(
+                    verticalDeltaInLines: scrollWheelEvent.verticalDeltaInLines,
+                    verticalDeltaInPoints: scrollWheelEvent.verticalDeltaInPoints,
+                    horizontalDeltaInLines: scrollWheelEvent.horizontalDeltaInLines,
+                    horizontalDeltaInPoints: scrollWheelEvent.horizontalDeltaInPoints,
+                    modifierFlagsRawValue: scrollWheelEvent.modifierFlagsRawValue
+                ) ?? false
+            }
+        }
     }
 
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
@@ -5058,10 +5072,10 @@ final class CompanionManager: ObservableObject {
     private func handleCaptionBubbleKeyboardScrollKeyDown(
         keyCode: UInt16,
         modifierFlagsRawValue: UInt64
-    ) {
+    ) -> Bool {
         guard captionBubbleVisible,
               !captionBubbleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return
+            return false
         }
 
         let modifierFlags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlagsRawValue))
@@ -5070,7 +5084,7 @@ final class CompanionManager: ObservableObject {
               !modifierFlags.contains(.option),
               !modifierFlags.contains(.control),
               !modifierFlags.contains(.shift) else {
-            return
+            return false
         }
 
         let scrollDirectionSteps: Int?
@@ -5091,13 +5105,78 @@ final class CompanionManager: ObservableObject {
             scrollDirectionSteps = nil
         }
 
-        guard let scrollDirectionSteps else { return }
+        guard let scrollDirectionSteps else { return false }
         captionBubbleScrollDirectionSteps = scrollDirectionSteps
         captionBubbleScrollCommandSequence &+= 1
         DotDebugLogger.log("caption.scroll", "keyboard scroll requested", metadata: [
             "steps": scrollDirectionSteps,
             "sequence": Int(captionBubbleScrollCommandSequence)
         ])
+        return true
+    }
+
+    private func handleCaptionBubbleScrollWheel(
+        verticalDeltaInLines: Int64,
+        verticalDeltaInPoints: Int64,
+        horizontalDeltaInLines: Int64,
+        horizontalDeltaInPoints: Int64,
+        modifierFlagsRawValue: UInt64
+    ) -> Bool {
+        guard shouldRouteScrollWheelToCaptionBubble() else { return false }
+
+        let modifierFlags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlagsRawValue))
+            .intersection(.deviceIndependentFlagsMask)
+        guard !modifierFlags.contains(.command),
+              !modifierFlags.contains(.option),
+              !modifierFlags.contains(.control),
+              !modifierFlags.contains(.shift) else {
+            return false
+        }
+
+        let verticalDelta = verticalDeltaInPoints != 0
+            ? CGFloat(verticalDeltaInPoints)
+            : CGFloat(verticalDeltaInLines) * 24
+        let horizontalDelta = horizontalDeltaInPoints != 0
+            ? CGFloat(horizontalDeltaInPoints)
+            : CGFloat(horizontalDeltaInLines) * 24
+        guard abs(verticalDelta) >= abs(horizontalDelta),
+              abs(verticalDelta) >= 0.5 else {
+            return false
+        }
+
+        captionBubbleScrollWheelDeltaInPoints = min(max(-verticalDelta, -180), 180)
+        captionBubbleScrollWheelCommandSequence &+= 1
+        DotDebugLogger.log("caption.scroll", "wheel scroll requested", metadata: [
+            "delta": captionBubbleScrollWheelDeltaInPoints,
+            "sequence": Int(captionBubbleScrollWheelCommandSequence)
+        ])
+        return true
+    }
+
+    private func shouldRouteScrollWheelToCaptionBubble() -> Bool {
+        let trimmedCaptionBubbleText = captionBubbleText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard captionBubbleVisible, !trimmedCaptionBubbleText.isEmpty else { return false }
+
+        let screenUnderMouseHeight = NSScreen.screens
+            .first(where: { $0.frame.contains(NSEvent.mouseLocation) })?
+            .frame
+            .height
+            ?? NSScreen.main?.frame.height
+            ?? 900
+        let maximumCaptionViewportHeight = max(160, screenUnderMouseHeight - 80)
+        let estimatedAverageCharacterWidthInPoints: CGFloat = 7.6
+        let estimatedLineHeightInPoints: CGFloat = 22
+        let estimatedMaximumCaptionWidth: CGFloat = 640
+        let estimatedCharactersPerLine = max(
+            28,
+            Int(estimatedMaximumCaptionWidth / estimatedAverageCharacterWidthInPoints)
+        )
+        let estimatedLineCount = trimmedCaptionBubbleText.components(separatedBy: .newlines)
+            .reduce(0) { partialLineCount, line in
+                let wrappedLineCount = max(1, Int(ceil(Double(line.count) / Double(estimatedCharactersPerLine))))
+                return partialLineCount + wrappedLineCount
+            }
+        return CGFloat(estimatedLineCount) * estimatedLineHeightInPoints > maximumCaptionViewportHeight
     }
 
     private func startResponseMouseInterruptionMonitor(reason: String) {

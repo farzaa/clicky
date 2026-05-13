@@ -3,8 +3,8 @@
 //  leanring-buddy
 //
 //  Captures push-to-talk keyboard shortcuts while makesomething is running in the
-//  background. Uses a listen-only CGEvent tap so modifier-only shortcuts like
-//  ctrl + option behave more like a real system-wide voice tool.
+//  background. Uses a CGEvent tap so modifier-only shortcuts like ctrl + option
+//  behave more like a real system-wide voice tool.
 //
 
 import AppKit
@@ -32,9 +32,25 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         let modifierFlagsRawValue: UInt64
     }
 
-    /// Raw key-down stream from the same listen-only event tap used for
-    /// push-to-talk. Consumers still decide whether a key matters.
+    struct GlobalScrollWheelEvent {
+        let verticalDeltaInLines: Int64
+        let verticalDeltaInPoints: Int64
+        let horizontalDeltaInLines: Int64
+        let horizontalDeltaInPoints: Int64
+        let modifierFlagsRawValue: UInt64
+    }
+
+    /// Raw key-down stream from the same event tap used for push-to-talk.
+    /// Consumers still decide whether a key matters.
     let globalKeyDownPublisher = PassthroughSubject<GlobalKeyDownEvent, Never>()
+
+    /// Synchronous key-down handler for shortcuts that must prevent the
+    /// frontmost app from also seeing the keypress. Return true to consume.
+    var globalKeyDownEventHandler: ((GlobalKeyDownEvent) -> Bool)?
+
+    /// Synchronous scroll handler for overlay UI that must prevent the
+    /// frontmost app from also scrolling. Return true to consume.
+    var globalScrollWheelEventHandler: ((GlobalScrollWheelEvent) -> Bool)?
 
     /// Virtual key code for Space (kVK_Space). Used by the text-command
     /// shortcut detection below.
@@ -43,7 +59,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
 
-    /// Whether the listen-only CGEvent tap is currently alive. We use this as
+    /// Whether the CGEvent tap is currently alive. We use this as
     /// the source of truth for "do we have Input Monitoring permission?",
     /// because `CGPreflightListenEventAccess()` is known to return a stale
     /// `false` even after the user grants permission in System Settings — but
@@ -66,7 +82,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         // refreshAllPermissions → start() every few seconds.
         guard globalEventTap == nil else { return }
 
-        let monitoredEventTypes: [CGEventType] = [.flagsChanged, .keyDown, .keyUp]
+        let monitoredEventTypes: [CGEventType] = [.flagsChanged, .keyDown, .keyUp, .scrollWheel]
         let eventMask = monitoredEventTypes.reduce(CGEventMask(0)) { currentMask, eventType in
             currentMask | (CGEventMask(1) << eventType.rawValue)
         }
@@ -89,7 +105,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         guard let globalEventTap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
-            options: .listenOnly,
+            options: .defaultTap,
             eventsOfInterest: eventMask,
             callback: eventTapCallback,
             userInfo: Unmanaged.passUnretained(self).toOpaque()
@@ -151,12 +167,31 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             return Unmanaged.passUnretained(event)
         }
 
+        if eventType == .scrollWheel {
+            let globalScrollWheelEvent = GlobalScrollWheelEvent(
+                verticalDeltaInLines: event.getIntegerValueField(.scrollWheelEventDeltaAxis1),
+                verticalDeltaInPoints: event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1),
+                horizontalDeltaInLines: event.getIntegerValueField(.scrollWheelEventDeltaAxis2),
+                horizontalDeltaInPoints: event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2),
+                modifierFlagsRawValue: event.flags.rawValue
+            )
+            if globalScrollWheelEventHandler?(globalScrollWheelEvent) == true {
+                return nil
+            }
+            return Unmanaged.passUnretained(event)
+        }
+
         let eventKeyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+        var shouldConsumeCurrentEvent = false
         if eventType == .keyDown {
-            globalKeyDownPublisher.send(GlobalKeyDownEvent(
+            let globalKeyDownEvent = GlobalKeyDownEvent(
                 keyCode: eventKeyCode,
                 modifierFlagsRawValue: event.flags.rawValue
-            ))
+            )
+            shouldConsumeCurrentEvent = globalKeyDownEventHandler?(globalKeyDownEvent) ?? false
+            if !shouldConsumeCurrentEvent {
+                globalKeyDownPublisher.send(globalKeyDownEvent)
+            }
         }
 
         let shortcutTransition = BuddyPushToTalkShortcut.shortcutTransition(
@@ -196,6 +231,9 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             textCommandToggleRequestPublisher.send(())
         }
 
+        if shouldConsumeCurrentEvent {
+            return nil
+        }
         return Unmanaged.passUnretained(event)
     }
 
