@@ -108,11 +108,11 @@ a:hover { text-decoration: underline; }
   color: var(--text-primary);
 }
 .brand-dot {
-  --eye-width: 1.55px;
-  --eye-height: 4.2px;
-  --eye-left-offset: -2.7px;
-  --eye-right-offset: 1.15px;
-  --eye-top-offset: -3px;
+  --eye-width: 2.2px;
+  --eye-height: 5.5px;
+  --eye-left-offset: -3.1px;
+  --eye-right-offset: 1px;
+  --eye-top-offset: -3.45px;
   position: relative;
   display: inline-block;
   flex: 0 0 auto;
@@ -130,7 +130,7 @@ a:hover { text-decoration: underline; }
   width: var(--eye-width);
   height: var(--eye-height);
   border-radius: 999px;
-  background: rgba(2, 10, 18, 0.72);
+  background: rgba(2, 10, 18, 0.9);
 }
 .brand-dot::before {
   left: calc(50% + var(--eye-left-offset));
@@ -143,11 +143,11 @@ a:hover { text-decoration: underline; }
   margin: 32px 0 0;
 }
 .brand-large .brand-dot {
-  --eye-width: 2.45px;
-  --eye-height: 6.6px;
-  --eye-left-offset: -4.25px;
-  --eye-right-offset: 1.8px;
-  --eye-top-offset: -4.75px;
+  --eye-width: 3.6px;
+  --eye-height: 8.8px;
+  --eye-left-offset: -4.9px;
+  --eye-right-offset: 1.6px;
+  --eye-top-offset: -5.5px;
   width: 22px;
   height: 22px;
   box-shadow: 0 0 18px rgba(96, 165, 250, 0.7);
