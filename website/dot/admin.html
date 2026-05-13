@@ -6,7 +6,7 @@
   <title>Dot — admin</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body>
+<body class="admin-page">
   <div class="page">
     <header class="row between">
       <a href="index.html" class="brand"><span class="brand-dot"></span> Dot · admin</a>
@@ -32,6 +32,61 @@
       </div>
     </section>
 
+    <section class="section" id="diagnosticsSection" style="display: none;">
+      <h2>Founder snapshot</h2>
+      <div id="metricGrid" class="metric-grid"></div>
+
+      <div class="dashboard-grid">
+        <div class="card">
+          <h3>Downloads</h3>
+          <div id="downloadsSummary" class="stack"></div>
+        </div>
+        <div class="card">
+          <h3>Recent signups</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Signed up</th>
+                <th>Last seen</th>
+              </tr>
+            </thead>
+            <tbody id="recentSignupsTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" style="padding: 0; margin-top: 16px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Day</th>
+              <th>New users</th>
+              <th>Active users</th>
+              <th>Usage events</th>
+              <th>Spend</th>
+            </tr>
+          </thead>
+          <tbody id="dailySeriesTableBody"></tbody>
+        </table>
+      </div>
+
+      <div class="card" style="padding: 0; margin-top: 16px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Project</th>
+              <th>Endpoint</th>
+              <th>Active users</th>
+              <th>Events</th>
+              <th>Total amount</th>
+            </tr>
+          </thead>
+          <tbody id="usageLast24HoursTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+
     <section class="section" id="usersSection" style="display: none;">
       <h2>Users</h2>
       <div class="card" style="padding: 0;">
@@ -39,9 +94,13 @@
           <thead>
             <tr>
               <th>Email</th>
+              <th>Signed up</th>
               <th>Status</th>
               <th>Last seen</th>
-              <th colspan="3">Usage today by project</th>
+              <th>Balance</th>
+              <th>Spend 24h</th>
+              <th>Spend 7d</th>
+              <th>Usage 24h</th>
             </tr>
           </thead>
           <tbody id="usersTableBody"></tbody>
@@ -114,6 +173,7 @@
       }
 
       function hideAdminTables() {
+        setVisibility("diagnosticsSection", false);
         setVisibility("usersSection", false);
         setVisibility("usageSection", false);
       }
@@ -143,6 +203,15 @@
         if (!unixSeconds) return "—";
         var date = new Date(unixSeconds * 1000);
         return date.toLocaleString();
+      }
+
+      function formatInteger(value) {
+        var numberValue = Number(value || 0);
+        return numberValue.toLocaleString();
+      }
+
+      function formatCents(cents) {
+        return "$" + (Number(cents || 0) / 100).toFixed(2);
       }
 
       function dayBucketToDateLabel(dayBucket) {
@@ -180,33 +249,146 @@
           localStorage.setItem(EMAIL_STORAGE_KEY, signedInEmail);
           showSignedIn(signedInEmail);
 
-          var [usersResponse, usageResponse] = await Promise.all([
+          var [summaryResponse, usersResponse, usageResponse] = await Promise.all([
+            fetch(vibeIdBaseURL + "/admin/summary", { headers: authorizationHeaders }),
             fetch(vibeIdBaseURL + "/admin/users", { headers: authorizationHeaders }),
             fetch(vibeIdBaseURL + "/admin/usage", { headers: authorizationHeaders }),
           ]);
-          if (usersResponse.status === 401 || usageResponse.status === 401) {
+          if (summaryResponse.status === 401 || usersResponse.status === 401 || usageResponse.status === 401) {
             clearStoredAuth();
             showSignedOut();
             showErrorMessage("Your sign-in expired. Sign in again.");
             return;
           }
-          if (usersResponse.status === 403 || usageResponse.status === 403) {
+          if (summaryResponse.status === 403 || usersResponse.status === 403 || usageResponse.status === 403) {
             hideAdminTables();
             showErrorMessage("This Google account is not on the Dot admin allowlist.");
             return;
           }
+          if (!summaryResponse.ok) { showErrorMessage("Failed to load summary (" + summaryResponse.status + ")"); return; }
           if (!usersResponse.ok) { showErrorMessage("Failed to load users (" + usersResponse.status + ")"); return; }
           if (!usageResponse.ok) { showErrorMessage("Failed to load usage (" + usageResponse.status + ")"); return; }
 
+          var summaryJson = await summaryResponse.json();
           var usersJson = await usersResponse.json();
           var usageJson = await usageResponse.json();
+          renderDiagnostics(summaryJson);
           renderUsersTable(usersJson.users || []);
           renderUsageTable(usageJson.usage || []);
+          setVisibility("diagnosticsSection", true);
           setVisibility("usersSection", true);
           setVisibility("usageSection", true);
         } catch (networkError) {
           hideAdminTables();
           showErrorMessage("Couldn't reach the identity server: " + networkError.message);
+        }
+      }
+
+      function renderDiagnostics(summaryData) {
+        renderMetricGrid(summaryData);
+        renderDownloadsSummary(summaryData.downloads || {});
+        renderRecentSignupsTable(summaryData.recent_signups || []);
+        renderDailySeriesTable(summaryData.daily_series || []);
+        renderUsageLast24HoursTable(summaryData.usage_last_24h_by_project_endpoint || []);
+      }
+
+      function renderMetricGrid(summaryData) {
+        var users = summaryData.users || {};
+        var activity = summaryData.activity || {};
+        var credits = summaryData.credits || {};
+        var waitlist = summaryData.waitlist || {};
+        var downloads = summaryData.downloads || {};
+        var latestRelease = downloads.latest_release || null;
+        var metricGrid = document.getElementById("metricGrid");
+        var metrics = [
+          { label: "Total users", value: formatInteger(users.total_users), detail: "+" + formatInteger(users.new_users_24h) + " in 24h, +" + formatInteger(users.new_users_7d) + " in 7d" },
+          { label: "Active users", value: formatInteger(activity.active_users_24h), detail: formatInteger(activity.active_users_7d) + " in 7d, " + formatInteger(activity.active_users_30d) + " in 30d" },
+          { label: "Usage events", value: formatInteger(activity.usage_events_24h), detail: formatInteger(activity.usage_events_7d) + " in 7d" },
+          { label: "Spend", value: formatCents(credits.spent_cents_24h), detail: formatCents(credits.spent_cents_7d) + " in 7d, " + formatCents(credits.spent_cents_30d) + " in 30d" },
+          { label: "User balance", value: formatCents(credits.total_balance_cents), detail: formatInteger(credits.users_with_positive_balance) + " users with credits" },
+          { label: "DMG downloads", value: downloads.ok ? formatInteger(downloads.total_dmg_downloads) : "—", detail: latestRelease ? formatInteger(latestRelease.dmg_downloads) + " on latest release" : "GitHub release assets" },
+          { label: "Waitlist", value: formatInteger(waitlist.total_waitlist_signups), detail: "+" + formatInteger(waitlist.new_waitlist_signups_7d) + " in 7d" },
+          { label: "Blocked users", value: formatInteger(users.blocked_users), detail: formatInteger(users.active_users) + " active accounts" },
+        ];
+        metricGrid.innerHTML = metrics.map(function (metric) {
+          return "<div class='metric-card'>" +
+            "<div class='metric-label'>" + escapeHtml(metric.label) + "</div>" +
+            "<div class='metric-value'>" + escapeHtml(metric.value) + "</div>" +
+            "<div class='metric-detail'>" + escapeHtml(metric.detail) + "</div>" +
+          "</div>";
+        }).join("");
+      }
+
+      function renderDownloadsSummary(downloads) {
+        var downloadsSummary = document.getElementById("downloadsSummary");
+        if (!downloads.ok) {
+          downloadsSummary.innerHTML = "<p class='muted' style='margin: 0;'>Couldn't load GitHub release download counts: " + escapeHtml(downloads.error || "unknown error") + "</p>";
+          return;
+        }
+        var latestRelease = downloads.latest_release || {};
+        var latestAssets = latestRelease.assets || [];
+        var assetRows = latestAssets.map(function (asset) {
+          return "<div class='compact-row'>" +
+            "<span>" + escapeHtml(asset.name || "asset") + "</span>" +
+            "<strong>" + formatInteger(asset.download_count) + "</strong>" +
+          "</div>";
+        }).join("");
+        downloadsSummary.innerHTML =
+          "<div class='compact-row'><span>Total release downloads</span><strong>" + formatInteger(downloads.total_downloads) + "</strong></div>" +
+          "<div class='compact-row'><span>Total DMG downloads</span><strong>" + formatInteger(downloads.total_dmg_downloads) + "</strong></div>" +
+          "<div class='compact-row'><span>Latest release</span><strong>" + escapeHtml(latestRelease.name || "—") + "</strong></div>" +
+          (assetRows || "<p class='muted' style='margin: 0;'>No release assets found.</p>");
+      }
+
+      function renderRecentSignupsTable(signupRows) {
+        var tableBody = document.getElementById("recentSignupsTableBody");
+        tableBody.innerHTML = "";
+        signupRows.slice(0, 8).forEach(function (signupRow) {
+          var rowElement = document.createElement("tr");
+          rowElement.innerHTML =
+            "<td>" + escapeHtml(signupRow.email) + "</td>" +
+            "<td>" + formatUnixSeconds(signupRow.created_at) + "</td>" +
+            "<td>" + formatUnixSeconds(signupRow.last_seen_at) + "</td>";
+          tableBody.appendChild(rowElement);
+        });
+        if (signupRows.length === 0) {
+          tableBody.innerHTML = "<tr><td colspan='3' class='muted'>No signups yet.</td></tr>";
+        }
+      }
+
+      function renderDailySeriesTable(dailyRows) {
+        var tableBody = document.getElementById("dailySeriesTableBody");
+        tableBody.innerHTML = "";
+        dailyRows.slice().reverse().forEach(function (dailyRow) {
+          var rowElement = document.createElement("tr");
+          rowElement.innerHTML =
+            "<td>" + escapeHtml(dailyRow.day) + "</td>" +
+            "<td>" + formatInteger(dailyRow.new_users) + "</td>" +
+            "<td>" + formatInteger(dailyRow.active_users) + "</td>" +
+            "<td>" + formatInteger(dailyRow.usage_events) + "</td>" +
+            "<td>" + formatCents(dailyRow.spent_cents) + "</td>";
+          tableBody.appendChild(rowElement);
+        });
+        if (dailyRows.length === 0) {
+          tableBody.innerHTML = "<tr><td colspan='5' class='muted'>No daily history yet.</td></tr>";
+        }
+      }
+
+      function renderUsageLast24HoursTable(usageRows) {
+        var tableBody = document.getElementById("usageLast24HoursTableBody");
+        tableBody.innerHTML = "";
+        usageRows.forEach(function (usageRow) {
+          var rowElement = document.createElement("tr");
+          rowElement.innerHTML =
+            "<td>" + escapeHtml(usageRow.project_id || "—") + "</td>" +
+            "<td>" + escapeHtml(usageRow.endpoint || "—") + "</td>" +
+            "<td>" + formatInteger(usageRow.active_users) + "</td>" +
+            "<td>" + formatInteger(usageRow.event_count) + "</td>" +
+            "<td>" + formatInteger(usageRow.total_amount) + "</td>";
+          tableBody.appendChild(rowElement);
+        });
+        if (usageRows.length === 0) {
+          tableBody.innerHTML = "<tr><td colspan='5' class='muted'>No usage in the last 24 hours.</td></tr>";
         }
       }
 
@@ -230,13 +412,17 @@
           var rowElement = document.createElement("tr");
           rowElement.innerHTML =
             "<td>" + escapeHtml(userRow.email) + "</td>" +
+            "<td>" + formatUnixSeconds(userRow.created_at) + "</td>" +
             "<td>" + escapeHtml(userRow.status) + "</td>" +
             "<td>" + formatUnixSeconds(userRow.last_seen_at) + "</td>" +
-            "<td colspan='3'>" + escapeHtml(summarizeUsageByProject(userRow.usage_today_by_project)) + "</td>";
+            "<td>" + formatCents(userRow.balance_cents) + "</td>" +
+            "<td>" + formatCents(userRow.spent_cents_24h) + "</td>" +
+            "<td>" + formatCents(userRow.spent_cents_7d) + "</td>" +
+            "<td>" + escapeHtml(summarizeUsageByProject(userRow.usage_today_by_project)) + "</td>";
           tableBody.appendChild(rowElement);
         });
         if (userRows.length === 0) {
-          tableBody.innerHTML = "<tr><td colspan='6' class='muted'>No users yet.</td></tr>";
+          tableBody.innerHTML = "<tr><td colspan='8' class='muted'>No users yet.</td></tr>";
         }
       }
 

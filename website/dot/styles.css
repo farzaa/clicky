@@ -38,6 +38,7 @@ a:hover { text-decoration: underline; }
   margin: 0 auto;
   padding: 64px 20px 80px;
 }
+.admin-page .page { max-width: 1120px; }
 
 .brand {
   display: inline-flex;
@@ -119,6 +120,12 @@ a:hover { text-decoration: underline; }
   letter-spacing: -0.01em;
   margin-bottom: 12px;
 }
+.section h3 {
+  font-size: 15px;
+  margin: 0 0 12px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
 
 .card {
   background: var(--bg-elevated);
@@ -127,6 +134,7 @@ a:hover { text-decoration: underline; }
   padding: 20px 22px;
   box-shadow: var(--shadow);
 }
+.admin-page .card { overflow-x: auto; }
 .card + .card { margin-top: 16px; }
 
 .muted { color: var(--text-tertiary); font-size: 13px; }
@@ -136,6 +144,61 @@ a:hover { text-decoration: underline; }
 .row.between { justify-content: space-between; }
 
 .stack { display: flex; flex-direction: column; gap: 8px; }
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.metric-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+}
+.metric-label {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.metric-value {
+  font-size: 24px;
+  line-height: 1.2;
+  font-weight: 650;
+  margin-top: 6px;
+}
+.metric-detail {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  margin-top: 4px;
+}
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.8fr) minmax(360px, 1.2fr);
+  gap: 16px;
+  margin-top: 16px;
+}
+.compact-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.compact-row:first-child { padding-top: 0; }
+.compact-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.compact-row span {
+  color: var(--text-secondary);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.compact-row strong {
+  color: var(--text-primary);
+  font-weight: 600;
+  white-space: nowrap;
+}
 
 .usage-grid {
   display: grid;
@@ -213,4 +276,14 @@ footer {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+@media (max-width: 900px) {
+  .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dashboard-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 560px) {
+  .metric-grid { grid-template-columns: 1fr; }
+  .row { align-items: flex-start; flex-direction: column; }
 }

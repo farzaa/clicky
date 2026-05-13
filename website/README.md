@@ -16,7 +16,7 @@ Assuming `vibe-research.net` is on Cloudflare (or you'll add it there):
 1. Move your current `vibe-research.net` hosting to a new subdomain `swarmlab.vibe-research.net` (the bytes themselves stay where they are; just point a new CNAME at them).
 2. Point `vibe-research.net` (root) at the new minimal page from `research-lab/`.
 3. Point `dot.vibe-research.net` at the `dot/` static site.
-4. Point `api.dot.vibe-research.net` at the Cloudflare Worker route (see `worker/README.md`).
+4. Keep `api.accounts.vibe-research.net` pointed at the central `vibe-id` Worker from the separate backend repo.
 
 ## Deploying with Cloudflare Pages
 
@@ -40,14 +40,14 @@ Then in the Cloudflare dashboard, attach the right custom domain to each project
 
 Edit `website/dot/config.js` and replace:
 
-- `workerBaseURL` — the Worker URL (e.g. `https://api.dot.vibe-research.net`).
+- `workerBaseURL` — the central `vibe-id` URL (`https://api.accounts.vibe-research.net`).
 - `downloadDmgURL` — the link to your latest macOS release DMG.
 - `githubURL` — the public source repo URL.
 
 ## How sign-in works on the website
 
 1. User clicks **Sign in with Google**. The button links to
-   `<workerBaseURL>/auth/start?return_to=<websiteOrigin>/account.html`.
+   `<workerBaseURL>/auth/start?project=dot&return_to=<websiteOrigin>/account.html`.
 2. The Worker redirects to Google, then back to `/auth/callback`.
 3. The Worker mints an install token, then redirects the browser to
    `<websiteOrigin>/account.html#token=<install_token>&email=<email>`.
@@ -66,6 +66,8 @@ flow as the account page, then calls the admin APIs with
 that token when the signed-in Google email is in `VIBE_ID_ADMIN_EMAILS`.
 
 It calls two routes:
+- `GET /admin/summary` — founder dashboard snapshot: signups, DAU/WAU/MAU,
+  spend, balances, recent signups, 14-day trend, and GitHub release downloads.
 - `GET /admin/users` — list users with today's usage and limits.
 - `GET /admin/usage` — last 30 days, bucketed by day + endpoint.
 
