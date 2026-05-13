@@ -83,6 +83,7 @@ final class VideoMemoryMonitorManager: ObservableObject {
     private static let browserCameraStatusPollNanoseconds: UInt64 = 300_000_000
     private static let pollIntervalNanoseconds: UInt64 = 3_000_000_000
     private static let screenPublishIntervalNanoseconds: UInt64 = 2_000_000_000
+    private static let maximumConsecutiveRefreshFailuresBeforeDormant = 5
 
     @Published private(set) var activeMonitors: [VideoMemoryMonitor] = []
     @Published private(set) var isVideoMemoryReachable: Bool = false
@@ -97,6 +98,8 @@ final class VideoMemoryMonitorManager: ObservableObject {
     private var actionInstructionByTaskID: [String: String]
     private var notifiedTaskIDs: Set<String>
     private var previouslyActiveTaskIDs: Set<String> = []
+    private var launchDiscoveryTask: Task<Void, Never>?
+    private var consecutiveRefreshFailureCount = 0
 
     init(
         baseURL: URL = URL(string: "http://127.0.0.1:5050")!,
@@ -109,6 +112,24 @@ final class VideoMemoryMonitorManager: ObservableObject {
     }
 
     func start() {
+        guard pollingTask == nil, launchDiscoveryTask == nil else { return }
+        if actionInstructionByTaskID.isEmpty {
+            launchDiscoveryTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.refreshActiveMonitors(logFailures: false)
+                self.updateScreenFramePublisherForCurrentMonitors()
+                if self.activeMonitors.isEmpty == false {
+                    self.startPollingIfNeeded(reason: "active-monitor-discovered")
+                }
+                self.launchDiscoveryTask = nil
+            }
+            DotDebugLogger.log("videomemory.monitor", "running one-shot launch discovery")
+            return
+        }
+        startPollingIfNeeded(reason: "persisted-monitor-actions")
+    }
+
+    private func startPollingIfNeeded(reason: String) {
         guard pollingTask == nil else { return }
         pollingTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -117,12 +138,28 @@ final class VideoMemoryMonitorManager: ObservableObject {
                 try? await Task.sleep(nanoseconds: Self.pollIntervalNanoseconds)
             }
         }
+        DotDebugLogger.log("videomemory.monitor", "started polling", metadata: [
+            "reason": reason
+        ])
     }
 
     func stop() {
+        launchDiscoveryTask?.cancel()
+        launchDiscoveryTask = nil
+        stopPolling()
+        stopScreenFramePublisher()
+    }
+
+    private func stopPolling() {
         pollingTask?.cancel()
         pollingTask = nil
-        stopScreenFramePublisher()
+    }
+
+    private func stopPollingIfIdle() {
+        guard actionInstructionByTaskID.isEmpty, activeMonitors.isEmpty else { return }
+        guard pollingTask != nil else { return }
+        stopPolling()
+        DotDebugLogger.log("videomemory.monitor", "stopped polling because no active monitors remain")
     }
 
     var activeMonitorCountForOverlay: Int {
@@ -144,6 +181,9 @@ final class VideoMemoryMonitorManager: ObservableObject {
             async let tasksObject = requestJSONObject(path: "/api/tasks")
             let (devices, tasks) = try await (devicesObject, tasksObject)
             await refreshActiveMonitors()
+            if activeMonitors.isEmpty == false {
+                startPollingIfNeeded(reason: "tool-list-discovered-active-monitor")
+            }
             let renderedDevices = Self.renderCompactJSONObject(devices)
             let renderedTasks = Self.renderCompactJSONObject(tasks)
             return """
@@ -173,6 +213,7 @@ final class VideoMemoryMonitorManager: ObservableObject {
             return .failure(Self.makeError("trigger_condition and action_instruction are required"))
         }
 
+        var shouldReconcileScreenPublisherOnFailure = false
         do {
             let resolvedIOID = try await resolveIOID(
                 source: source,
@@ -184,6 +225,7 @@ final class VideoMemoryMonitorManager: ObservableObject {
                 ioID: resolvedIOID
             )
             if resolvedIOID == Self.dotScreenIOID {
+                shouldReconcileScreenPublisherOnFailure = true
                 try await ensureDotScreenDeviceIsPublishing()
             }
 
@@ -213,6 +255,7 @@ final class VideoMemoryMonitorManager: ObservableObject {
 
             actionInstructionByTaskID[taskID] = trimmedActionInstruction
             Self.saveActionInstructions(actionInstructionByTaskID)
+            startPollingIfNeeded(reason: "monitor-created")
 
             let readinessWarning = await readinessWarningIfNeeded(ioID: resolvedIOID)
             await refreshActiveMonitors()
@@ -226,6 +269,9 @@ final class VideoMemoryMonitorManager: ObservableObject {
                 readinessWarning: readinessWarning
             ))
         } catch {
+            if shouldReconcileScreenPublisherOnFailure {
+                updateScreenFramePublisherForCurrentMonitors()
+            }
             return .failure(error)
         }
     }
@@ -253,6 +299,7 @@ final class VideoMemoryMonitorManager: ObservableObject {
             )
             activeMonitors.removeAll { $0.taskID == trimmedTaskID }
             updateScreenFramePublisherForCurrentMonitors()
+            stopPollingIfIdle()
             DotDebugLogger.log("videomemory.monitor", "stopped monitor", metadata: [
                 "taskID": trimmedTaskID
             ])
@@ -273,43 +320,75 @@ final class VideoMemoryMonitorManager: ObservableObject {
         }
     }
 
-    func refreshActiveMonitors() async {
+    func refreshActiveMonitors(logFailures: Bool = true) async {
         do {
             let tasksObject = try await requestJSONObject(path: "/api/tasks")
             let fetchedTasks = Self.parseTasksResponse(tasksObject)
+            let fetchedTaskIDs = Set(fetchedTasks.map(\.taskID))
             let fetchedActiveMonitors = fetchedTasks
                 .filter { !$0.done && $0.status.lowercased() == "active" }
                 .sorted { $0.taskID.localizedStandardCompare($1.taskID) == .orderedAscending }
 
             let activeTaskIDs = Set(fetchedActiveMonitors.map(\.taskID))
             let fetchedDoneTasks = fetchedTasks.filter { $0.done || $0.status.lowercased() == "done" }
+            var didUpdatePersistedMonitorActions = false
             for doneTask in fetchedDoneTasks {
                 guard previouslyActiveTaskIDs.contains(doneTask.taskID),
                       notifiedTaskIDs.contains(doneTask.taskID) == false,
                       actionInstructionByTaskID[doneTask.taskID] != nil else {
+                    if actionInstructionByTaskID[doneTask.taskID] != nil {
+                        actionInstructionByTaskID.removeValue(forKey: doneTask.taskID)
+                        previouslyActiveTaskIDs.remove(doneTask.taskID)
+                        didUpdatePersistedMonitorActions = true
+                    }
                     continue
                 }
                 notifiedTaskIDs.insert(doneTask.taskID)
-                Self.saveNotifiedTaskIDs(notifiedTaskIDs)
                 DotDebugLogger.log("videomemory.monitor", "monitor triggered", metadata: [
                     "taskID": doneTask.taskID,
                     "ioID": doneTask.ioID,
                     "descriptionLength": doneTask.taskDescription.count
                 ])
                 triggerHandler?(doneTask)
+                actionInstructionByTaskID.removeValue(forKey: doneTask.taskID)
+                previouslyActiveTaskIDs.remove(doneTask.taskID)
+                didUpdatePersistedMonitorActions = true
+            }
+
+            for persistedTaskID in Array(actionInstructionByTaskID.keys) where fetchedTaskIDs.contains(persistedTaskID) == false {
+                actionInstructionByTaskID.removeValue(forKey: persistedTaskID)
+                previouslyActiveTaskIDs.remove(persistedTaskID)
+                didUpdatePersistedMonitorActions = true
+            }
+
+            if didUpdatePersistedMonitorActions {
+                Self.saveActionInstructions(actionInstructionByTaskID)
+                Self.saveNotifiedTaskIDs(notifiedTaskIDs)
             }
 
             activeMonitors = fetchedActiveMonitors
             previouslyActiveTaskIDs.formUnion(activeTaskIDs)
             isVideoMemoryReachable = true
             lastRefreshError = nil
+            consecutiveRefreshFailureCount = 0
+            stopPollingIfIdle()
         } catch {
             isVideoMemoryReachable = false
             lastRefreshError = error.localizedDescription
             activeMonitors = []
-            DotDebugLogger.log("videomemory.monitor", "refresh failed", metadata: [
-                "error": error.localizedDescription
-            ])
+            consecutiveRefreshFailureCount += 1
+            if logFailures {
+                DotDebugLogger.log("videomemory.monitor", "refresh failed", metadata: [
+                    "error": error.localizedDescription,
+                    "consecutiveFailureCount": consecutiveRefreshFailureCount
+                ])
+            }
+            if consecutiveRefreshFailureCount >= Self.maximumConsecutiveRefreshFailuresBeforeDormant {
+                stopPolling()
+                DotDebugLogger.log("videomemory.monitor", "stopped polling after repeated refresh failures", metadata: [
+                    "consecutiveFailureCount": consecutiveRefreshFailureCount
+                ])
+            }
         }
     }
 
