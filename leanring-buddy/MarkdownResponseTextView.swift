@@ -16,7 +16,7 @@ struct MarkdownResponseTextView: View {
     var body: some View {
         let responseBlocks = MarkdownResponseParser.parse(markdownText)
 
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             ForEach(responseBlocks) { responseBlock in
                 responseBlockView(responseBlock)
             }
@@ -29,7 +29,7 @@ struct MarkdownResponseTextView: View {
         case .paragraph(let paragraphText):
             MarkdownInlineText(
                 text: paragraphText,
-                font: .system(size: 13, weight: .regular),
+                font: .system(size: 16, weight: .regular),
                 foregroundColor: .white.opacity(0.96)
             )
 
@@ -70,7 +70,7 @@ struct MarkdownResponseTextView: View {
                     .frame(width: 3)
                 MarkdownInlineText(
                     text: quoteText,
-                    font: .system(size: 12.5, weight: .regular),
+                    font: .system(size: 15, weight: .regular),
                     foregroundColor: .white.opacity(0.82)
                 )
             }
@@ -99,11 +99,11 @@ struct MarkdownResponseTextView: View {
     private func headingFont(for headingLevel: Int) -> Font {
         switch headingLevel {
         case 1:
-            return .system(size: 16, weight: .semibold)
+            return .system(size: 20, weight: .semibold)
         case 2:
-            return .system(size: 14.5, weight: .semibold)
+            return .system(size: 18, weight: .semibold)
         default:
-            return .system(size: 13.5, weight: .semibold)
+            return .system(size: 16.5, weight: .semibold)
         }
     }
 }
@@ -117,7 +117,7 @@ private struct MarkdownInlineText: View {
         Text(attributedMarkdownText)
             .font(font)
             .foregroundColor(foregroundColor)
-            .lineSpacing(3)
+            .lineSpacing(4)
             .multilineTextAlignment(.leading)
             .fixedSize(horizontal: false, vertical: true)
             .tint(DS.Colors.accentText)
@@ -149,21 +149,21 @@ private struct MarkdownListItemRowView: View {
         HStack(alignment: .top, spacing: 7) {
             if let taskState {
                 Image(systemName: taskState == .checked ? "checkmark.square.fill" : "square")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundColor(taskState == .checked ? DS.Colors.success : .white.opacity(0.48))
-                    .frame(width: 14, alignment: .center)
+                    .frame(width: 16, alignment: .center)
                     .padding(.top, 2)
             } else {
                 Text(markerText)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(DS.Colors.overlayCursorBlue.opacity(0.9))
-                    .frame(width: 18, alignment: .trailing)
+                    .frame(width: 22, alignment: .trailing)
                     .padding(.top, 0.5)
             }
 
             MarkdownInlineText(
                 text: itemText,
-                font: .system(size: 13, weight: .regular),
+                font: .system(size: 16, weight: .regular),
                 foregroundColor: .white.opacity(0.94)
             )
         }
@@ -178,16 +178,16 @@ private struct MarkdownCodeBlockView: View {
         VStack(alignment: .leading, spacing: 5) {
             if let language, !language.isEmpty {
                 Text(language.lowercased())
-                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .foregroundColor(DS.Colors.codeText.opacity(0.82))
                     .textCase(.uppercase)
                     .tracking(0.6)
             }
 
             Text(codeText)
-                .font(.system(size: 11.5, weight: .regular, design: .monospaced))
+                .font(.system(size: 14, weight: .regular, design: .monospaced))
                 .foregroundColor(.white.opacity(0.92))
-                .lineSpacing(2)
+                .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 10)
@@ -214,9 +214,9 @@ private struct MarkdownMathBlockView: View {
                 .frame(width: 3)
 
             Text(MathSyntaxFormatter.displayText(from: mathText))
-                .font(.system(size: 14, weight: .medium, design: .serif))
+                .font(.system(size: 17, weight: .medium, design: .serif))
                 .foregroundColor(.white.opacity(0.95))
-                .lineSpacing(4)
+                .lineSpacing(5)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 10)
@@ -242,7 +242,7 @@ private struct MarkdownTableView: View {
                 ForEach(0..<table.columnCount, id: \.self) { columnIndex in
                     MarkdownInlineText(
                         text: table.headerText(at: columnIndex),
-                        font: .system(size: 11.5, weight: .semibold),
+                        font: .system(size: 14, weight: .semibold),
                         foregroundColor: .white.opacity(0.96)
                     )
                 }
@@ -257,7 +257,7 @@ private struct MarkdownTableView: View {
                     ForEach(0..<table.columnCount, id: \.self) { columnIndex in
                         MarkdownInlineText(
                             text: table.cellText(rowIndex: rowIndex, columnIndex: columnIndex),
-                            font: .system(size: 11.5, weight: .regular),
+                            font: .system(size: 14, weight: .regular),
                             foregroundColor: .white.opacity(0.82)
                         )
                     }
@@ -285,14 +285,14 @@ private struct MarkdownDiagramView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Text(diagram.badgeText)
-                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .foregroundColor(DS.Colors.overlayCursorBlue.opacity(0.95))
                     .textCase(.uppercase)
                     .tracking(0.6)
 
                 if let title = diagram.title, !title.isEmpty {
                     Text(title)
-                        .font(.system(size: 11.5, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.white.opacity(0.92))
                         .lineLimit(2)
                 }
@@ -337,16 +337,16 @@ private struct MarkdownFlowchartDiagramView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                         VStack(spacing: 1) {
                             Text(edge.symbolText)
-                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                .font(.system(size: 13, weight: .bold, design: .monospaced))
                                 .foregroundColor(DS.Colors.overlayCursorBlue.opacity(0.92))
                             if let label = edge.label, !label.isEmpty {
                                 Text(label)
-                                    .font(.system(size: 9, weight: .medium))
+                                    .font(.system(size: 11, weight: .medium))
                                     .foregroundColor(.white.opacity(0.66))
                                     .lineLimit(1)
                             }
                         }
-                        .frame(width: 42)
+                        .frame(width: 48)
                         MarkdownDiagramNodeView(node: flowchart.node(for: edge.toID))
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -365,7 +365,7 @@ private struct MarkdownSequenceDiagramView: View {
                 HStack(spacing: 6) {
                     ForEach(sequenceDiagram.participants, id: \.self) { participant in
                         Text(participant)
-                            .font(.system(size: 10.5, weight: .semibold))
+                            .font(.system(size: 12.5, weight: .semibold))
                             .foregroundColor(.white.opacity(0.9))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
@@ -381,22 +381,22 @@ private struct MarkdownSequenceDiagramView: View {
                 ForEach(sequenceDiagram.messages) { message in
                     HStack(alignment: .center, spacing: 6) {
                         Text(message.from)
-                            .font(.system(size: 10.5, weight: .semibold))
+                            .font(.system(size: 12.5, weight: .semibold))
                             .foregroundColor(.white.opacity(0.86))
                             .lineLimit(1)
-                            .frame(width: 64, alignment: .trailing)
+                            .frame(width: 78, alignment: .trailing)
                         Text(message.arrowText)
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .font(.system(size: 13, weight: .bold, design: .monospaced))
                             .foregroundColor(DS.Colors.overlayCursorBlue.opacity(0.92))
-                            .frame(width: 34)
+                            .frame(width: 40)
                         Text(message.to)
-                            .font(.system(size: 10.5, weight: .semibold))
+                            .font(.system(size: 12.5, weight: .semibold))
                             .foregroundColor(.white.opacity(0.86))
                             .lineLimit(1)
-                            .frame(width: 64, alignment: .leading)
+                            .frame(width: 78, alignment: .leading)
                         if !message.text.isEmpty {
                             Text(message.text)
-                                .font(.system(size: 10.5, weight: .regular))
+                                .font(.system(size: 12.5, weight: .regular))
                                 .foregroundColor(.white.opacity(0.72))
                                 .lineLimit(2)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -422,12 +422,12 @@ private struct MarkdownPieDiagramView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {
                         Text(slice.label)
-                            .font(.system(size: 10.5, weight: .semibold))
+                            .font(.system(size: 12.5, weight: .semibold))
                             .foregroundColor(.white.opacity(0.88))
                             .lineLimit(1)
                         Spacer(minLength: 8)
                         Text("\(Int((fraction * 100).rounded()))%")
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
                             .foregroundColor(.white.opacity(0.62))
                     }
                     GeometryReader { geometryProxy in
@@ -450,7 +450,7 @@ private struct FlexibleNodeGrid: View {
     let nodes: [MarkdownResponseDiagramNode]
 
     var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 6)], alignment: .leading, spacing: 6) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 6)], alignment: .leading, spacing: 6) {
             ForEach(nodes) { node in
                 MarkdownDiagramNodeView(node: node)
             }
@@ -463,7 +463,7 @@ private struct MarkdownDiagramNodeView: View {
 
     var body: some View {
         Text(node.label)
-            .font(.system(size: 10.5, weight: node.shape == .decision ? .semibold : .medium))
+            .font(.system(size: 12.5, weight: node.shape == .decision ? .semibold : .medium))
             .foregroundColor(.white.opacity(0.9))
             .lineLimit(2)
             .multilineTextAlignment(.center)

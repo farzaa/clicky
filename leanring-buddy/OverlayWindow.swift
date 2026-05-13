@@ -582,11 +582,11 @@ struct BlueCursorView: View {
     // TTS caption bubble tuning. Bubble lives just below-right of the Dot
     // so it doesn't collide with the small navigation-pointer bubble
     // (which sits at +18y to the right).
-    private static let captionBubbleMaxWidth: CGFloat = 560
+    private static let captionBubbleMaxWidth: CGFloat = 640
     private static let captionBubbleHorizontalOffsetInPoints: CGFloat = 16
     private static let captionBubbleVerticalOffsetInPoints: CGFloat = 28
     private static let captionBubbleScreenMarginInPoints: CGFloat = 12
-    private static let captionBubbleKeyboardScrollStepInPoints: CGFloat = 54
+    private static let captionBubbleKeyboardScrollStepInPoints: CGFloat = 72
 
     private var captionBubbleMaximumWidth: CGFloat {
         max(220, min(Self.captionBubbleMaxWidth, screenFrame.width - (Self.captionBubbleScreenMarginInPoints * 2)))
