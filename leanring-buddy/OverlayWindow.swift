@@ -417,10 +417,11 @@ struct BlueCursorView: View {
             // During cursor following: fast spring animation for snappy tracking.
             // During navigation: NO implicit animation — the frame-by-frame bezier
             // timer controls position directly at 60fps for a smooth arc flight.
-            Circle()
-                .fill(DS.Colors.overlayCursorBlue)
-                .frame(width: 14, height: 14)
-                .shadow(color: DS.Colors.overlayCursorBlue, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
+            BlueCursorFaceDotView(
+                glowRadius: 8 + (buddyFlightScale - 1.0) * 20,
+                glowOpacity: 1.0,
+                eyeOpacity: 0.68
+            )
                 .scaleEffect(buddyFlightScale * clickPulseScale * scrollSquashScale)
                 .opacity(
                     buddyIsVisibleOnThisScreen
@@ -441,10 +442,10 @@ struct BlueCursorView: View {
                     value: triangleRotationDegrees
                 )
 
-            // Talking oval — replaces the plain dot while text or TTS is
-            // streaming. It alternates between a horizontal and vertical
-            // capsule so Dot looks alive without becoming visually noisy.
-            BlueCursorTalkingOvalView()
+            // Speaking glow — keeps Dot round while text or TTS is streaming.
+            // The old horizontal/vertical mouth cycle read a little uncanny;
+            // this uses a softer breathing dot plus tiny voice pips instead.
+            BlueCursorSpeakingGlowView()
                 .scaleEffect(buddyFlightScale * clickPulseScale)
                 .opacity(
                     buddyIsVisibleOnThisScreen
@@ -462,15 +463,16 @@ struct BlueCursorView: View {
                 )
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
 
-            // Blue waveform — replaces the triangle while listening
-            BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel)
+            // Listening face — keeps Dot present while the side pulses react
+            // to mic input.
+            BlueCursorListeningFaceView(audioPowerLevel: companionManager.currentAudioPowerLevel)
                 .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .listening ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
 
-            // Blue hourglass — shown while the AI is processing or waiting.
-            BlueCursorWaitingHourglassView()
+            // Thinking face — shown while the AI is processing or waiting.
+            BlueCursorThinkingFaceView()
                 .opacity(
                     buddyIsVisibleOnThisScreen
                     && (companionManager.voiceState == .processing || companionManager.isShowingWaitingAnimation)
@@ -1058,167 +1060,323 @@ struct BlueCursorView: View {
     }
 }
 
-// MARK: - Blue Cursor Talking Oval
+// MARK: - Blue Cursor Speaking Glow
 
-/// A compact speaking-state indicator. The horizontal/vertical oval cycle
-/// reads as a mouth moving while streamed text and TTS chunks arrive.
-private struct BlueCursorTalkingOvalView: View {
-    private let animationDurationSeconds: TimeInterval = 0.64
+private struct BlueCursorFaceDotView: View {
+    let glowRadius: CGFloat
+    let glowOpacity: Double
+    let eyeOpacity: Double
+    let eyeHeightScale: CGFloat
 
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 45.0)) { timelineContext in
-            let horizontalAmount = CGFloat(horizontalMouthAmount(for: timelineContext.date))
-            let verticalAmount = 1.0 - horizontalAmount
-            let width = 12.0 + horizontalAmount * 12.0
-            let height = 12.0 + verticalAmount * 10.0
-
-            ZStack {
-                RoundedRectangle(cornerRadius: 999, style: .continuous)
-                    .fill(DS.Colors.overlayCursorBlue)
-                    .frame(width: width, height: height)
-                    .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.72), radius: 9, x: 0, y: 0)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 999, style: .continuous)
-                            .stroke(
-                                Color.white.opacity(Double(0.40 + horizontalAmount * 0.18)),
-                                lineWidth: 0.9
-                            )
-                    )
-
-                Capsule(style: .continuous)
-                    .fill(Color.white.opacity(0.42))
-                    .frame(
-                        width: max(3.5, width * 0.28),
-                        height: 2.2
-                    )
-                    .offset(x: -width * 0.14, y: -height * 0.18)
-                    .opacity(Double(0.55 + horizontalAmount * 0.20))
-            }
-            .frame(width: 30, height: 30)
-            .scaleEffect(CGFloat(0.98 + 0.05 * sin(timelineContext.date.timeIntervalSinceReferenceDate * .pi * 4.0)))
-        }
+    init(
+        glowRadius: CGFloat,
+        glowOpacity: Double,
+        eyeOpacity: Double,
+        eyeHeightScale: CGFloat = 1.0
+    ) {
+        self.glowRadius = glowRadius
+        self.glowOpacity = glowOpacity
+        self.eyeOpacity = eyeOpacity
+        self.eyeHeightScale = eyeHeightScale
     }
 
-    private func horizontalMouthAmount(for date: Date) -> Double {
-        let rawProgress = date.timeIntervalSinceReferenceDate
-            .truncatingRemainder(dividingBy: animationDurationSeconds) / animationDurationSeconds
-        let wave = (sin(rawProgress * .pi * 2.0) + 1.0) / 2.0
-        return wave * wave * (3.0 - 2.0 * wave)
+    var body: some View {
+        let eyeHeight = max(0.9, 4.2 * eyeHeightScale)
+
+        ZStack {
+            Circle()
+                .fill(DS.Colors.overlayCursorBlue)
+                .frame(width: 14, height: 14)
+                .shadow(
+                    color: DS.Colors.overlayCursorBlue.opacity(glowOpacity),
+                    radius: glowRadius,
+                    x: 0,
+                    y: 0
+                )
+
+            HStack(spacing: 2.3) {
+                Capsule(style: .continuous)
+                    .fill(Color(red: 0.02, green: 0.08, blue: 0.12).opacity(eyeOpacity))
+                    .frame(width: 1.55, height: eyeHeight)
+                Capsule(style: .continuous)
+                    .fill(Color(red: 0.02, green: 0.08, blue: 0.12).opacity(eyeOpacity))
+                    .frame(width: 1.55, height: eyeHeight)
+            }
+            .offset(y: -0.9)
+            .allowsHitTesting(false)
+        }
+        .frame(width: 14, height: 14)
     }
 }
 
-// MARK: - Blue Cursor Waveform
-
-/// A small blue waveform that replaces the triangle cursor while
-/// the user is holding the push-to-talk shortcut and speaking.
-private struct BlueCursorWaveformView: View {
-    let audioPowerLevel: CGFloat
-
-    private let barCount = 5
-    private let listeningBarProfile: [CGFloat] = [0.4, 0.7, 1.0, 0.7, 0.4]
+/// A compact speaking-state indicator. It keeps Dot's silhouette round and
+/// adds a gentle breath plus tiny voice pips so streamed text/TTS feels alive
+/// without becoming mouth-like or twitchy.
+private struct BlueCursorSpeakingGlowView: View {
+    private let breathDurationSeconds: TimeInterval = 1.65
+    private let pipDurationSeconds: TimeInterval = 1.45
+    private let pipOffsets: [CGSize] = [
+        CGSize(width: 11.0, height: -7.0),
+        CGSize(width: 14.0, height: 0.0),
+        CGSize(width: 10.5, height: 7.0)
+    ]
+    private let pipDiameters: [CGFloat] = [3.2, 4.0, 2.8]
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 36.0)) { timelineContext in
-            HStack(alignment: .center, spacing: 2) {
-                ForEach(0..<barCount, id: \.self) { barIndex in
-                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                        .fill(DS.Colors.overlayCursorBlue)
-                        .frame(
-                            width: 2,
-                            height: barHeight(
-                                for: barIndex,
-                                timelineDate: timelineContext.date
-                            )
+        TimelineView(.animation(minimumInterval: 1.0 / 45.0)) { timelineContext in
+            let breath = CGFloat(breathAmount(for: timelineContext.date))
+
+            ZStack {
+                Circle()
+                    .fill(DS.Colors.overlayCursorBlue.opacity(0.18 + Double(breath) * 0.08))
+                    .frame(width: 24, height: 24)
+                    .scaleEffect(0.95 + breath * 0.14)
+
+                Circle()
+                    .stroke(DS.Colors.overlayCursorBlue.opacity(0.24 + Double(breath) * 0.18), lineWidth: 1.0)
+                    .frame(width: 19, height: 19)
+                    .scaleEffect(0.92 + breath * 0.16)
+
+                BlueCursorFaceDotView(
+                    glowRadius: 7 + breath * 3,
+                    glowOpacity: 0.66 + Double(breath) * 0.10,
+                    eyeOpacity: 0.74
+                )
+                    .overlay(
+                        Circle()
+                            .stroke(Color.white.opacity(0.26 + Double(breath) * 0.10), lineWidth: 0.75)
+                    )
+
+                ForEach(pipOffsets.indices, id: \.self) { pipIndex in
+                    let pipPulse = CGFloat(pipPulseAmount(
+                        for: timelineContext.date,
+                        pipIndex: pipIndex
+                    ))
+                    let baseOffset = pipOffsets[pipIndex]
+                    let travelScale = 0.91 + pipPulse * 0.14
+
+                    Circle()
+                        .fill(DS.Colors.overlayCursorBlue.opacity(0.24 + Double(pipPulse) * 0.58))
+                        .frame(width: pipDiameters[pipIndex], height: pipDiameters[pipIndex])
+                        .scaleEffect(0.72 + pipPulse * 0.46)
+                        .offset(
+                            x: baseOffset.width * travelScale,
+                            y: baseOffset.height * travelScale
+                        )
+                        .shadow(
+                            color: DS.Colors.overlayCursorBlue.opacity(0.28 + Double(pipPulse) * 0.32),
+                            radius: 3 + pipPulse * 2,
+                            x: 0,
+                            y: 0
                         )
                 }
             }
-            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.6), radius: 6, x: 0, y: 0)
+            .frame(width: 36, height: 32)
+            .scaleEffect(0.98 + breath * 0.05)
+        }
+    }
+
+    private func breathAmount(for date: Date) -> Double {
+        let rawProgress = date.timeIntervalSinceReferenceDate
+            .truncatingRemainder(dividingBy: breathDurationSeconds) / breathDurationSeconds
+        let wave = (sin(rawProgress * .pi * 2.0) + 1.0) / 2.0
+        return wave * wave * (3.0 - 2.0 * wave)
+    }
+
+    private func pipPulseAmount(for date: Date, pipIndex: Int) -> Double {
+        let shiftedTime = date.timeIntervalSinceReferenceDate + Double(pipIndex) * 0.18
+        let rawProgress = shiftedTime
+            .truncatingRemainder(dividingBy: pipDurationSeconds) / pipDurationSeconds
+        let wave = max(0, sin(rawProgress * .pi))
+        return pow(wave, 1.35)
+    }
+}
+
+// MARK: - Blue Cursor Listening Face
+
+/// A small face with symmetric side pulses. The center stays Dot-shaped while
+/// the outer pips react to live mic power.
+private struct BlueCursorListeningFaceView: View {
+    let audioPowerLevel: CGFloat
+
+    private let pulseVerticalOffsets: [CGFloat] = [-5.2, 0.0, 5.2]
+    private let breathDurationSeconds: TimeInterval = 1.25
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 36.0)) { timelineContext in
+            let audioLevel = easedAudioPowerLevel()
+            let breath = breathAmount(for: timelineContext.date)
+
+            ZStack {
+                Circle()
+                    .fill(DS.Colors.overlayCursorBlue.opacity(0.12 + Double(audioLevel) * 0.12))
+                    .frame(width: 27, height: 27)
+                    .scaleEffect(0.94 + breath * 0.06 + audioLevel * 0.12)
+
+                Circle()
+                    .stroke(
+                        DS.Colors.overlayCursorBlue.opacity(0.24 + Double(audioLevel) * 0.28),
+                        lineWidth: 1.0
+                    )
+                    .frame(width: 21, height: 21)
+                    .scaleEffect(0.95 + breath * 0.08 + audioLevel * 0.08)
+
+                ForEach(pulseVerticalOffsets.indices, id: \.self) { pulseIndex in
+                    let pulseAmount = listeningPulseAmount(
+                        for: timelineContext.date,
+                        pulseIndex: pulseIndex
+                    )
+                    let pulseDiameter = 2.1 + pulseAmount * 1.9 + audioLevel * 1.2
+
+                    ForEach(0..<2, id: \.self) { sideIndex in
+                        let direction: CGFloat = sideIndex == 0 ? -1.0 : 1.0
+
+                        Circle()
+                            .fill(DS.Colors.overlayCursorBlue.opacity(0.20 + Double(pulseAmount) * 0.30 + Double(audioLevel) * 0.32))
+                            .frame(width: pulseDiameter, height: pulseDiameter)
+                            .offset(
+                                x: direction * (11.3 + pulseAmount * 2.5 + audioLevel * 2.8),
+                                y: pulseVerticalOffsets[pulseIndex]
+                            )
+                            .shadow(
+                                color: DS.Colors.overlayCursorBlue.opacity(0.20 + Double(audioLevel) * 0.35),
+                                radius: 3 + audioLevel * 3,
+                                x: 0,
+                                y: 0
+                            )
+                    }
+                }
+
+                BlueCursorFaceDotView(
+                    glowRadius: 7 + audioLevel * 5,
+                    glowOpacity: 0.72 + Double(audioLevel) * 0.18,
+                    eyeOpacity: 0.76
+                )
+                    .overlay(
+                        Circle()
+                            .stroke(Color.white.opacity(0.22 + Double(audioLevel) * 0.12), lineWidth: 0.75)
+                    )
+            }
+            .frame(width: 44, height: 36)
             .animation(.linear(duration: 0.08), value: audioPowerLevel)
         }
     }
 
-    private func barHeight(for barIndex: Int, timelineDate: Date) -> CGFloat {
-        let animationPhase = CGFloat(timelineDate.timeIntervalSinceReferenceDate * 3.6) + CGFloat(barIndex) * 0.35
+    private func easedAudioPowerLevel() -> CGFloat {
         let normalizedAudioPowerLevel = max(audioPowerLevel - 0.008, 0)
-        let easedAudioPowerLevel = pow(min(normalizedAudioPowerLevel * 2.85, 1), 0.76)
-        let reactiveHeight = easedAudioPowerLevel * 10 * listeningBarProfile[barIndex]
-        let idlePulse = (sin(animationPhase) + 1) / 2 * 1.5
-        return 3 + reactiveHeight + idlePulse
+        return pow(min(normalizedAudioPowerLevel * 2.85, 1), 0.76)
+    }
+
+    private func breathAmount(for date: Date) -> CGFloat {
+        let rawProgress = date.timeIntervalSinceReferenceDate
+            .truncatingRemainder(dividingBy: breathDurationSeconds) / breathDurationSeconds
+        let wave = (sin(rawProgress * .pi * 2.0) + 1.0) / 2.0
+        return CGFloat(wave * wave * (3.0 - 2.0 * wave))
+    }
+
+    private func listeningPulseAmount(for date: Date, pulseIndex: Int) -> CGFloat {
+        let shiftedTime = date.timeIntervalSinceReferenceDate + Double(pulseIndex) * 0.12
+        let wave = (sin(shiftedTime * 4.2) + 1.0) / 2.0
+        let reactiveAmount = easedAudioPowerLevel()
+        return CGFloat(0.24 + wave * 0.18) + reactiveAmount * CGFloat(0.45 + Double(pulseIndex) * 0.08)
     }
 }
 
-// MARK: - Blue Cursor Waiting Hourglass
+// MARK: - Blue Cursor Thinking Face
 
-/// A compact figure-eight/hourglass that replaces the blue dot while Dot is
-/// processing. The falling bead gives long waits a visible "still working"
-/// signal without requiring another state variable or prompt instruction.
-private struct BlueCursorWaitingHourglassView: View {
-    private let animationDurationSeconds: TimeInterval = 1.55
+/// A face-preserving waiting state. A slow blink and small orbiting sparkle
+/// reads as "thinking" without switching into a mechanical hourglass.
+private struct BlueCursorThinkingFaceView: View {
+    private let breathDurationSeconds: TimeInterval = 2.2
+    private let orbitDurationSeconds: TimeInterval = 2.8
+    private let blinkDurationSeconds: TimeInterval = 3.4
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 45.0)) { timelineContext in
-            let progress = animationProgress(for: timelineContext.date)
-            BlueCursorWaitingHourglassFrame(progress: progress)
-        }
-    }
+            let breath = breathAmount(for: timelineContext.date)
+            let orbitAngle = orbitAngle(for: timelineContext.date)
+            let sparkleOpacity = sparkleOpacity(for: timelineContext.date)
+            let eyeHeightScale = blinkingEyeHeightScale(for: timelineContext.date)
 
-    private func animationProgress(for date: Date) -> CGFloat {
-        let rawProgress = date.timeIntervalSinceReferenceDate
-            .truncatingRemainder(dividingBy: animationDurationSeconds) / animationDurationSeconds
-        return CGFloat(rawProgress)
-    }
-}
+            ZStack {
+                Circle()
+                    .fill(DS.Colors.overlayCursorBlue.opacity(0.12 + Double(breath) * 0.06))
+                    .frame(width: 27, height: 27)
+                    .scaleEffect(0.96 + breath * 0.08)
 
-private struct BlueCursorWaitingHourglassFrame: View {
-    let progress: CGFloat
+                Circle()
+                    .stroke(
+                        DS.Colors.overlayCursorBlue.opacity(0.22 + Double(breath) * 0.20),
+                        lineWidth: 1.0
+                    )
+                    .frame(width: 21, height: 21)
+                    .scaleEffect(0.94 + breath * 0.14)
 
-    private var easedSandProgress: CGFloat {
-        smoothStep(progress)
-    }
+                Circle()
+                    .fill(Color.white.opacity(0.66 * sparkleOpacity))
+                    .frame(width: 3.6, height: 3.6)
+                    .offset(
+                        x: CGFloat(cos(Double(orbitAngle))) * 13.2,
+                        y: CGFloat(sin(Double(orbitAngle))) * 8.4
+                    )
+                    .shadow(
+                        color: DS.Colors.overlayCursorBlue.opacity(0.45 * sparkleOpacity),
+                        radius: 5,
+                        x: 0,
+                        y: 0
+                    )
 
-    private var flipProgress: CGFloat {
-        smoothStep(clamped((progress - 0.82) / 0.18))
-    }
+                Circle()
+                    .fill(DS.Colors.overlayCursorBlue.opacity(0.34 * sparkleOpacity))
+                    .frame(width: 2.2, height: 2.2)
+                    .offset(
+                        x: CGFloat(cos(Double(orbitAngle - 0.55))) * 11.6,
+                        y: CGFloat(sin(Double(orbitAngle - 0.55))) * 7.4
+                    )
 
-    private var topSandScale: CGFloat {
-        max(0.35, 1.0 - easedSandProgress * 0.55)
-    }
-
-    private var bottomSandScale: CGFloat {
-        0.45 + easedSandProgress * 0.65
-    }
-
-    var body: some View {
-        ZStack {
-            BlueCursorFigureEightShape()
-                .stroke(
-                    DS.Colors.overlayCursorBlue,
-                    style: StrokeStyle(lineWidth: 2.15, lineCap: .round, lineJoin: .round)
+                BlueCursorFaceDotView(
+                    glowRadius: 7 + breath * 3,
+                    glowOpacity: 0.68 + Double(breath) * 0.12,
+                    eyeOpacity: 0.72,
+                    eyeHeightScale: eyeHeightScale
                 )
-                .frame(width: 15, height: 18)
-                .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.65), radius: 6, x: 0, y: 0)
-
-            Circle()
-                .fill(DS.Colors.overlayCursorBlue.opacity(0.9))
-                .frame(width: 3.2, height: 3.2)
-                .scaleEffect(topSandScale)
-                .offset(y: -4.6)
-
-            Circle()
-                .fill(DS.Colors.overlayCursorBlue.opacity(0.95))
-                .frame(width: 2.6, height: 2.6)
-                .offset(y: -4.3 + easedSandProgress * 8.6)
-                .opacity(progress < 0.82 ? 1 : 0)
-
-            Circle()
-                .fill(DS.Colors.overlayCursorBlue.opacity(0.9))
-                .frame(width: 3.2, height: 3.2)
-                .scaleEffect(bottomSandScale)
-                .offset(y: 4.7)
+                    .overlay(
+                        Circle()
+                            .stroke(Color.white.opacity(0.22 + Double(breath) * 0.10), lineWidth: 0.75)
+                    )
+            }
+            .frame(width: 38, height: 34)
+            .scaleEffect(0.98 + breath * 0.04)
         }
-        .frame(width: 20, height: 22)
-        .rotationEffect(.degrees(Double(flipProgress) * 180.0))
-        .scaleEffect(0.96 + 0.06 * sin(Double(progress) * .pi * 2.0))
+    }
+
+    private func breathAmount(for date: Date) -> CGFloat {
+        let rawProgress = date.timeIntervalSinceReferenceDate
+            .truncatingRemainder(dividingBy: breathDurationSeconds) / breathDurationSeconds
+        let wave = (sin(rawProgress * .pi * 2.0) + 1.0) / 2.0
+        return CGFloat(wave * wave * (3.0 - 2.0 * wave))
+    }
+
+    private func orbitAngle(for date: Date) -> CGFloat {
+        let rawProgress = date.timeIntervalSinceReferenceDate
+            .truncatingRemainder(dividingBy: orbitDurationSeconds) / orbitDurationSeconds
+        return CGFloat(rawProgress * .pi * 2.0)
+    }
+
+    private func sparkleOpacity(for date: Date) -> Double {
+        let rawProgress = date.timeIntervalSinceReferenceDate
+            .truncatingRemainder(dividingBy: orbitDurationSeconds) / orbitDurationSeconds
+        let wave = (sin(rawProgress * .pi * 2.0) + 1.0) / 2.0
+        return 0.48 + wave * 0.42
+    }
+
+    private func blinkingEyeHeightScale(for date: Date) -> CGFloat {
+        let rawProgress = date.timeIntervalSinceReferenceDate
+            .truncatingRemainder(dividingBy: blinkDurationSeconds) / blinkDurationSeconds
+        let closeProgress = smoothStep(clamped((CGFloat(rawProgress) - 0.72) / 0.045))
+        let openProgress = smoothStep(clamped((CGFloat(rawProgress) - 0.79) / 0.075))
+        let blinkAmount = closeProgress * (1.0 - openProgress)
+        return 1.0 - blinkAmount * 0.78
     }
 
     private func clamped(_ value: CGFloat) -> CGFloat {
@@ -1228,40 +1386,6 @@ private struct BlueCursorWaitingHourglassFrame: View {
     private func smoothStep(_ value: CGFloat) -> CGFloat {
         let clampedValue = clamped(value)
         return clampedValue * clampedValue * (3 - 2 * clampedValue)
-    }
-}
-
-private struct BlueCursorFigureEightShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        let center = CGPoint(x: rect.midX, y: rect.midY)
-        let top = CGPoint(x: rect.midX, y: rect.minY + 1.3)
-        let bottom = CGPoint(x: rect.midX, y: rect.maxY - 1.3)
-        let left = rect.minX + 1.2
-        let right = rect.maxX - 1.2
-
-        var path = Path()
-        path.move(to: center)
-        path.addCurve(
-            to: top,
-            control1: CGPoint(x: left, y: rect.midY - 1.1),
-            control2: CGPoint(x: left, y: rect.minY + 1.4)
-        )
-        path.addCurve(
-            to: center,
-            control1: CGPoint(x: right, y: rect.minY + 1.4),
-            control2: CGPoint(x: right, y: rect.midY - 1.1)
-        )
-        path.addCurve(
-            to: bottom,
-            control1: CGPoint(x: left, y: rect.midY + 1.1),
-            control2: CGPoint(x: left, y: rect.maxY - 1.4)
-        )
-        path.addCurve(
-            to: center,
-            control1: CGPoint(x: right, y: rect.maxY - 1.4),
-            control2: CGPoint(x: right, y: rect.midY + 1.1)
-        )
-        return path
     }
 }
 
