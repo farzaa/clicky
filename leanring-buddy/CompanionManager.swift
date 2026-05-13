@@ -402,7 +402,6 @@ final class CompanionManager: ObservableObject {
     private var responseMouseInterruptionSuppressedUntil = Date.distantPast
     private var isHandlingMouseInterruption = false
     private var didRequestMouseInterruptionForCurrentTurn = false
-    private var captionBubbleKeyboardScrollMonitor: Any?
 
     /// Fires once per agent-loop terminal state (completed / cancelled /
     /// failed). The `source` carries the same string the caller passed to
@@ -417,6 +416,7 @@ final class CompanionManager: ObservableObject {
     private var currentAgentLoopSource: String?
 
     private var shortcutTransitionCancellable: AnyCancellable?
+    private var globalKeyDownCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var dictationErrorCancellable: AnyCancellable?
@@ -574,6 +574,7 @@ final class CompanionManager: ObservableObject {
         bindAudioPowerLevel()
         bindDictationErrors()
         bindShortcutTransitions()
+        bindGlobalKeyDownEvents()
         // Phase 4: idle-aware sleep cycle that periodically compacts the
         // running thread + reviews /memories/ via Haiku. Cheap to leave
         // running because the body is mostly clock reads + early-returns.
@@ -708,6 +709,7 @@ final class CompanionManager: ObservableObject {
         currentResponseTask?.cancel()
         currentResponseTask = nil
         shortcutTransitionCancellable?.cancel()
+        globalKeyDownCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
         dictationErrorCancellable?.cancel()
@@ -1160,6 +1162,18 @@ final class CompanionManager: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] transition in
                 self?.handleShortcutTransition(transition)
+            }
+    }
+
+    private func bindGlobalKeyDownEvents() {
+        globalKeyDownCancellable = globalPushToTalkShortcutMonitor
+            .globalKeyDownPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] keyDownEvent in
+                self?.handleCaptionBubbleKeyboardScrollKeyDown(
+                    keyCode: keyDownEvent.keyCode,
+                    modifierFlagsRawValue: keyDownEvent.modifierFlagsRawValue
+                )
             }
     }
 
@@ -4770,7 +4784,6 @@ final class CompanionManager: ObservableObject {
 
         captionBubbleText = normalizedMarkdownText
         captionBubbleVisible = true
-        startCaptionBubbleKeyboardScrollMonitorIfNeeded()
         voiceState = .responding
     }
 
@@ -4911,7 +4924,6 @@ final class CompanionManager: ObservableObject {
                     if nextChunk.shouldUpdateCaption {
                         strongSelf.captionBubbleText = nextChunk.displayText
                         strongSelf.captionBubbleVisible = true
-                        strongSelf.startCaptionBubbleKeyboardScrollMonitorIfNeeded()
                     }
                     let speechText = ResponseSpeechTextFormatter.speechText(from: nextChunk.speechText)
                     if !speechText.isEmpty {
@@ -4970,7 +4982,6 @@ final class CompanionManager: ObservableObject {
     private func keepCaptionBubbleVisibleUntilUserMouseMove() {
         captionBubbleFadeOutTask?.cancel()
         captionBubbleFadeOutTask = nil
-        startCaptionBubbleKeyboardScrollMonitorIfNeeded()
         // Re-arm even when the monitor is already installed. During a
         // normal turn the interruption monitor starts before screenshotting
         // and TTS, so its baseline may include earlier cursor drift. The
@@ -4982,34 +4993,17 @@ final class CompanionManager: ObservableObject {
         ])
     }
 
-    private func startCaptionBubbleKeyboardScrollMonitorIfNeeded() {
-        guard captionBubbleKeyboardScrollMonitor == nil else { return }
-
-        captionBubbleKeyboardScrollMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: .keyDown
-        ) { [weak self] event in
-            Task { @MainActor in
-                self?.handleCaptionBubbleKeyboardScrollEvent(event)
-            }
-        }
-
-        DotDebugLogger.log("caption.scroll", "started keyboard scroll monitor")
-    }
-
-    private func stopCaptionBubbleKeyboardScrollMonitor() {
-        if let captionBubbleKeyboardScrollMonitor {
-            NSEvent.removeMonitor(captionBubbleKeyboardScrollMonitor)
-        }
-        captionBubbleKeyboardScrollMonitor = nil
-    }
-
-    private func handleCaptionBubbleKeyboardScrollEvent(_ event: NSEvent) {
+    private func handleCaptionBubbleKeyboardScrollKeyDown(
+        keyCode: UInt16,
+        modifierFlagsRawValue: UInt64
+    ) {
         guard captionBubbleVisible,
               !captionBubbleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return
         }
 
-        let modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let modifierFlags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlagsRawValue))
+            .intersection(.deviceIndependentFlagsMask)
         guard !modifierFlags.contains(.command),
               !modifierFlags.contains(.option),
               !modifierFlags.contains(.control),
@@ -5018,7 +5012,7 @@ final class CompanionManager: ObservableObject {
         }
 
         let scrollDirectionSteps: Int?
-        switch event.keyCode {
+        switch keyCode {
         case 126: // Up Arrow
             scrollDirectionSteps = -1
         case 125: // Down Arrow
@@ -5089,7 +5083,6 @@ final class CompanionManager: ObservableObject {
     }
 
     private func stopResponseMouseInterruptionMonitor() {
-        stopCaptionBubbleKeyboardScrollMonitor()
         if let responseMouseInterruptionMonitor {
             NSEvent.removeMonitor(responseMouseInterruptionMonitor)
         }

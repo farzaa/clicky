@@ -27,6 +27,15 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// each other. Not a default macOS shortcut.
     let textCommandToggleRequestPublisher = PassthroughSubject<Void, Never>()
 
+    struct GlobalKeyDownEvent {
+        let keyCode: UInt16
+        let modifierFlagsRawValue: UInt64
+    }
+
+    /// Raw key-down stream from the same listen-only event tap used for
+    /// push-to-talk. Consumers still decide whether a key matters.
+    let globalKeyDownPublisher = PassthroughSubject<GlobalKeyDownEvent, Never>()
+
     /// Virtual key code for Space (kVK_Space). Used by the text-command
     /// shortcut detection below.
     private static let textCommandShortcutKeyCode: UInt16 = 49
@@ -143,6 +152,13 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         }
 
         let eventKeyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+        if eventType == .keyDown {
+            globalKeyDownPublisher.send(GlobalKeyDownEvent(
+                keyCode: eventKeyCode,
+                modifierFlagsRawValue: event.flags.rawValue
+            ))
+        }
+
         let shortcutTransition = BuddyPushToTalkShortcut.shortcutTransition(
             for: eventType,
             keyCode: eventKeyCode,

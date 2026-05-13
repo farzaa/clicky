@@ -206,6 +206,7 @@ struct BlueCursorView: View {
     @State private var captionBubbleSize: CGSize = .zero
     @State private var captionBubbleContentHeight: CGFloat = 0
     @State private var captionBubbleScrollOffset: CGFloat = 0
+    @State private var shouldAutoScrollCaptionBubbleToBottom = true
 
     // MARK: - Onboarding Video Layout
 
@@ -527,12 +528,20 @@ struct BlueCursorView: View {
             )
         }
         .onChange(of: companionManager.captionBubbleScrollCommandSequence) { _ in
+            shouldAutoScrollCaptionBubbleToBottom = false
             applyCaptionBubbleScrollCommand()
+        }
+        .onChange(of: companionManager.captionBubbleText) { _ in
+            shouldAutoScrollCaptionBubbleToBottom = true
+            captionBubbleScrollOffset = 0
         }
         .onChange(of: companionManager.captionBubbleVisible) { isVisible in
             if !isVisible {
                 captionBubbleScrollOffset = 0
                 captionBubbleContentHeight = 0
+                shouldAutoScrollCaptionBubbleToBottom = true
+            } else {
+                shouldAutoScrollCaptionBubbleToBottom = true
             }
         }
     }
@@ -642,12 +651,25 @@ struct BlueCursorView: View {
         )
         .clipped()
         .onPreferenceChange(CaptionBubbleContentSizePreferenceKey.self) { newSize in
-            captionBubbleContentHeight = newSize.height
-            if captionBubbleContentExceedsMaximumHeight {
-                captionBubbleScrollOffset = captionBubbleMaximumScrollOffset
-            } else {
-                captionBubbleScrollOffset = 0
-            }
+            updateCaptionBubbleMeasuredContentHeight(newSize.height)
+        }
+    }
+
+    private func updateCaptionBubbleMeasuredContentHeight(_ measuredContentHeight: CGFloat) {
+        captionBubbleContentHeight = measuredContentHeight
+        let maximumScrollOffset = max(0, measuredContentHeight - captionBubbleMaximumHeight)
+        guard maximumScrollOffset > 1 else {
+            captionBubbleScrollOffset = 0
+            return
+        }
+
+        if shouldAutoScrollCaptionBubbleToBottom {
+            captionBubbleScrollOffset = maximumScrollOffset
+        } else {
+            captionBubbleScrollOffset = min(
+                max(0, captionBubbleScrollOffset),
+                maximumScrollOffset
+            )
         }
     }
 
