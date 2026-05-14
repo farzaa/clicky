@@ -47,11 +47,36 @@ If you want to do it yourself, here's the deal.
 - Xcode 15+
 - Node.js 18+ (for the Cloudflare Worker)
 - A [Cloudflare](https://cloudflare.com) account (free tier works)
-- API keys for: [Anthropic](https://console.anthropic.com), [AssemblyAI](https://www.assemblyai.com), [ElevenLabs](https://elevenlabs.io)
+- API keys for: [AssemblyAI](https://www.assemblyai.com) and [ElevenLabs](https://elevenlabs.io)
+- A Claude Max subscription, plus [Claude Code](https://claude.com/claude-code) installed and signed in on this Mac
 
-### 1. Set up the Cloudflare Worker
+> **No Anthropic API key needed.** Clicky uses the locally installed Claude
+> Code CLI as the backend, so all Claude usage counts against your Max
+> subscription quota. The Cloudflare Worker only proxies AssemblyAI and
+> ElevenLabs.
 
-The Worker is a tiny proxy that holds your API keys. The app talks to the Worker, the Worker talks to the APIs. This way your keys never ship in the app binary.
+### 1. Install and sign in to Claude Code
+
+Install the CLI per the official docs at <https://claude.com/claude-code>, then
+run it once and sign in with your Max account:
+
+```bash
+claude
+```
+
+Sign in via the OAuth flow it walks you through. After that, exit. Clicky
+will shell out to the same `claude` binary and inherit the authenticated
+session.
+
+If you installed `claude` somewhere unusual (e.g. via `nvm`/`asdf`/`mise`)
+and Clicky cannot find it, add a `ClaudeBinaryPath` key to
+`leanring-buddy/Info.plist` with the absolute path.
+
+### 2. Set up the Cloudflare Worker
+
+The Worker is a tiny proxy that holds your AssemblyAI and ElevenLabs API
+keys. The app talks to the Worker, the Worker talks to the APIs. This way
+those keys never ship in the app binary.
 
 ```bash
 cd worker
@@ -61,7 +86,6 @@ npm install
 Now add your secrets. Wrangler will prompt you to paste each one:
 
 ```bash
-npx wrangler secret put ANTHROPIC_API_KEY
 npx wrangler secret put ASSEMBLYAI_API_KEY
 npx wrangler secret put ELEVENLABS_API_KEY
 ```
@@ -81,7 +105,7 @@ npx wrangler deploy
 
 It'll give you a URL like `https://your-worker-name.your-subdomain.workers.dev`. Copy that.
 
-### 2. Run the Worker locally (for development)
+### 3. Run the Worker locally (for development)
 
 If you want to test changes to the Worker without deploying:
 
@@ -93,27 +117,26 @@ npx wrangler dev
 This starts a local server (usually `http://localhost:8787`) that behaves exactly like the deployed Worker. You'll need to create a `.dev.vars` file in the `worker/` directory with your keys:
 
 ```
-ANTHROPIC_API_KEY=sk-ant-...
 ASSEMBLYAI_API_KEY=...
 ELEVENLABS_API_KEY=...
 ELEVENLABS_VOICE_ID=...
 ```
 
-Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing. Grep for `clicky-proxy` to find them all.
+Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing. Grep for `workers.dev` to find them all.
 
-### 3. Update the proxy URLs in the app
+### 4. Update the proxy URLs in the app
 
 The app has the Worker URL hardcoded in a few places. Search for `your-worker-name.your-subdomain.workers.dev` and replace it with your Worker URL:
 
 ```bash
-grep -r "clicky-proxy" leanring-buddy/
+grep -r "your-worker-name" leanring-buddy/
 ```
 
 You'll find it in:
-- `CompanionManager.swift` — Claude chat + ElevenLabs TTS
+- `CompanionManager.swift` — ElevenLabs TTS
 - `AssemblyAIStreamingTranscriptionProvider.swift` — AssemblyAI token endpoint
 
-### 4. Open in Xcode and run
+### 5. Open in Xcode and run
 
 ```bash
 open leanring-buddy.xcodeproj
@@ -137,21 +160,21 @@ The app will appear in your menu bar (not the dock). Click the icon to open the 
 
 If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
 
-**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied through a Cloudflare Worker.
+**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to a locally-running `claude` CLI subprocess (authenticated against your Claude Max subscription), and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. AssemblyAI and ElevenLabs are proxied through a Cloudflare Worker; Claude is not.
 
 ## Project structure
 
 ```
 leanring-buddy/          # Swift source (yes, the typo stays)
-  CompanionManager.swift    # Central state machine
-  CompanionPanelView.swift  # Menu bar panel UI
-  ClaudeAPI.swift           # Claude streaming client
-  ElevenLabsTTSClient.swift # Text-to-speech playback
-  OverlayWindow.swift       # Blue cursor overlay
-  AssemblyAI*.swift         # Real-time transcription
-  BuddyDictation*.swift     # Push-to-talk pipeline
+  CompanionManager.swift     # Central state machine
+  CompanionPanelView.swift   # Menu bar panel UI
+  ClaudeAgentRunner.swift    # Local Claude Code CLI driver
+  ElevenLabsTTSClient.swift  # Text-to-speech playback
+  OverlayWindow.swift        # Blue cursor overlay
+  AssemblyAI*.swift          # Real-time transcription
+  BuddyDictation*.swift      # Push-to-talk pipeline
 worker/                  # Cloudflare Worker proxy
-  src/index.ts              # Three routes: /chat, /tts, /transcribe-token
+  src/index.ts              # Two routes: /tts, /transcribe-token
 CLAUDE.md                # Full architecture doc (agents read this)
 ```
 
