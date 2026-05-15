@@ -176,7 +176,9 @@ final class CompanionManager: ObservableObject {
     func start() {
         refreshAllPermissions()
         print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
-        startPermissionPolling()
+        if !allPermissionsGranted {
+            startPermissionPolling()
+        }
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
@@ -303,7 +305,7 @@ final class CompanionManager: ObservableObject {
         accessibilityCheckTimer = nil
     }
 
-    func refreshAllPermissions() {
+    func refreshAllPermissions(pollScreenRecording: Bool = true) {
         let previouslyHadAccessibility = hasAccessibilityPermission
         let previouslyHadScreenRecording = hasScreenRecordingPermission
         let previouslyHadMicrophone = hasMicrophonePermission
@@ -318,7 +320,9 @@ final class CompanionManager: ObservableObject {
             globalPushToTalkShortcutMonitor.stop()
         }
 
-        hasScreenRecordingPermission = WindowPositionManager.hasScreenRecordingPermission()
+        if pollScreenRecording {
+            hasScreenRecordingPermission = WindowPositionManager.hasScreenRecordingPermission()
+        }
 
         let micAuthStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         hasMicrophonePermission = micAuthStatus == .authorized
@@ -409,13 +413,21 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Polls all permissions frequently so the UI updates live after the
-    /// user grants them in System Settings. Screen Recording is the exception —
-    /// macOS requires an app restart for that one to take effect.
+    /// Polls permissions at a low cadence so the UI updates after the user grants
+    /// them in System Settings without spamming macOS TCC. Permission buttons call
+    /// request APIs directly; this timer is only a fallback for external changes.
     private func startPermissionPolling() {
-        accessibilityCheckTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+        guard accessibilityCheckTimer == nil else { return }
+
+        accessibilityCheckTimer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.refreshAllPermissions()
+                guard let self else { return }
+                self.refreshAllPermissions(pollScreenRecording: true)
+
+                if self.allPermissionsGranted {
+                    self.accessibilityCheckTimer?.invalidate()
+                    self.accessibilityCheckTimer = nil
+                }
             }
         }
     }
