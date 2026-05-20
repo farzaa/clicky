@@ -68,17 +68,28 @@ final class CompanionManager: ObservableObject {
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
-    /// Base URL for the Cloudflare Worker proxy. All API requests route
-    /// through this so keys never ship in the app binary.
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
-
-    private lazy var claudeAPI: ClaudeAPI = {
-        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+    /// AI client talking to the local Ollama server. No proxy, no API keys.
+    private lazy var ollamaAPI: OllamaAPI = {
+        return OllamaAPI(model: selectedModel)
     }()
 
-    private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
-        return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
+    /// Neural TTS client backed by a local Kokoro-FastAPI server (localhost:8880).
+    /// Produces significantly more natural speech than the Apple fallback.
+    /// CompanionManager tries this first and falls back to localTTSClient if the
+    /// Kokoro server is not reachable.
+    private lazy var kokoroTTSClient: KokoroTTSClient = {
+        return KokoroTTSClient()
     }()
+
+    /// TTS fallback using macOS AVSpeechSynthesizer. Used automatically when
+    /// the Kokoro server is not running. No network or server required.
+    private lazy var localTTSClient: LocalTTSClient = {
+        return LocalTTSClient()
+    }()
+
+    /// Whether the Kokoro TTS server was reachable on the last startup check.
+    /// Rechecked each time the app starts. Used by the panel status indicator.
+    @Published private(set) var isKokoroTTSServerReachable: Bool = false
 
     /// Conversation history so Claude remembers prior exchanges within a session.
     /// Each entry is the user's transcript and Claude's response.
@@ -107,13 +118,17 @@ final class CompanionManager: ObservableObject {
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
 
-    /// The Claude model used for voice responses. Persisted to UserDefaults.
-    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+    /// The Ollama model used for voice responses. Persisted to UserDefaults.
+    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedOllamaModel") ?? "nemotron3:33b"
+
+    /// Available models fetched from the local Ollama server on startup.
+    /// Used by the panel UI to populate the model picker.
+    @Published private(set) var availableOllamaModels: [String] = []
 
     func setSelectedModel(_ model: String) {
         selectedModel = model
-        UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
-        claudeAPI.model = model
+        UserDefaults.standard.set(model, forKey: "selectedOllamaModel")
+        ollamaAPI.model = model
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -179,9 +194,14 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
-        // Eagerly touch the Claude API so its TLS warmup handshake completes
-        // well before the onboarding demo fires at ~40s into the video.
-        _ = claudeAPI
+        // Eagerly initialize the Ollama API client and fetch available models
+        // so the model picker is populated before the user opens the panel.
+        _ = ollamaAPI
+        Task { await fetchAvailableOllamaModels() }
+
+        // Check whether the Kokoro neural TTS server is running so the panel
+        // status indicator and TTS fallback logic are accurate from the start.
+        Task { await checkKokoroTTSServerReachability() }
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -292,6 +312,8 @@ final class CompanionManager: ObservableObject {
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
         transientHideTask?.cancel()
+        kokoroTTSClient.stopPlayback()
+        localTTSClient.stopPlayback()
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
@@ -408,6 +430,40 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    // MARK: - Ollama Model Discovery
+
+    /// Queries the local Ollama server for its list of installed models and
+    /// updates `availableOllamaModels` so the panel picker stays current.
+    /// Runs silently on startup — failures are non-fatal (the default model still works).
+    private func fetchAvailableOllamaModels() async {
+        guard let tagsURL = URL(string: "http://localhost:11434/api/tags") else { return }
+
+        do {
+            let (responseData, response) = try await URLSession.shared.data(from: tagsURL)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode) else { return }
+
+            guard let jsonPayload = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+                  let modelsArray = jsonPayload["models"] as? [[String: Any]] else { return }
+
+            let modelNames = modelsArray.compactMap { $0["name"] as? String }
+
+            guard !modelNames.isEmpty else { return }
+
+            availableOllamaModels = modelNames
+            print("🤖 Ollama: found \(modelNames.count) installed model(s): \(modelNames.joined(separator: ", "))")
+
+            // If the previously-saved model is no longer installed, reset to the
+            // first available model so the picker doesn't show a stale selection.
+            if !modelNames.contains(selectedModel), let firstAvailableModel = modelNames.first {
+                setSelectedModel(firstAvailableModel)
+                print("🤖 Ollama: selected model '\(selectedModel)' not found, switching to '\(firstAvailableModel)'")
+            }
+        } catch {
+            print("⚠️ Ollama: could not fetch model list (is Ollama running?): \(error.localizedDescription)")
+        }
+    }
+
     /// Polls all permissions frequently so the UI updates live after the
     /// user grants them in System Settings. Screen Recording is the exception —
     /// macOS requires an app restart for that one to take effect.
@@ -493,7 +549,8 @@ final class CompanionManager: ObservableObject {
 
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
-            elevenLabsTTSClient.stopPlayback()
+            kokoroTTSClient.stopPlayback()
+            localTTSClient.stopPlayback()
             clearDetectedElementLocation()
 
             // Dismiss the onboarding prompt if it's showing
@@ -521,7 +578,7 @@ final class CompanionManager: ObservableObject {
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
                         ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
-                        self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                        self?.sendTranscriptToAIWithScreenshot(transcript: finalTranscript)
                     }
                 )
             }
@@ -578,14 +635,14 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - AI Response Pipeline
 
-    /// Captures a screenshot, sends it along with the transcript to Claude,
-    /// and plays the response aloud via ElevenLabs TTS. The cursor stays in
-    /// the spinner/processing state until TTS audio begins playing.
-    /// Claude's response may include a [POINT:x,y:label] tag which triggers
+    /// Captures a screenshot, sends it along with the transcript to the local
+    /// Ollama AI, and speaks the response aloud via macOS TTS. The cursor stays
+    /// in the spinner/processing state until speech begins.
+    /// The AI response may include a [POINT:x,y:label] tag which triggers
     /// the buddy to fly to that element on screen.
-    private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
+    private func sendTranscriptToAIWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
-        elevenLabsTTSClient.stopPlayback()
+        localTTSClient.stopPlayback()
 
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
@@ -610,7 +667,7 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                let (fullResponseText, _) = try await ollamaAPI.analyzeImageStreaming(
                     images: labeledImages,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt,
                     conversationHistory: historyForAPI,
@@ -697,17 +754,16 @@ final class CompanionManager: ObservableObject {
 
                 ClickyAnalytics.trackAIResponseReceived(response: spokenText)
 
-                // Play the response via TTS. Keep the spinner (processing state)
-                // until the audio actually starts playing, then switch to responding.
+                // Speak the response. Try Kokoro (neural, natural-sounding) first.
+                // If the Kokoro server isn't running, fall back to AVSpeechSynthesizer.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     do {
-                        try await elevenLabsTTSClient.speakText(spokenText)
-                        // speakText returns after player.play() — audio is now playing
+                        try await speakWithBestAvailableTTS(spokenText)
                         voiceState = .responding
                     } catch {
                         ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ ElevenLabs TTS error: \(error)")
-                        speakCreditsErrorFallback()
+                        print("⚠️ TTS error: \(error)")
+                        speakOllamaErrorFallback()
                     }
                 }
             } catch is CancellationError {
@@ -715,7 +771,7 @@ final class CompanionManager: ObservableObject {
             } catch {
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
-                speakCreditsErrorFallback()
+                speakOllamaErrorFallback()
             }
 
             if !Task.isCancelled {
@@ -724,6 +780,48 @@ final class CompanionManager: ObservableObject {
             }
         }
     }
+
+    // MARK: - TTS Dispatch
+
+    /// Speaks text using the best available local TTS backend.
+    /// Tries Kokoro (neural, natural-sounding) first. If the Kokoro server is
+    /// unreachable (connection refused), automatically falls back to
+    /// AVSpeechSynthesizer so the response is always spoken aloud.
+    private func speakWithBestAvailableTTS(_ text: String) async throws {
+        if isKokoroTTSServerReachable {
+            do {
+                try await kokoroTTSClient.speakText(text)
+                return
+            } catch {
+                // Kokoro was reachable at startup but failed mid-session
+                // (e.g. server crashed). Update the reachability flag and
+                // fall through to the Apple Speech fallback.
+                print("⚠️ Kokoro TTS failed mid-session, switching to Apple Speech fallback: \(error)")
+                isKokoroTTSServerReachable = false
+            }
+        }
+
+        // Apple Speech fallback — always available, no server needed
+        try await localTTSClient.speakText(text)
+    }
+
+    /// Returns true if either TTS backend is currently playing audio.
+    private var isAnyTTSPlaying: Bool {
+        kokoroTTSClient.isPlaying || localTTSClient.isPlaying
+    }
+
+    // MARK: - Kokoro Server Reachability
+
+    /// Checks whether the Kokoro neural TTS server is running and updates
+    /// `isKokoroTTSServerReachable` so the panel indicator and TTS dispatch
+    /// logic stay accurate.
+    private func checkKokoroTTSServerReachability() async {
+        let reachable = await KokoroTTSClient.isServerReachable()
+        isKokoroTTSServerReachable = reachable
+        print("🔊 Kokoro TTS server: \(reachable ? "reachable" : "not running (will use Apple Speech fallback)")")
+    }
+
+    // MARK: - Transient Cursor Hide
 
     /// If the cursor is in transient mode (user toggled "Show Clicky" off),
     /// waits for TTS playback and any pointing animation to finish, then
@@ -734,8 +832,8 @@ final class CompanionManager: ObservableObject {
 
         transientHideTask?.cancel()
         transientHideTask = Task {
-            // Wait for TTS audio to finish playing
-            while elevenLabsTTSClient.isPlaying {
+            // Wait for whichever TTS backend is active to finish speaking
+            while isAnyTTSPlaying {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }
@@ -755,13 +853,13 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Speaks a hardcoded error message using macOS system TTS when API
-    /// credits run out. Uses NSSpeechSynthesizer so it works even when
-    /// ElevenLabs is down.
-    private func speakCreditsErrorFallback() {
-        let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
+    /// Speaks a fallback error using NSSpeechSynthesizer when the local TTS
+    /// client itself fails. NSSpeechSynthesizer is used as a last resort here
+    /// because it has no dependencies on LocalTTSClient state.
+    private func speakOllamaErrorFallback() {
+        let errorMessage = "I couldn't reach the Ollama server. Make sure it's running on your machine."
+        let fallbackSynthesizer = NSSpeechSynthesizer()
+        fallbackSynthesizer.startSpeaking(errorMessage)
         voiceState = .responding
     }
 
@@ -982,7 +1080,7 @@ final class CompanionManager: ObservableObject {
                 let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
                 let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                let (fullResponseText, _) = try await ollamaAPI.analyzeImageStreaming(
                     images: labeledImages,
                     systemPrompt: Self.onboardingDemoSystemPrompt,
                     userPrompt: "look around my screen and find something interesting to point at",
