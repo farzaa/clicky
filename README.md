@@ -19,23 +19,37 @@ Here's the [original tweet](https://x.com/FarzaTV/status/2041314633978659092) th
 
 This is the open-source version of Clicky for those that want to hack on it, build their own features, or just see how it works under the hood.
 
-## Get started with Claude Code
+## Get started with an agent
 
-The fastest way to get this running is with [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
+Clicky includes repo instructions for coding agents. Codex reads `AGENTS.md`; Claude Code reads `CLAUDE.md`, which points to the same instructions.
 
-Once you get Claude running, paste this:
+### Codex
+
+Once you have [Codex CLI](https://github.com/openai/codex) running, paste this:
 
 ```
-Hi Claude.
-
 Clone https://github.com/farzaa/clicky.git into my current directory.
 
-Then read the CLAUDE.md. I want to get Clicky running locally on my Mac.
+Then read AGENTS.md. I want to get Clicky running locally on my Mac.
 
-Help me set up everything — the Cloudflare Worker with my own API keys, the proxy URLs, and getting it building in Xcode. Walk me through it.
+Help me set up everything: the Cloudflare Worker with my own API keys, the proxy URLs, and getting it building in Xcode. Walk me through it.
 ```
 
-That's it. It'll clone the repo, read the docs, and walk you through the whole setup. Once you're running you can just keep talking to it — build features, fix bugs, whatever. Go crazy.
+Codex will use the root `AGENTS.md` for architecture, build constraints, and coding conventions. The nested `leanring-buddy/AGENTS.md` adds guidance for the native macOS app target.
+
+### Claude Code
+
+Once you have [Claude Code](https://docs.anthropic.com/en/docs/claude-code) running, paste this:
+
+```
+Clone https://github.com/farzaa/clicky.git into my current directory.
+
+Then read CLAUDE.md. I want to get Clicky running locally on my Mac.
+
+Help me set up everything: the Cloudflare Worker with my own API keys, the proxy URLs, and getting it building in Xcode. Walk me through it.
+```
+
+That's it. It'll clone the repo, read the docs, and walk you through the whole setup. Once you're running you can just keep talking to it: build features, fix bugs, whatever. Go crazy.
 
 ## Manual setup
 
@@ -135,7 +149,7 @@ The app will appear in your menu bar (not the dock). Click the icon to open the 
 
 ## Architecture
 
-If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
+If you want the full technical breakdown, read `AGENTS.md` or `CLAUDE.md`. But here's the short version:
 
 **Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied through a Cloudflare Worker.
 
@@ -152,11 +166,12 @@ leanring-buddy/          # Swift source (yes, the typo stays)
   BuddyDictation*.swift     # Push-to-talk pipeline
 worker/                  # Cloudflare Worker proxy
   src/index.ts              # Three routes: /chat, /tts, /transcribe-token
-CLAUDE.md                # Full architecture doc (agents read this)
+AGENTS.md                # Full architecture doc for Codex and other agents
+CLAUDE.md                # Symlink to AGENTS.md for Claude Code
 ```
 
 ## Contributing
 
-PRs welcome. If you're using Claude Code, it already knows the codebase — just tell it what you want to build and point it at `CLAUDE.md`.
+PRs welcome. If you're using Codex, point it at `AGENTS.md`. If you're using Claude Code, point it at `CLAUDE.md`; both files describe the same architecture and conventions.
 
 Got feedback? DM me on X [@farzatv](https://x.com/farzatv).
