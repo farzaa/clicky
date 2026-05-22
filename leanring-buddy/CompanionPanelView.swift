@@ -29,7 +29,10 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 12)
 
-                modelPickerRow
+                VStack(spacing: 2) {
+                    aiProviderPickerRow
+                    modelPickerRow
+                }
                     .padding(.horizontal, 16)
             }
 
@@ -596,7 +599,51 @@ struct CompanionPanelView: View {
         .padding(.vertical, 4)
     }
 
-    // MARK: - Model Picker
+    // MARK: - AI Provider and Model Picker
+
+    private var aiProviderPickerRow: some View {
+        HStack {
+            Text("AI")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Spacer()
+
+            HStack(spacing: 0) {
+                ForEach(companionManager.aiProviderOptions, id: \.label) { option in
+                    aiProviderOptionButton(label: option.label, provider: option.provider)
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func aiProviderOptionButton(label: String, provider: CompanionAIProvider) -> some View {
+        let isSelected = companionManager.selectedAIProvider == provider
+        return Button(action: {
+            companionManager.setSelectedAIProvider(provider)
+        }) {
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
 
     private var modelPickerRow: some View {
         HStack {
@@ -607,8 +654,9 @@ struct CompanionPanelView: View {
             Spacer()
 
             HStack(spacing: 0) {
-                modelOptionButton(label: "Codex", modelID: "gpt-5.2-codex")
-                modelOptionButton(label: "Mini", modelID: "gpt-5.1-codex-mini")
+                ForEach(companionManager.modelOptions, id: \.modelID) { option in
+                    modelOptionButton(label: option.label, modelID: option.modelID)
+                }
             }
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)

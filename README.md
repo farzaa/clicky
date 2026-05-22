@@ -61,7 +61,8 @@ If you want to do it yourself, here's the deal.
 - Xcode 15+
 - Node.js 18+ (for the Cloudflare Worker)
 - A [Cloudflare](https://cloudflare.com) account (free tier works)
-- API keys for: [OpenAI](https://platform.openai.com), [AssemblyAI](https://www.assemblyai.com), [ElevenLabs](https://elevenlabs.io)
+- API keys for at least one chat provider: [OpenAI](https://platform.openai.com) for Codex or [Anthropic](https://console.anthropic.com) for Claude
+- API keys for: [AssemblyAI](https://www.assemblyai.com) and [ElevenLabs](https://elevenlabs.io)
 
 ### 1. Set up the Cloudflare Worker
 
@@ -76,9 +77,12 @@ Now add your secrets. Wrangler will prompt you to paste each one:
 
 ```bash
 npx wrangler secret put OPENAI_API_KEY
+npx wrangler secret put ANTHROPIC_API_KEY
 npx wrangler secret put ASSEMBLYAI_API_KEY
 npx wrangler secret put ELEVENLABS_API_KEY
 ```
+
+You only need the chat secret for the AI provider you plan to use: `OPENAI_API_KEY` for Codex or `ANTHROPIC_API_KEY` for Claude. If you add both, you can switch between them in the Clicky panel without redeploying.
 
 For the ElevenLabs voice ID, open `wrangler.toml` and set it there (it's not sensitive):
 
@@ -108,6 +112,7 @@ This starts a local server (usually `http://localhost:8787`) that behaves exactl
 
 ```
 OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
 ASSEMBLYAI_API_KEY=...
 ELEVENLABS_API_KEY=...
 ELEVENLABS_VOICE_ID=...
@@ -124,7 +129,7 @@ grep -r "clicky-proxy" leanring-buddy/
 ```
 
 You'll find it in:
-- `CompanionManager.swift` — Codex chat + ElevenLabs TTS
+- `CompanionManager.swift` — Codex/Claude chat + ElevenLabs TTS
 - `AssemblyAIStreamingTranscriptionProvider.swift` — AssemblyAI token endpoint
 
 ### 4. Open in Xcode and run
@@ -151,7 +156,7 @@ The app will appear in your menu bar (not the dock). Click the icon to open the 
 
 If you want the full technical breakdown, read `AGENTS.md` or `CLAUDE.md`. But here's the short version:
 
-**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to an OpenAI Codex model through streaming SSE, and plays the response through ElevenLabs TTS. Codex can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied through a Cloudflare Worker.
+**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to the selected AI provider, and plays the response through ElevenLabs TTS. The panel lets users choose Codex or Claude, plus a provider-specific model. The selected model can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All external APIs are proxied through a Cloudflare Worker.
 
 ## Project structure
 
@@ -160,12 +165,13 @@ leanring-buddy/          # Swift source (yes, the typo stays)
   CompanionManager.swift    # Central state machine
   CompanionPanelView.swift  # Menu bar panel UI
   CodexAPI.swift            # OpenAI Codex streaming client
+  ClaudeAPI.swift           # Claude streaming client
   ElevenLabsTTSClient.swift # Text-to-speech playback
   OverlayWindow.swift       # Blue cursor overlay
   AssemblyAI*.swift         # Real-time transcription
   BuddyDictation*.swift     # Push-to-talk pipeline
 worker/                  # Cloudflare Worker proxy
-  src/index.ts              # Three routes: /chat, /tts, /transcribe-token
+  src/index.ts              # /chat/codex, /chat/claude, /tts, /transcribe-token
 AGENTS.md                # Full architecture doc for Codex and other agents
 CLAUDE.md                # Symlink to AGENTS.md for Claude Code
 ```

@@ -21,6 +21,30 @@ enum CompanionVoiceState {
     case responding
 }
 
+enum CompanionAIProvider: String {
+    case codex
+    case claude
+
+    var defaultsKey: String {
+        switch self {
+        case .codex:
+            return "selectedCodexModel"
+        case .claude:
+            return "selectedClaudeModel"
+        }
+    }
+}
+
+struct CompanionAIProviderOption {
+    let label: String
+    let provider: CompanionAIProvider
+}
+
+struct CompanionModelOption {
+    let label: String
+    let modelID: String
+}
+
 @MainActor
 final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle
@@ -73,14 +97,18 @@ final class CompanionManager: ObservableObject {
     private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
 
     private lazy var codexAPI: CodexAPI = {
-        return CodexAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+        return CodexAPI(proxyURL: "\(Self.workerBaseURL)/chat/codex", model: selectedModel)
+    }()
+
+    private lazy var claudeAPI: ClaudeAPI = {
+        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat/claude", model: selectedModel)
     }()
 
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
         return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
     }()
 
-    /// Conversation history so the Codex model remembers prior exchanges within a session.
+    /// Conversation history so the selected AI model remembers prior exchanges within a session.
     /// Each entry is the user's transcript and the assistant response.
     private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
 
@@ -107,26 +135,137 @@ final class CompanionManager: ObservableObject {
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
 
-    /// The OpenAI Codex model used for voice responses. Persisted to UserDefaults.
+    /// The selected AI provider and model used for voice responses. Persisted to UserDefaults.
+    private static let defaultAIProvider: CompanionAIProvider = .codex
     private static let defaultCodexModel = "gpt-5.2-codex"
+    private static let defaultClaudeModel = "claude-sonnet-4-6"
     private static let supportedCodexModels = ["gpt-5.2-codex", "gpt-5.1-codex-mini"]
+    private static let supportedClaudeModels = ["claude-sonnet-4-6", "claude-opus-4-6"]
 
-    @Published var selectedModel: String = CompanionManager.persistedCodexModel()
+    @Published var selectedAIProvider: CompanionAIProvider = CompanionManager.persistedAIProvider()
+    @Published var selectedModel: String = CompanionManager.persistedModel(for: CompanionManager.persistedAIProvider())
 
-    private static func persistedCodexModel() -> String {
-        guard let storedModel = UserDefaults.standard.string(forKey: "selectedCodexModel"),
-              supportedCodexModels.contains(storedModel) else {
-            return defaultCodexModel
+    var aiProviderOptions: [CompanionAIProviderOption] {
+        [
+            CompanionAIProviderOption(label: "Codex", provider: .codex),
+            CompanionAIProviderOption(label: "Claude", provider: .claude)
+        ]
+    }
+
+    var modelOptions: [CompanionModelOption] {
+        Self.modelOptions(for: selectedAIProvider)
+    }
+
+    private static func persistedAIProvider() -> CompanionAIProvider {
+        guard let storedProvider = UserDefaults.standard.string(forKey: "selectedAIProvider"),
+              let provider = CompanionAIProvider(rawValue: storedProvider) else {
+            return defaultAIProvider
+        }
+
+        return provider
+    }
+
+    private static func persistedModel(for provider: CompanionAIProvider) -> String {
+        let supportedModels = supportedModelIDs(for: provider)
+        let defaultModel = defaultModelID(for: provider)
+
+        guard let storedModel = UserDefaults.standard.string(forKey: provider.defaultsKey),
+              supportedModels.contains(storedModel) else {
+            return defaultModel
         }
 
         return storedModel
     }
 
+    private static func modelOptions(for provider: CompanionAIProvider) -> [CompanionModelOption] {
+        switch provider {
+        case .codex:
+            return [
+                CompanionModelOption(label: "Codex", modelID: "gpt-5.2-codex"),
+                CompanionModelOption(label: "Mini", modelID: "gpt-5.1-codex-mini")
+            ]
+        case .claude:
+            return [
+                CompanionModelOption(label: "Sonnet", modelID: "claude-sonnet-4-6"),
+                CompanionModelOption(label: "Opus", modelID: "claude-opus-4-6")
+            ]
+        }
+    }
+
+    private static func supportedModelIDs(for provider: CompanionAIProvider) -> [String] {
+        switch provider {
+        case .codex:
+            return supportedCodexModels
+        case .claude:
+            return supportedClaudeModels
+        }
+    }
+
+    private static func defaultModelID(for provider: CompanionAIProvider) -> String {
+        switch provider {
+        case .codex:
+            return defaultCodexModel
+        case .claude:
+            return defaultClaudeModel
+        }
+    }
+
+    func setSelectedAIProvider(_ provider: CompanionAIProvider) {
+        selectedAIProvider = provider
+        UserDefaults.standard.set(provider.rawValue, forKey: "selectedAIProvider")
+
+        let modelForProvider = Self.persistedModel(for: provider)
+        selectedModel = modelForProvider
+        updateActiveAPIModel(to: modelForProvider)
+    }
+
     func setSelectedModel(_ model: String) {
-        let validatedModel = Self.supportedCodexModels.contains(model) ? model : Self.defaultCodexModel
+        let supportedModels = Self.supportedModelIDs(for: selectedAIProvider)
+        let validatedModel = supportedModels.contains(model) ? model : Self.defaultModelID(for: selectedAIProvider)
         selectedModel = validatedModel
-        UserDefaults.standard.set(validatedModel, forKey: "selectedCodexModel")
-        codexAPI.model = validatedModel
+        UserDefaults.standard.set(validatedModel, forKey: selectedAIProvider.defaultsKey)
+        updateActiveAPIModel(to: validatedModel)
+    }
+
+    private func updateActiveAPIModel(to model: String) {
+        switch selectedAIProvider {
+        case .codex:
+            codexAPI.model = model
+        case .claude:
+            claudeAPI.model = model
+        }
+    }
+
+    private func analyzeImageWithSelectedProvider(
+        images: [(data: Data, label: String)],
+        systemPrompt: String,
+        conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
+        userPrompt: String
+    ) async throws -> String {
+        switch selectedAIProvider {
+        case .codex:
+            let (text, _) = try await codexAPI.analyzeImageStreaming(
+                images: images,
+                systemPrompt: systemPrompt,
+                conversationHistory: conversationHistory,
+                userPrompt: userPrompt,
+                onTextChunk: { _ in
+                    // No streaming text display — spinner stays until TTS plays.
+                }
+            )
+            return text
+        case .claude:
+            let (text, _) = try await claudeAPI.analyzeImageStreaming(
+                images: images,
+                systemPrompt: systemPrompt,
+                conversationHistory: conversationHistory,
+                userPrompt: userPrompt,
+                onTextChunk: { _ in
+                    // No streaming text display — spinner stays until TTS plays.
+                }
+            )
+            return text
+        }
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -192,9 +331,10 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
-        // Eagerly touch the Codex API so its TLS warmup handshake completes
+        // Eagerly touch both AI clients so their TLS warmup handshakes complete
         // well before the onboarding demo fires at ~40s into the video.
         _ = codexAPI
+        _ = claudeAPI
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -618,19 +758,16 @@ final class CompanionManager: ObservableObject {
                     return (data: capture.imageData, label: capture.label + dimensionInfo)
                 }
 
-                // Pass conversation history so the Codex model remembers prior exchanges
+                // Pass conversation history so the selected model remembers prior exchanges
                 let historyForAPI = conversationHistory.map { entry in
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                let (fullResponseText, _) = try await codexAPI.analyzeImageStreaming(
+                let fullResponseText = try await analyzeImageWithSelectedProvider(
                     images: labeledImages,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt,
                     conversationHistory: historyForAPI,
-                    userPrompt: transcript,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
-                    }
+                    userPrompt: transcript
                 )
 
                 guard !Task.isCancelled else { return }
@@ -995,11 +1132,10 @@ final class CompanionManager: ObservableObject {
                 let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
                 let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
 
-                let (fullResponseText, _) = try await codexAPI.analyzeImageStreaming(
+                let fullResponseText = try await analyzeImageWithSelectedProvider(
                     images: labeledImages,
                     systemPrompt: Self.onboardingDemoSystemPrompt,
                     userPrompt: "look around my screen and find something interesting to point at",
-                    onTextChunk: { _ in }
                 )
 
                 let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
