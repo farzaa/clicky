@@ -690,10 +690,13 @@ final class CompanionManager: ObservableObject {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
                 }
 
-                // Copy the clean response to the clipboard if the user has enabled auto-copy
-                if isAutoCopyResponseEnabled {
+                let trimmedSpokenText = spokenText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                // Copy only when there is meaningful text to write, so auto-copy
+                // never clears the user's clipboard for point-only responses.
+                if isAutoCopyResponseEnabled && !trimmedSpokenText.isEmpty {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(spokenText, forType: .string)
+                    NSPasteboard.general.setString(trimmedSpokenText, forType: .string)
                 }
 
                 // Save this exchange to conversation history (with the point tag
@@ -714,7 +717,7 @@ final class CompanionManager: ObservableObject {
 
                 // Play the response via TTS. Keep the spinner (processing state)
                 // until the audio actually starts playing, then switch to responding.
-                if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if !trimmedSpokenText.isEmpty {
                     do {
                         try await elevenLabsTTSClient.speakText(spokenText)
                         // speakText returns after player.play() — audio is now playing
