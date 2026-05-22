@@ -139,6 +139,15 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    /// Whether Clicky's responses are automatically copied to the clipboard.
+    /// Defaults to OFF. Persisted to UserDefaults.
+    @Published var isAutoCopyResponseEnabled: Bool = UserDefaults.standard.bool(forKey: "isAutoCopyResponseEnabled")
+
+    func setAutoCopyResponseEnabled(_ enabled: Bool) {
+        isAutoCopyResponseEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isAutoCopyResponseEnabled")
+    }
+
     /// Whether the user has completed onboarding at least once. Persisted
     /// to UserDefaults so the Start button only appears on first launch.
     var hasCompletedOnboarding: Bool {
@@ -681,6 +690,15 @@ final class CompanionManager: ObservableObject {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
                 }
 
+                let trimmedSpokenText = spokenText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                // Copy only when there is meaningful text to write, so auto-copy
+                // never clears the user's clipboard for point-only responses.
+                if isAutoCopyResponseEnabled && !trimmedSpokenText.isEmpty {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(trimmedSpokenText, forType: .string)
+                }
+
                 // Save this exchange to conversation history (with the point tag
                 // stripped so it doesn't confuse future context)
                 conversationHistory.append((
@@ -699,7 +717,7 @@ final class CompanionManager: ObservableObject {
 
                 // Play the response via TTS. Keep the spinner (processing state)
                 // until the audio actually starts playing, then switch to responding.
-                if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if !trimmedSpokenText.isEmpty {
                     do {
                         try await elevenLabsTTSClient.speakText(spokenText)
                         // speakText returns after player.play() — audio is now playing
