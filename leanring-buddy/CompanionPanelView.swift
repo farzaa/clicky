@@ -653,40 +653,40 @@ struct CompanionPanelView: View {
 
             Spacer()
 
-            HStack(spacing: 0) {
+            Menu {
                 ForEach(companionManager.modelOptions, id: \.modelID) { option in
-                    modelOptionButton(label: option.label, modelID: option.modelID)
+                    Button(action: {
+                        companionManager.setSelectedModel(option.modelID)
+                    }) {
+                        Text(option.label)
+                    }
                 }
-            }
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-            )
-        }
-        .padding(.vertical, 4)
-    }
+            } label: {
+                HStack(spacing: 6) {
+                    Text(companionManager.selectedModelLabel)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.textPrimary)
 
-    private func modelOptionButton(label: String, modelID: String) -> some View {
-        let isSelected = companionManager.selectedModel == modelID
-        return Button(action: {
-            companionManager.setSelectedModel(modelID)
-        }) {
-            Text(label)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
                 )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .buttonStyle(.plain)
+            .pointerCursor()
         }
-        .buttonStyle(.plain)
-        .pointerCursor()
+        .padding(.vertical, 4)
     }
 
     // MARK: - DM Farza Button

@@ -96,8 +96,8 @@ final class CompanionManager: ObservableObject {
     /// through this so keys never ship in the app binary.
     private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
 
-    private lazy var codexAPI: CodexAPI = {
-        return CodexAPI(proxyURL: "\(Self.workerBaseURL)/chat/codex", model: selectedModel)
+    private lazy var codexCLIAPI: CodexCLIAPI = {
+        return CodexCLIAPI(model: selectedModel)
     }()
 
     private lazy var claudeAPI: ClaudeAPI = {
@@ -139,7 +139,14 @@ final class CompanionManager: ObservableObject {
     private static let defaultAIProvider: CompanionAIProvider = .codex
     private static let defaultCodexModel = "gpt-5.2-codex"
     private static let defaultClaudeModel = "claude-sonnet-4-6"
-    private static let supportedCodexModels = ["gpt-5.2-codex", "gpt-5.1-codex-mini"]
+    private static let supportedCodexModels = [
+        "gpt-5.2-codex",
+        "gpt-5.1-codex-max",
+        "gpt-5.1-codex",
+        "gpt-5.1-codex-mini",
+        "gpt-5-codex",
+        "codex-mini-latest"
+    ]
     private static let supportedClaudeModels = ["claude-sonnet-4-6", "claude-opus-4-6"]
 
     @Published var selectedAIProvider: CompanionAIProvider = CompanionManager.persistedAIProvider()
@@ -154,6 +161,10 @@ final class CompanionManager: ObservableObject {
 
     var modelOptions: [CompanionModelOption] {
         Self.modelOptions(for: selectedAIProvider)
+    }
+
+    var selectedModelLabel: String {
+        modelOptions.first(where: { $0.modelID == selectedModel })?.label ?? selectedModel
     }
 
     private static func persistedAIProvider() -> CompanionAIProvider {
@@ -181,8 +192,12 @@ final class CompanionManager: ObservableObject {
         switch provider {
         case .codex:
             return [
-                CompanionModelOption(label: "Codex", modelID: "gpt-5.2-codex"),
-                CompanionModelOption(label: "Mini", modelID: "gpt-5.1-codex-mini")
+                CompanionModelOption(label: "5.2 Codex", modelID: "gpt-5.2-codex"),
+                CompanionModelOption(label: "5.1 Max", modelID: "gpt-5.1-codex-max"),
+                CompanionModelOption(label: "5.1 Codex", modelID: "gpt-5.1-codex"),
+                CompanionModelOption(label: "5.1 Mini", modelID: "gpt-5.1-codex-mini"),
+                CompanionModelOption(label: "5 Codex", modelID: "gpt-5-codex"),
+                CompanionModelOption(label: "Mini Latest", modelID: "codex-mini-latest")
             ]
         case .claude:
             return [
@@ -230,7 +245,7 @@ final class CompanionManager: ObservableObject {
     private func updateActiveAPIModel(to model: String) {
         switch selectedAIProvider {
         case .codex:
-            codexAPI.model = model
+            codexCLIAPI.model = model
         case .claude:
             claudeAPI.model = model
         }
@@ -244,7 +259,7 @@ final class CompanionManager: ObservableObject {
     ) async throws -> String {
         switch selectedAIProvider {
         case .codex:
-            let (text, _) = try await codexAPI.analyzeImageStreaming(
+            let (text, _) = try await codexCLIAPI.analyzeImageStreaming(
                 images: images,
                 systemPrompt: systemPrompt,
                 conversationHistory: conversationHistory,
@@ -331,9 +346,9 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
-        // Eagerly touch both AI clients so their TLS warmup handshakes complete
-        // well before the onboarding demo fires at ~40s into the video.
-        _ = codexAPI
+        // Eagerly initialize both AI clients so setup issues surface before
+        // the onboarding demo fires at ~40s into the video.
+        _ = codexCLIAPI
         _ = claudeAPI
 
         // If the user already completed onboarding AND all permissions are

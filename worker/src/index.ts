@@ -1,19 +1,17 @@
 /**
  * Clicky Proxy Worker
  *
- * Proxies requests to OpenAI, Anthropic, AssemblyAI, and ElevenLabs APIs so the
- * app never ships with raw API keys. Keys are stored as Cloudflare secrets.
+ * Proxies requests to Anthropic, AssemblyAI, and ElevenLabs APIs so the app
+ * never ships with raw API keys. Codex runs through the user's local Codex CLI.
  *
  * Routes:
- *   POST /chat             → OpenAI Responses API (Codex, streaming; default)
- *   POST /chat/codex       → OpenAI Responses API (Codex, streaming)
+ *   POST /chat             → Anthropic Messages API (Claude, streaming)
  *   POST /chat/claude      → Anthropic Messages API (Claude, streaming)
  *   POST /tts              → ElevenLabs TTS API
  *   POST /transcribe-token → AssemblyAI temporary streaming token
  */
 
 interface Env {
-  OPENAI_API_KEY?: string;
   ANTHROPIC_API_KEY?: string;
   ELEVENLABS_API_KEY?: string;
   ELEVENLABS_VOICE_ID?: string;
@@ -29,11 +27,7 @@ export default {
     }
 
     try {
-      if (url.pathname === "/chat" || url.pathname === "/chat/codex") {
-        return await handleCodexChat(request, env);
-      }
-
-      if (url.pathname === "/chat/claude") {
+      if (url.pathname === "/chat" || url.pathname === "/chat/claude") {
         return await handleClaudeChat(request, env);
       }
 
@@ -55,40 +49,6 @@ export default {
     return new Response("Not found", { status: 404 });
   },
 };
-
-async function handleCodexChat(request: Request, env: Env): Promise<Response> {
-  if (!env.OPENAI_API_KEY) {
-    return missingSecretResponse("OPENAI_API_KEY");
-  }
-
-  const body = await request.text();
-
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${env.OPENAI_API_KEY}`,
-      "content-type": "application/json",
-    },
-    body,
-  });
-
-  if (!response.ok) {
-    const errorBody = await response.text();
-    console.error(`[/chat] OpenAI Responses API error ${response.status}: ${errorBody}`);
-    return new Response(errorBody, {
-      status: response.status,
-      headers: { "content-type": "application/json" },
-    });
-  }
-
-  return new Response(response.body, {
-    status: response.status,
-    headers: {
-      "content-type": response.headers.get("content-type") || "text/event-stream",
-      "cache-control": "no-cache",
-    },
-  });
-}
 
 async function handleClaudeChat(request: Request, env: Env): Promise<Response> {
   if (!env.ANTHROPIC_API_KEY) {
