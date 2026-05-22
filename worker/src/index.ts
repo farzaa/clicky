@@ -1,16 +1,17 @@
 /**
  * Clicky Proxy Worker
  *
- * Proxies requests to Claude and ElevenLabs APIs so the app never
+ * Proxies requests to OpenAI, AssemblyAI, and ElevenLabs APIs so the app never
  * ships with raw API keys. Keys are stored as Cloudflare secrets.
  *
  * Routes:
- *   POST /chat  → Anthropic Messages API (streaming)
- *   POST /tts   → ElevenLabs TTS API
+ *   POST /chat             → OpenAI Responses API (Codex, streaming)
+ *   POST /tts              → ElevenLabs TTS API
+ *   POST /transcribe-token → AssemblyAI temporary streaming token
  */
 
 interface Env {
-  ANTHROPIC_API_KEY: string;
+  OPENAI_API_KEY: string;
   ELEVENLABS_API_KEY: string;
   ELEVENLABS_VOICE_ID: string;
   ASSEMBLYAI_API_KEY: string;
@@ -26,7 +27,7 @@ export default {
 
     try {
       if (url.pathname === "/chat") {
-        return await handleChat(request, env);
+        return await handleCodexChat(request, env);
       }
 
       if (url.pathname === "/tts") {
@@ -48,14 +49,13 @@ export default {
   },
 };
 
-async function handleChat(request: Request, env: Env): Promise<Response> {
+async function handleCodexChat(request: Request, env: Env): Promise<Response> {
   const body = await request.text();
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+  const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
-      "x-api-key": env.ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
+      authorization: `Bearer ${env.OPENAI_API_KEY}`,
       "content-type": "application/json",
     },
     body,
@@ -63,7 +63,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
 
   if (!response.ok) {
     const errorBody = await response.text();
-    console.error(`[/chat] Anthropic API error ${response.status}: ${errorBody}`);
+    console.error(`[/chat] OpenAI Responses API error ${response.status}: ${errorBody}`);
     return new Response(errorBody, {
       status: response.status,
       headers: { "content-type": "application/json" },

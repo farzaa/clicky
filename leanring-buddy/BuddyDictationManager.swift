@@ -654,8 +654,6 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             "makesomething",
             "Learning Buddy",
             "Codex",
-            "Claude",
-            "Anthropic",
             "OpenAI",
             "SwiftUI",
             "Xcode",
