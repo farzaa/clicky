@@ -29,7 +29,10 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 12)
 
-                modelPickerRow
+                VStack(spacing: 2) {
+                    aiProviderPickerRow
+                    modelPickerRow
+                }
                     .padding(.horizontal, 16)
             }
 
@@ -596,19 +599,20 @@ struct CompanionPanelView: View {
         .padding(.vertical, 4)
     }
 
-    // MARK: - Model Picker
+    // MARK: - AI Provider and Model Picker
 
-    private var modelPickerRow: some View {
+    private var aiProviderPickerRow: some View {
         HStack {
-            Text("Model")
+            Text("AI")
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(DS.Colors.textSecondary)
 
             Spacer()
 
             HStack(spacing: 0) {
-                modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
-                modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
+                ForEach(companionManager.aiProviderOptions, id: \.label) { option in
+                    aiProviderOptionButton(label: option.label, provider: option.provider)
+                }
             }
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -622,10 +626,10 @@ struct CompanionPanelView: View {
         .padding(.vertical, 4)
     }
 
-    private func modelOptionButton(label: String, modelID: String) -> some View {
-        let isSelected = companionManager.selectedModel == modelID
+    private func aiProviderOptionButton(label: String, provider: CompanionAIProvider) -> some View {
+        let isSelected = companionManager.selectedAIProvider == provider
         return Button(action: {
-            companionManager.setSelectedModel(modelID)
+            companionManager.setSelectedAIProvider(provider)
         }) {
             Text(label)
                 .font(.system(size: 11, weight: .medium))
@@ -639,6 +643,50 @@ struct CompanionPanelView: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
+    }
+
+    private var modelPickerRow: some View {
+        HStack {
+            Text("Model")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Spacer()
+
+            Menu {
+                ForEach(companionManager.modelOptions, id: \.modelID) { option in
+                    Button(action: {
+                        companionManager.setSelectedModel(option.modelID)
+                    }) {
+                        Text(option.label)
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text(companionManager.selectedModelLabel)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.textPrimary)
+
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .buttonStyle(.plain)
+            .pointerCursor()
+        }
+        .padding(.vertical, 4)
     }
 
     // MARK: - DM Farza Button

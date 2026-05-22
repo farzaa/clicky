@@ -87,7 +87,7 @@ enum ClickyAnalytics {
         ])
     }
 
-    /// Claude responded and the response is being spoken via TTS.
+    /// The AI responded and the response is being spoken via TTS.
     static func trackAIResponseReceived(response: String) {
         PostHogSDK.shared.capture("ai_response_received", properties: [
             "response": response,
@@ -95,7 +95,7 @@ enum ClickyAnalytics {
         ])
     }
 
-    /// Claude's response included a [POINT:x,y:label] coordinate tag,
+    /// The AI response included a [POINT:x,y:label] coordinate tag,
     /// so the buddy is flying to point at a UI element.
     static func trackElementPointed(elementLabel: String?) {
         PostHogSDK.shared.capture("element_pointed", properties: [

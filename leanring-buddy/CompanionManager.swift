@@ -21,6 +21,30 @@ enum CompanionVoiceState {
     case responding
 }
 
+enum CompanionAIProvider: String {
+    case codex
+    case claude
+
+    var defaultsKey: String {
+        switch self {
+        case .codex:
+            return "selectedCodexModel"
+        case .claude:
+            return "selectedClaudeModel"
+        }
+    }
+}
+
+struct CompanionAIProviderOption {
+    let label: String
+    let provider: CompanionAIProvider
+}
+
+struct CompanionModelOption {
+    let label: String
+    let modelID: String
+}
+
 @MainActor
 final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle
@@ -32,7 +56,7 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var hasScreenContentPermission = false
 
     /// Screen location (global AppKit coords) of a detected UI element the
-    /// buddy should fly to and point at. Parsed from Claude's response;
+    /// buddy should fly to and point at. Parsed from the Codex response;
     /// observed by BlueCursorView to trigger the flight animation.
     @Published var detectedElementScreenLocation: CGPoint?
     /// The display frame (global AppKit coords) of the screen the detected
@@ -72,16 +96,20 @@ final class CompanionManager: ObservableObject {
     /// through this so keys never ship in the app binary.
     private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
 
+    private lazy var codexCLIAPI: CodexCLIAPI = {
+        return CodexCLIAPI(model: selectedModel)
+    }()
+
     private lazy var claudeAPI: ClaudeAPI = {
-        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat/claude", model: selectedModel)
     }()
 
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
         return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
     }()
 
-    /// Conversation history so Claude remembers prior exchanges within a session.
-    /// Each entry is the user's transcript and Claude's response.
+    /// Conversation history so the selected AI model remembers prior exchanges within a session.
+    /// Each entry is the user's transcript and the assistant response.
     private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
 
     /// The currently running AI response task, if any. Cancelled when the user
@@ -107,13 +135,152 @@ final class CompanionManager: ObservableObject {
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
 
-    /// The Claude model used for voice responses. Persisted to UserDefaults.
-    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+    /// The selected AI provider and model used for voice responses. Persisted to UserDefaults.
+    private static let defaultAIProvider: CompanionAIProvider = .codex
+    private static let defaultCodexModel = "gpt-5.5"
+    private static let defaultClaudeModel = "claude-sonnet-4-6"
+    private static let supportedCodexModels = [
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex",
+        "gpt-5.3-codex-spark",
+        "gpt-5.2"
+    ]
+    private static let supportedClaudeModels = ["claude-sonnet-4-6", "claude-opus-4-6"]
+
+    @Published var selectedAIProvider: CompanionAIProvider = CompanionManager.persistedAIProvider()
+    @Published var selectedModel: String = CompanionManager.persistedModel(for: CompanionManager.persistedAIProvider())
+
+    var aiProviderOptions: [CompanionAIProviderOption] {
+        [
+            CompanionAIProviderOption(label: "Codex", provider: .codex),
+            CompanionAIProviderOption(label: "Claude", provider: .claude)
+        ]
+    }
+
+    var modelOptions: [CompanionModelOption] {
+        Self.modelOptions(for: selectedAIProvider)
+    }
+
+    var selectedModelLabel: String {
+        modelOptions.first(where: { $0.modelID == selectedModel })?.label ?? selectedModel
+    }
+
+    private static func persistedAIProvider() -> CompanionAIProvider {
+        guard let storedProvider = UserDefaults.standard.string(forKey: "selectedAIProvider"),
+              let provider = CompanionAIProvider(rawValue: storedProvider) else {
+            return defaultAIProvider
+        }
+
+        return provider
+    }
+
+    private static func persistedModel(for provider: CompanionAIProvider) -> String {
+        let supportedModels = supportedModelIDs(for: provider)
+        let defaultModel = defaultModelID(for: provider)
+
+        guard let storedModel = UserDefaults.standard.string(forKey: provider.defaultsKey),
+              supportedModels.contains(storedModel) else {
+            return defaultModel
+        }
+
+        return storedModel
+    }
+
+    private static func modelOptions(for provider: CompanionAIProvider) -> [CompanionModelOption] {
+        switch provider {
+        case .codex:
+            return [
+                CompanionModelOption(label: "GPT-5.5", modelID: "gpt-5.5"),
+                CompanionModelOption(label: "GPT-5.4", modelID: "gpt-5.4"),
+                CompanionModelOption(label: "5.4 Mini", modelID: "gpt-5.4-mini"),
+                CompanionModelOption(label: "5.3 Codex", modelID: "gpt-5.3-codex"),
+                CompanionModelOption(label: "Spark", modelID: "gpt-5.3-codex-spark"),
+                CompanionModelOption(label: "GPT-5.2", modelID: "gpt-5.2")
+            ]
+        case .claude:
+            return [
+                CompanionModelOption(label: "Sonnet", modelID: "claude-sonnet-4-6"),
+                CompanionModelOption(label: "Opus", modelID: "claude-opus-4-6")
+            ]
+        }
+    }
+
+    private static func supportedModelIDs(for provider: CompanionAIProvider) -> [String] {
+        switch provider {
+        case .codex:
+            return supportedCodexModels
+        case .claude:
+            return supportedClaudeModels
+        }
+    }
+
+    private static func defaultModelID(for provider: CompanionAIProvider) -> String {
+        switch provider {
+        case .codex:
+            return defaultCodexModel
+        case .claude:
+            return defaultClaudeModel
+        }
+    }
+
+    func setSelectedAIProvider(_ provider: CompanionAIProvider) {
+        selectedAIProvider = provider
+        UserDefaults.standard.set(provider.rawValue, forKey: "selectedAIProvider")
+
+        let modelForProvider = Self.persistedModel(for: provider)
+        selectedModel = modelForProvider
+        updateActiveAPIModel(to: modelForProvider)
+    }
 
     func setSelectedModel(_ model: String) {
-        selectedModel = model
-        UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
-        claudeAPI.model = model
+        let supportedModels = Self.supportedModelIDs(for: selectedAIProvider)
+        let validatedModel = supportedModels.contains(model) ? model : Self.defaultModelID(for: selectedAIProvider)
+        selectedModel = validatedModel
+        UserDefaults.standard.set(validatedModel, forKey: selectedAIProvider.defaultsKey)
+        updateActiveAPIModel(to: validatedModel)
+    }
+
+    private func updateActiveAPIModel(to model: String) {
+        switch selectedAIProvider {
+        case .codex:
+            codexCLIAPI.model = model
+        case .claude:
+            claudeAPI.model = model
+        }
+    }
+
+    private func analyzeImageWithSelectedProvider(
+        images: [(data: Data, label: String)],
+        systemPrompt: String,
+        conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
+        userPrompt: String
+    ) async throws -> String {
+        switch selectedAIProvider {
+        case .codex:
+            let (text, _) = try await codexCLIAPI.analyzeImageStreaming(
+                images: images,
+                systemPrompt: systemPrompt,
+                conversationHistory: conversationHistory,
+                userPrompt: userPrompt,
+                onTextChunk: { _ in
+                    // No streaming text display — spinner stays until TTS plays.
+                }
+            )
+            return text
+        case .claude:
+            let (text, _) = try await claudeAPI.analyzeImageStreaming(
+                images: images,
+                systemPrompt: systemPrompt,
+                conversationHistory: conversationHistory,
+                userPrompt: userPrompt,
+                onTextChunk: { _ in
+                    // No streaming text display — spinner stays until TTS plays.
+                }
+            )
+            return text
+        }
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -179,8 +346,9 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
-        // Eagerly touch the Claude API so its TLS warmup handshake completes
-        // well before the onboarding demo fires at ~40s into the video.
+        // Eagerly initialize both AI clients so setup issues surface before
+        // the onboarding demo fires at ~40s into the video.
+        _ = codexCLIAPI
         _ = claudeAPI
 
         // If the user already completed onboarding AND all permissions are
@@ -521,7 +689,7 @@ final class CompanionManager: ObservableObject {
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
                         ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
-                        self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                        self?.sendTranscriptToCodexWithScreenshot(transcript: finalTranscript)
                     }
                 )
             }
@@ -578,12 +746,12 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - AI Response Pipeline
 
-    /// Captures a screenshot, sends it along with the transcript to Claude,
+    /// Captures a screenshot, sends it along with the transcript to Codex,
     /// and plays the response aloud via ElevenLabs TTS. The cursor stays in
     /// the spinner/processing state until TTS audio begins playing.
-    /// Claude's response may include a [POINT:x,y:label] tag which triggers
+    /// The Codex response may include a [POINT:x,y:label] tag which triggers
     /// the buddy to fly to that element on screen.
-    private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
+    private func sendTranscriptToCodexWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
 
@@ -598,35 +766,32 @@ final class CompanionManager: ObservableObject {
                 guard !Task.isCancelled else { return }
 
                 // Build image labels with the actual screenshot pixel dimensions
-                // so Claude's coordinate space matches the image it sees. We
+                // so the model's coordinate space matches the image it sees. We
                 // scale from screenshot pixels to display points ourselves.
                 let labeledImages = screenCaptures.map { capture in
                     let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
                     return (data: capture.imageData, label: capture.label + dimensionInfo)
                 }
 
-                // Pass conversation history so Claude remembers prior exchanges
+                // Pass conversation history so the selected model remembers prior exchanges
                 let historyForAPI = conversationHistory.map { entry in
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                let fullResponseText = try await analyzeImageWithSelectedProvider(
                     images: labeledImages,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt,
                     conversationHistory: historyForAPI,
-                    userPrompt: transcript,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
-                    }
+                    userPrompt: transcript
                 )
 
                 guard !Task.isCancelled else { return }
 
-                // Parse the [POINT:...] tag from Claude's response
+                // Parse the [POINT:...] tag from the Codex response
                 let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
                 let spokenText = parseResult.spokenText
 
-                // Handle element pointing if Claude returned coordinates.
+                // Handle element pointing if Codex returned coordinates.
                 // Switch to idle BEFORE setting the location so the triangle
                 // becomes visible and can fly to the target. Without this, the
                 // spinner hides the triangle and the flight animation is invisible.
@@ -635,7 +800,7 @@ final class CompanionManager: ObservableObject {
                     voiceState = .idle
                 }
 
-                // Pick the screen capture matching Claude's screen number,
+                // Pick the screen capture matching the model's screen number,
                 // falling back to the cursor screen if not specified.
                 let targetScreenCapture: CompanionScreenCapture? = {
                     if let screenNumber = parseResult.screenNumber,
@@ -647,7 +812,7 @@ final class CompanionManager: ObservableObject {
 
                 if let pointCoordinate = parseResult.coordinate,
                    let targetScreenCapture {
-                    // Claude's coordinates are in the screenshot's pixel space
+                    // Codex coordinates are in the screenshot's pixel space
                     // (top-left origin, e.g. 1280x831). Scale to the display's
                     // point space (e.g. 1512x982), then convert to AppKit global coords.
                     let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
@@ -767,11 +932,11 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Point Tag Parsing
 
-    /// Result of parsing a [POINT:...] tag from Claude's response.
+    /// Result of parsing a [POINT:...] tag from the Codex response.
     struct PointingParseResult {
         /// The response text with the [POINT:...] tag removed — this is what gets spoken.
         let spokenText: String
-        /// The parsed pixel coordinate, or nil if Claude said "none" or no tag was found.
+        /// The parsed pixel coordinate, or nil if the model said "none" or no tag was found.
         let coordinate: CGPoint?
         /// Short label describing the element (e.g. "run button"), or "none".
         let elementLabel: String?
@@ -779,7 +944,7 @@ final class CompanionManager: ObservableObject {
         let screenNumber: Int?
     }
 
-    /// Parses a [POINT:x,y:label:screenN] or [POINT:none] tag from the end of Claude's response.
+    /// Parses a [POINT:x,y:label:screenN] or [POINT:none] tag from the end of the Codex response.
     /// Returns the spoken text (tag removed) and the optional coordinate + label + screen number.
     static func parsePointingCoordinates(from responseText: String) -> PointingParseResult {
         // Match [POINT:none] or [POINT:123,456:label] or [POINT:123,456:label:screen2]
@@ -961,7 +1126,7 @@ final class CompanionManager: ObservableObject {
     the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. origin (0,0) is top-left. x increases rightward, y increases downward.
     """
 
-    /// Captures a screenshot and asks Claude to find something interesting to
+    /// Captures a screenshot and asks Codex to find something interesting to
     /// point at, then triggers the buddy's flight animation. Used during
     /// onboarding to demo the pointing feature while the intro video plays.
     func performOnboardingDemoInteraction() {
@@ -972,7 +1137,7 @@ final class CompanionManager: ObservableObject {
             do {
                 let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
 
-                // Only send the cursor screen so Claude can't pick something
+                // Only send the cursor screen so Codex can't pick something
                 // on a different monitor that we can't point at.
                 guard let cursorScreenCapture = screenCaptures.first(where: { $0.isCursorScreen }) else {
                     print("🎯 Onboarding demo: no cursor screen found")
@@ -982,11 +1147,10 @@ final class CompanionManager: ObservableObject {
                 let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
                 let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                let fullResponseText = try await analyzeImageWithSelectedProvider(
                     images: labeledImages,
                     systemPrompt: Self.onboardingDemoSystemPrompt,
                     userPrompt: "look around my screen and find something interesting to point at",
-                    onTextChunk: { _ in }
                 )
 
                 let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
@@ -1012,7 +1176,7 @@ final class CompanionManager: ObservableObject {
                     y: appKitY + displayFrame.origin.y
                 )
 
-                // Set custom bubble text so the pointing animation uses Claude's
+                // Set custom bubble text so the pointing animation uses Codex's
                 // comment instead of a random phrase
                 detectedElementBubbleText = parseResult.spokenText
                 detectedElementScreenLocation = globalLocation

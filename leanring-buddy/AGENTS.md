@@ -1,28 +1,21 @@
-# AGENTS.md - leanring-buddy (Main App Target)
+# AGENTS.md - leanring-buddy
 
-## Source Files
+This directory contains the native macOS app target. Start with the root `AGENTS.md` for the full architecture, build constraints, and coding conventions; this file only adds target-specific guidance for edits under `leanring-buddy/`.
 
-### FloatingSessionButton.swift
-- `FloatingSessionButtonManager` — `@MainActor` class managing the `NSPanel` lifecycle
-  - `showFloatingButton()` — Creates/shows the panel in top-right of primary screen
-  - `hideFloatingButton()` — Hides panel (keeps it alive for quick re-show)
-  - `destroyFloatingButton()` — Removes panel permanently (session ended)
-  - `onFloatingButtonClicked` — Callback closure, set by ContentView to bring main window to front
-  - `floatingButtonPanel` — Exposed `NSPanel` reference for screenshot exclusion
-- `FloatingButtonView` — Private SwiftUI view with gradient circle, scale+glow hover animation, pointer cursor
+## Target Shape
 
-### ContentView.swift
-- Receives `FloatingSessionButtonManager` via `@EnvironmentObject`
-- `isMainWindowCurrentlyFocused` — Tracks main window focus state
-- `configureFloatingButtonManager()` — Wires up the click callback
-- `startObservingMainWindowFocusChanges()` — Sets up `NSWindow` notification observers
-- `updateFloatingButtonVisibility()` — Core logic: show if running + not focused, hide otherwise
-- `bringMainWindowToFront()` — Activates app and orders main window front
+- `leanring_buddyApp.swift` is the menu-bar app entry point and wires `CompanionAppDelegate`, `MenuBarPanelManager`, and `CompanionManager` together.
+- `CompanionManager.swift` owns the core interaction state machine: push-to-talk, screenshot capture, AI provider/model selection, Codex/Claude streaming, TTS playback, cursor visibility, and pointing coordination.
+- `CompanionPanelView.swift`, `CompanionResponseOverlay.swift`, `OverlayWindow.swift`, and `DesignSystem.swift` own the visible SwiftUI/AppKit UI surfaces.
+- `BuddyDictationManager.swift` plus the `*TranscriptionProvider.swift` files own microphone capture and transcription-provider behavior.
+- `CodexCLIAPI.swift` runs the local Codex CLI for Codex chat. `ClaudeAPI.swift`, `ElevenLabsTTSClient.swift`, and `AssemblyAIStreamingTranscriptionProvider.swift` talk to the Worker proxy for Claude chat, TTS, and AssemblyAI tokens.
+- `AppBundleConfiguration.swift` is the runtime reader for app-bundle configuration values stored in `Info.plist`.
 
-### ScreenshotManager.swift
-- `floatingButtonWindowToExcludeFromCaptures` — `NSWindow?` reference set by ContentView
-- `captureScreen()` — Matches the floating window to an `SCWindow` and excludes it from capture filter
+## Editing Rules
 
-### leanring_buddyApp.swift
-- Owns `FloatingSessionButtonManager` as `@StateObject`
-- Injects it into ContentView via `.environmentObject()`
+- Keep changes local to the file that owns the behavior. Do not route new app state through `CompanionManager` unless it needs to coordinate the main interaction pipeline.
+- Preserve the menu-bar-only app model. Do not introduce a dock window, document scene, or ordinary app lifecycle unless the root architecture changes first.
+- Keep all UI mutations on the main actor. Prefer explicit `@MainActor` isolation over detached main-thread hops.
+- Use the existing `DS` design tokens for panel and overlay UI. Do not add one-off colors, spacing scales, or button styles.
+- Do not put API keys, bearer tokens, or provider secrets in Swift source, `Info.plist`, or project build settings. Claude, ElevenLabs, and AssemblyAI secrets belong in the Worker environment. Codex uses the user's local `codex login` session.
+- Do not run `xcodebuild` from the terminal. Open the Xcode project and build there so macOS permissions do not get reset.
