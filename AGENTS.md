@@ -5,16 +5,16 @@
 
 ## Overview
 
-macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to the selected AI provider. The app can use OpenAI Codex through the Responses API or Claude through Anthropic Messages. The selected model responds with text (streamed via SSE) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements the model references on any connected monitor.
+macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to the selected AI provider. The app can use Codex through the local Codex CLI session or Claude through Anthropic Messages. The selected model responds with text and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements the model references on any connected monitor.
 
-All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in the app.
+Claude, ElevenLabs, and AssemblyAI API keys live on a Cloudflare Worker proxy — nothing sensitive ships in the app. Codex uses the user's installed `codex` CLI and existing `codex login` session instead of a Worker API key.
 
 ## Architecture
 
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: User-selectable in the panel. Codex (`gpt-5.2-codex` default, `gpt-5.1-codex-mini` optional) uses OpenAI Responses. Claude (`claude-sonnet-4-6` default, `claude-opus-4-6` optional) uses Anthropic Messages. Both stream through the Cloudflare Worker proxy.
+- **AI Chat**: User-selectable in the panel. Codex (`gpt-5.2-codex` default, plus the other Codex model options in `CompanionManager.swift`) runs through the local Codex CLI. Claude (`claude-sonnet-4-6` default, `claude-opus-4-6` optional) uses Anthropic Messages through the Cloudflare Worker proxy.
 - **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with OpenAI and Apple Speech as fallbacks
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
@@ -25,17 +25,16 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 
 ### API Proxy (Cloudflare Worker)
 
-The app never calls external APIs directly. All requests go through a Cloudflare Worker (`worker/src/index.ts`) that holds the real API keys as secrets.
+Claude, ElevenLabs, and AssemblyAI requests go through a Cloudflare Worker (`worker/src/index.ts`) that holds the real API keys as secrets. Codex chat does not use the Worker; it runs `codex exec` locally.
 
 | Route | Upstream | Purpose |
 |-------|----------|---------|
-| `POST /chat` | `api.openai.com/v1/responses` | Default Codex vision + streaming chat |
-| `POST /chat/codex` | `api.openai.com/v1/responses` | OpenAI Codex vision + streaming chat |
+| `POST /chat` | `api.anthropic.com/v1/messages` | Claude vision + streaming chat |
 | `POST /chat/claude` | `api.anthropic.com/v1/messages` | Claude vision + streaming chat |
 | `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
 | `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Fetches a short-lived (480s) AssemblyAI websocket token |
 
-Worker chat secrets: `OPENAI_API_KEY` for Codex, `ANTHROPIC_API_KEY` for Claude. Voice secrets: `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`
+Worker chat secrets: `ANTHROPIC_API_KEY` for Claude. Voice secrets: `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`
 Worker vars: `ELEVENLABS_VOICE_ID`
 
 ### Key Architecture Decisions
@@ -68,14 +67,14 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `AppleSpeechTranscriptionProvider.swift` | ~147 | Local fallback transcription provider backed by Apple's Speech framework. |
 | `BuddyAudioConversionSupport.swift` | ~108 | Audio conversion helpers. Converts live mic buffers to PCM16 mono audio and builds WAV payloads for upload-based providers. |
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
-| `CodexAPI.swift` | ~335 | OpenAI Codex Responses API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation context support. |
+| `CodexCLIAPI.swift` | ~225 | Local Codex CLI client. Writes screenshots to a temp directory, runs `codex exec` with the selected Codex model, and reads the final response from `--output-last-message`. |
 | `ClaudeAPI.swift` | ~291 | Claude Messages API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
 | `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
 | `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
-| `worker/src/index.ts` | ~211 | Cloudflare Worker proxy. Routes: `/chat` and `/chat/codex` (OpenAI Codex Responses), `/chat/claude` (Anthropic Messages), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
+| `worker/src/index.ts` | ~135 | Cloudflare Worker proxy. Routes: `/chat` and `/chat/claude` (Anthropic Messages), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
 
 ## Build & Run
 
@@ -98,7 +97,6 @@ cd worker
 npm install
 
 # Add secrets
-npx wrangler secret put OPENAI_API_KEY
 npx wrangler secret put ANTHROPIC_API_KEY
 npx wrangler secret put ASSEMBLYAI_API_KEY
 npx wrangler secret put ELEVENLABS_API_KEY
