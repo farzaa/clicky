@@ -5,10 +5,10 @@ This directory contains the native macOS app target. Start with the root `AGENTS
 ## Target Shape
 
 - `leanring_buddyApp.swift` is the menu-bar app entry point and wires `CompanionAppDelegate`, `MenuBarPanelManager`, and `CompanionManager` together.
-- `CompanionManager.swift` owns the core interaction state machine: push-to-talk, screenshot capture, Claude streaming, TTS playback, cursor visibility, and pointing coordination.
+- `CompanionManager.swift` owns the core interaction state machine: push-to-talk, screenshot capture, Codex streaming, TTS playback, cursor visibility, and pointing coordination.
 - `CompanionPanelView.swift`, `CompanionResponseOverlay.swift`, `OverlayWindow.swift`, and `DesignSystem.swift` own the visible SwiftUI/AppKit UI surfaces.
 - `BuddyDictationManager.swift` plus the `*TranscriptionProvider.swift` files own microphone capture and transcription-provider behavior.
-- `ClaudeAPI.swift`, `OpenAIAPI.swift`, `ElevenLabsTTSClient.swift`, and `AssemblyAIStreamingTranscriptionProvider.swift` talk to the Worker proxy, not directly to third-party APIs.
+- `CodexAPI.swift`, `ElevenLabsTTSClient.swift`, and `AssemblyAIStreamingTranscriptionProvider.swift` talk to the Worker proxy for runtime AI, TTS, and AssemblyAI tokens.
 - `AppBundleConfiguration.swift` is the runtime reader for app-bundle configuration values stored in `Info.plist`.
 
 ## Editing Rules
