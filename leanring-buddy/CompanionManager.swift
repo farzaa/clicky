@@ -137,15 +137,15 @@ final class CompanionManager: ObservableObject {
 
     /// The selected AI provider and model used for voice responses. Persisted to UserDefaults.
     private static let defaultAIProvider: CompanionAIProvider = .codex
-    private static let defaultCodexModel = "gpt-5.2-codex"
+    private static let defaultCodexModel = "gpt-5.5"
     private static let defaultClaudeModel = "claude-sonnet-4-6"
     private static let supportedCodexModels = [
-        "gpt-5.2-codex",
-        "gpt-5.1-codex-max",
-        "gpt-5.1-codex",
-        "gpt-5.1-codex-mini",
-        "gpt-5-codex",
-        "codex-mini-latest"
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex",
+        "gpt-5.3-codex-spark",
+        "gpt-5.2"
     ]
     private static let supportedClaudeModels = ["claude-sonnet-4-6", "claude-opus-4-6"]
 
@@ -192,12 +192,12 @@ final class CompanionManager: ObservableObject {
         switch provider {
         case .codex:
             return [
-                CompanionModelOption(label: "5.2 Codex", modelID: "gpt-5.2-codex"),
-                CompanionModelOption(label: "5.1 Max", modelID: "gpt-5.1-codex-max"),
-                CompanionModelOption(label: "5.1 Codex", modelID: "gpt-5.1-codex"),
-                CompanionModelOption(label: "5.1 Mini", modelID: "gpt-5.1-codex-mini"),
-                CompanionModelOption(label: "5 Codex", modelID: "gpt-5-codex"),
-                CompanionModelOption(label: "Mini Latest", modelID: "codex-mini-latest")
+                CompanionModelOption(label: "GPT-5.5", modelID: "gpt-5.5"),
+                CompanionModelOption(label: "GPT-5.4", modelID: "gpt-5.4"),
+                CompanionModelOption(label: "5.4 Mini", modelID: "gpt-5.4-mini"),
+                CompanionModelOption(label: "5.3 Codex", modelID: "gpt-5.3-codex"),
+                CompanionModelOption(label: "Spark", modelID: "gpt-5.3-codex-spark"),
+                CompanionModelOption(label: "GPT-5.2", modelID: "gpt-5.2")
             ]
         case .claude:
             return [

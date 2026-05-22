@@ -14,7 +14,7 @@ Claude, ElevenLabs, and AssemblyAI API keys live on a Cloudflare Worker proxy â€
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: User-selectable in the panel. Codex (`gpt-5.2-codex` default, plus the other Codex model options in `CompanionManager.swift`) runs through the local Codex CLI. Claude (`claude-sonnet-4-6` default, `claude-opus-4-6` optional) uses Anthropic Messages through the Cloudflare Worker proxy.
+- **AI Chat**: User-selectable in the panel. Codex (`gpt-5.5` default, plus the other Codex CLI model options in `CompanionManager.swift`) runs through the local Codex CLI. Claude (`claude-sonnet-4-6` default, `claude-opus-4-6` optional) uses Anthropic Messages through the Cloudflare Worker proxy.
 - **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with OpenAI and Apple Speech as fallbacks
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support

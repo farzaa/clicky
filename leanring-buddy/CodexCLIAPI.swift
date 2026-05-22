@@ -10,7 +10,7 @@ import Foundation
 class CodexCLIAPI {
     var model: String
 
-    init(model: String = "gpt-5.2-codex") {
+    init(model: String = "gpt-5.5") {
         self.model = model
     }
 
