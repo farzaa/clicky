@@ -13,7 +13,7 @@ on:
 jobs:
   niche-discovery-e2e:
     name: Niche discovery E2E (macOS)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
 
     steps:

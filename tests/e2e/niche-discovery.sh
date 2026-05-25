@@ -7,6 +7,8 @@ WORKER_URL="${CLICKY_WORKER_URL:-http://127.0.0.1:8787}"
 NICHE_JSON="$HOME/.clicky/e2e-niche-discovery.json"
 PROMPT_FILE="$HOME/.clicky/e2e-last-system-prompt.txt"
 BUNDLE_ID="com.yourcompany.leanring-buddy"
+# Force bundled JSON suggestions in Phase A/B (avoid app-aware Terminal/VS Code ids in CI).
+E2E_UNMAPPED_BUNDLE_ID="com.unknown.app"
 MOCK_WORKER_PID=""
 CLICKY_PID=""
 
@@ -52,6 +54,13 @@ assert_phase_a_json() {
     return 1
   fi
 
+  local is_app_aware
+  is_app_aware="$(read_niche_json_field isAppAware)"
+  if [[ "$is_app_aware" == "True" ]]; then
+    echo "FAIL: expected bundled suggestions (isAppAware false), got true"
+    return 1
+  fi
+
   case "$first_id" in
     commit-changes|run-tests|debug-breakpoint|terminal-command|find-setting) ;;
     *)
@@ -73,7 +82,11 @@ xcodebuild \
   -derivedDataPath "$ROOT_DIR/build/E2E/DerivedData" \
   CODE_SIGN_IDENTITY="-" \
   CODE_SIGNING_ALLOWED=NO \
-  build >/tmp/clicky-e2e-niche-build.log 2>&1
+  build >/tmp/clicky-e2e-niche-build.log 2>&1 || {
+  echo "FAIL: xcodebuild failed"
+  tail -40 /tmp/clicky-e2e-niche-build.log || true
+  exit 1
+}
 
 BUILT_APP="$ROOT_DIR/build/E2E/DerivedData/Build/Products/Debug/Clicky.app"
 rm -rf "$CLICKY_APP"
@@ -85,7 +98,8 @@ rm -f "$NICHE_JSON"
 
 "$CLICKY_APP/Contents/MacOS/Clicky" \
   -CLICKY_E2E=1 \
-  -CLICKY_E2E_SET_NICHE=developer >/tmp/clicky-e2e-niche-app.log 2>&1 &
+  -CLICKY_E2E_SET_NICHE=developer \
+  -CLICKY_E2E_FRONTMOST_BUNDLE_ID="$E2E_UNMAPPED_BUNDLE_ID" >/tmp/clicky-e2e-niche-app.log 2>&1 &
 CLICKY_PID=$!
 
 PHASE_A_OK=0
@@ -119,7 +133,8 @@ echo "Phase B: verify developer niche persists across relaunch..."
 rm -f "$NICHE_JSON"
 
 "$CLICKY_APP/Contents/MacOS/Clicky" \
-  -CLICKY_E2E=1 >/tmp/clicky-e2e-niche-persist.log 2>&1 &
+  -CLICKY_E2E=1 \
+  -CLICKY_E2E_FRONTMOST_BUNDLE_ID="$E2E_UNMAPPED_BUNDLE_ID" >/tmp/clicky-e2e-niche-persist.log 2>&1 &
 CLICKY_PID=$!
 
 PHASE_B_OK=0
