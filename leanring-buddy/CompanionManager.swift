@@ -8,6 +8,7 @@
 //
 
 import AVFoundation
+import AppKit
 import Combine
 import Foundation
 import PostHog
@@ -70,7 +71,14 @@ final class CompanionManager: ObservableObject {
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
+    private static var workerBaseURL: String {
+        ClickyE2EConfiguration.workerBaseURL ?? "https://your-worker-name.your-subdomain.workers.dev"
+    }
+
+    private let nicheDiscoveryManager = NicheDiscoveryManager()
+
+    @Published private(set) var selectedUserNiche: NicheDiscoveryManager.Niche?
+    @Published private(set) var nicheSuggestions: [NicheSuggestion] = []
 
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
@@ -109,6 +117,106 @@ final class CompanionManager: ObservableObject {
 
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+
+    func setUserNiche(_ niche: NicheDiscoveryManager.Niche) {
+        nicheDiscoveryManager.setNiche(niche)
+        selectedUserNiche = niche
+        nicheSuggestions = nicheDiscoveryManager.suggestionsForCurrentNiche()
+        ClickyAnalytics.trackNicheSelected(niche: niche.rawValue)
+    }
+
+    func trackNicheSuggestionTapped(suggestion: NicheSuggestion) {
+        guard let selectedUserNiche else { return }
+        ClickyAnalytics.trackSuggestionTapped(niche: selectedUserNiche.rawValue, promptID: suggestion.id)
+    }
+
+    private func bootstrapNicheDiscovery() {
+        selectedUserNiche = nicheDiscoveryManager.selectedNiche
+        nicheSuggestions = nicheDiscoveryManager.suggestionsForCurrentNiche()
+    }
+
+    private func nicheClauseForVoicePrompt() -> String? {
+        guard let selectedUserNiche else { return nil }
+        return nicheDiscoveryManager.voiceSystemPromptClause(for: selectedUserNiche)
+    }
+
+    private func buildVoiceResponseSystemPrompt() -> String {
+        var prompt = Self.companionVoiceResponseSystemPrompt
+        if let clause = nicheClauseForVoicePrompt() {
+            prompt += "\n\n\(clause)"
+        }
+        return prompt
+    }
+
+    func injectTranscriptForE2E(_ transcript: String) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            sendTranscriptToClaudeWithScreenshot(transcript: transcript) {
+                continuation.resume()
+            }
+        }
+    }
+
+    func runE2ENicheDiscoveryChecksIfNeeded() {
+        guard ClickyE2EConfiguration.isEnabled else { return }
+
+        if let nicheRawValue = ClickyE2EConfiguration.e2eSetNicheRawValue,
+           let niche = NicheDiscoveryManager.Niche(rawValue: nicheRawValue) {
+            setUserNiche(niche)
+        }
+
+        if let suggestionID = ClickyE2EConfiguration.e2eTapSuggestionID {
+            tapNicheSuggestionForE2E(promptID: suggestionID)
+        }
+
+        writeNicheDiscoveryDebugJSONIfNeeded()
+    }
+
+    func runE2EInjectSequenceIfNeeded() {
+        guard ClickyE2EConfiguration.isEnabled else { return }
+        guard let thirdTranscript = ClickyE2EConfiguration.injectTranscript3 else { return }
+
+        Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            await injectTranscriptForE2E(thirdTranscript)
+        }
+    }
+
+    private func tapNicheSuggestionForE2E(promptID: String) {
+        guard let suggestion = nicheSuggestions.first(where: { $0.id == promptID }) else {
+            print("⚠️ E2E: no niche suggestion with id \(promptID)")
+            return
+        }
+        trackNicheSuggestionTapped(suggestion: suggestion)
+    }
+
+    private func writeNicheDiscoveryDebugJSONIfNeeded() {
+        guard ClickyE2EConfiguration.isEnabled else { return }
+        guard let selectedUserNiche else { return }
+
+        let suggestions = nicheSuggestions
+        guard let firstSuggestion = suggestions.first else {
+            print("⚠️ E2E: no niche suggestions loaded for \(selectedUserNiche.rawValue)")
+            return
+        }
+
+        let snapshot = ClickyE2EConfiguration.NicheDiscoveryE2ESnapshot(
+            selectedNiche: selectedUserNiche.rawValue,
+            suggestionCount: suggestions.count,
+            firstSuggestionId: firstSuggestion.id,
+            voicePromptClauseContains: e2eNicheClauseAssertionToken(for: selectedUserNiche)
+        )
+        ClickyE2EConfiguration.writeNicheDiscoveryForE2E(snapshot)
+    }
+
+    private func e2eNicheClauseAssertionToken(for niche: NicheDiscoveryManager.Niche) -> String {
+        switch niche {
+        case .contentCreator: return "content creator"
+        case .developer: return "developer"
+        case .student: return "student"
+        case .designer: return "designer"
+        case .other: return "many apps"
+        }
+    }
 
     func setSelectedModel(_ model: String) {
         selectedModel = model
@@ -173,6 +281,7 @@ final class CompanionManager: ObservableObject {
     }
 
     func start() {
+        bootstrapNicheDiscovery()
         refreshAllPermissions()
         print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
@@ -583,11 +692,15 @@ final class CompanionManager: ObservableObject {
     /// the spinner/processing state until TTS audio begins playing.
     /// Claude's response may include a [POINT:x,y:label] tag which triggers
     /// the buddy to fly to that element on screen.
-    private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
+    private func sendTranscriptToClaudeWithScreenshot(
+        transcript: String,
+        onComplete: (@MainActor () -> Void)? = nil
+    ) {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
 
         currentResponseTask = Task {
+            defer { onComplete?() }
             // Stay in processing (spinner) state — no streaming text displayed
             voiceState = .processing
 
@@ -610,9 +723,12 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
+                let systemPrompt = buildVoiceResponseSystemPrompt()
+                ClickyE2EConfiguration.writeLastSystemPromptForE2E(systemPrompt)
+
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                    systemPrompt: systemPrompt,
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
                     onTextChunk: { _ in

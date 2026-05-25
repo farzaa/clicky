@@ -8,11 +8,13 @@
 //
 
 import AVFoundation
+import AppKit
 import SwiftUI
 
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    @State private var nicheSuggestionHintMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -24,6 +26,14 @@ struct CompanionPanelView: View {
             permissionsCopySection
                 .padding(.top, 16)
                 .padding(.horizontal, 16)
+
+            if companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 12)
+
+                nicheDiscoverySection
+                    .padding(.horizontal, 16)
+            }
 
             if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
                 Spacer()
@@ -594,6 +604,117 @@ struct CompanionPanelView: View {
                 .foregroundColor(DS.Colors.textTertiary)
         }
         .padding(.vertical, 4)
+    }
+
+    // MARK: - Niche Discovery
+
+    private var nicheDiscoverySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("What do you use Clicky for?")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Text("Hold Control+Option, ask out loud, and Clicky will look at your screen and point.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            nichePickerChips
+
+            if let selectedNiche = companionManager.selectedUserNiche {
+                Text("Try saying one of these:")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .padding(.top, 2)
+
+                ForEach(companionManager.nicheSuggestions) { suggestion in
+                    nicheSuggestionCard(suggestion)
+                }
+
+                if let nicheSuggestionHintMessage {
+                    Text(nicheSuggestionHintMessage)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(DS.Colors.accent)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var nichePickerChips: some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 72), spacing: 6)],
+            alignment: .leading,
+            spacing: 6
+        ) {
+            ForEach(NicheDiscoveryManager.Niche.allCases) { niche in
+                nicheChipButton(niche)
+            }
+        }
+    }
+
+    private func nicheChipButton(_ niche: NicheDiscoveryManager.Niche) -> some View {
+        let isSelected = companionManager.selectedUserNiche == niche
+        return Button(action: {
+            companionManager.setUserNiche(niche)
+            nicheSuggestionHintMessage = nil
+        }) {
+            Text(niche.displayName)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.12) : Color.white.opacity(0.05))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(isSelected ? DS.Colors.accent.opacity(0.5) : DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    private func nicheSuggestionCard(_ suggestion: NicheSuggestion) -> some View {
+        Button(action: {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(suggestion.prompt, forType: .string)
+            companionManager.trackNicheSuggestionTapped(suggestion: suggestion)
+            nicheSuggestionHintMessage = "Copied — hold Control+Option and say this while looking at your screen."
+        }) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(DS.Colors.accent)
+                    .padding(.top, 2)
+
+                Text(suggestion.prompt)
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.white.opacity(0.04))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
     }
 
     // MARK: - Model Picker

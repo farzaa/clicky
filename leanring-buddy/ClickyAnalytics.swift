@@ -118,4 +118,19 @@ enum ClickyAnalytics {
             "error": error
         ])
     }
+
+    // MARK: - Niche Discovery
+
+    static func trackNicheSelected(niche: String) {
+        PostHogSDK.shared.capture("niche_selected", properties: [
+            "niche": niche
+        ])
+    }
+
+    static func trackSuggestionTapped(niche: String, promptID: String) {
+        PostHogSDK.shared.capture("suggestion_tapped", properties: [
+            "niche": niche,
+            "prompt_id": promptID
+        ])
+    }
 }
