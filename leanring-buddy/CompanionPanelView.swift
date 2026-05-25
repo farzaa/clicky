@@ -29,6 +29,14 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 12)
 
+                teachingSkillsSection
+                    .padding(.horizontal, 16)
+            }
+
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 12)
+
                 modelPickerRow
                     .padding(.horizontal, 16)
             }
@@ -592,6 +600,85 @@ struct CompanionPanelView: View {
             Text(companionManager.buddyDictationManager.transcriptionProviderDisplayName)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(DS.Colors.textTertiary)
+        }
+        .padding(.vertical, 4)
+    }
+
+    // MARK: - Teaching Skills
+
+    private var teachingSkillsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Teaching Skills")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                Toggle("", isOn: Binding(
+                    get: { companionManager.isLearningFromSessionsEnabled },
+                    set: { companionManager.setLearningFromSessionsEnabled($0) }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .tint(DS.Colors.accent)
+                .scaleEffect(0.8)
+            }
+
+            Text(companionManager.isLearningFromSessionsEnabled
+                 ? "Clicky learns from successful tutoring sessions."
+                 : "Learning paused — saved skills still apply.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+
+            if companionManager.teachingSkills.isEmpty {
+                Text("No skills yet. Teach Clicky something on screen and confirm it worked.")
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(companionManager.teachingSkills.prefix(4)) { skill in
+                    teachingSkillRow(skill)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func teachingSkillRow(_ skill: TeachingSkill) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(skill.name)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .lineLimit(1)
+
+                Text("\(skill.usageCount) uses • \(skill.status.rawValue)")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+
+            Spacer()
+
+            Button(action: {
+                companionManager.setTeachingSkillPinned(id: skill.id, pinned: !skill.isPinned)
+            }) {
+                Image(systemName: skill.isPinned ? "pin.fill" : "pin")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(skill.isPinned ? DS.Colors.accent : DS.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+
+            Button(action: {
+                companionManager.deleteTeachingSkill(id: skill.id)
+            }) {
+                Image(systemName: "trash")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
         }
         .padding(.vertical, 4)
     }
