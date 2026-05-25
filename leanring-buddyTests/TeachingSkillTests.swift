@@ -99,7 +99,7 @@ struct TeachingSkillTests {
         #expect(SkillTriggerEvaluator.primaryTeachingQuestion(from: trace) == "how do I save this document?")
     }
 
-    @Test func slugAndNameAreCleanForSaveQuestionWithConfirmation() {
+    @Test func slugAndNameAreCleanForSaveQuestionWithConfirmation() throws {
         let trace = [
             SessionTraceEntry(
                 timestamp: Date(),
@@ -221,5 +221,103 @@ struct TeachingSkillTests {
         #expect(matchedSkills.map(\.name) == ["Save in TextEdit"])
         #expect(prompt.contains("Save in TextEdit"))
         #expect(prompt.contains("click file then save or use command s"))
+    }
+
+    @Test func detectsDuplicateSkillsWithOverlappingContent() {
+        let saveSkill = TeachingSkill(
+            id: "teach-textedit-save",
+            name: "Save in TextEdit",
+            description: "Walk the user through saving a document",
+            bundleIds: ["com.apple.TextEdit"],
+            status: .active,
+            lastUsed: Date(),
+            usageCount: 3,
+            isPinned: false,
+            body: "click file then save or use command s shortcut"
+        )
+        let duplicateSaveSkill = TeachingSkill(
+            id: "teach-textedit-save-document",
+            name: "Save document in TextEdit",
+            description: "Help save the current document",
+            bundleIds: ["com.apple.TextEdit"],
+            status: .active,
+            lastUsed: Date().addingTimeInterval(-86400),
+            usageCount: 1,
+            isPinned: false,
+            body: "open file menu then choose save for the document"
+        )
+
+        let duplicatePairs = SkillMatcher.findDuplicateSkillPairs(
+            in: [saveSkill, duplicateSaveSkill],
+            minimumOverlapScore: 3
+        )
+
+        #expect(duplicatePairs.count == 1)
+        #expect(duplicatePairs.first?.primarySkill.id == "teach-textedit-save")
+        #expect(duplicatePairs.first?.duplicateSkill.id == "teach-textedit-save-document")
+    }
+
+    @Test func ignoresPinnedSkillsForDuplicateDetection() {
+        let pinnedSkill = TeachingSkill(
+            id: "teach-textedit-save",
+            name: "Save in TextEdit",
+            description: "Walk the user through saving a document",
+            bundleIds: ["com.apple.TextEdit"],
+            status: .active,
+            lastUsed: Date(),
+            usageCount: 3,
+            isPinned: true,
+            body: "click file then save or use command s shortcut"
+        )
+        let overlappingSkill = TeachingSkill(
+            id: "teach-textedit-save-copy",
+            name: "Save document in TextEdit",
+            description: "Help save the current document",
+            bundleIds: ["com.apple.TextEdit"],
+            status: .active,
+            lastUsed: Date(),
+            usageCount: 1,
+            isPinned: false,
+            body: "click file then save or use command s shortcut"
+        )
+
+        let duplicatePairs = SkillMatcher.findDuplicateSkillPairs(
+            in: [pinnedSkill, overlappingSkill],
+            minimumOverlapScore: 3
+        )
+
+        #expect(duplicatePairs.isEmpty)
+    }
+
+    @Test func ignoresSkillsWithDifferentBundleIdsForDuplicateDetection() {
+        let textEditSkill = TeachingSkill(
+            id: "teach-textedit-save",
+            name: "Save in TextEdit",
+            description: "Walk the user through saving a document",
+            bundleIds: ["com.apple.TextEdit"],
+            status: .active,
+            lastUsed: Date(),
+            usageCount: 3,
+            isPinned: false,
+            body: "click file then save or use command s shortcut"
+        )
+        let xcodeSkill = TeachingSkill(
+            id: "teach-xcode-save",
+            name: "Save in Xcode",
+            description: "Walk the user through saving a file",
+            bundleIds: ["com.apple.dt.Xcode"],
+            status: .active,
+            lastUsed: Date(),
+            usageCount: 1,
+            isPinned: false,
+            body: "click file then save or use command s shortcut"
+        )
+
+        let duplicatePairs = SkillMatcher.findDuplicateSkillPairs(
+            in: [textEditSkill, xcodeSkill],
+            minimumOverlapScore: 3
+        )
+
+        #expect(duplicatePairs.isEmpty)
     }
 }

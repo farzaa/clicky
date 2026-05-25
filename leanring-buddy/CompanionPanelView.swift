@@ -13,8 +13,22 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    @State private var isShowingTeachingSkillsLibrary = false
+    @State private var copiedSuggestionText: String?
 
     var body: some View {
+        if isShowingTeachingSkillsLibrary {
+            TeachingSkillsLibraryView(companionManager: companionManager) {
+                isShowingTeachingSkillsLibrary = false
+            }
+            .frame(width: 320)
+            .background(panelBackground)
+        } else {
+            mainPanelContent
+        }
+    }
+
+    private var mainPanelContent: some View {
         VStack(alignment: .leading, spacing: 0) {
             panelHeader
             Divider()
@@ -53,7 +67,20 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 16)
 
-                startButton
+                if !companionManager.nicheDiscoveryManager.hasSelectedUserNiche {
+                    nichePickerSection
+                        .padding(.horizontal, 16)
+                } else {
+                    startButton
+                        .padding(.horizontal, 16)
+                }
+            }
+
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 12)
+
+                nicheSuggestionsSection
                     .padding(.horizontal, 16)
             }
 
@@ -604,6 +631,104 @@ struct CompanionPanelView: View {
         .padding(.vertical, 4)
     }
 
+    // MARK: - Niche Discovery
+
+    private var nichePickerSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("What do you mostly use Clicky for?")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            VStack(spacing: 6) {
+                ForEach(UserNiche.allCases.filter { $0 != .general }) { userNiche in
+                    Button(action: {
+                        companionManager.nicheDiscoveryManager.selectUserNiche(userNiche)
+                    }) {
+                        Text(userNiche.displayName)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(DS.Colors.textSecondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                                    .fill(Color.white.opacity(0.06))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                    .accessibilityIdentifier("clicky.panel.niche.\(userNiche.rawValue)")
+                }
+            }
+
+            Button(action: {
+                companionManager.nicheDiscoveryManager.skipNicheSelection()
+            }) {
+                Text("Skip — show general examples")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .accessibilityIdentifier("clicky.panel.niche.skip")
+        }
+        .accessibilityIdentifier("clicky.panel.niche.section")
+    }
+
+    private var nicheSuggestionsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Try asking")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                if let copiedSuggestionText {
+                    Text("Copied!")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(DS.Colors.success)
+                        .transition(.opacity)
+                        .onAppear {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                if self.copiedSuggestionText == copiedSuggestionText {
+                                    self.copiedSuggestionText = nil
+                                }
+                            }
+                        }
+                }
+            }
+
+            Text("Tap to copy — then hold Control+Option and say it.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+
+            ForEach(Array(companionManager.nicheDiscoveryManager.currentSuggestions.enumerated()), id: \.element) { suggestionIndex, suggestion in
+                Button(action: {
+                    companionManager.nicheDiscoveryManager.handleSuggestionTapped(suggestion)
+                    copiedSuggestionText = suggestion
+                }) {
+                    Text(suggestion)
+                        .font(.system(size: 11))
+                        .foregroundColor(DS.Colors.textSecondary)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                                .fill(Color.white.opacity(0.06))
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .accessibilityIdentifier("clicky.panel.suggestion.\(suggestionIndex)")
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityIdentifier("clicky.panel.suggestions.section")
+    }
+
     // MARK: - Teaching Skills
 
     private var teachingSkillsSection: some View {
@@ -623,6 +748,7 @@ struct CompanionPanelView: View {
                 .labelsHidden()
                 .tint(DS.Colors.accent)
                 .scaleEffect(0.8)
+                .accessibilityIdentifier("clicky.panel.teaching-skills.learn-toggle")
             }
 
             Text(companionManager.isLearningFromSessionsEnabled
@@ -640,6 +766,17 @@ struct CompanionPanelView: View {
                 ForEach(companionManager.teachingSkills.prefix(4)) { skill in
                     teachingSkillRow(skill)
                 }
+
+                Button(action: {
+                    isShowingTeachingSkillsLibrary = true
+                }) {
+                    Text("View all")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.accent)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .accessibilityIdentifier("clicky.panel.teaching-skills.view-all")
             }
         }
         .padding(.vertical, 4)

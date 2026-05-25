@@ -243,6 +243,7 @@ struct BlueCursorView: View {
                             .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.5), radius: 6, x: 0, y: 0)
                     )
                     .fixedSize()
+                    .accessibilityIdentifier("clicky.overlay.onboarding-prompt")
                     .overlay(
                         GeometryReader { geo in
                             Color.clear
@@ -277,6 +278,7 @@ struct BlueCursorView: View {
                             )
                     )
                     .fixedSize()
+                    .accessibilityIdentifier("clicky.overlay.pointing-bubble")
                     .overlay(
                         GeometryReader { geo in
                             Color.clear
@@ -310,6 +312,7 @@ struct BlueCursorView: View {
                 .scaleEffect(buddyFlightScale)
                 .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
                 .position(cursorPosition)
+                .accessibilityIdentifier("clicky.overlay.cursor")
                 .animation(
                     buddyNavigationMode == .followingCursor
                         ? .spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0)
@@ -326,6 +329,7 @@ struct BlueCursorView: View {
             BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel)
                 .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .listening ? cursorOpacity : 0)
                 .position(cursorPosition)
+                .accessibilityIdentifier("clicky.overlay.waveform")
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
 
@@ -333,6 +337,7 @@ struct BlueCursorView: View {
             BlueCursorSpinnerView()
                 .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing ? cursorOpacity : 0)
                 .position(cursorPosition)
+                .accessibilityIdentifier("clicky.overlay.spinner")
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
 

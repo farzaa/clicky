@@ -12,6 +12,12 @@ struct SkillMatch: Equatable {
     let score: Int
 }
 
+struct DuplicateSkillPair: Equatable {
+    let primarySkill: TeachingSkill
+    let duplicateSkill: TeachingSkill
+    let overlapScore: Int
+}
+
 enum SkillMatcher {
     static let topicStopwords: Set<String> = [
         "how", "do", "does", "did", "can", "could", "would", "should", "what", "where", "when", "why", "which",
@@ -86,6 +92,74 @@ enum SkillMatcher {
         .flatMap { candidate in
             overlapScore(candidate, topicTokens: topicTokens) >= 2 ? candidate : nil
         }
+    }
+
+    static func tokenOverlapScore(between leftSkill: TeachingSkill, and rightSkill: TeachingSkill) -> Int {
+        let leftTokens = Set(
+            tokenize(leftSkill.name) +
+            tokenize(leftSkill.description) +
+            tokenize(leftSkill.body)
+        )
+        let rightTokens = Set(
+            tokenize(rightSkill.name) +
+            tokenize(rightSkill.description) +
+            tokenize(rightSkill.body)
+        )
+        return leftTokens.filter { rightTokens.contains($0) }.count
+    }
+
+    static func findDuplicateSkillPairs(
+        in skills: [TeachingSkill],
+        minimumOverlapScore: Int = 3
+    ) -> [DuplicateSkillPair] {
+        let eligibleSkills = skills.filter { skill in
+            !skill.isPinned && skill.status != .archived
+        }
+
+        var duplicatePairs: [DuplicateSkillPair] = []
+
+        for leftIndex in 0..<eligibleSkills.count {
+            for rightIndex in (leftIndex + 1)..<eligibleSkills.count {
+                let leftSkill = eligibleSkills[leftIndex]
+                let rightSkill = eligibleSkills[rightIndex]
+
+                let bundleIdsOverlap = leftSkill.bundleIds.isEmpty
+                    || rightSkill.bundleIds.isEmpty
+                    || !Set(leftSkill.bundleIds).isDisjoint(with: rightSkill.bundleIds)
+                guard bundleIdsOverlap else { continue }
+
+                let overlapScore = tokenOverlapScore(between: leftSkill, and: rightSkill)
+                guard overlapScore >= minimumOverlapScore else { continue }
+
+                let primarySkill: TeachingSkill
+                let duplicateSkill: TeachingSkill
+                if leftSkill.usageCount != rightSkill.usageCount {
+                    if leftSkill.usageCount > rightSkill.usageCount {
+                        primarySkill = leftSkill
+                        duplicateSkill = rightSkill
+                    } else {
+                        primarySkill = rightSkill
+                        duplicateSkill = leftSkill
+                    }
+                } else if (leftSkill.lastUsed ?? .distantPast) >= (rightSkill.lastUsed ?? .distantPast) {
+                    primarySkill = leftSkill
+                    duplicateSkill = rightSkill
+                } else {
+                    primarySkill = rightSkill
+                    duplicateSkill = leftSkill
+                }
+
+                duplicatePairs.append(
+                    DuplicateSkillPair(
+                        primarySkill: primarySkill,
+                        duplicateSkill: duplicateSkill,
+                        overlapScore: overlapScore
+                    )
+                )
+            }
+        }
+
+        return duplicatePairs
     }
 
     private static func overlapScore(_ skill: TeachingSkill, topicTokens: Set<String>) -> Int {

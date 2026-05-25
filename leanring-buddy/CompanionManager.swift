@@ -66,6 +66,7 @@ final class CompanionManager: ObservableObject {
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
+    let nicheDiscoveryManager = NicheDiscoveryManager()
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
@@ -79,6 +80,7 @@ final class CompanionManager: ObservableObject {
     private let topicHistoryStore = TeachingTopicHistoryStore()
     private var sessionTrace: [SessionTraceEntry] = []
     private var skillWriteTask: Task<Void, Never>?
+    private var curatorLLMTask: Task<Void, Never>?
 
     /// Skills currently on disk, exposed for the panel UI.
     @Published private(set) var teachingSkills: [TeachingSkill] = []
@@ -160,6 +162,20 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    func restoreTeachingSkill(id: String) {
+        do {
+            try teachingSkillStore.restoreSkill(id: id)
+            teachingSkills = teachingSkillStore.skills
+            writeE2EArtifactsIfNeeded()
+        } catch {
+            print("⚠️ Failed to restore teaching skill \(id): \(error)")
+        }
+    }
+
+    func teachingSkills(withStatus status: TeachingSkillStatus?) -> [TeachingSkill] {
+        teachingSkillStore.skills(withStatus: status)
+    }
+
     /// Allows E2E tests to bypass microphone/STT and exercise the response + skill loop directly.
     func injectTranscriptForE2E(_ transcript: String) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -188,6 +204,42 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    func runE2EBootstrapActionsIfNeeded() {
+        guard ClickyE2EConfiguration.isEnabled else { return }
+
+        Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+
+            if let nicheRawValue = ClickyE2EConfiguration.selectNicheOnLaunch,
+               let userNiche = UserNiche(rawValue: nicheRawValue) {
+                nicheDiscoveryManager.selectUserNiche(userNiche)
+            }
+
+            if let simulatedBundleID = ClickyE2EConfiguration.simulateFrontmostBundleID {
+                nicheDiscoveryManager.setSimulatedFrontmostBundleIDForE2E(simulatedBundleID)
+            }
+
+            if let restoreSkillID = ClickyE2EConfiguration.restoreSkillID {
+                restoreTeachingSkill(id: restoreSkillID)
+            }
+
+            if let suggestionTapText = ClickyE2EConfiguration.injectSuggestionTapText {
+                nicheDiscoveryManager.handleSuggestionTapped(suggestionTapText)
+            }
+
+            writeE2EArtifactsIfNeeded()
+        }
+    }
+
+    func writeE2EArtifactsIfNeeded() {
+        guard ClickyE2EConfiguration.isEnabled else { return }
+
+        ClickyE2EConfiguration.writeSelectedNicheForE2E(nicheDiscoveryManager.selectedUserNiche.rawValue)
+        ClickyE2EConfiguration.writeLastSuggestionsForE2E(nicheDiscoveryManager.currentSuggestions)
+        ClickyE2EConfiguration.writeSkillsCountForE2E(teachingSkillStore.skills.count)
+        ClickyE2EConfiguration.writeSkillLibraryStateForE2E(teachingSkillStore.skills)
+    }
+
     private func frontmostApplicationBundleId() -> String? {
         NSWorkspace.shared.frontmostApplication?.bundleIdentifier
     }
@@ -197,6 +249,15 @@ final class CompanionManager: ObservableObject {
         topicHistoryStore.load()
         SkillCurator.curate(store: teachingSkillStore)
         teachingSkills = teachingSkillStore.skills
+        runCuratorLLMPassesIfNeeded()
+    }
+
+    private func runCuratorLLMPassesIfNeeded() {
+        curatorLLMTask?.cancel()
+        curatorLLMTask = Task {
+            await SkillCurator.curateWithLLMPasses(store: teachingSkillStore, claudeAPI: claudeAPI)
+            teachingSkills = teachingSkillStore.skills
+        }
     }
 
     private func matchedSkills(for transcript: String) -> [TeachingSkill] {
@@ -288,6 +349,7 @@ final class CompanionManager: ObservableObject {
                 _ = try teachingSkillStore.saveSkill(skill)
                 SkillCurator.curate(store: teachingSkillStore)
                 teachingSkills = teachingSkillStore.skills
+                runCuratorLLMPassesIfNeeded()
                 topicHistoryStore.recordTopic(
                     topic: trigger.topic,
                     bundleId: bundleId,
@@ -300,6 +362,7 @@ final class CompanionManager: ObservableObject {
                     reason: trigger.reason.rawValue,
                     updatedExisting: existingSkill != nil
                 )
+                writeE2EArtifactsIfNeeded()
                 print("📚 Saved teaching skill: \(skill.id)")
             } catch {
                 print("⚠️ Failed to synthesize teaching skill: \(error)")
@@ -833,6 +896,9 @@ final class CompanionManager: ObservableObject {
                         skillIDs: matchedTeachingSkills.map(\.id),
                         bundleID: frontmostApplicationBundleId()
                     )
+                    ClickyE2EConfiguration.writeLastMatchedSkillIDForE2E(matchedTeachingSkills.first?.id)
+                } else {
+                    ClickyE2EConfiguration.writeLastMatchedSkillIDForE2E(nil)
                 }
 
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(

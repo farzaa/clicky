@@ -149,4 +149,33 @@ enum ClickyAnalytics {
             "skill_id": skillID
         ])
     }
+
+    static func trackTeachingSkillMerged(primarySkillID: String, duplicateSkillID: String) {
+        PostHogSDK.shared.capture("teaching_skill_merged", properties: [
+            "primary_skill_id": primarySkillID,
+            "duplicate_skill_id": duplicateSkillID
+        ])
+    }
+
+    static func trackTeachingSkillPatched(skillID: String) {
+        PostHogSDK.shared.capture("teaching_skill_patched", properties: [
+            "skill_id": skillID
+        ])
+    }
+
+    // MARK: - Niche Discovery
+
+    static func trackNicheSelected(niche: String) {
+        PostHogSDK.shared.capture("niche_selected", properties: [
+            "niche": niche
+        ])
+    }
+
+    static func trackNicheSuggestionTapped(suggestion: String, niche: String, bundleID: String?) {
+        PostHogSDK.shared.capture("niche_suggestion_tapped", properties: [
+            "suggestion": suggestion,
+            "niche": niche,
+            "bundle_id": bundleID ?? "unknown"
+        ])
+    }
 }

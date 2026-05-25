@@ -1,0 +1,84 @@
+{
+  "general": {
+    "suggestions": [
+      "What can you help me with on this screen?",
+      "Show me where to find the main menu in this app",
+      "Walk me through the most common task here",
+      "Point out the settings for this app",
+      "How do I get started with what I'm looking at?"
+    ]
+  },
+  "contentCreator": {
+    "suggestions": [
+      "Show me where to add captions in this timeline",
+      "Walk me through export settings for YouTube",
+      "How do I color grade this clip?",
+      "Where is the transition menu?",
+      "Help me trim this section of the video"
+    ]
+  },
+  "developer": {
+    "suggestions": [
+      "Walk me through committing changes in this project",
+      "Show me where to run tests in this app",
+      "How do I open the debugger?",
+      "Point me to the source control panel",
+      "Where do I change build settings?"
+    ]
+  },
+  "student": {
+    "suggestions": [
+      "Help me understand what's on this page",
+      "Show me where to submit this assignment",
+      "Walk me through the steps on this screen",
+      "Where do I find my course materials?",
+      "Point out the key buttons I need to click"
+    ]
+  },
+  "designer": {
+    "suggestions": [
+      "Show me the layers panel",
+      "How do I export this design?",
+      "Walk me through alignment tools",
+      "Where are the color and fill controls?",
+      "Point me to the export presets"
+    ]
+  },
+  "appSuggestions": {
+    "com.apple.FinalCut": {
+      "suggestions": [
+        "Show me where to add captions in this timeline",
+        "Walk me through export settings for YouTube",
+        "How do I add a transition between clips?"
+      ]
+    },
+    "com.apple.dt.Xcode": {
+      "suggestions": [
+        "Walk me through committing changes in Xcode",
+        "Show me the source control navigator",
+        "How do I run tests for this target?"
+      ]
+    },
+    "com.apple.TextEdit": {
+      "suggestions": [
+        "How do I save this document?",
+        "Show me where to change the font",
+        "Walk me through exporting as PDF"
+      ]
+    },
+    "com.apple.Safari": {
+      "suggestions": [
+        "Show me how to bookmark this page",
+        "Where are the privacy settings?",
+        "How do I open a new private window?"
+      ]
+    },
+    "com.adobe.Photoshop": {
+      "suggestions": [
+        "Show me the layers panel",
+        "How do I remove the background from this image?",
+        "Walk me through exporting for web"
+      ]
+    }
+  }
+}
