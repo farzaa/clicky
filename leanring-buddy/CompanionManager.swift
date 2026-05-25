@@ -8,6 +8,7 @@
 //
 
 import AVFoundation
+import AppKit
 import Combine
 import Foundation
 import PostHog
@@ -70,7 +71,26 @@ final class CompanionManager: ObservableObject {
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
+    private static var workerBaseURL: String {
+        ClickyE2EConfiguration.workerBaseURL ?? "https://your-worker-name.your-subdomain.workers.dev"
+    }
+
+    private let teachingSkillStore = TeachingSkillStore()
+    private var sessionTrace: [SessionTraceEntry] = []
+    private var skillWriteTask: Task<Void, Never>?
+
+    /// Skills currently on disk, exposed for the panel UI.
+    @Published private(set) var teachingSkills: [TeachingSkill] = []
+
+    /// When disabled, Clicky still reads skills but will not create new ones.
+    @Published var isLearningFromSessionsEnabled: Bool = UserDefaults.standard.object(forKey: "isLearningFromSessionsEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isLearningFromSessionsEnabled")
+
+    /// Exposed for automated E2E assertions.
+    @Published private(set) var lastSystemPrompt: String?
+    @Published private(set) var lastMatchedSkillNames: [String] = []
+    @Published private(set) var lastSkillWriteTrigger: String?
 
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
@@ -109,6 +129,159 @@ final class CompanionManager: ObservableObject {
 
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+
+    func setLearningFromSessionsEnabled(_ enabled: Bool) {
+        isLearningFromSessionsEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isLearningFromSessionsEnabled")
+    }
+
+    func refreshTeachingSkills() {
+        teachingSkillStore.loadSkills()
+        teachingSkills = teachingSkillStore.skills
+    }
+
+    func deleteTeachingSkill(id: String) {
+        do {
+            try teachingSkillStore.deleteSkill(id: id)
+            teachingSkills = teachingSkillStore.skills
+            ClickyAnalytics.trackTeachingSkillDeleted(skillID: id)
+        } catch {
+            print("⚠️ Failed to delete teaching skill \(id): \(error)")
+        }
+    }
+
+    func setTeachingSkillPinned(id: String, pinned: Bool) {
+        do {
+            try teachingSkillStore.setPinned(id: id, pinned: pinned)
+            teachingSkills = teachingSkillStore.skills
+        } catch {
+            print("⚠️ Failed to pin teaching skill \(id): \(error)")
+        }
+    }
+
+    /// Allows E2E tests to bypass microphone/STT and exercise the response + skill loop directly.
+    func injectTranscriptForE2E(_ transcript: String) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            sendTranscriptToClaudeWithScreenshot(transcript: transcript) {
+                continuation.resume()
+            }
+        }
+    }
+
+    func runE2EInjectSequenceIfNeeded() {
+        guard ClickyE2EConfiguration.isEnabled,
+              let firstTranscript = ClickyE2EConfiguration.injectTranscript else {
+            return
+        }
+
+        Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            await injectTranscriptForE2E(firstTranscript)
+
+            if let secondTranscript = ClickyE2EConfiguration.injectTranscript2 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                await injectTranscriptForE2E(secondTranscript)
+            }
+        }
+    }
+
+    private func frontmostApplicationBundleId() -> String? {
+        NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+    }
+
+    private func bootstrapTeachingSkills() {
+        teachingSkillStore.loadSkills()
+        SkillCurator.curate(store: teachingSkillStore)
+        teachingSkills = teachingSkillStore.skills
+    }
+
+    private func matchedSkills(for transcript: String) -> [TeachingSkill] {
+        let matches = SkillMatcher.matchSkills(
+            from: teachingSkillStore.skills,
+            bundleId: frontmostApplicationBundleId(),
+            transcript: transcript
+        )
+        return matches.map(\.skill)
+    }
+
+    private func recordSessionExchange(
+        transcript: String,
+        spokenResponse: String,
+        pointed: Bool
+    ) {
+        sessionTrace.append(
+            SessionTraceEntry(
+                timestamp: Date(),
+                userTranscript: transcript,
+                assistantResponse: spokenResponse,
+                bundleId: frontmostApplicationBundleId(),
+                pointed: pointed
+            )
+        )
+
+        if sessionTrace.count > 20 {
+            sessionTrace.removeFirst(sessionTrace.count - 20)
+        }
+    }
+
+    private func maybeWriteTeachingSkill(after transcript: String) {
+        guard isLearningFromSessionsEnabled else { return }
+        guard SkillTriggerEvaluator.isScreenTeachingSession(sessionTrace) else { return }
+        guard let trigger = SkillTriggerEvaluator.shouldWriteSkill(
+            sessionTrace: sessionTrace,
+            latestTranscript: transcript
+        ) else {
+            return
+        }
+
+        lastSkillWriteTrigger = trigger.reason.rawValue
+        ClickyAnalytics.trackTeachingSkillWriteTriggered(reason: trigger.reason.rawValue, topic: trigger.topic)
+
+        let traceSnapshot = sessionTrace
+        let bundleId = frontmostApplicationBundleId()
+        skillWriteTask?.cancel()
+        skillWriteTask = Task {
+            do {
+                let existingSkill = SkillMatcher.findSimilarSkill(
+                    in: teachingSkillStore.skills,
+                    bundleId: bundleId,
+                    topic: trigger.topic
+                )
+
+                let synthesized = try await SkillSynthesizer.synthesizeSkillContent(
+                    sessionTrace: traceSnapshot,
+                    trigger: trigger,
+                    existingSkill: existingSkill,
+                    claudeAPI: claudeAPI
+                )
+
+                guard !Task.isCancelled else { return }
+
+                let skill = SkillSynthesizer.buildSkill(
+                    id: existingSkill?.id,
+                    name: synthesized.name,
+                    description: synthesized.description,
+                    body: synthesized.body,
+                    bundleId: bundleId,
+                    existingSkill: existingSkill
+                )
+
+                _ = try teachingSkillStore.saveSkill(skill)
+                SkillCurator.curate(store: teachingSkillStore)
+                teachingSkills = teachingSkillStore.skills
+                sessionTrace.removeAll()
+
+                ClickyAnalytics.trackTeachingSkillSaved(
+                    skillID: skill.id,
+                    reason: trigger.reason.rawValue,
+                    updatedExisting: existingSkill != nil
+                )
+                print("📚 Saved teaching skill: \(skill.id)")
+            } catch {
+                print("⚠️ Failed to synthesize teaching skill: \(error)")
+            }
+        }
+    }
 
     func setSelectedModel(_ model: String) {
         selectedModel = model
@@ -173,6 +346,7 @@ final class CompanionManager: ObservableObject {
     }
 
     func start() {
+        bootstrapTeachingSkills()
         refreshAllPermissions()
         print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
@@ -295,6 +469,8 @@ final class CompanionManager: ObservableObject {
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
+        skillWriteTask?.cancel()
+        skillWriteTask = nil
         shortcutTransitionCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
@@ -583,11 +759,15 @@ final class CompanionManager: ObservableObject {
     /// the spinner/processing state until TTS audio begins playing.
     /// Claude's response may include a [POINT:x,y:label] tag which triggers
     /// the buddy to fly to that element on screen.
-    private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
+    private func sendTranscriptToClaudeWithScreenshot(
+        transcript: String,
+        onComplete: (@MainActor () -> Void)? = nil
+    ) {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
 
         currentResponseTask = Task {
+            defer { onComplete?() }
             // Stay in processing (spinner) state — no streaming text displayed
             voiceState = .processing
 
@@ -610,9 +790,29 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
+                let matchedTeachingSkills = matchedSkills(for: transcript)
+                lastMatchedSkillNames = matchedTeachingSkills.map(\.name)
+                let systemPrompt = TeachingPromptBuilder.buildVoiceResponsePrompt(
+                    basePrompt: Self.companionVoiceResponseSystemPrompt,
+                    matchedSkills: matchedTeachingSkills
+                )
+                lastSystemPrompt = systemPrompt
+
+                for skill in matchedTeachingSkills {
+                    _ = try? teachingSkillStore.markUsed(skill)
+                }
+                teachingSkills = teachingSkillStore.skills
+
+                if !matchedTeachingSkills.isEmpty {
+                    ClickyAnalytics.trackTeachingSkillsMatched(
+                        skillIDs: matchedTeachingSkills.map(\.id),
+                        bundleID: frontmostApplicationBundleId()
+                    )
+                }
+
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                    systemPrompt: systemPrompt,
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
                     onTextChunk: { _ in
@@ -694,6 +894,13 @@ final class CompanionManager: ObservableObject {
                 }
 
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")
+
+                recordSessionExchange(
+                    transcript: transcript,
+                    spokenResponse: spokenText,
+                    pointed: hasPointCoordinate
+                )
+                maybeWriteTeachingSkill(after: transcript)
 
                 ClickyAnalytics.trackAIResponseReceived(response: spokenText)
 

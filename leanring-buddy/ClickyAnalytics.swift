@@ -118,4 +118,35 @@ enum ClickyAnalytics {
             "error": error
         ])
     }
+
+    // MARK: - Teaching Skills
+
+    static func trackTeachingSkillsMatched(skillIDs: [String], bundleID: String?) {
+        PostHogSDK.shared.capture("teaching_skills_matched", properties: [
+            "skill_ids": skillIDs,
+            "bundle_id": bundleID ?? "unknown",
+            "count": skillIDs.count
+        ])
+    }
+
+    static func trackTeachingSkillWriteTriggered(reason: String, topic: String) {
+        PostHogSDK.shared.capture("teaching_skill_write_triggered", properties: [
+            "reason": reason,
+            "topic": topic
+        ])
+    }
+
+    static func trackTeachingSkillSaved(skillID: String, reason: String, updatedExisting: Bool) {
+        PostHogSDK.shared.capture("teaching_skill_saved", properties: [
+            "skill_id": skillID,
+            "reason": reason,
+            "updated_existing": updatedExisting
+        ])
+    }
+
+    static func trackTeachingSkillDeleted(skillID: String) {
+        PostHogSDK.shared.capture("teaching_skill_deleted", properties: [
+            "skill_id": skillID
+        ])
+    }
 }

@@ -41,9 +41,12 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
         ClickyAnalytics.configure()
         ClickyAnalytics.trackAppOpened()
+        ClickyE2EConfiguration.applyLaunchOverrides()
 
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
         companionManager.start()
+
+        companionManager.runE2EInjectSequenceIfNeeded()
         // Auto-open the panel if the user still needs to do something:
         // either they haven't onboarded yet, or permissions were revoked.
         if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
