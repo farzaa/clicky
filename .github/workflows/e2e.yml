@@ -1,0 +1,47 @@
+name: E2E Niche Discovery
+
+on:
+  push:
+    branches:
+      - main
+      - feature/niche-discovery
+  pull_request:
+    branches:
+      - main
+      - feature/niche-discovery
+
+jobs:
+  niche-discovery-e2e:
+    name: Niche discovery E2E (macOS)
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run niche-discovery E2E
+        run: |
+          chmod +x tests/e2e/run-all.sh tests/e2e/niche-discovery.sh
+          ./tests/e2e/run-all.sh
+
+      - name: Upload E2E logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: niche-discovery-e2e-logs
+          if-no-files-found: ignore
+          path: |
+            /tmp/clicky-e2e-niche-app.log
+            /tmp/clicky-e2e-niche-persist.log
+            /tmp/clicky-e2e-niche-prompt.log
+            /tmp/clicky-e2e-niche-app-aware.log
+            /tmp/clicky-e2e-niche-build.log
+            /tmp/clicky-e2e-niche-worker.log
+            ~/.clicky/e2e-last-system-prompt.txt
+            ~/.clicky/e2e-niche-discovery.json
