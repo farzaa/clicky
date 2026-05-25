@@ -51,9 +51,22 @@ ensure_clicky_built() {
   echo "Built Clicky at $CLICKY_APP"
 }
 
+worker_port_from_url() {
+  local url="$1"
+  local port="8787"
+
+  if [[ "$url" =~ :([0-9]+)(/|$|\?) ]]; then
+    port="${BASH_REMATCH[1]}"
+  fi
+
+  echo "$port"
+}
+
 start_mock_worker() {
-  echo "Starting mock worker on $WORKER_URL..."
-  node "$ROOT_DIR/tests/e2e/mock-worker.mjs" >/tmp/clicky-e2e-worker.log 2>&1 &
+  local worker_port
+  worker_port="$(worker_port_from_url "$WORKER_URL")"
+  echo "Starting mock worker on $WORKER_URL (port $worker_port)..."
+  MOCK_WORKER_PORT="$worker_port" node "$ROOT_DIR/tests/e2e/mock-worker.mjs" >/tmp/clicky-e2e-worker.log 2>&1 &
   MOCK_WORKER_PID=$!
   sleep 1
 }

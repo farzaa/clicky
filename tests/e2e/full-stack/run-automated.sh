@@ -12,10 +12,6 @@ FULL_STACK_LOG="/tmp/clicky-fullstack-automated.log"
 check_prerequisites() {
   local missing_reasons=()
 
-  if [[ ! -d "$CLICKY_APP" ]]; then
-    missing_reasons+=("Clicky.app not built at $CLICKY_APP")
-  fi
-
   if ! command -v node >/dev/null 2>&1; then
     missing_reasons+=("node not installed")
   fi
@@ -57,6 +53,13 @@ trap e2e_cleanup EXIT
 
 echo "=== Clicky full-stack automated E2E ==="
 check_prerequisites
+
+if [[ -d "$CLICKY_APP" ]]; then
+  export SKIP_E2E_BUILD=1
+  echo "Reusing existing Clicky build at $CLICKY_APP (preserves code signing/TCC)"
+else
+  echo "WARNING: building Clicky with ad-hoc signing — TCC permissions may reset after this build"
+fi
 
 ensure_clicky_built
 start_mock_worker

@@ -54,4 +54,4 @@ echo "   Ad-hoc signing (CODE_SIGN_IDENTITY=\"-\") resets permissions on every b
 
 echo ""
 echo "=== Setup complete ==="
-echo "Next: build Clicky, then run ./tests/e2e/full-stack/run-full-stack.sh"
+echo "Next: build Clicky (Xcode or ./tests/e2e/run-all.sh), then run ./tests/e2e/full-stack/run-automated.sh"

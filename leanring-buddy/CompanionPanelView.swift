@@ -703,7 +703,7 @@ struct CompanionPanelView: View {
                 .font(.system(size: 10))
                 .foregroundColor(DS.Colors.textTertiary)
 
-            ForEach(Array(companionManager.nicheDiscoveryManager.currentSuggestions.enumerated()), id: \.element) { suggestionIndex, suggestion in
+            ForEach(Array(companionManager.nicheDiscoveryManager.currentSuggestions.enumerated()), id: \.offset) { suggestionIndex, suggestion in
                 Button(action: {
                     companionManager.nicheDiscoveryManager.handleSuggestionTapped(suggestion)
                     copiedSuggestionText = suggestion
