@@ -66,6 +66,7 @@ final class CompanionManager: ObservableObject {
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
+    let nicheDiscoveryManager = NicheDiscoveryManager()
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
@@ -75,12 +76,24 @@ final class CompanionManager: ObservableObject {
         ClickyE2EConfiguration.workerBaseURL ?? "https://your-worker-name.your-subdomain.workers.dev"
     }
 
-    private let nicheDiscoveryManager = NicheDiscoveryManager()
-    private var frontmostAppObserver: NSObjectProtocol?
+    private let teachingSkillStore = TeachingSkillStore()
+    private let topicHistoryStore = TeachingTopicHistoryStore()
+    private var sessionTrace: [SessionTraceEntry] = []
+    private var skillWriteTask: Task<Void, Never>?
+    private var curatorLLMTask: Task<Void, Never>?
 
-    @Published private(set) var selectedUserNiche: NicheDiscoveryManager.Niche?
-    @Published private(set) var nicheSuggestions: [NicheSuggestion] = []
-    @Published private(set) var nicheSuggestionContextLabel: String?
+    /// Skills currently on disk, exposed for the panel UI.
+    @Published private(set) var teachingSkills: [TeachingSkill] = []
+
+    /// When disabled, Clicky still reads skills but will not create new ones.
+    @Published var isLearningFromSessionsEnabled: Bool = UserDefaults.standard.object(forKey: "isLearningFromSessionsEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isLearningFromSessionsEnabled")
+
+    /// Exposed for automated E2E assertions.
+    @Published private(set) var lastSystemPrompt: String?
+    @Published private(set) var lastMatchedSkillNames: [String] = []
+    @Published private(set) var lastSkillWriteTrigger: String?
 
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
@@ -120,77 +133,50 @@ final class CompanionManager: ObservableObject {
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
 
-    func setUserNiche(_ niche: NicheDiscoveryManager.Niche) {
-        nicheDiscoveryManager.setNiche(niche)
-        selectedUserNiche = niche
-        refreshNicheSuggestions()
-        ClickyAnalytics.trackNicheSelected(niche: niche.rawValue)
+    func setLearningFromSessionsEnabled(_ enabled: Bool) {
+        isLearningFromSessionsEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isLearningFromSessionsEnabled")
     }
 
-    func refreshNicheSuggestions() {
-        guard let selectedUserNiche else {
-            nicheSuggestions = []
-            nicheSuggestionContextLabel = nil
-            return
-        }
-
-        let frontmostBundleId = frontmostApplicationBundleId()
-        nicheSuggestions = nicheDiscoveryManager.suggestions(
-            for: selectedUserNiche,
-            frontmostBundleId: frontmostBundleId
-        )
-        nicheSuggestionContextLabel = nicheDiscoveryManager.contextLabel(
-            for: selectedUserNiche,
-            frontmostBundleId: frontmostBundleId
-        )
+    func refreshTeachingSkills() {
+        teachingSkillStore.loadSkills()
+        teachingSkills = teachingSkillStore.skills
     }
 
-    func trackNicheSuggestionTapped(suggestion: NicheSuggestion) {
-        guard let selectedUserNiche else { return }
-        ClickyAnalytics.trackSuggestionTapped(niche: selectedUserNiche.rawValue, promptID: suggestion.id)
-    }
-
-    private func bootstrapNicheDiscovery() {
-        selectedUserNiche = nicheDiscoveryManager.selectedNiche
-        refreshNicheSuggestions()
-    }
-
-    private func frontmostApplicationBundleId() -> String? {
-        if let overrideBundleId = ClickyE2EConfiguration.e2eFrontmostBundleId {
-            return overrideBundleId
-        }
-        return NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-    }
-
-    private func startFrontmostAppObservation() {
-        frontmostAppObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.refreshNicheSuggestions()
+    func deleteTeachingSkill(id: String) {
+        do {
+            try teachingSkillStore.deleteSkill(id: id)
+            teachingSkills = teachingSkillStore.skills
+            ClickyAnalytics.trackTeachingSkillDeleted(skillID: id)
+        } catch {
+            print("⚠️ Failed to delete teaching skill \(id): \(error)")
         }
     }
 
-    deinit {
-        if let frontmostAppObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(frontmostAppObserver)
+    func setTeachingSkillPinned(id: String, pinned: Bool) {
+        do {
+            try teachingSkillStore.setPinned(id: id, pinned: pinned)
+            teachingSkills = teachingSkillStore.skills
+        } catch {
+            print("⚠️ Failed to pin teaching skill \(id): \(error)")
         }
     }
 
-    private func nicheClauseForVoicePrompt() -> String? {
-        guard let selectedUserNiche else { return nil }
-        return nicheDiscoveryManager.voiceSystemPromptClause(for: selectedUserNiche)
-    }
-
-    private func buildVoiceResponseSystemPrompt() -> String {
-        var prompt = Self.companionVoiceResponseSystemPrompt
-        if let clause = nicheClauseForVoicePrompt() {
-            prompt += "\n\n\(clause)"
+    func restoreTeachingSkill(id: String) {
+        do {
+            try teachingSkillStore.restoreSkill(id: id)
+            teachingSkills = teachingSkillStore.skills
+            writeE2EArtifactsIfNeeded()
+        } catch {
+            print("⚠️ Failed to restore teaching skill \(id): \(error)")
         }
-        return prompt
     }
 
+    func teachingSkills(withStatus status: TeachingSkillStatus?) -> [TeachingSkill] {
+        teachingSkillStore.skills(withStatus: status)
+    }
+
+    /// Allows E2E tests to bypass microphone/STT and exercise the response + skill loop directly.
     func injectTranscriptForE2E(_ transcript: String) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             sendTranscriptToClaudeWithScreenshot(transcript: transcript) {
@@ -199,67 +185,188 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    func runE2ENicheDiscoveryChecksIfNeeded() {
-        guard ClickyE2EConfiguration.isEnabled else { return }
-
-        if let nicheRawValue = ClickyE2EConfiguration.e2eSetNicheRawValue,
-           let niche = NicheDiscoveryManager.Niche(rawValue: nicheRawValue) {
-            setUserNiche(niche)
-        }
-
-        if let suggestionID = ClickyE2EConfiguration.e2eTapSuggestionID {
-            tapNicheSuggestionForE2E(promptID: suggestionID)
-        }
-
-        writeNicheDiscoveryDebugJSONIfNeeded()
-    }
-
     func runE2EInjectSequenceIfNeeded() {
         guard ClickyE2EConfiguration.isEnabled else { return }
-        guard let thirdTranscript = ClickyE2EConfiguration.injectTranscript3 else { return }
 
         Task {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
-            await injectTranscriptForE2E(thirdTranscript)
+
+            if let firstTranscript = ClickyE2EConfiguration.injectTranscript {
+                await injectTranscriptForE2E(firstTranscript)
+
+                if let secondTranscript = ClickyE2EConfiguration.injectTranscript2 {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    await injectTranscriptForE2E(secondTranscript)
+                }
+            } else if let thirdTranscript = ClickyE2EConfiguration.injectTranscript3 {
+                await injectTranscriptForE2E(thirdTranscript)
+            }
         }
     }
 
-    private func tapNicheSuggestionForE2E(promptID: String) {
-        guard let suggestion = nicheSuggestions.first(where: { $0.id == promptID }) else {
-            print("⚠️ E2E: no niche suggestion with id \(promptID)")
-            return
-        }
-        trackNicheSuggestionTapped(suggestion: suggestion)
-    }
-
-    private func writeNicheDiscoveryDebugJSONIfNeeded() {
+    func runE2EBootstrapActionsIfNeeded() {
         guard ClickyE2EConfiguration.isEnabled else { return }
-        guard let selectedUserNiche else { return }
 
-        let suggestions = nicheSuggestions
-        guard let firstSuggestion = suggestions.first else {
-            print("⚠️ E2E: no niche suggestions loaded for \(selectedUserNiche.rawValue)")
+        Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+
+            if let nicheRawValue = ClickyE2EConfiguration.selectNicheOnLaunch,
+               let userNiche = UserNiche(rawValue: nicheRawValue) {
+                nicheDiscoveryManager.selectUserNiche(userNiche)
+            }
+
+            if let simulatedBundleID = ClickyE2EConfiguration.simulateFrontmostBundleID {
+                nicheDiscoveryManager.setSimulatedFrontmostBundleIDForE2E(simulatedBundleID)
+            }
+
+            if let restoreSkillID = ClickyE2EConfiguration.restoreSkillID {
+                restoreTeachingSkill(id: restoreSkillID)
+            }
+
+            if let suggestionTapText = ClickyE2EConfiguration.injectSuggestionTapText {
+                nicheDiscoveryManager.handleSuggestionTapped(suggestionTapText)
+            }
+
+            writeE2EArtifactsIfNeeded()
+        }
+    }
+
+    func writeE2EArtifactsIfNeeded() {
+        guard ClickyE2EConfiguration.isEnabled else { return }
+
+        ClickyE2EConfiguration.writeSelectedNicheForE2E(nicheDiscoveryManager.selectedUserNiche.rawValue)
+        ClickyE2EConfiguration.writeLastSuggestionsForE2E(nicheDiscoveryManager.currentSuggestions)
+        ClickyE2EConfiguration.writeSkillsCountForE2E(teachingSkillStore.skills.count)
+        ClickyE2EConfiguration.writeSkillLibraryStateForE2E(teachingSkillStore.skills)
+    }
+
+    private func frontmostApplicationBundleId() -> String? {
+        NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+    }
+
+    private func bootstrapTeachingSkills() {
+        teachingSkillStore.loadSkills()
+        topicHistoryStore.load()
+        SkillCurator.curate(store: teachingSkillStore)
+        teachingSkills = teachingSkillStore.skills
+        runCuratorLLMPassesIfNeeded()
+    }
+
+    private func runCuratorLLMPassesIfNeeded() {
+        curatorLLMTask?.cancel()
+        curatorLLMTask = Task {
+            await SkillCurator.curateWithLLMPasses(store: teachingSkillStore, claudeAPI: claudeAPI)
+            teachingSkills = teachingSkillStore.skills
+        }
+    }
+
+    private func matchedSkills(for transcript: String) -> [TeachingSkill] {
+        let matches = SkillMatcher.matchSkills(
+            from: teachingSkillStore.skills,
+            bundleId: frontmostApplicationBundleId(),
+            transcript: transcript
+        )
+        return matches.map(\.skill)
+    }
+
+    private func recordSessionExchange(
+        transcript: String,
+        spokenResponse: String,
+        pointed: Bool
+    ) {
+        sessionTrace.append(
+            SessionTraceEntry(
+                timestamp: Date(),
+                userTranscript: transcript,
+                assistantResponse: spokenResponse,
+                bundleId: frontmostApplicationBundleId(),
+                pointed: pointed
+            )
+        )
+
+        if sessionTrace.count > 20 {
+            sessionTrace.removeFirst(sessionTrace.count - 20)
+        }
+
+        if !SkillTriggerEvaluator.isConfirmationTranscript(transcript) {
+            let topic = SkillTriggerEvaluator.deriveTopic(fromQuestion: transcript)
+            topicHistoryStore.recordTopic(
+                topic: topic,
+                bundleId: frontmostApplicationBundleId()
+            )
+        }
+    }
+
+    private func maybeWriteTeachingSkill(after transcript: String) {
+        guard isLearningFromSessionsEnabled else { return }
+        guard SkillTriggerEvaluator.isScreenTeachingSession(sessionTrace) else { return }
+        guard let trigger = SkillTriggerEvaluator.shouldWriteSkill(
+            sessionTrace: sessionTrace,
+            latestTranscript: transcript,
+            topicHistory: topicHistoryStore.entries
+        ) else {
             return
         }
 
-        let snapshot = ClickyE2EConfiguration.NicheDiscoveryE2ESnapshot(
-            selectedNiche: selectedUserNiche.rawValue,
-            suggestionCount: suggestions.count,
-            firstSuggestionId: firstSuggestion.id,
-            voicePromptClauseContains: e2eNicheClauseAssertionToken(for: selectedUserNiche),
-            suggestionContext: nicheSuggestionContextLabel,
-            isAppAware: nicheSuggestionContextLabel != nil
-        )
-        ClickyE2EConfiguration.writeNicheDiscoveryForE2E(snapshot)
-    }
+        lastSkillWriteTrigger = trigger.reason.rawValue
+        ClickyAnalytics.trackTeachingSkillWriteTriggered(reason: trigger.reason.rawValue, topic: trigger.topic)
 
-    private func e2eNicheClauseAssertionToken(for niche: NicheDiscoveryManager.Niche) -> String {
-        switch niche {
-        case .contentCreator: return "content creator"
-        case .developer: return "developer"
-        case .student: return "student"
-        case .designer: return "designer"
-        case .other: return "many apps"
+        let traceSnapshot = sessionTrace
+        let bundleId = frontmostApplicationBundleId()
+        skillWriteTask?.cancel()
+        skillWriteTask = Task {
+            do {
+                let existingSkill = SkillMatcher.findSimilarSkill(
+                    in: teachingSkillStore.skills,
+                    bundleId: bundleId,
+                    topic: trigger.topic
+                )
+
+                let synthesized = try await SkillSynthesizer.synthesizeSkillContent(
+                    sessionTrace: traceSnapshot,
+                    trigger: trigger,
+                    existingSkill: existingSkill,
+                    claudeAPI: claudeAPI
+                )
+
+                guard !Task.isCancelled else { return }
+
+                let metadata = SkillSynthesizer.buildSkillMetadata(
+                    sessionTrace: traceSnapshot,
+                    trigger: trigger,
+                    bundleId: bundleId
+                )
+
+                let skill = SkillSynthesizer.buildSkill(
+                    id: existingSkill?.id ?? metadata.id,
+                    name: synthesized.name,
+                    description: synthesized.description,
+                    body: synthesized.body,
+                    bundleId: bundleId,
+                    existingSkill: existingSkill
+                )
+
+                _ = try teachingSkillStore.saveSkill(skill)
+                SkillCurator.curate(store: teachingSkillStore)
+                teachingSkills = teachingSkillStore.skills
+                runCuratorLLMPassesIfNeeded()
+                topicHistoryStore.recordTopic(
+                    topic: trigger.topic,
+                    bundleId: bundleId,
+                    skillId: skill.id
+                )
+                sessionTrace.removeAll()
+
+                ClickyAnalytics.trackTeachingSkillSaved(
+                    skillID: skill.id,
+                    reason: trigger.reason.rawValue,
+                    updatedExisting: existingSkill != nil
+                )
+                writeE2EArtifactsIfNeeded()
+                print("📚 Saved teaching skill: \(skill.id)")
+            } catch {
+                print("⚠️ Failed to synthesize teaching skill: \(error)")
+            }
         }
     }
 
@@ -326,8 +433,7 @@ final class CompanionManager: ObservableObject {
     }
 
     func start() {
-        bootstrapNicheDiscovery()
-        startFrontmostAppObservation()
+        bootstrapTeachingSkills()
         refreshAllPermissions()
         print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
@@ -450,6 +556,8 @@ final class CompanionManager: ObservableObject {
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
+        skillWriteTask?.cancel()
+        skillWriteTask = nil
         shortcutTransitionCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
@@ -769,8 +877,29 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                let systemPrompt = buildVoiceResponseSystemPrompt()
+                let matchedTeachingSkills = matchedSkills(for: transcript)
+                lastMatchedSkillNames = matchedTeachingSkills.map(\.name)
+                let systemPrompt = TeachingPromptBuilder.buildVoiceResponsePrompt(
+                    basePrompt: Self.companionVoiceResponseSystemPrompt,
+                    matchedSkills: matchedTeachingSkills
+                )
+                lastSystemPrompt = systemPrompt
                 ClickyE2EConfiguration.writeLastSystemPromptForE2E(systemPrompt)
+
+                for skill in matchedTeachingSkills {
+                    _ = try? teachingSkillStore.markUsed(skill)
+                }
+                teachingSkills = teachingSkillStore.skills
+
+                if !matchedTeachingSkills.isEmpty {
+                    ClickyAnalytics.trackTeachingSkillsMatched(
+                        skillIDs: matchedTeachingSkills.map(\.id),
+                        bundleID: frontmostApplicationBundleId()
+                    )
+                    ClickyE2EConfiguration.writeLastMatchedSkillIDForE2E(matchedTeachingSkills.first?.id)
+                } else {
+                    ClickyE2EConfiguration.writeLastMatchedSkillIDForE2E(nil)
+                }
 
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
@@ -856,6 +985,13 @@ final class CompanionManager: ObservableObject {
                 }
 
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")
+
+                recordSessionExchange(
+                    transcript: transcript,
+                    spokenResponse: spokenText,
+                    pointed: hasPointCoordinate
+                )
+                maybeWriteTeachingSkill(after: transcript)
 
                 ClickyAnalytics.trackAIResponseReceived(response: spokenText)
 

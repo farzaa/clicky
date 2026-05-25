@@ -2,134 +2,191 @@
 //  NicheDiscoveryManager.swift
 //  leanring-buddy
 //
-//  Loads niche-specific example prompts from bundled JSON and persists the
-//  user's selected niche in UserDefaults.
+//  Loads niche suggestion packs and swaps examples based on user niche and frontmost app.
 //
 
+import AppKit
+import Combine
 import Foundation
 
-struct NicheSuggestion: Identifiable, Equatable, Codable {
-    let id: String
-    let prompt: String
-}
+@MainActor
+final class NicheDiscoveryManager: ObservableObject {
+    static let selectedUserNicheDefaultsKey = "selectedUserNiche"
+    static let hasSelectedUserNicheDefaultsKey = "hasSelectedUserNiche"
 
-struct NicheSuggestionsFile: Codable {
-    let suggestions: [NicheSuggestion]
-}
+    @Published private(set) var currentSuggestions: [String] = []
+    @Published private(set) var frontmostApplicationBundleID: String?
 
-final class NicheDiscoveryManager {
-    static let selectedUserNicheUserDefaultsKey = "selectedUserNiche"
+    private var simulatedFrontmostBundleIDForE2E: String?
+    private var bundledExamples: [String: NicheSuggestionPack] = [:]
+    private var bundledAppSuggestions: [String: NicheSuggestionPack] = [:]
+    private var workspaceActivationObserver: NSObjectProtocol?
 
-    enum Niche: String, CaseIterable, Identifiable, Codable {
-        case contentCreator = "content-creator"
-        case developer
-        case student
-        case designer
-        case other
-
-        var id: String { rawValue }
-
-        var displayName: String {
-            switch self {
-            case .contentCreator: return "Creator"
-            case .developer: return "Developer"
-            case .student: return "Student"
-            case .designer: return "Designer"
-            case .other: return "Other"
-            }
+    var selectedUserNiche: UserNiche {
+        get {
+            guard hasSelectedUserNiche else { return .general }
+            let rawValue = UserDefaults.standard.string(forKey: Self.selectedUserNicheDefaultsKey) ?? UserNiche.general.rawValue
+            return UserNiche(rawValue: rawValue) ?? .general
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: Self.selectedUserNicheDefaultsKey)
+            UserDefaults.standard.set(true, forKey: Self.hasSelectedUserNicheDefaultsKey)
+            refreshCurrentSuggestions()
         }
     }
 
-    private let bundle: Bundle
-    private let userDefaults: UserDefaults
-    private var cachedSuggestionsByNiche: [Niche: [NicheSuggestion]] = [:]
-
-    init(bundle: Bundle = .main, userDefaults: UserDefaults = .standard) {
-        self.bundle = bundle
-        self.userDefaults = userDefaults
+    var hasSelectedUserNiche: Bool {
+        UserDefaults.standard.bool(forKey: Self.hasSelectedUserNicheDefaultsKey)
     }
 
-    var selectedNiche: Niche? {
-        guard let rawValue = userDefaults.string(forKey: Self.selectedUserNicheUserDefaultsKey) else {
-            return nil
+    init() {
+        loadBundledExamples()
+        startObservingFrontmostApplication()
+        refreshCurrentSuggestions()
+    }
+
+    deinit {
+        if let workspaceActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(workspaceActivationObserver)
         }
-        return Niche(rawValue: rawValue)
     }
 
-    func setNiche(_ niche: Niche) {
-        userDefaults.set(niche.rawValue, forKey: Self.selectedUserNicheUserDefaultsKey)
-    }
-
-    func suggestions(for niche: Niche) -> [NicheSuggestion] {
-        if let cached = cachedSuggestionsByNiche[niche] {
-            return cached
+    func selectUserNiche(_ userNiche: UserNiche) {
+        selectedUserNiche = userNiche
+        ClickyAnalytics.trackNicheSelected(niche: userNiche.rawValue)
+        if ClickyE2EConfiguration.isEnabled {
+            ClickyE2EConfiguration.writeSelectedNicheForE2E(userNiche.rawValue)
         }
-
-        let loaded = loadSuggestionsFromBundle(for: niche)
-        cachedSuggestionsByNiche[niche] = loaded
-        return loaded
     }
 
-    func suggestions(for niche: Niche, frontmostBundleId: String?) -> [NicheSuggestion] {
-        if let frontmostBundleId,
-           let appSpecificSuggestions = NicheAppSuggestionMapping.appSpecificSuggestions(
-               bundleId: frontmostBundleId,
-               selectedNiche: niche
-           ) {
-            return appSpecificSuggestions
-        }
-        return suggestions(for: niche)
+    func skipNicheSelection() {
+        selectUserNiche(.general)
     }
 
-    func contextLabel(for niche: Niche, frontmostBundleId: String?) -> String? {
-        guard let frontmostBundleId else { return nil }
-        return NicheAppSuggestionMapping.contextLabel(
-            bundleId: frontmostBundleId,
-            selectedNiche: niche
+    func handleSuggestionTapped(_ suggestion: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(suggestion, forType: .string)
+        ClickyAnalytics.trackNicheSuggestionTapped(
+            suggestion: suggestion,
+            niche: selectedUserNiche.rawValue,
+            bundleID: effectiveFrontmostApplicationBundleID
         )
     }
 
-    func suggestionsForCurrentNiche(frontmostBundleId: String? = nil) -> [NicheSuggestion] {
-        guard let selectedNiche else { return [] }
-        return suggestions(for: selectedNiche, frontmostBundleId: frontmostBundleId)
+    func setSimulatedFrontmostBundleIDForE2E(_ bundleID: String?) {
+        simulatedFrontmostBundleIDForE2E = bundleID
+        refreshCurrentSuggestions()
     }
 
-    /// Short clause appended to the voice system prompt when a niche is set.
-    func voiceSystemPromptClause(for niche: Niche) -> String {
-        switch niche {
-        case .contentCreator:
-            return "the user is a content creator. prioritize help with video editing, captions, exports, color, and timeline navigation on screen. point at specific ui when teaching workflows."
-        case .developer:
-            return "the user is a developer. prioritize help with code editors, terminals, git, builds, and debugging on screen. point at specific ui when teaching workflows."
-        case .student:
-            return "the user is a student. prioritize help with assignments, notes, research, and study apps on screen. point at specific ui when teaching workflows."
-        case .designer:
-            return "the user is a designer. prioritize help with design tools, layers, assets, and export settings on screen. point at specific ui when teaching workflows."
-        case .other:
-            return "the user works across many apps. prioritize concrete on-screen guidance and pointing when it helps them complete a task."
+    var effectiveFrontmostApplicationBundleID: String? {
+        if let simulatedFrontmostBundleIDForE2E {
+            return simulatedFrontmostBundleIDForE2E
+        }
+        return frontmostApplicationBundleID
+    }
+
+    func refreshCurrentSuggestions() {
+        let suggestions = resolveSuggestions(
+            forNiche: selectedUserNiche,
+            bundleID: effectiveFrontmostApplicationBundleID
+        )
+        currentSuggestions = Array(suggestions.prefix(5))
+
+        if ClickyE2EConfiguration.isEnabled {
+            ClickyE2EConfiguration.writeLastSuggestionsForE2E(currentSuggestions)
+            ClickyE2EConfiguration.writeSelectedNicheForE2E(selectedUserNiche.rawValue)
         }
     }
 
-    private func loadSuggestionsFromBundle(for niche: Niche) -> [NicheSuggestion] {
-        // Xcode may copy `Resources/niches/*.json` flat into the bundle root.
-        let fileURL = bundle.url(
-            forResource: niche.rawValue,
-            withExtension: "json",
-            subdirectory: "niches"
-        ) ?? bundle.url(forResource: niche.rawValue, withExtension: "json")
+    private struct NicheSuggestionPack: Decodable {
+        let suggestions: [String]
+    }
 
-        guard let fileURL else {
-            print("⚠️ NicheDiscovery: missing bundled examples for \(niche.rawValue)")
-            return []
+    private struct BundledNicheExamples: Decodable {
+        let general: NicheSuggestionPack?
+        let contentCreator: NicheSuggestionPack?
+        let developer: NicheSuggestionPack?
+        let student: NicheSuggestionPack?
+        let designer: NicheSuggestionPack?
+        let appSuggestions: [String: NicheSuggestionPack]?
+    }
+
+    private func loadBundledExamples() {
+        guard let url = Bundle.main.url(forResource: "niche-examples", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let decoded = try? JSONDecoder().decode(BundledNicheExamples.self, from: data) else {
+            bundledExamples = [:]
+            bundledAppSuggestions = [:]
+            return
         }
 
-        do {
-            let data = try Data(contentsOf: fileURL)
-            let decoded = try JSONDecoder().decode(NicheSuggestionsFile.self, from: data)
-            return decoded.suggestions
-        } catch {
-            print("⚠️ NicheDiscovery: failed to load \(niche.rawValue).json: \(error)")
-            return []
+        var loadedExamples: [String: NicheSuggestionPack] = [:]
+        if let general = decoded.general { loadedExamples[UserNiche.general.jsonKey] = general }
+        if let contentCreator = decoded.contentCreator { loadedExamples[UserNiche.contentCreator.jsonKey] = contentCreator }
+        if let developer = decoded.developer { loadedExamples[UserNiche.developer.jsonKey] = developer }
+        if let student = decoded.student { loadedExamples[UserNiche.student.jsonKey] = student }
+        if let designer = decoded.designer { loadedExamples[UserNiche.designer.jsonKey] = designer }
+        bundledExamples = loadedExamples
+        bundledAppSuggestions = decoded.appSuggestions ?? [:]
+    }
+
+    private func resolveSuggestions(forNiche userNiche: UserNiche, bundleID: String?) -> [String] {
+        if let bundleID,
+           let localAppSuggestions = loadLocalOverrideSuggestions(forNiche: userNiche, bundleID: bundleID),
+           !localAppSuggestions.isEmpty {
+            return localAppSuggestions
+        }
+
+        if let bundleID,
+           let appSuggestions = bundledAppSuggestions[bundleID]?.suggestions,
+           !appSuggestions.isEmpty {
+            return appSuggestions
+        }
+
+        if let localNicheSuggestions = loadLocalOverrideSuggestions(forNiche: userNiche, bundleID: nil),
+           !localNicheSuggestions.isEmpty {
+            return localNicheSuggestions
+        }
+
+        return bundledExamples[userNiche.jsonKey]?.suggestions
+            ?? bundledExamples[UserNiche.general.jsonKey]?.suggestions
+            ?? []
+    }
+
+    private func loadLocalOverrideSuggestions(forNiche userNiche: UserNiche, bundleID: String?) -> [String]? {
+        let nicheDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".clicky/niches/\(userNiche.jsonKey)", isDirectory: true)
+
+        let overrideFileName = bundleID == nil ? "examples.json" : "app-\(bundleID!.replacingOccurrences(of: ".", with: "-")).json"
+        let overrideURL = nicheDirectory.appendingPathComponent(overrideFileName)
+
+        guard let data = try? Data(contentsOf: overrideURL),
+              let decoded = try? JSONDecoder().decode(NicheSuggestionPack.self, from: data) else {
+            if bundleID != nil {
+                let fallbackURL = nicheDirectory.appendingPathComponent("examples.json")
+                if let data = try? Data(contentsOf: fallbackURL),
+                   let decoded = try? JSONDecoder().decode(NicheSuggestionPack.self, from: data) {
+                    return decoded.suggestions
+                }
+            }
+            return nil
+        }
+
+        return decoded.suggestions
+    }
+
+    private func startObservingFrontmostApplication() {
+        frontmostApplicationBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+
+        workspaceActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self else { return }
+            let activatedApplication = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            self.frontmostApplicationBundleID = activatedApplication?.bundleIdentifier
+            self.refreshCurrentSuggestions()
         }
     }
 }

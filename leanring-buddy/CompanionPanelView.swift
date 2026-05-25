@@ -8,15 +8,27 @@
 //
 
 import AVFoundation
-import AppKit
 import SwiftUI
 
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
-    @State private var nicheSuggestionHintMessage: String?
+    @State private var isShowingTeachingSkillsLibrary = false
+    @State private var copiedSuggestionText: String?
 
     var body: some View {
+        if isShowingTeachingSkillsLibrary {
+            TeachingSkillsLibraryView(companionManager: companionManager) {
+                isShowingTeachingSkillsLibrary = false
+            }
+            .frame(width: 320)
+            .background(panelBackground)
+        } else {
+            mainPanelContent
+        }
+    }
+
+    private var mainPanelContent: some View {
         VStack(alignment: .leading, spacing: 0) {
             panelHeader
             Divider()
@@ -27,11 +39,11 @@ struct CompanionPanelView: View {
                 .padding(.top, 16)
                 .padding(.horizontal, 16)
 
-            if companionManager.allPermissionsGranted {
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
                 Spacer()
                     .frame(height: 12)
 
-                nicheDiscoverySection
+                teachingSkillsSection
                     .padding(.horizontal, 16)
             }
 
@@ -55,7 +67,20 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 16)
 
-                startButton
+                if !companionManager.nicheDiscoveryManager.hasSelectedUserNiche {
+                    nichePickerSection
+                        .padding(.horizontal, 16)
+                } else {
+                    startButton
+                        .padding(.horizontal, 16)
+                }
+            }
+
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 12)
+
+                nicheSuggestionsSection
                     .padding(.horizontal, 16)
             }
 
@@ -608,113 +633,191 @@ struct CompanionPanelView: View {
 
     // MARK: - Niche Discovery
 
-    private var nicheDiscoverySection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("What do you use Clicky for?")
-                .font(.system(size: 13, weight: .medium))
+    private var nichePickerSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("What do you mostly use Clicky for?")
+                .font(.system(size: 12, weight: .medium))
                 .foregroundColor(DS.Colors.textSecondary)
 
-            Text("Hold Control+Option, ask out loud, and Clicky will look at your screen and point.")
-                .font(.system(size: 10))
-                .foregroundColor(DS.Colors.textTertiary)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(spacing: 6) {
+                ForEach(UserNiche.allCases.filter { $0 != .general }) { userNiche in
+                    Button(action: {
+                        companionManager.nicheDiscoveryManager.selectUserNiche(userNiche)
+                    }) {
+                        Text(userNiche.displayName)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(DS.Colors.textSecondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                                    .fill(Color.white.opacity(0.06))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                    .accessibilityIdentifier("clicky.panel.niche.\(userNiche.rawValue)")
+                }
+            }
 
-            nichePickerChips
-
-            if let selectedNiche = companionManager.selectedUserNiche {
-                Text(companionManager.nicheSuggestionContextLabel ?? "Try saying one of these:")
+            Button(action: {
+                companionManager.nicheDiscoveryManager.skipNicheSelection()
+            }) {
+                Text("Skip — show general examples")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(DS.Colors.textTertiary)
-                    .padding(.top, 2)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .accessibilityIdentifier("clicky.panel.niche.skip")
+        }
+        .accessibilityIdentifier("clicky.panel.niche.section")
+    }
 
-                ForEach(companionManager.nicheSuggestions) { suggestion in
-                    nicheSuggestionCard(suggestion)
-                }
+    private var nicheSuggestionsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Try asking")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
 
-                if let nicheSuggestionHintMessage {
-                    Text(nicheSuggestionHintMessage)
+                Spacer()
+
+                if let copiedSuggestionText {
+                    Text("Copied!")
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(DS.Colors.accent)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .foregroundColor(DS.Colors.success)
+                        .transition(.opacity)
+                        .onAppear {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                if self.copiedSuggestionText == copiedSuggestionText {
+                                    self.copiedSuggestionText = nil
+                                }
+                            }
+                        }
                 }
+            }
+
+            Text("Tap to copy — then hold Control+Option and say it.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+
+            ForEach(Array(companionManager.nicheDiscoveryManager.currentSuggestions.enumerated()), id: \.offset) { suggestionIndex, suggestion in
+                Button(action: {
+                    companionManager.nicheDiscoveryManager.handleSuggestionTapped(suggestion)
+                    copiedSuggestionText = suggestion
+                }) {
+                    Text(suggestion)
+                        .font(.system(size: 11))
+                        .foregroundColor(DS.Colors.textSecondary)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                                .fill(Color.white.opacity(0.06))
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .accessibilityIdentifier("clicky.panel.suggestion.\(suggestionIndex)")
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityIdentifier("clicky.panel.suggestions.section")
+    }
+
+    // MARK: - Teaching Skills
+
+    private var teachingSkillsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Teaching Skills")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                Toggle("", isOn: Binding(
+                    get: { companionManager.isLearningFromSessionsEnabled },
+                    set: { companionManager.setLearningFromSessionsEnabled($0) }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .tint(DS.Colors.accent)
+                .scaleEffect(0.8)
+                .accessibilityIdentifier("clicky.panel.teaching-skills.learn-toggle")
+            }
+
+            Text(companionManager.isLearningFromSessionsEnabled
+                 ? "Clicky learns from successful tutoring sessions."
+                 : "Learning paused — saved skills still apply.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+
+            if companionManager.teachingSkills.isEmpty {
+                Text("No skills yet. Teach Clicky something on screen and confirm it worked.")
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(companionManager.teachingSkills.prefix(4)) { skill in
+                    teachingSkillRow(skill)
+                }
+
+                Button(action: {
+                    isShowingTeachingSkillsLibrary = true
+                }) {
+                    Text("View all")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.accent)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .accessibilityIdentifier("clicky.panel.teaching-skills.view-all")
             }
         }
         .padding(.vertical, 4)
     }
 
-    private var nichePickerChips: some View {
-        LazyVGrid(
-            columns: [GridItem(.adaptive(minimum: 72), spacing: 6)],
-            alignment: .leading,
-            spacing: 6
-        ) {
-            ForEach(NicheDiscoveryManager.Niche.allCases) { niche in
-                nicheChipButton(niche)
-            }
-        }
-    }
-
-    private func nicheChipButton(_ niche: NicheDiscoveryManager.Niche) -> some View {
-        let isSelected = companionManager.selectedUserNiche == niche
-        return Button(action: {
-            companionManager.setUserNiche(niche)
-            nicheSuggestionHintMessage = nil
-        }) {
-            Text(niche.displayName)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(isSelected ? Color.white.opacity(0.12) : Color.white.opacity(0.05))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(isSelected ? DS.Colors.accent.opacity(0.5) : DS.Colors.borderSubtle, lineWidth: 0.5)
-                )
-        }
-        .buttonStyle(.plain)
-        .pointerCursor()
-    }
-
-    private func nicheSuggestionCard(_ suggestion: NicheSuggestion) -> some View {
-        Button(action: {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(suggestion.prompt, forType: .string)
-            companionManager.trackNicheSuggestionTapped(suggestion: suggestion)
-            nicheSuggestionHintMessage = "Copied — hold Control+Option and say this while looking at your screen."
-        }) {
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "mic.fill")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(DS.Colors.accent)
-                    .padding(.top, 2)
-
-                Text(suggestion.prompt)
-                    .font(.system(size: 11))
+    private func teachingSkillRow(_ skill: TeachingSkill) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(skill.name)
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(DS.Colors.textSecondary)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(1)
 
-                Spacer(minLength: 0)
-
-                Image(systemName: "doc.on.doc")
-                    .font(.system(size: 10, weight: .medium))
+                Text("\(skill.usageCount) uses • \(skill.status.rawValue)")
+                    .font(.system(size: 10))
                     .foregroundColor(DS.Colors.textTertiary)
             }
-            .padding(10)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.white.opacity(0.04))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-            )
+
+            Spacer()
+
+            Button(action: {
+                companionManager.setTeachingSkillPinned(id: skill.id, pinned: !skill.isPinned)
+            }) {
+                Image(systemName: skill.isPinned ? "pin.fill" : "pin")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(skill.isPinned ? DS.Colors.accent : DS.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+
+            Button(action: {
+                companionManager.deleteTeachingSkill(id: skill.id)
+            }) {
+                Image(systemName: "trash")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
         }
-        .buttonStyle(.plain)
-        .pointerCursor()
+        .padding(.vertical, 4)
     }
 
     // MARK: - Model Picker

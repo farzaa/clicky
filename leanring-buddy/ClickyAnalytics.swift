@@ -119,6 +119,50 @@ enum ClickyAnalytics {
         ])
     }
 
+    // MARK: - Teaching Skills
+
+    static func trackTeachingSkillsMatched(skillIDs: [String], bundleID: String?) {
+        PostHogSDK.shared.capture("teaching_skills_matched", properties: [
+            "skill_ids": skillIDs,
+            "bundle_id": bundleID ?? "unknown",
+            "count": skillIDs.count
+        ])
+    }
+
+    static func trackTeachingSkillWriteTriggered(reason: String, topic: String) {
+        PostHogSDK.shared.capture("teaching_skill_write_triggered", properties: [
+            "reason": reason,
+            "topic": topic
+        ])
+    }
+
+    static func trackTeachingSkillSaved(skillID: String, reason: String, updatedExisting: Bool) {
+        PostHogSDK.shared.capture("teaching_skill_saved", properties: [
+            "skill_id": skillID,
+            "reason": reason,
+            "updated_existing": updatedExisting
+        ])
+    }
+
+    static func trackTeachingSkillDeleted(skillID: String) {
+        PostHogSDK.shared.capture("teaching_skill_deleted", properties: [
+            "skill_id": skillID
+        ])
+    }
+
+    static func trackTeachingSkillMerged(primarySkillID: String, duplicateSkillID: String) {
+        PostHogSDK.shared.capture("teaching_skill_merged", properties: [
+            "primary_skill_id": primarySkillID,
+            "duplicate_skill_id": duplicateSkillID
+        ])
+    }
+
+    static func trackTeachingSkillPatched(skillID: String) {
+        PostHogSDK.shared.capture("teaching_skill_patched", properties: [
+            "skill_id": skillID
+        ])
+    }
+
     // MARK: - Niche Discovery
 
     static func trackNicheSelected(niche: String) {
@@ -127,10 +171,11 @@ enum ClickyAnalytics {
         ])
     }
 
-    static func trackSuggestionTapped(niche: String, promptID: String) {
-        PostHogSDK.shared.capture("suggestion_tapped", properties: [
+    static func trackNicheSuggestionTapped(suggestion: String, niche: String, bundleID: String?) {
+        PostHogSDK.shared.capture("niche_suggestion_tapped", properties: [
+            "suggestion": suggestion,
             "niche": niche,
-            "prompt_id": promptID
+            "bundle_id": bundleID ?? "unknown"
         ])
     }
 }

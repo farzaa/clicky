@@ -288,4 +288,51 @@ class ClaudeAPI {
         let duration = Date().timeIntervalSince(startTime)
         return (text: text, duration: duration)
     }
+
+    /// Sends a text-only request to Claude. Used for skill synthesis and other
+    /// non-vision tasks that still route through the worker proxy.
+    func sendTextMessage(
+        systemPrompt: String,
+        userPrompt: String,
+        maxTokens: Int = 1024
+    ) async throws -> (text: String, duration: TimeInterval) {
+        let startTime = Date()
+
+        var request = makeAPIRequest()
+        let body: [String: Any] = [
+            "model": model,
+            "max_tokens": maxTokens,
+            "system": systemPrompt,
+            "messages": [
+                ["role": "user", "content": userPrompt]
+            ]
+        ]
+
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            let responseString = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw NSError(
+                domain: "ClaudeAPI",
+                code: (response as? HTTPURLResponse)?.statusCode ?? -1,
+                userInfo: [NSLocalizedDescriptionKey: "API Error: \(responseString)"]
+            )
+        }
+
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let content = json?["content"] as? [[String: Any]],
+              let textBlock = content.first(where: { ($0["type"] as? String) == "text" }),
+              let text = textBlock["text"] as? String else {
+            throw NSError(
+                domain: "ClaudeAPI",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid response format"]
+            )
+        }
+
+        let duration = Date().timeIntervalSince(startTime)
+        return (text: text, duration: duration)
+    }
 }
