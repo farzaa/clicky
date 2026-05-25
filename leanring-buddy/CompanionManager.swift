@@ -76,6 +76,7 @@ final class CompanionManager: ObservableObject {
     }
 
     private let teachingSkillStore = TeachingSkillStore()
+    private let topicHistoryStore = TeachingTopicHistoryStore()
     private var sessionTrace: [SessionTraceEntry] = []
     private var skillWriteTask: Task<Void, Never>?
 
@@ -169,18 +170,20 @@ final class CompanionManager: ObservableObject {
     }
 
     func runE2EInjectSequenceIfNeeded() {
-        guard ClickyE2EConfiguration.isEnabled,
-              let firstTranscript = ClickyE2EConfiguration.injectTranscript else {
-            return
-        }
+        guard ClickyE2EConfiguration.isEnabled else { return }
 
         Task {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
-            await injectTranscriptForE2E(firstTranscript)
 
-            if let secondTranscript = ClickyE2EConfiguration.injectTranscript2 {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                await injectTranscriptForE2E(secondTranscript)
+            if let firstTranscript = ClickyE2EConfiguration.injectTranscript {
+                await injectTranscriptForE2E(firstTranscript)
+
+                if let secondTranscript = ClickyE2EConfiguration.injectTranscript2 {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    await injectTranscriptForE2E(secondTranscript)
+                }
+            } else if let thirdTranscript = ClickyE2EConfiguration.injectTranscript3 {
+                await injectTranscriptForE2E(thirdTranscript)
             }
         }
     }
@@ -191,6 +194,7 @@ final class CompanionManager: ObservableObject {
 
     private func bootstrapTeachingSkills() {
         teachingSkillStore.loadSkills()
+        topicHistoryStore.load()
         SkillCurator.curate(store: teachingSkillStore)
         teachingSkills = teachingSkillStore.skills
     }
@@ -222,6 +226,14 @@ final class CompanionManager: ObservableObject {
         if sessionTrace.count > 20 {
             sessionTrace.removeFirst(sessionTrace.count - 20)
         }
+
+        if !SkillTriggerEvaluator.isConfirmationTranscript(transcript) {
+            let topic = SkillTriggerEvaluator.deriveTopic(fromQuestion: transcript)
+            topicHistoryStore.recordTopic(
+                topic: topic,
+                bundleId: frontmostApplicationBundleId()
+            )
+        }
     }
 
     private func maybeWriteTeachingSkill(after transcript: String) {
@@ -229,7 +241,8 @@ final class CompanionManager: ObservableObject {
         guard SkillTriggerEvaluator.isScreenTeachingSession(sessionTrace) else { return }
         guard let trigger = SkillTriggerEvaluator.shouldWriteSkill(
             sessionTrace: sessionTrace,
-            latestTranscript: transcript
+            latestTranscript: transcript,
+            topicHistory: topicHistoryStore.entries
         ) else {
             return
         }
@@ -257,8 +270,14 @@ final class CompanionManager: ObservableObject {
 
                 guard !Task.isCancelled else { return }
 
+                let metadata = SkillSynthesizer.buildSkillMetadata(
+                    sessionTrace: traceSnapshot,
+                    trigger: trigger,
+                    bundleId: bundleId
+                )
+
                 let skill = SkillSynthesizer.buildSkill(
-                    id: existingSkill?.id,
+                    id: existingSkill?.id ?? metadata.id,
                     name: synthesized.name,
                     description: synthesized.description,
                     body: synthesized.body,
@@ -269,6 +288,11 @@ final class CompanionManager: ObservableObject {
                 _ = try teachingSkillStore.saveSkill(skill)
                 SkillCurator.curate(store: teachingSkillStore)
                 teachingSkills = teachingSkillStore.skills
+                topicHistoryStore.recordTopic(
+                    topic: trigger.topic,
+                    bundleId: bundleId,
+                    skillId: skill.id
+                )
                 sessionTrace.removeAll()
 
                 ClickyAnalytics.trackTeachingSkillSaved(
@@ -797,6 +821,7 @@ final class CompanionManager: ObservableObject {
                     matchedSkills: matchedTeachingSkills
                 )
                 lastSystemPrompt = systemPrompt
+                ClickyE2EConfiguration.writeLastSystemPromptForE2E(systemPrompt)
 
                 for skill in matchedTeachingSkills {
                     _ = try? teachingSkillStore.markUsed(skill)

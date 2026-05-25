@@ -24,6 +24,23 @@ struct TeachingSkill: Identifiable, Equatable {
     var isPinned: Bool
     var body: String
 
+    struct Metadata: Equatable {
+        let id: String
+        let name: String
+        let description: String
+    }
+
+    private static let knownAppNames: [String: String] = [
+        "com.apple.TextEdit": "TextEdit",
+        "com.apple.dt.Xcode": "Xcode",
+        "com.apple.finder": "Finder",
+        "com.apple.Safari": "Safari",
+        "com.apple.mail": "Mail",
+        "com.apple.Notes": "Notes",
+        "com.apple.systempreferences": "System Settings",
+        "com.apple.Preview": "Preview"
+    ]
+
     var folderURL: URL {
         TeachingSkillStore.skillsRootURL.appendingPathComponent(id, isDirectory: true)
     }
@@ -77,6 +94,87 @@ struct TeachingSkill: Identifiable, Equatable {
             .replacingOccurrences(of: "-+", with: "-", options: .regularExpression)
             .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         return collapsed.isEmpty ? "teaching-skill" : collapsed
+    }
+
+    static func displayName(forBundleId bundleId: String?) -> String? {
+        guard let bundleId else { return nil }
+        if let knownName = knownAppNames[bundleId] {
+            return knownName
+        }
+        guard let lastComponent = bundleId.split(separator: ".").last else { return nil }
+        return String(lastComponent)
+    }
+
+    static func buildMetadata(primaryQuestion: String, bundleId: String?) -> Metadata {
+        let actionTokens = SkillMatcher.meaningfulTokens(primaryQuestion)
+        let primaryActionToken = actionTokens.first ?? "task"
+        let appName = displayName(forBundleId: bundleId)
+        let appSlug = appName.map { slug(from: $0) }
+
+        let skillID: String
+        let skillName: String
+        if let appName, let appSlug {
+            skillID = "teach-\(appSlug)-\(slug(from: primaryActionToken))"
+            skillName = "\(capitalizeWord(primaryActionToken)) in \(appName)"
+        } else {
+            let actionPhrase = actionTokens.prefix(3).joined(separator: " ")
+            skillID = "teach-\(slug(from: actionPhrase.isEmpty ? primaryActionToken : actionPhrase))"
+            skillName = capitalizeWords(actionPhrase.isEmpty ? primaryActionToken : actionPhrase)
+        }
+
+        let skillDescription = descriptionFromQuestion(primaryQuestion)
+        return Metadata(id: skillID, name: skillName, description: skillDescription)
+    }
+
+    private static func descriptionFromQuestion(_ question: String) -> String {
+        var cleanedQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleanedQuestion.hasSuffix("?") {
+            cleanedQuestion.removeLast()
+        }
+
+        let loweredQuestion = cleanedQuestion.lowercased()
+        let questionPrefixes = [
+            "how do i ",
+            "how can i ",
+            "how to ",
+            "what is the way to ",
+            "what is ",
+            "where do i ",
+            "where is ",
+            "where can i "
+        ]
+
+        for prefix in questionPrefixes where loweredQuestion.hasPrefix(prefix) {
+            cleanedQuestion = String(cleanedQuestion.dropFirst(prefix.count))
+            break
+        }
+
+        let meaningfulTokens = SkillMatcher.meaningfulTokens(cleanedQuestion)
+        if !meaningfulTokens.isEmpty {
+            return "Walk the user through \(meaningfulTokens.joined(separator: " "))"
+        }
+
+        cleanedQuestion = cleanedQuestion
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "  ", with: " ")
+
+        if cleanedQuestion.isEmpty {
+            return "Walk the user through this task"
+        }
+
+        return "Walk the user through \(cleanedQuestion)"
+    }
+
+    private static func capitalizeWord(_ word: String) -> String {
+        guard let firstCharacter = word.first else { return word }
+        return String(firstCharacter).uppercased() + word.dropFirst()
+    }
+
+    private static func capitalizeWords(_ phrase: String) -> String {
+        phrase
+            .split(separator: " ")
+            .map { capitalizeWord(String($0)) }
+            .joined(separator: " ")
     }
 
     static func parse(id: String, markdown: String) -> TeachingSkill? {

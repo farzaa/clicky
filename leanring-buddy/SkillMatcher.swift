@@ -13,6 +13,17 @@ struct SkillMatch: Equatable {
 }
 
 enum SkillMatcher {
+    static let topicStopwords: Set<String> = [
+        "how", "do", "does", "did", "can", "could", "would", "should", "what", "where", "when", "why", "which",
+        "the", "this", "that", "these", "those", "a", "an", "my", "your", "me", "you", "and", "or", "but",
+        "is", "are", "was", "were", "be", "been", "being", "to", "in", "on", "at", "for", "of", "with", "from",
+        "please", "help", "show", "tell", "explain", "use", "using", "got", "thanks", "thank", "worked", "perfect"
+    ]
+
+    static func meaningfulTokens(_ text: String) -> [String] {
+        tokenize(text).filter { !topicStopwords.contains($0) }
+    }
+
     static func matchSkills(
         from skills: [TeachingSkill],
         bundleId: String?,

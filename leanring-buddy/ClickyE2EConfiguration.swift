@@ -24,12 +24,29 @@ enum ClickyE2EConfiguration {
         argumentValue(for: "-CLICKY_INJECT_TRANSCRIPT_2=")
     }
 
+    static var injectTranscript3: String? {
+        argumentValue(for: "-CLICKY_INJECT_TRANSCRIPT_3=")
+    }
+
+    static var lastSystemPromptFileURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".clicky/e2e-last-system-prompt.txt")
+    }
+
     static func applyLaunchOverrides() {
         guard isEnabled else { return }
 
         UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding")
         UserDefaults.standard.set(true, forKey: "hasSubmittedEmail")
         UserDefaults.standard.set(true, forKey: "isClickyCursorEnabled")
+    }
+
+    static func writeLastSystemPromptForE2E(_ systemPrompt: String) {
+        guard isEnabled else { return }
+
+        let directory = lastSystemPromptFileURL.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? systemPrompt.write(to: lastSystemPromptFileURL, atomically: true, encoding: .utf8)
     }
 
     private static func argumentValue(for prefix: String) -> String? {

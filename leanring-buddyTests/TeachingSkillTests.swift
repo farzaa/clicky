@@ -37,8 +37,8 @@ struct TeachingSkillTests {
     @Test func matchesSkillsByBundleAndKeywords() {
         let skill = TeachingSkill(
             id: "teach-textedit-save",
-            name: "teach-textedit-save",
-            description: "Save a document in TextEdit",
+            name: "Save in TextEdit",
+            description: "Walk the user through saving a document",
             bundleIds: ["com.apple.TextEdit"],
             status: .active,
             lastUsed: Date(),
@@ -76,11 +76,105 @@ struct TeachingSkillTests {
         #expect(trigger?.reason == .userConfirmed)
     }
 
+    @Test func topicIgnoresConfirmationPhrase() {
+        let trace = [
+            SessionTraceEntry(
+                timestamp: Date(),
+                userTranscript: "how do I save this document?",
+                assistantResponse: "click file then save",
+                bundleId: "com.apple.TextEdit",
+                pointed: true
+            ),
+            SessionTraceEntry(
+                timestamp: Date(),
+                userTranscript: "got it thanks that worked",
+                assistantResponse: "great",
+                bundleId: "com.apple.TextEdit",
+                pointed: false
+            )
+        ]
+
+        let topic = SkillTriggerEvaluator.deriveTopic(from: trace)
+        #expect(topic == "save document")
+        #expect(SkillTriggerEvaluator.primaryTeachingQuestion(from: trace) == "how do I save this document?")
+    }
+
+    @Test func slugAndNameAreCleanForSaveQuestionWithConfirmation() {
+        let trace = [
+            SessionTraceEntry(
+                timestamp: Date(),
+                userTranscript: "how do I save this document?",
+                assistantResponse: "click file then save",
+                bundleId: "com.apple.TextEdit",
+                pointed: true
+            ),
+            SessionTraceEntry(
+                timestamp: Date(),
+                userTranscript: "got it thanks that worked",
+                assistantResponse: "great",
+                bundleId: "com.apple.TextEdit",
+                pointed: false
+            )
+        ]
+
+        let trigger = SkillTriggerEvaluator.shouldWriteSkill(
+            sessionTrace: trace,
+            latestTranscript: "got it thanks that worked"
+        )
+        let metadata = SkillSynthesizer.buildSkillMetadata(
+            sessionTrace: trace,
+            trigger: try #require(trigger),
+            bundleId: "com.apple.TextEdit"
+        )
+
+        #expect(metadata.id == "teach-textedit-save")
+        #expect(metadata.name == "Save in TextEdit")
+        #expect(metadata.description == "Walk the user through save document")
+        #expect(!metadata.id.contains("got"))
+        #expect(!metadata.id.contains("thanks"))
+        #expect(!metadata.id.contains("worked"))
+    }
+
+    @Test func crossSessionRepeatDetectionWithin7Days() throws {
+        let tempHistoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clicky-topic-history-test-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: tempHistoryURL) }
+
+        let topicHistoryStore = TeachingTopicHistoryStore(historyFileURL: tempHistoryURL)
+        topicHistoryStore.load()
+
+        let bundleId = "com.apple.TextEdit"
+        let topic = "save document"
+
+        topicHistoryStore.recordTopic(topic: topic, bundleId: bundleId)
+
+        let trace = [
+            SessionTraceEntry(
+                timestamp: Date(),
+                userTranscript: "how do I save this document?",
+                assistantResponse: "click file then save",
+                bundleId: bundleId,
+                pointed: true
+            )
+        ]
+
+        topicHistoryStore.recordTopic(topic: topic, bundleId: bundleId)
+
+        let trigger = SkillTriggerEvaluator.shouldWriteSkill(
+            sessionTrace: trace,
+            latestTranscript: "how do I save this document?",
+            topicHistory: topicHistoryStore.entries
+        )
+
+        #expect(trigger?.reason == .repeatedTopic)
+        #expect(trigger?.topic == "save document")
+    }
+
     @Test func promptBuilderInjectsMatchedSkills() {
         let skill = TeachingSkill(
             id: "teach-textedit-save",
             name: "Save in TextEdit",
-            description: "Save a document",
+            description: "Walk the user through saving a document",
             bundleIds: ["com.apple.TextEdit"],
             status: .active,
             lastUsed: nil,
@@ -98,5 +192,34 @@ struct TeachingSkillTests {
         #expect(prompt.contains("teaching skills:"))
         #expect(prompt.contains("Save in TextEdit"))
         #expect(prompt.contains("use file > save"))
+    }
+
+    @Test func matchedSkillAppearsInComposedPrompt() {
+        let skill = TeachingSkill(
+            id: "teach-textedit-save",
+            name: "Save in TextEdit",
+            description: "Walk the user through saving a document",
+            bundleIds: ["com.apple.TextEdit"],
+            status: .active,
+            lastUsed: nil,
+            usageCount: 0,
+            isPinned: false,
+            body: "click file then save or use command s"
+        )
+
+        let matches = SkillMatcher.matchSkills(
+            from: [skill],
+            bundleId: "com.apple.TextEdit",
+            transcript: "how do I save this document?"
+        )
+        let matchedSkills = matches.map(\.skill)
+        let prompt = TeachingPromptBuilder.buildVoiceResponsePrompt(
+            basePrompt: "companion voice prompt",
+            matchedSkills: matchedSkills
+        )
+
+        #expect(matchedSkills.map(\.name) == ["Save in TextEdit"])
+        #expect(prompt.contains("Save in TextEdit"))
+        #expect(prompt.contains("click file then save or use command s"))
     }
 }
