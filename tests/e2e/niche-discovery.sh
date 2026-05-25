@@ -194,3 +194,51 @@ fi
 
 echo ""
 echo "E2E PASS: Phase A (niche set) + Phase B (persistence) succeeded (+ Phase C niche clause in prompt)"
+
+kill "$CLICKY_PID" 2>/dev/null || true
+CLICKY_PID=""
+if [[ -n "$MOCK_WORKER_PID" ]]; then
+  kill "$MOCK_WORKER_PID" 2>/dev/null || true
+  MOCK_WORKER_PID=""
+fi
+sleep 1
+
+echo "Phase D: verify app-aware Xcode suggestions..."
+rm -f "$NICHE_JSON"
+defaults delete "$BUNDLE_ID" selectedUserNiche 2>/dev/null || true
+
+"$CLICKY_APP/Contents/MacOS/Clicky" \
+  -CLICKY_E2E=1 \
+  -CLICKY_E2E_SET_NICHE=developer \
+  -CLICKY_E2E_FRONTMOST_BUNDLE_ID=com.apple.dt.Xcode >/tmp/clicky-e2e-niche-app-aware.log 2>&1 &
+CLICKY_PID=$!
+
+PHASE_D_OK=0
+for _ in $(seq 1 15); do
+  if [[ -f "$NICHE_JSON" ]]; then
+    is_app_aware="$(read_niche_json_field isAppAware)"
+    suggestion_context="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('suggestionContext') or '')" "$NICHE_JSON")"
+    first_id="$(read_niche_json_field firstSuggestionId)"
+
+    if [[ "$is_app_aware" == "True" ]] && [[ "$suggestion_context" == *"Xcode"* ]] && [[ "$first_id" == xcode-* ]]; then
+      echo "PASS: app-aware Xcode suggestions — context='$suggestion_context' first=$first_id"
+      PHASE_D_OK=1
+      break
+    fi
+  fi
+  sleep 1
+done
+
+if [[ "$PHASE_D_OK" -ne 1 ]]; then
+  echo "FAIL: Phase D app-aware check failed within 15s"
+  echo "--- app log ---"
+  tail -40 /tmp/clicky-e2e-niche-app-aware.log || true
+  if [[ -f "$NICHE_JSON" ]]; then
+    echo "--- niche json ---"
+    cat "$NICHE_JSON" || true
+  fi
+  exit 1
+fi
+
+echo ""
+echo "E2E PASS: Phase A + B + C + D (app-aware) succeeded"

@@ -76,9 +76,11 @@ final class CompanionManager: ObservableObject {
     }
 
     private let nicheDiscoveryManager = NicheDiscoveryManager()
+    private var frontmostAppObserver: NSObjectProtocol?
 
     @Published private(set) var selectedUserNiche: NicheDiscoveryManager.Niche?
     @Published private(set) var nicheSuggestions: [NicheSuggestion] = []
+    @Published private(set) var nicheSuggestionContextLabel: String?
 
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
@@ -121,8 +123,26 @@ final class CompanionManager: ObservableObject {
     func setUserNiche(_ niche: NicheDiscoveryManager.Niche) {
         nicheDiscoveryManager.setNiche(niche)
         selectedUserNiche = niche
-        nicheSuggestions = nicheDiscoveryManager.suggestionsForCurrentNiche()
+        refreshNicheSuggestions()
         ClickyAnalytics.trackNicheSelected(niche: niche.rawValue)
+    }
+
+    func refreshNicheSuggestions() {
+        guard let selectedUserNiche else {
+            nicheSuggestions = []
+            nicheSuggestionContextLabel = nil
+            return
+        }
+
+        let frontmostBundleId = frontmostApplicationBundleId()
+        nicheSuggestions = nicheDiscoveryManager.suggestions(
+            for: selectedUserNiche,
+            frontmostBundleId: frontmostBundleId
+        )
+        nicheSuggestionContextLabel = nicheDiscoveryManager.contextLabel(
+            for: selectedUserNiche,
+            frontmostBundleId: frontmostBundleId
+        )
     }
 
     func trackNicheSuggestionTapped(suggestion: NicheSuggestion) {
@@ -132,7 +152,30 @@ final class CompanionManager: ObservableObject {
 
     private func bootstrapNicheDiscovery() {
         selectedUserNiche = nicheDiscoveryManager.selectedNiche
-        nicheSuggestions = nicheDiscoveryManager.suggestionsForCurrentNiche()
+        refreshNicheSuggestions()
+    }
+
+    private func frontmostApplicationBundleId() -> String? {
+        if let overrideBundleId = ClickyE2EConfiguration.e2eFrontmostBundleId {
+            return overrideBundleId
+        }
+        return NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+    }
+
+    private func startFrontmostAppObservation() {
+        frontmostAppObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshNicheSuggestions()
+        }
+    }
+
+    deinit {
+        if let frontmostAppObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(frontmostAppObserver)
+        }
     }
 
     private func nicheClauseForVoicePrompt() -> String? {
@@ -203,7 +246,9 @@ final class CompanionManager: ObservableObject {
             selectedNiche: selectedUserNiche.rawValue,
             suggestionCount: suggestions.count,
             firstSuggestionId: firstSuggestion.id,
-            voicePromptClauseContains: e2eNicheClauseAssertionToken(for: selectedUserNiche)
+            voicePromptClauseContains: e2eNicheClauseAssertionToken(for: selectedUserNiche),
+            suggestionContext: nicheSuggestionContextLabel,
+            isAppAware: nicheSuggestionContextLabel != nil
         )
         ClickyE2EConfiguration.writeNicheDiscoveryForE2E(snapshot)
     }
@@ -282,6 +327,7 @@ final class CompanionManager: ObservableObject {
 
     func start() {
         bootstrapNicheDiscovery()
+        startFrontmostAppObservation()
         refreshAllPermissions()
         print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()

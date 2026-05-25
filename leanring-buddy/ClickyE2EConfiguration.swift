@@ -36,6 +36,10 @@ enum ClickyE2EConfiguration {
         argumentValue(for: "-CLICKY_E2E_TAP_SUGGESTION=")
     }
 
+    static var e2eFrontmostBundleId: String? {
+        argumentValue(for: "-CLICKY_E2E_FRONTMOST_BUNDLE_ID=")
+    }
+
     static var lastSystemPromptFileURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".clicky/e2e-last-system-prompt.txt")
@@ -51,6 +55,8 @@ enum ClickyE2EConfiguration {
         let suggestionCount: Int
         let firstSuggestionId: String
         let voicePromptClauseContains: String
+        let suggestionContext: String?
+        let isAppAware: Bool
     }
 
     static func applyLaunchOverrides() {

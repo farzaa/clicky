@@ -622,7 +622,7 @@ struct CompanionPanelView: View {
             nichePickerChips
 
             if let selectedNiche = companionManager.selectedUserNiche {
-                Text("Try saying one of these:")
+                Text(companionManager.nicheSuggestionContextLabel ?? "Try saying one of these:")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(DS.Colors.textTertiary)
                     .padding(.top, 2)

@@ -40,6 +40,7 @@ jobs:
             /tmp/clicky-e2e-niche-app.log
             /tmp/clicky-e2e-niche-persist.log
             /tmp/clicky-e2e-niche-prompt.log
+            /tmp/clicky-e2e-niche-app-aware.log
             /tmp/clicky-e2e-niche-build.log
             /tmp/clicky-e2e-niche-worker.log
             ~/.clicky/e2e-last-system-prompt.txt

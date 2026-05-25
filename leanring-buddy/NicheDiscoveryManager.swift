@@ -70,9 +70,28 @@ final class NicheDiscoveryManager {
         return loaded
     }
 
-    func suggestionsForCurrentNiche() -> [NicheSuggestion] {
+    func suggestions(for niche: Niche, frontmostBundleId: String?) -> [NicheSuggestion] {
+        if let frontmostBundleId,
+           let appSpecificSuggestions = NicheAppSuggestionMapping.appSpecificSuggestions(
+               bundleId: frontmostBundleId,
+               selectedNiche: niche
+           ) {
+            return appSpecificSuggestions
+        }
+        return suggestions(for: niche)
+    }
+
+    func contextLabel(for niche: Niche, frontmostBundleId: String?) -> String? {
+        guard let frontmostBundleId else { return nil }
+        return NicheAppSuggestionMapping.contextLabel(
+            bundleId: frontmostBundleId,
+            selectedNiche: niche
+        )
+    }
+
+    func suggestionsForCurrentNiche(frontmostBundleId: String? = nil) -> [NicheSuggestion] {
         guard let selectedNiche else { return [] }
-        return suggestions(for: selectedNiche)
+        return suggestions(for: selectedNiche, frontmostBundleId: frontmostBundleId)
     }
 
     /// Short clause appended to the voice system prompt when a niche is set.

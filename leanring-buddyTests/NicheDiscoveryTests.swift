@@ -60,27 +60,34 @@ struct NicheDiscoveryTests {
         }
     }
 
-    @Test func nicheClauseIncludedInVoicePromptWithoutBreakingSkills() {
-        let skill = TeachingSkill(
-            id: "teach-test",
-            name: "Test Skill",
-            description: "Test",
-            bundleIds: [],
-            status: .active,
-            lastUsed: Date(),
-            usageCount: 1,
-            isPinned: false,
-            body: "step one"
-        )
+    @Test func xcodeBundleIdReturnsAppSpecificDeveloperSuggestions() {
         let manager = NicheDiscoveryManager()
-        let prompt = TeachingPromptBuilder.buildVoiceResponsePrompt(
-            basePrompt: "base",
-            matchedSkills: [skill],
-            nicheClause: manager.voiceSystemPromptClause(for: .developer)
+        let suggestions = manager.suggestions(
+            for: .developer,
+            frontmostBundleId: "com.apple.dt.Xcode"
         )
-        #expect(prompt.contains("base"))
-        #expect(prompt.contains("the user is a developer"))
-        #expect(prompt.contains("teaching skills:"))
-        #expect(prompt.contains("step one"))
+        #expect(!suggestions.isEmpty)
+        #expect(suggestions.first?.id == "xcode-source-control")
+        #expect(suggestions.allSatisfy { $0.id.hasPrefix("xcode-") })
+    }
+
+    @Test func unknownBundleIdFallsBackToBundledDeveloperSuggestions() {
+        let manager = NicheDiscoveryManager()
+        let bundledSuggestions = manager.suggestions(for: .developer)
+        let suggestions = manager.suggestions(
+            for: .developer,
+            frontmostBundleId: "com.unknown.app"
+        )
+        #expect(suggestions.map(\.id) == bundledSuggestions.map(\.id))
+        #expect(suggestions.first?.id == "commit-changes")
+    }
+
+    @Test func contextLabelMentionsXcodeForDeveloperNiche() {
+        let manager = NicheDiscoveryManager()
+        let label = manager.contextLabel(
+            for: .developer,
+            frontmostBundleId: "com.apple.dt.Xcode"
+        )
+        #expect(label?.contains("Xcode") == true)
     }
 }
