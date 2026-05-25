@@ -42,10 +42,22 @@ enum SkillSynthesizer {
         )
 
         let cleanedBody = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let fallbackName = "teach-\(trigger.topic.replacingOccurrences(of: " ", with: "-"))"
-        let name = existingSkill?.name ?? fallbackName
-        let description = existingSkill?.description ?? "Teach the user how to \(trigger.topic)"
+        let primaryQuestion = SkillTriggerEvaluator.primaryTeachingQuestion(from: sessionTrace) ?? trigger.topic
+        let bundleId = sessionTrace.compactMap(\.bundleId).first
+        let metadata = TeachingSkill.buildMetadata(primaryQuestion: primaryQuestion, bundleId: bundleId)
+
+        let name = existingSkill?.name ?? metadata.name
+        let description = existingSkill?.description ?? metadata.description
         return (name: name, description: description, body: cleanedBody)
+    }
+
+    static func buildSkillMetadata(
+        sessionTrace: [SessionTraceEntry],
+        trigger: SkillWriteTrigger,
+        bundleId: String?
+    ) -> TeachingSkill.Metadata {
+        let primaryQuestion = SkillTriggerEvaluator.primaryTeachingQuestion(from: sessionTrace) ?? trigger.topic
+        return TeachingSkill.buildMetadata(primaryQuestion: primaryQuestion, bundleId: bundleId)
     }
 
     static func buildSkill(
@@ -87,6 +99,9 @@ enum SkillSynthesizer {
         var lines: [String] = []
         lines.append("trigger: \(trigger.reason.rawValue)")
         lines.append("topic: \(trigger.topic)")
+        if let primaryQuestion = SkillTriggerEvaluator.primaryTeachingQuestion(from: sessionTrace) {
+            lines.append("primary question: \(primaryQuestion)")
+        }
         if let existingSkill {
             lines.append("existing skill id: \(existingSkill.id)")
         }

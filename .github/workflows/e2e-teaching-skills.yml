@@ -1,0 +1,59 @@
+name: E2E Teaching Skills
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  teaching-skills-e2e:
+    name: Teaching skills E2E (macOS)
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # leanring-buddyTests is not wired into the shared Xcode scheme yet.
+      # Build-for-testing is best-effort; failures here do not block E2E.
+      - name: Build unit tests (optional)
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project leanring-buddy.xcodeproj \
+            -scheme leanring-buddy \
+            -destination 'platform=macOS' \
+            -derivedDataPath build/E2E/DerivedData \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_ALLOWED=NO \
+            build-for-testing 2>&1 | tee /tmp/clicky-unit-build.log
+          echo "Unit test build-for-testing succeeded."
+
+      - name: Run teaching-skills E2E
+        run: |
+          chmod +x tests/e2e/run-all.sh tests/e2e/teaching-skills.sh
+          ./tests/e2e/run-all.sh
+
+      - name: Upload E2E logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: teaching-skills-e2e-logs
+          if-no-files-found: ignore
+          path: |
+            /tmp/clicky-e2e-app.log
+            /tmp/clicky-e2e-app-read.log
+            /tmp/clicky-e2e-worker.log
+            /tmp/clicky-e2e-build.log
+            /tmp/clicky-unit-build.log
+            ~/.clicky/e2e-last-system-prompt.txt
