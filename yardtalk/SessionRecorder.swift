@@ -58,6 +58,7 @@ enum SessionRecorderError: LocalizedError {
 final class SessionRecorder: NSObject, @unchecked Sendable {
     nonisolated(unsafe) private var writer: AVAssetWriter?
     nonisolated(unsafe) private var videoInput: AVAssetWriterInput?
+    nonisolated(unsafe) private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
     nonisolated(unsafe) private var audioInput: AVAssetWriterInput?
     /// Host-clock CMTime captured at the first sample's arrival. Used as
     /// the anchor from which every appended sample's PTS is measured —
@@ -71,18 +72,38 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
     nonisolated(unsafe) private var startedAt: Date?
     nonisolated(unsafe) private var didLogAudioFormat = false
     nonisolated(unsafe) private var didLogWriterFailure = false
+    nonisolated(unsafe) private var didReceiveAudioSample = false
+    nonisolated(unsafe) private var audioWatchdogTimer: DispatchSourceTimer?
 
     /// Fired ~20Hz during recording with a normalized 0...1 level so the UI
     /// can show a live mic meter. A flat meter while recording is a visible
     /// signal that the mic isn't actually capturing — the user can release,
     /// fix the input, and try again.
     nonisolated(unsafe) var onAudioLevel: (@Sendable (Float) -> Void)?
+    /// Fired if no audio samples arrive within the first few seconds of
+    /// recording. Gives the UI a chance to warn the user before they
+    /// record a long silent clip.
+    nonisolated(unsafe) var onAudioNotDetected: (@Sendable () -> Void)?
+    /// Fired when the SCStream stops externally (e.g. user clicks "Stop
+    /// Sharing" in the macOS menu bar). Not called when stop() is invoked
+    /// programmatically — only for unexpected/external termination.
+    nonisolated(unsafe) var onStreamStoppedExternally: (@Sendable () -> Void)?
+    nonisolated(unsafe) private var stopCalledProgrammatically = false
 
     private let outputURL: URL
+    private let targetDisplayID: CGDirectDisplayID?
+    private let micDeviceUniqueID: String?
+    private let cameraOverlayWindowID: CGWindowID?
     private let captureQueue = DispatchQueue(label: "com.yardtalk.capture", qos: .userInteractive)
 
-    nonisolated init(outputURL: URL) {
+    private let includeSelfInRecording: Bool
+
+    nonisolated init(outputURL: URL, displayID: CGDirectDisplayID? = nil, micDeviceUniqueID: String? = nil, cameraOverlayWindowID: CGWindowID? = nil, includeSelfInRecording: Bool = false) {
         self.outputURL = outputURL
+        self.targetDisplayID = displayID
+        self.micDeviceUniqueID = micDeviceUniqueID
+        self.cameraOverlayWindowID = cameraOverlayWindowID
+        self.includeSelfInRecording = includeSelfInRecording
         super.init()
     }
 
@@ -91,7 +112,6 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
     /// neither capture source should start producing samples until the
     /// writer is ready to receive them.
     nonisolated func start() async throws {
-        NSLog("YardTalk[recorder] start() begin — output: %@", outputURL.lastPathComponent)
         Logger.recorder.info("start() begin — output: \(self.outputURL.lastPathComponent, privacy: .public)")
         try prepareWriter()
         try await configureScreenCapture()
@@ -99,20 +119,19 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
 
         guard let writer, writer.startWriting() else {
             let message = writer?.error?.localizedDescription ?? "startWriting returned false"
-            NSLog("YardTalk[recorder] startWriting failed: %@", message)
-            Logger.recorder.error("startWriting failed: \(message, privacy: .public)")
+            Logger.recorder.error("startWriting failed: \(message, privacy: .private)")
             throw SessionRecorderError.writerSetupFailed(message)
         }
 
-        // Mic before screen so the audio session is hot when the first
-        // video frame arrives — avoids dropping early audio samples.
         captureSession?.startRunning()
+        let sessionRunning = captureSession?.isRunning ?? false
+        Logger.recorder.info("mic session running: \(sessionRunning ? "yes" : "NO", privacy: .public), device: \(self.micDeviceUniqueID ?? "system-default", privacy: .public)")
         if let stream {
             try await stream.startCapture()
         }
         startedAt = Date()
         startAudioLevelMonitoring()
-        NSLog("YardTalk[recorder] start() complete — capture running")
+        startAudioWatchdog()
         Logger.recorder.info("start() complete — capture running")
     }
 
@@ -123,10 +142,11 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
     /// the caller is responsible for not registering a clip.
     nonisolated func stop() async throws -> (url: URL, duration: TimeInterval) {
         let finishedAt = Date()
-        NSLog("YardTalk[recorder] stop() begin")
         Logger.recorder.info("stop() begin")
 
         stopAudioLevelMonitoring()
+        stopAudioWatchdog()
+        stopCalledProgrammatically = true
 
         if let stream {
             try? await stream.stopCapture()
@@ -140,18 +160,19 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
         let duration: TimeInterval = startedAt.map { finishedAt.timeIntervalSince($0) } ?? 0
 
         guard let writer else {
-            NSLog("YardTalk[recorder] stop() — writer was nil (start may have failed)")
+            Logger.recorder.warning("stop() — writer was nil (start may have failed)")
             return (outputURL, duration)
         }
 
         guard anchorHostTime != nil else {
             // No samples ever arrived. Calling finishWriting() on a writer
             // that never had startSession() called produces an MP4 with no
-            // moov atom — unplayable. Cancel and delete instead.
-            NSLog("YardTalk[recorder] stop() — no samples received, cancelling writer")
+            // moov atom — unplayable. Cancel and delete instead. Return
+            // duration 0 so the caller discards the clip.
+            Logger.recorder.warning("stop() — no samples received, cancelling writer (wall-clock was \(duration, privacy: .public)s)")
             writer.cancelWriting()
             try? FileManager.default.removeItem(at: outputURL)
-            return (outputURL, duration)
+            return (outputURL, 0)
         }
 
         videoInput?.markAsFinished()
@@ -160,11 +181,10 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
         await writer.finishWriting()
 
         if writer.status == .completed {
-            NSLog("YardTalk[recorder] stop() — writer completed cleanly, duration=%.2fs", duration)
+            Logger.recorder.info("stop() — writer completed cleanly, duration=\(duration, privacy: .public)s")
         } else {
             let errorMessage = writer.error?.localizedDescription ?? "no error"
-            NSLog("YardTalk[recorder] stop() — writer ended with status=%ld error=%@",
-                  writer.status.rawValue, errorMessage)
+            Logger.recorder.error("stop() — writer ended with status=\(writer.status.rawValue, privacy: .public) error=\(errorMessage, privacy: .private)")
         }
 
         return (outputURL, duration)
@@ -189,19 +209,34 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
             throw SessionRecorderError.streamFailed(error.localizedDescription)
         }
 
-        guard let display = content.displays.first else {
+        let display: SCDisplay
+        if let targetID = targetDisplayID,
+           let match = content.displays.first(where: { $0.displayID == targetID }) {
+            display = match
+        } else if let first = content.displays.first {
+            display = first
+        } else {
             throw SessionRecorderError.noDisplay
         }
 
-        // Exclude YardTalk itself so the menu bar panel doesn't show up
-        // in the recording when it's open during a hotkey-held capture.
-        let excluded = content.applications.filter {
-            $0.bundleIdentifier == Bundle.main.bundleIdentifier
+        let excluded: [SCRunningApplication]
+        if includeSelfInRecording {
+            excluded = []
+        } else {
+            excluded = content.applications.filter {
+                $0.bundleIdentifier == Bundle.main.bundleIdentifier
+            }
+        }
+        var exceptedWindows: [SCWindow] = []
+        if !includeSelfInRecording,
+           let overlayID = cameraOverlayWindowID,
+           let scWindow = content.windows.first(where: { $0.windowID == overlayID }) {
+            exceptedWindows.append(scWindow)
         }
         let filter = SCContentFilter(
             display: display,
             excludingApplications: excluded,
-            exceptingWindows: []
+            exceptingWindows: exceptedWindows
         )
 
         let config = SCStreamConfiguration()
@@ -225,6 +260,10 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
         }
         writer.add(videoInput)
         self.videoInput = videoInput
+        self.pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: videoInput,
+            sourcePixelBufferAttributes: nil
+        )
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         do {
@@ -236,7 +275,13 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
     }
 
     private nonisolated func configureMicCapture() throws {
-        guard let micDevice = AVCaptureDevice.default(for: .audio) else {
+        let micDevice: AVCaptureDevice
+        if let uid = micDeviceUniqueID,
+           let selected = AVCaptureDevice(uniqueID: uid) {
+            micDevice = selected
+        } else if let fallback = AVCaptureDevice.default(for: .audio) {
+            micDevice = fallback
+        } else {
             throw SessionRecorderError.noMicrophone
         }
 
@@ -275,7 +320,7 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
         if audioSettings[AVEncoderBitRateKey] == nil {
             audioSettings[AVEncoderBitRateKey] = 64_000
         }
-        NSLog("YardTalk[recorder] audio writer settings: %@", "\(audioSettings)")
+        Logger.recorder.info("audio writer settings: \("\(audioSettings)", privacy: .public)")
         let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
         audioInput.expectsMediaDataInRealTime = true
 
@@ -304,8 +349,7 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
                 didLogWriterFailure = true
                 let kind = isVideo ? "video" : "audio"
                 let errorMessage = writer.error?.localizedDescription ?? "no error"
-                NSLog("YardTalk[recorder] writer entered .failed during %@ sample: %@",
-                      kind, errorMessage)
+                Logger.recorder.error("writer entered .failed during \(kind, privacy: .public) sample: \(errorMessage, privacy: .private)")
             }
             return
         }
@@ -314,15 +358,18 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
         // PCM format AVCaptureAudioDataOutput is actually delivering. If
         // sampleRate / channels disagree with the writer's expected encoding
         // we get silent AAC tracks.
+        if !isVideo && !didReceiveAudioSample {
+            didReceiveAudioSample = true
+        }
+
         if !isVideo && !didLogAudioFormat {
             didLogAudioFormat = true
             if let formatDesc = CMSampleBufferGetFormatDescription(sb),
                let asbdPtr = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc) {
                 let asbd = asbdPtr.pointee
-                NSLog("YardTalk[recorder] audio input format: %.0f Hz, %u ch, formatID=%u, bytesPerFrame=%u",
-                      asbd.mSampleRate, asbd.mChannelsPerFrame, asbd.mFormatID, asbd.mBytesPerFrame)
+                Logger.recorder.info("audio input format: \(asbd.mSampleRate, privacy: .public) Hz, \(asbd.mChannelsPerFrame, privacy: .public) ch, formatID=\(asbd.mFormatID, privacy: .public), bytesPerFrame=\(asbd.mBytesPerFrame, privacy: .public)")
             } else {
-                NSLog("YardTalk[recorder] audio input format: <unavailable>")
+                Logger.recorder.info("audio input format: <unavailable>")
             }
         }
 
@@ -333,41 +380,46 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
             anchorHostTime = now
             writer.startSession(atSourceTime: .zero)
             let kind = isVideo ? "video" : "audio"
-            NSLog("YardTalk[recorder] first sample arrived (%@); session started at zero", kind)
             Logger.recorder.info("First sample arrived (\(kind, privacy: .public)); session started at zero")
         }
 
         let relativePTS = CMTimeSubtract(now, anchorHostTime!)
 
-        var newTiming = CMSampleTimingInfo(
-            duration: CMSampleBufferGetDuration(sb),
-            presentationTimeStamp: relativePTS,
-            decodeTimeStamp: .invalid
-        )
+        if isVideo {
+            guard let adaptor = pixelBufferAdaptor,
+                  let pixelBuffer = CMSampleBufferGetImageBuffer(sb),
+                  adaptor.assetWriterInput.isReadyForMoreMediaData else { return }
 
-        var rebased: CMSampleBuffer?
-        let result = CMSampleBufferCreateCopyWithNewTiming(
-            allocator: kCFAllocatorDefault,
-            sampleBuffer: sb,
-            sampleTimingEntryCount: 1,
-            sampleTimingArray: &newTiming,
-            sampleBufferOut: &rebased
-        )
-
-        guard result == noErr, let buffer = rebased else {
-            Logger.recorder.warning("CMSampleBufferCreateCopyWithNewTiming returned \(result, privacy: .public)")
-            return
-        }
-
-        let input = isVideo ? videoInput : audioInput
-        guard let input, input.isReadyForMoreMediaData else { return }
-
-        if !input.append(buffer) {
-            let kind = isVideo ? "video" : "audio"
-            let errorMessage = writer.error?.localizedDescription ?? "no error"
-            Logger.recorder.error(
-                "append failed for \(kind, privacy: .public): \(errorMessage, privacy: .public)"
+            if !adaptor.append(pixelBuffer, withPresentationTime: relativePTS) {
+                let errorMessage = writer.error?.localizedDescription ?? "no error"
+                Logger.recorder.error("append failed for video: \(errorMessage, privacy: .public)")
+            }
+        } else {
+            var newTiming = CMSampleTimingInfo(
+                duration: CMSampleBufferGetDuration(sb),
+                presentationTimeStamp: relativePTS,
+                decodeTimeStamp: .invalid
             )
+
+            var rebased: CMSampleBuffer?
+            let result = CMSampleBufferCreateCopyWithNewTiming(
+                allocator: kCFAllocatorDefault,
+                sampleBuffer: sb,
+                sampleTimingEntryCount: 1,
+                sampleTimingArray: &newTiming,
+                sampleBufferOut: &rebased
+            )
+
+            guard result == noErr, let buffer = rebased else {
+                Logger.recorder.warning("CMSampleBufferCreateCopyWithNewTiming returned \(result, privacy: .public)")
+                return
+            }
+
+            guard let audioInput, audioInput.isReadyForMoreMediaData else { return }
+            if !audioInput.append(buffer) {
+                let errorMessage = writer.error?.localizedDescription ?? "no error"
+                Logger.recorder.error("append failed for audio: \(errorMessage, privacy: .public)")
+            }
         }
     }
 
@@ -397,9 +449,30 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
     private nonisolated func stopAudioLevelMonitoring() {
         audioLevelTimer?.cancel()
         audioLevelTimer = nil
-        // Reset the published level so the meter doesn't freeze at the
-        // last reading after recording ends.
         onAudioLevel?(0)
+    }
+
+    // MARK: - Audio watchdog
+
+    private nonisolated func startAudioWatchdog() {
+        let timer = DispatchSource.makeTimerSource(queue: captureQueue)
+        timer.schedule(deadline: .now() + .seconds(3))
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            if !self.didReceiveAudioSample {
+                Logger.recorder.warning("No audio samples received after 3s — mic may not be delivering data")
+                self.onAudioNotDetected?()
+            }
+            self.audioWatchdogTimer?.cancel()
+            self.audioWatchdogTimer = nil
+        }
+        timer.resume()
+        audioWatchdogTimer = timer
+    }
+
+    private nonisolated func stopAudioWatchdog() {
+        audioWatchdogTimer?.cancel()
+        audioWatchdogTimer = nil
     }
 }
 
@@ -408,6 +481,10 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
 extension SessionRecorder: SCStreamDelegate {
     nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
         Logger.recorder.error("SCStream stopped with error: \(error.localizedDescription, privacy: .public)")
+        if !stopCalledProgrammatically {
+            Logger.recorder.warning("stream stopped externally (user stopped sharing?) — notifying manager")
+            onStreamStoppedExternally?()
+        }
     }
 }
 

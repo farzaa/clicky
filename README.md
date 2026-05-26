@@ -19,15 +19,27 @@ Forked from [Clicky](https://github.com/farzaa/clicky) (MIT). YardTalk inherits 
 
 ## Status
 
-Under active rebrand as of April 2026. See [`REBRAND-TODO.md`](REBRAND-TODO.md) for the Xcode-side tasks still outstanding before implementation work begins.
+Active development as of April 2026. Core recording, transcription, and synthesis pipeline are functional. See [`REBRAND-TODO.md`](REBRAND-TODO.md) for remaining cleanup and upcoming milestones.
 
-## Architecture (planned)
+**Working:**
+- Menu bar panel with project management (create, edit, switch)
+- Toggle-hotkey recording (⌃⌥D) with per-display screen selection overlay
+- Marker hotkey (⌃⌥M) for flagging moments during recording
+- Per-project clip storage with local transcription
+- Session grouping with timeline UI (expand clips, delete, QuickLook)
+- End-of-session synthesis via Claude (presentation prep + research notes templates)
+- BYOK: user supplies their own Anthropic API key, stored in macOS Keychain
+- Settings screen for API key management
+
+**Upcoming:** Review/edit dialog (M3), NU PAT flow + upload (M4/M5), outbox (M6)
+
+## Architecture
 
 - Swift / SwiftUI menu bar app (no dock icon), `NSPanel` floating UI
 - `ScreenCaptureKit` for screen video + `AVAssetWriter` for MP4 encoding with audio
-- `FluidAudio` for local Parakeet STT
-- Anthropic Claude for end-of-session synthesis
-- NU integration via `Authorization: Bearer pat_…` + `POST /api/v1/sessions/`, `Idempotency-Key` header, `test_mode` flag for dev pushes
+- `FluidAudio` for local Parakeet STT (CoreML, Apple Neural Engine)
+- Anthropic Claude for end-of-session synthesis — BYOK (Bring Your Own Key), API key stored in macOS Keychain, direct calls to `api.anthropic.com`
+- NU integration (planned) via `Authorization: Bearer pat_…` + `POST /api/v1/sessions/`, `Idempotency-Key` header, `test_mode` flag for dev pushes
 
 ## Principles
 

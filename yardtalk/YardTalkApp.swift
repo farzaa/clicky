@@ -7,9 +7,14 @@
 //  opens a floating panel with companion voice controls.
 //
 
+import OSLog
 import ServiceManagement
 import SwiftUI
 import Sparkle
+
+extension Logger {
+    static let app = Logger(subsystem: "com.yardtalk.app", category: "app")
+}
 
 @main
 struct YardTalkApp: App {
@@ -35,8 +40,8 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var sparkleUpdaterController: SPUStandardUpdaterController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        print("🎯 YardTalk: Starting...")
-        print("🎯 YardTalk: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
+        Logger.app.info("Starting...")
+        Logger.app.info("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown", privacy: .public)")
 
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
 
@@ -66,9 +71,9 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         if loginItemService.status != .enabled {
             do {
                 try loginItemService.register()
-                print("🎯 YardTalk: Registered as login item")
+                Logger.app.info("Registered as login item")
             } catch {
-                print("⚠️ YardTalk: Failed to register as login item: \(error)")
+                Logger.app.error("Failed to register as login item: \(error.localizedDescription, privacy: .private)")
             }
         }
     }
@@ -84,7 +89,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         do {
             try updaterController.updater.start()
         } catch {
-            print("⚠️ YardTalk: Sparkle updater failed to start: \(error)")
+            Logger.app.error("Sparkle updater failed to start: \(error.localizedDescription, privacy: .private)")
         }
     }
 }

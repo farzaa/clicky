@@ -6,21 +6,21 @@
 
 YardTalk is a macOS menu bar app that records short narrated screen clips during work sessions and synthesizes them into per-project reports. Forked from [Clicky](https://github.com/farzaa/clicky) (MIT); preserves Clicky's menu bar, screen capture, and overlay foundations while diverging toward session-oriented journaling with local transcription and optional push to a personal assistant.
 
-**Current phase:** rebrand and planning. Implementation has not started. See [`REBRAND-TODO.md`](REBRAND-TODO.md) for Xcode-side renaming tasks that must happen before serious code work.
+**Current phase:** active development. Recording, transcription, session management, and synthesis pipeline are functional. Working through M3–M6 (review dialog, NU integration, upload, outbox). See [`REBRAND-TODO.md`](REBRAND-TODO.md) for remaining tasks.
 
 ## Not YardTalk (Python)
 
 There is a separate, unrelated Python dictation app also named YardTalk at `/Users/michaeljones/Projects/yardtalk-py`. They share a name but not a codebase. This repo is the Swift successor. Do not confuse the two — check the repo's language/tooling if you're uncertain which you're in.
 
-## Architecture (planned)
+## Architecture
 
 - **App type:** Menu bar-only (`LSUIElement=true`), inherited from Clicky
 - **Framework:** SwiftUI with AppKit bridging for `NSPanel` and the capture overlay
 - **Transcription:** [FluidAudio](https://github.com/FluidInference/FluidAudio) (CoreML Parakeet on the Apple Neural Engine), replacing Clicky's AssemblyAI pipeline
-- **Synthesis:** Anthropic Claude (Sonnet / Opus) via the Anthropic Swift SDK or direct HTTPS
+- **Synthesis:** Anthropic Claude via direct HTTPS — BYOK (user supplies their own API key, stored in macOS Keychain)
 - **Screen capture:** `ScreenCaptureKit` + `AVAssetWriter` for MP4 video clips with audio baked in
 - **Session timeline:** per-project, persisted locally; user reviews before any outbound push
-- **NU integration:** `POST /api/v1/sessions/` with PAT auth (`Authorization: Bearer pat_…`), `Idempotency-Key` header, `test_mode` flag for dev pushes. Contract frozen per [`performlikemj/nbhd-united#330`](https://github.com/performlikemj/nbhd-united/pull/330).
+- **NU integration:** `POST /api/v1/sessions/create/` with PAT auth (`Authorization: Bearer pat_…`), `Idempotency-Key` header, `test_mode` flag for dev pushes. Contract frozen per [`performlikemj/nbhd-united#330`](https://github.com/performlikemj/nbhd-united/pull/330). Reads (`GET /sessions/`) require `sessions:read` scope on the PAT; writes (`POST /sessions/create/`) require `sessions:write`.
 
 ## Core principles
 

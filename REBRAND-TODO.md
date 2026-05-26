@@ -31,23 +31,27 @@ Clicky's worker proxies AssemblyAI, ElevenLabs, and Claude. For YardTalk:
 
 - [x] **Delete AssemblyAI endpoint** — FluidAudio runs locally, no cloud STT needed
 - [x] **Delete ElevenLabs endpoint** — no TTS planned for v1
-- [x] **Keep Claude endpoint** (repurpose) — if API keys shouldn't ship in the binary, the worker is still the right proxy
+- [x] **Claude proxy no longer required** — switched to BYOK (Bring Your Own Key); users supply their own Anthropic API key in Settings, stored in macOS Keychain, app calls `api.anthropic.com` directly. Optional proxy URL override retained in `ClaudeAPI` for enterprise/team setups.
 - [x] **No NU endpoint needed** — NU's PAT auth is designed for direct client calls
 
 ## Replace Clicky's core loop with YardTalk's
 
 - [ ] Strip push-to-talk → AssemblyAI → Claude → ElevenLabs → cursor-pointing pipeline
-- [ ] Add FluidAudio as a Swift Package dependency
+- [x] Add FluidAudio as a Swift Package dependency
 - [ ] Build:
-  - [ ] Project model + picker UI (menu bar dropdown)
-  - [ ] Session mode with hotkey-held video capture (`SCStream` + `AVAssetWriter`)
-  - [ ] Per-session timeline, persisted to `~/Library/Application Support/YardTalk/…`
-  - [ ] End-of-session review/edit dialog
-  - [ ] Synthesis pipeline → Claude → structured payload
-  - [ ] Three-way upload dialog (upload now / queue / keep local or delete)
-  - [ ] Outbox view for queued pushes
-  - [ ] PAT flow: paste → Keychain → `Authorization: Bearer pat_…`
-  - [ ] First two templates: presentation prep, research notes
+  - [x] Project model + picker UI (menu bar dropdown)
+  - [x] Session mode with toggle-hotkey video capture (`SCStream` + `AVAssetWriter`, ⌃⌥D toggle, ⌃⌥M markers)
+  - [x] Display selection overlay (full-screen per-display, shown on hotkey press)
+  - [x] Per-session timeline with clip expansion, deletion, QuickLook
+  - [ ] End-of-session review/edit dialog (M3)
+  - [x] Synthesis pipeline → Claude → structured payload (BYOK, direct API calls)
+  - [x] Synthesis UI: progress indicator, summary preview, error+retry, manual synthesize button
+  - [ ] Three-way upload dialog (upload now / queue / keep local or delete) (M5)
+  - [ ] Outbox view for queued pushes (M6)
+  - [x] Keychain service for secure credential storage
+  - [x] BYOK settings screen for Anthropic API key
+  - [ ] PAT flow: paste → Keychain → `Authorization: Bearer pat_…` (M4, reuses KeychainService)
+  - [x] First two templates: presentation prep, research notes
 
 ## NU integration
 
@@ -72,21 +76,23 @@ Files that still exist from Clicky's pipeline and aren't needed for YardTalk v1:
 - [ ] `BuddyAudioConversionSupport.swift` — audio format conversion for AssemblyAI; review if needed for FluidAudio
 - [ ] `BuddyDictationManager.swift` — dictation pipeline; will need rewrite for session recording
 - [ ] `BuddyTranscriptionProvider.swift` — transcription protocol; update for FluidAudio
-- [ ] `ClaudeAPI.swift` — streaming Claude client; keep and adapt for synthesis pipeline
+- [x] `ClaudeAPI.swift` — adapted for BYOK synthesis (direct Anthropic API calls with user-supplied key)
 - [ ] `steve.jpg`, `codex-add-project.png` — Clicky assets; remove
 - [ ] `enter.mp3`, `eshop.mp3` — Clicky sound effects; decide if YardTalk needs sounds
 - [ ] `ff.mp3` — onboarding music; remove or replace
 
-## Next steps (after Xcode rebrand pass)
+## Next steps
 
-1. **Complete the Xcode-side renames** — directory, scheme, targets, bundle config, signing
+1. ~~Complete the Xcode-side renames~~ ✓
 2. **Remove PostHog SPM package** and dead Clicky files listed above
-3. **Add FluidAudio** as a Swift Package dependency
-4. **Build the project model** — `YardTalkProject` struct, local persistence to `~/Library/Application Support/YardTalk/`, menu bar project picker
-5. **Build session recording** — hotkey-held video capture via `SCStream` + `AVAssetWriter`, local transcription via FluidAudio, per-session timeline
-6. **Build synthesis pipeline** — end-of-session Claude call producing the structured payload (start with presentation prep template)
-7. **Build review/upload UI** — three-way dialog, outbox for queued pushes
-8. **Wire NU integration** — PAT flow, `POST /api/v1/sessions/`, idempotency, test_mode
+3. ~~Add FluidAudio~~ ✓
+4. ~~Build the project model~~ ✓
+5. ~~Build session recording~~ ✓ (toggle-hotkey, display selection, markers, timeline)
+6. ~~Build synthesis pipeline~~ ✓ (BYOK, two templates, synthesis UI)
+7. **Build review/edit dialog** (M3) — edit summary/accomplishments/blockers/next_steps before upload
+8. **Build NU PAT flow** (M4) — reuses KeychainService, settings screen gets a second field
+9. **Build upload + NU integration** (M5) — three-way dialog, `POST /api/v1/sessions/`, idempotency, test_mode
+10. **Build outbox** (M6) — queued/failed uploads with manual retry
 
 ## Reference
 

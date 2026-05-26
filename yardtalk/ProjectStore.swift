@@ -11,6 +11,7 @@
 
 import Foundation
 import Observation
+import OSLog
 
 @MainActor
 @Observable
@@ -38,15 +39,22 @@ final class ProjectStore {
     /// trimmed; empty names are rejected because they'd round-trip into the NU
     /// payload's `project` field (which is the slug, per the contract).
     @discardableResult
-    func createProject(name: String, type: YardTalkProjectType) throws -> YardTalkProject {
+    func createProject(name: String, type: YardTalkProjectType, projectDescription: String = "", location: URL) throws -> YardTalkProject {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { throw ProjectStoreError.invalidName }
 
-        let project = YardTalkProject(name: trimmedName, type: type)
+        let project = YardTalkProject(name: trimmedName, type: type, projectDescription: projectDescription, location: location)
         try save(project)
         projects.insert(project, at: 0)
         setActive(project.id)
         return project
+    }
+
+    func updateProject(_ project: YardTalkProject) throws {
+        try save(project)
+        if let idx = projects.firstIndex(where: { $0.id == project.id }) {
+            projects[idx] = project
+        }
     }
 
     /// Sets the active project. Pass `nil` to clear the selection (e.g. after
@@ -108,15 +116,30 @@ final class ProjectStore {
         decoder.dateDecodingStrategy = .iso8601
 
         var loaded: [YardTalkProject] = []
+        var needsMigration: [YardTalkProject] = []
         for url in urls where url.pathExtension == "json" {
             do {
-                let data = try Data(contentsOf: url)
-                loaded.append(try decoder.decode(YardTalkProject.self, from: data))
+                let data = try EncryptedStore.read(from: url)
+                let project = try decoder.decode(YardTalkProject.self, from: data)
+                loaded.append(project)
+                if !Self.isEncryptedOnDisk(url) {
+                    needsMigration.append(project)
+                }
             } catch {
-                print("⚠️ YardTalk: skipping unreadable project at \(url.lastPathComponent): \(error)")
+                Logger.session.warning("skipping unreadable project at \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .private)")
             }
         }
         projects = loaded.sorted(by: { $0.updatedAt > $1.updatedAt })
+        for project in needsMigration {
+            try? save(project)
+        }
+    }
+
+    private static func isEncryptedOnDisk(_ url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard let prefix = try? handle.read(upToCount: 4) else { return false }
+        return prefix == Data("YT01".utf8)
     }
 
     private func restoreActiveSelection() {
@@ -131,10 +154,10 @@ final class ProjectStore {
 
     private func save(_ project: YardTalkProject) throws {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(project)
-        try data.write(to: projectFileURL(for: project.id), options: .atomic)
+        try EncryptedStore.write(data, to: projectFileURL(for: project.id))
     }
 
     private func projectFileURL(for id: UUID) -> URL {
