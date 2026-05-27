@@ -77,8 +77,15 @@ final class PersonalKnowledgeManager {
         let fileManager = FileManager.default
         try? fileManager.createDirectory(at: brainRootURL, withIntermediateDirectories: true)
 
-        guard let data = try? Data(contentsOf: sourcesFileURL),
-              let sourcesFile = try? JSONDecoder().decode(ConnectedVaultsFile.self, from: data) else {
+        guard let data = try? Data(contentsOf: sourcesFileURL) else {
+            connectedVaults = []
+            return
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        guard let sourcesFile = try? decoder.decode(ConnectedVaultsFile.self, from: data) else {
             connectedVaults = []
             return
         }
@@ -90,9 +97,8 @@ final class PersonalKnowledgeManager {
 
     @discardableResult
     func connectVault(at folderURL: URL, label: String? = nil) throws -> ConnectedVault {
-        var isDirectory = false
-        guard FileManager.default.fileExists(atPath: folderURL.path, isDirectory: &isDirectory),
-              isDirectory else {
+        guard FileManager.default.fileExists(atPath: folderURL.path),
+              (try? folderURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
             throw PersonalKnowledgeError.invalidVaultFolder
         }
 
@@ -102,11 +108,17 @@ final class PersonalKnowledgeManager {
         }
 
         let resolvedLabel = label ?? folderURL.lastPathComponent
-        let bookmarkData = try? folderURL.bookmarkData(
+
+        _ = folderURL.startAccessingSecurityScopedResource()
+        let bookmarkData = try folderURL.bookmarkData(
             options: [.withSecurityScope],
             includingResourceValuesForKeys: nil,
             relativeTo: nil
         )
+
+        guard FileManager.default.isReadableFile(atPath: standardizedPath) else {
+            throw PersonalKnowledgeError.vaultFolderNotReadable
+        }
 
         let connectedVault = ConnectedVault(
             id: UUID(),
@@ -359,6 +371,7 @@ final class PersonalKnowledgeManager {
 enum PersonalKnowledgeError: LocalizedError {
     case invalidVaultFolder
     case vaultAlreadyConnected
+    case vaultFolderNotReadable
 
     var errorDescription: String? {
         switch self {
@@ -366,6 +379,8 @@ enum PersonalKnowledgeError: LocalizedError {
             return "That folder does not exist or is not a valid vault folder."
         case .vaultAlreadyConnected:
             return "That vault is already connected."
+        case .vaultFolderNotReadable:
+            return "Clicky cannot read that folder. Choose it again in the folder picker to grant access."
         }
     }
 }

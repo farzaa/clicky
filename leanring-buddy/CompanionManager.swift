@@ -193,35 +193,50 @@ final class CompanionManager: ObservableObject {
         connectedVaultMarkdownFileCount = personalKnowledgeManager.countSearchableMarkdownFiles()
     }
 
-    func connectVault(at folderURL: URL, label: String? = nil) {
+    @discardableResult
+    func connectVault(at folderURL: URL, label: String? = nil) -> Bool {
         do {
             _ = try personalKnowledgeManager.connectVault(at: folderURL, label: label)
             vaultConnectionErrorMessage = nil
-            refreshConnectedVaultState()
+            connectedVaultSummaries = personalKnowledgeManager.connectedVaults
+            connectedVaultMarkdownFileCount = personalKnowledgeManager.countSearchableMarkdownFiles()
+            return true
         } catch {
             vaultConnectionErrorMessage = error.localizedDescription
             print("⚠️ Failed to connect vault: \(error)")
+            return false
         }
     }
 
-    func connectDiscoveredVault(_ discoveredVault: DiscoveredVault) {
-        connectVault(at: discoveredVault.folderURL, label: discoveredVault.displayName)
+    @discardableResult
+    func connectDiscoveredVault(_ discoveredVault: DiscoveredVault) -> Bool {
+        // macOS only grants durable folder read access when the user confirms via NSOpenPanel.
+        confirmVaultFolderAccess(
+            suggestedFolderURL: discoveredVault.folderURL,
+            vaultLabel: discoveredVault.displayName
+        )
     }
 
     func chooseVaultFolderManually() {
+        _ = confirmVaultFolderAccess(suggestedFolderURL: nil, vaultLabel: nil)
+    }
+
+    @discardableResult
+    private func confirmVaultFolderAccess(suggestedFolderURL: URL?, vaultLabel: String?) -> Bool {
         let openPanel = NSOpenPanel()
-        openPanel.title = "Choose a notes folder"
-        openPanel.message = "Select a folder containing your markdown notes or Obsidian vault."
+        openPanel.title = "Allow vault access"
+        openPanel.message = "Select your notes folder so Clicky can read it when you ask about your vault. This stays read-only."
         openPanel.canChooseFiles = false
         openPanel.canChooseDirectories = true
         openPanel.allowsMultipleSelection = false
         openPanel.prompt = "Connect"
+        openPanel.directoryURL = suggestedFolderURL
 
         guard openPanel.runModal() == .OK, let selectedFolderURL = openPanel.url else {
-            return
+            return false
         }
 
-        connectVault(at: selectedFolderURL)
+        return connectVault(at: selectedFolderURL, label: vaultLabel ?? selectedFolderURL.lastPathComponent)
     }
 
     func disconnectVault(id: UUID) {

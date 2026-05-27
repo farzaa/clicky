@@ -76,6 +76,25 @@ struct PersonalKnowledgeTests {
         #expect(chunks.contains(where: { $0.excerpt.contains("Project Alpha") }))
     }
 
+    @Test func connectedVaultsFileRoundTripsThroughJSON() throws {
+        let temporaryBrainDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clicky-brain-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryBrainDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryBrainDirectory) }
+
+        let manager = PersonalKnowledgeManager(brainRootURL: temporaryBrainDirectory)
+        let temporaryVaultDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clicky-vault-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryVaultDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryVaultDirectory) }
+
+        _ = try manager.connectVault(at: temporaryVaultDirectory, label: "Test Vault")
+
+        let reloadedManager = PersonalKnowledgeManager(brainRootURL: temporaryBrainDirectory)
+        #expect(reloadedManager.connectedVaults.count == 1)
+        #expect(reloadedManager.connectedVaults.first?.label == "Test Vault")
+    }
+
     @Test func vaultDiscoveryParsesObsidianRegistryShape() {
         let discoveredVault = DiscoveredVault(
             id: "abc123",

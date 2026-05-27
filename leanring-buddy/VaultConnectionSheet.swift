@@ -20,7 +20,7 @@ struct VaultConnectionSheet: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(DS.Colors.textPrimary)
 
-                Text("Clicky reads your notes only when you ask about your vault or internal knowledge. Read-only by default.")
+                Text("Clicky reads your notes only when you ask about your vault or internal knowledge. Tap Connect, then confirm the folder in the picker.")
                     .font(.system(size: 12))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -88,9 +88,8 @@ enum VaultDiscoveryService {
                 let standardizedPath = (entryURL.path as NSString).standardizingPath
                 guard !existingPaths.contains(standardizedPath) else { continue }
 
-                var isDirectory = false
-                guard fileManager.fileExists(atPath: entryURL.path, isDirectory: &isDirectory),
-                      isDirectory else {
+                guard fileManager.fileExists(atPath: entryURL.path),
+                      (try? entryURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
                     continue
                 }
 

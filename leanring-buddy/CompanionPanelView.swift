@@ -36,8 +36,10 @@ struct CompanionPanelView: View {
         VaultConnectionSheet(
             discoveredVaults: discoveredVaults,
             onConnectDiscoveredVault: { discoveredVault in
-                companionManager.connectDiscoveredVault(discoveredVault)
-                isShowingVaultConnectionSheet = false
+                let didConnectVault = companionManager.connectDiscoveredVault(discoveredVault)
+                if didConnectVault {
+                    isShowingVaultConnectionSheet = false
+                }
             },
             onChooseDifferentFolder: {
                 isShowingVaultConnectionSheet = false
