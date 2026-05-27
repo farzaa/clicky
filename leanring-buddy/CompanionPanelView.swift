@@ -40,19 +40,19 @@ struct CompanionPanelView: View {
                 .padding(.top, 16)
                 .padding(.horizontal, 16)
 
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 12)
-
-                teachingSkillsSection
-                    .padding(.horizontal, 16)
-            }
-
             if showsSuggestedAsksSection {
                 Spacer()
                     .frame(height: 12)
 
                 nicheSuggestionsSection
+                    .padding(.horizontal, 16)
+            }
+
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 12)
+
+                teachingSkillsSection
                     .padding(.horizontal, 16)
             }
 
