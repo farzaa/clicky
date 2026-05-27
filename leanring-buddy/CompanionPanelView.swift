@@ -135,10 +135,31 @@ struct CompanionPanelView: View {
     @ViewBuilder
     private var permissionsCopySection: some View {
         if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            Text("Hold Control+Option to talk.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Hold ^ Control + ⌥ Option to talk.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Text("Use Control (not ⌘ Command). Speak while holding, then release.")
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if !companionManager.isPushToTalkHotkeyActive {
+                    Text("Push-to-talk is inactive. Enable Input Monitoring for Clicky, then quit and reopen the app.")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if !AppBundleConfiguration.isWorkerBaseURLConfigured {
+                    Text("API proxy is not configured. Set ClickyWorkerBaseURL in Info.plist to your Cloudflare Worker URL.")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         } else if companionManager.allPermissionsGranted && !companionManager.hasSubmittedEmail {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Drop your email to get started.")
@@ -161,7 +182,7 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(DS.Colors.textSecondary)
 
-                Text("Some permissions were revoked. Grant all four below to keep using Clicky.")
+                Text("Some permissions were revoked. Grant all five below to keep using Clicky.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -262,6 +283,8 @@ struct CompanionPanelView: View {
 
             accessibilityPermissionRow
 
+            inputMonitoringPermissionRow
+
             screenRecordingPermissionRow
 
             if companionManager.hasScreenRecordingPermission {
@@ -322,6 +345,79 @@ struct CompanionPanelView: View {
                         // (common with unsigned dev builds).
                         WindowPositionManager.revealAppInFinder()
                         WindowPositionManager.openAccessibilitySettings()
+                    }) {
+                        Text("Find App")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(DS.Colors.textSecondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(
+                                Capsule()
+                                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.8)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                }
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
+    private var inputMonitoringPermissionRow: some View {
+        let isGranted = companionManager.hasInputMonitoringPermission
+        return HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "keyboard")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
+                    .frame(width: 16)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Input Monitoring")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+
+                    Text(isGranted
+                         ? "Required for Control+Option push-to-talk"
+                         : "Enable this for the global hotkey to work")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+            }
+
+            Spacer()
+
+            if isGranted {
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(DS.Colors.success)
+                        .frame(width: 6, height: 6)
+                    Text("Granted")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.success)
+                }
+            } else {
+                HStack(spacing: 6) {
+                    Button(action: {
+                        WindowPositionManager.requestInputMonitoringPermission()
+                    }) {
+                        Text("Grant")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(DS.Colors.textOnAccent)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(
+                                Capsule()
+                                    .fill(DS.Colors.accent)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+
+                    Button(action: {
+                        WindowPositionManager.revealAppInFinder()
+                        WindowPositionManager.openInputMonitoringSettings()
                     }) {
                         Text("Find App")
                             .font(.system(size: 11, weight: .semibold))

@@ -8,6 +8,7 @@
 
 import AppKit
 import ApplicationServices
+import CoreGraphics
 import ScreenCaptureKit
 
 enum PermissionRequestPresentationDestination: Equatable {
@@ -19,6 +20,7 @@ enum PermissionRequestPresentationDestination: Equatable {
 @MainActor
 class WindowPositionManager {
     private static var hasAttemptedAccessibilitySystemPromptDuringCurrentLaunch = false
+    private static var hasAttemptedInputMonitoringSystemPromptDuringCurrentLaunch = false
     private static var hasAttemptedScreenRecordingSystemPromptDuringCurrentLaunch = false
     private static let hasPreviouslyConfirmedScreenRecordingPermissionUserDefaultsKey = "com.learningbuddy.hasPreviouslyConfirmedScreenRecordingPermission"
 
@@ -71,6 +73,40 @@ class WindowPositionManager {
     static func revealAppInFinder() {
         guard let appURL = Bundle.main.bundleURL as URL? else { return }
         NSWorkspace.shared.activateFileViewerSelecting([appURL])
+    }
+
+    // MARK: - Input Monitoring Permission
+
+    /// Returns true if the app can install the global CGEvent tap used for push-to-talk.
+    static func hasInputMonitoringPermission() -> Bool {
+        CGPreflightListenEventAccess()
+    }
+
+    /// Presents the system Input Monitoring prompt once, then opens System Settings.
+    @discardableResult
+    static func requestInputMonitoringPermission() -> PermissionRequestPresentationDestination {
+        let presentationDestination = permissionRequestPresentationDestination(
+            hasPermissionNow: hasInputMonitoringPermission(),
+            hasAttemptedSystemPrompt: hasAttemptedInputMonitoringSystemPromptDuringCurrentLaunch
+        )
+
+        switch presentationDestination {
+        case .alreadyGranted:
+            return .alreadyGranted
+        case .systemPrompt:
+            hasAttemptedInputMonitoringSystemPromptDuringCurrentLaunch = true
+            _ = CGRequestListenEventAccess()
+        case .systemSettings:
+            openInputMonitoringSettings()
+        }
+
+        return presentationDestination
+    }
+
+    /// Opens System Settings to the Input Monitoring pane.
+    static func openInputMonitoringSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     // MARK: - Screen Recording Permission

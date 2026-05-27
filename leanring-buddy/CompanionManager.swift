@@ -28,6 +28,7 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var lastTranscript: String?
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
     @Published private(set) var hasAccessibilityPermission = false
+    @Published private(set) var hasInputMonitoringPermission = false
     @Published private(set) var hasScreenRecordingPermission = false
     @Published private(set) var hasMicrophonePermission = false
     @Published private(set) var hasScreenContentPermission = false
@@ -72,7 +73,12 @@ final class CompanionManager: ObservableObject {
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
     private static var workerBaseURL: String {
-        ClickyE2EConfiguration.workerBaseURL ?? "https://your-worker-name.your-subdomain.workers.dev"
+        ClickyE2EConfiguration.workerBaseURL ?? AppBundleConfiguration.workerBaseURL
+    }
+
+    /// True when the global CGEvent tap is active and can detect Control+Option.
+    var isPushToTalkHotkeyActive: Bool {
+        hasInputMonitoringPermission && globalPushToTalkShortcutMonitor.isEventTapInstalled
     }
 
     private let teachingSkillStore = TeachingSkillStore()
@@ -118,10 +124,13 @@ final class CompanionManager: ObservableObject {
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
 
-    /// True when all three required permissions (accessibility, screen recording,
-    /// microphone) are granted. Used by the panel to show a single "all good" state.
+    /// True when all required permissions are granted. Used by the panel to show a single "all good" state.
     var allPermissionsGranted: Bool {
-        hasAccessibilityPermission && hasScreenRecordingPermission && hasMicrophonePermission && hasScreenContentPermission
+        hasAccessibilityPermission
+            && hasInputMonitoringPermission
+            && hasScreenRecordingPermission
+            && hasMicrophonePermission
+            && hasScreenContentPermission
     }
 
     /// Whether the blue cursor overlay is currently visible on screen.
@@ -390,7 +399,7 @@ final class CompanionManager: ObservableObject {
     func start() {
         bootstrapTeachingSkills()
         refreshAllPermissions()
-        print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
+        print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), inputMonitoring: \(hasInputMonitoringPermission), pushToTalkActive: \(isPushToTalkHotkeyActive), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
         bindVoiceStateObservation()
         bindAudioPowerLevel()
@@ -522,6 +531,7 @@ final class CompanionManager: ObservableObject {
 
     func refreshAllPermissions() {
         let previouslyHadAccessibility = hasAccessibilityPermission
+        let previouslyHadInputMonitoring = hasInputMonitoringPermission
         let previouslyHadScreenRecording = hasScreenRecordingPermission
         let previouslyHadMicrophone = hasMicrophonePermission
         let previouslyHadAll = allPermissionsGranted
@@ -529,7 +539,10 @@ final class CompanionManager: ObservableObject {
         let currentlyHasAccessibility = WindowPositionManager.hasAccessibilityPermission()
         hasAccessibilityPermission = currentlyHasAccessibility
 
-        if currentlyHasAccessibility {
+        let currentlyHasInputMonitoring = WindowPositionManager.hasInputMonitoringPermission()
+        hasInputMonitoringPermission = currentlyHasInputMonitoring
+
+        if currentlyHasInputMonitoring {
             globalPushToTalkShortcutMonitor.start()
         } else {
             globalPushToTalkShortcutMonitor.stop()
@@ -542,14 +555,18 @@ final class CompanionManager: ObservableObject {
 
         // Debug: log permission state on changes
         if previouslyHadAccessibility != hasAccessibilityPermission
+            || previouslyHadInputMonitoring != hasInputMonitoringPermission
             || previouslyHadScreenRecording != hasScreenRecordingPermission
             || previouslyHadMicrophone != hasMicrophonePermission {
-            print("🔑 Permissions — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
+            print("🔑 Permissions — accessibility: \(hasAccessibilityPermission), inputMonitoring: \(hasInputMonitoringPermission), pushToTalkActive: \(isPushToTalkHotkeyActive), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
         }
 
         // Track individual permission grants as they happen
         if !previouslyHadAccessibility && hasAccessibilityPermission {
             ClickyAnalytics.trackPermissionGranted(permission: "accessibility")
+        }
+        if !previouslyHadInputMonitoring && hasInputMonitoringPermission {
+            ClickyAnalytics.trackPermissionGranted(permission: "input_monitoring")
         }
         if !previouslyHadScreenRecording && hasScreenRecordingPermission {
             ClickyAnalytics.trackPermissionGranted(permission: "screen_recording")
