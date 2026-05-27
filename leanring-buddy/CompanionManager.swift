@@ -163,7 +163,11 @@ final class CompanionManager: ObservableObject {
             isOverlayVisible = true
         }
 
-        sendTranscriptToClaudeWithScreenshot(transcript: suggestion.prompt)
+        let suggestionTapContext = makeSuggestionTapContext(for: suggestion)
+        sendTranscriptToClaudeWithScreenshot(
+            transcript: suggestion.prompt,
+            suggestionTapContext: suggestionTapContext
+        )
     }
 
     func trackNicheSuggestionTapped(suggestion: NicheSuggestion) {
@@ -217,9 +221,38 @@ final class CompanionManager: ObservableObject {
         return nicheDiscoveryManager.voiceSystemPromptClause(for: effectiveNiche)
     }
 
-    private func buildVoiceResponseSystemPrompt() -> String {
+    private func makeSuggestionTapContext(for suggestion: NicheSuggestion) -> SuggestionTapContext {
+        let frontmostBundleId = frontmostApplicationBundleId()
+        let snapshot = nicheDiscoveryManager.suggestionSnapshot(frontmostBundleId: frontmostBundleId)
+
+        return SuggestionTapContext(
+            suggestion: suggestion,
+            suggestionMode: snapshot.mode,
+            frontmostBundleId: frontmostBundleId,
+            frontmostAppDisplayName: frontmostApplicationDisplayName(bundleId: frontmostBundleId),
+            effectiveNiche: nicheDiscoveryManager.effectiveNiche,
+            inferredNiche: nicheDiscoveryManager.inferredNiche,
+            profileIsStable: nicheDiscoveryManager.profileIsStable,
+            profileConfidence: nicheDiscoveryManager.profileConfidence,
+            isUserNicheOverride: nicheDiscoveryManager.userNicheOverride != nil
+        )
+    }
+
+    private func frontmostApplicationDisplayName(bundleId: String?) -> String? {
+        guard let bundleId else { return nil }
+
+        if let mappedDisplayName = NicheAppSuggestionMapping.appDisplayName(bundleId: bundleId) {
+            return mappedDisplayName
+        }
+
+        return NSWorkspace.shared.frontmostApplication?.localizedName
+    }
+
+    private func buildVoiceResponseSystemPrompt(suggestionTapContext: SuggestionTapContext? = nil) -> String {
         var prompt = Self.companionVoiceResponseSystemPrompt
-        if let clause = nicheClauseForVoicePrompt() {
+        if let suggestionTapContext {
+            prompt += "\n\n\(SuggestionTapPromptBuilder.systemPromptClause(for: suggestionTapContext))"
+        } else if let clause = nicheClauseForVoicePrompt() {
             prompt += "\n\n\(clause)"
         }
         return prompt
@@ -770,6 +803,7 @@ final class CompanionManager: ObservableObject {
     /// the buddy to fly to that element on screen.
     private func sendTranscriptToClaudeWithScreenshot(
         transcript: String,
+        suggestionTapContext: SuggestionTapContext? = nil,
         onComplete: (@MainActor () -> Void)? = nil
     ) {
         currentResponseTask?.cancel()
@@ -799,7 +833,7 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                let systemPrompt = buildVoiceResponseSystemPrompt()
+                let systemPrompt = buildVoiceResponseSystemPrompt(suggestionTapContext: suggestionTapContext)
                 ClickyE2EConfiguration.writeLastSystemPromptForE2E(systemPrompt)
 
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(

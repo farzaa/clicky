@@ -257,3 +257,53 @@ fi
 
 echo ""
 echo "E2E PASS: Phase A + B + C + D (app-aware) succeeded"
+
+kill "$CLICKY_PID" 2>/dev/null || true
+CLICKY_PID=""
+sleep 1
+
+echo "Phase E: verify suggestion tap injects hidden context into system prompt..."
+rm -f "$PROMPT_FILE" "$NICHE_JSON"
+defaults delete "$BUNDLE_ID" selectedUserNiche 2>/dev/null || true
+
+if [[ -z "$MOCK_WORKER_PID" ]] || ! kill -0 "$MOCK_WORKER_PID" 2>/dev/null; then
+  echo "Starting mock worker on $WORKER_URL..."
+  node "$ROOT_DIR/tests/e2e/mock-worker.mjs" >/tmp/clicky-e2e-niche-worker-phase-e.log 2>&1 &
+  MOCK_WORKER_PID=$!
+  sleep 1
+fi
+
+"$CLICKY_APP/Contents/MacOS/Clicky" \
+  -CLICKY_E2E=1 \
+  -CLICKY_WORKER_URL="$WORKER_URL" \
+  -CLICKY_E2E_FRONTMOST_BUNDLE_ID=com.mitchellh.ghostty \
+  -CLICKY_E2E_TAP_SUGGESTION=ghostty-command >/tmp/clicky-e2e-niche-suggestion-tap.log 2>&1 &
+CLICKY_PID=$!
+
+PHASE_E_OK=0
+for _ in $(seq 1 30); do
+  if [[ -f "$PROMPT_FILE" ]] && grep -qi "suggestion tap context" "$PROMPT_FILE"; then
+    echo "PASS: suggestion tap hidden context found in composed system prompt"
+    echo "--- prompt excerpt ---"
+    grep -i "suggestion tap context" "$PROMPT_FILE" | head -3
+    PHASE_E_OK=1
+    break
+  fi
+  sleep 1
+done
+
+if [[ "$PHASE_E_OK" -ne 1 ]]; then
+  echo "FAIL: Phase E did not include suggestion tap context within 30s"
+  echo "--- app log ---"
+  tail -40 /tmp/clicky-e2e-niche-suggestion-tap.log || true
+  if [[ -f "$PROMPT_FILE" ]]; then
+    echo "--- prompt file ---"
+    head -40 "$PROMPT_FILE" || true
+  else
+    echo "prompt file missing: $PROMPT_FILE"
+  fi
+  exit 1
+fi
+
+echo ""
+echo "E2E PASS: Phase A + B + C + D + E (suggestion tap context) succeeded"

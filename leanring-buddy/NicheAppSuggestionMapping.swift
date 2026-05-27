@@ -325,6 +325,10 @@ enum NicheAppSuggestionMapping {
         entriesByBundleId[bundleId]?.suggestions
     }
 
+    static func appDisplayName(bundleId: String) -> String? {
+        entriesByBundleId[bundleId]?.appDisplayName
+    }
+
     static func contextLabel(bundleId: String) -> String? {
         guard let entry = entriesByBundleId[bundleId] else { return nil }
         return "While you're in \(entry.appDisplayName), try saying one of these:"

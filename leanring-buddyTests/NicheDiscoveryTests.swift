@@ -102,4 +102,47 @@ struct NicheDiscoveryTests {
             #expect(!clause.isEmpty)
         }
     }
+
+    @Test func suggestionTapPromptIncludesHiddenContextAndGuardrails() {
+        let context = SuggestionTapContext(
+            suggestion: NicheSuggestion(id: "ghostty-command", prompt: "Explain this terminal command on my screen."),
+            suggestionMode: .appAware,
+            frontmostBundleId: "com.mitchellh.ghostty",
+            frontmostAppDisplayName: "Ghostty",
+            effectiveNiche: .developer,
+            inferredNiche: .developer,
+            profileIsStable: true,
+            profileConfidence: 0.54,
+            isUserNicheOverride: false
+        )
+
+        let clause = SuggestionTapPromptBuilder.systemPromptClause(for: context)
+
+        #expect(clause.contains(SuggestionTapPromptBuilder.e2eAssertionMarker))
+        #expect(clause.contains("ghostty-command"))
+        #expect(clause.contains("Explain this terminal command on my screen."))
+        #expect(clause.contains("app-aware"))
+        #expect(clause.contains("Ghostty (com.mitchellh.ghostty)"))
+        #expect(clause.contains("do not tell the user you inferred their job"))
+        #expect(clause.contains("did not use push-to-talk"))
+    }
+
+    @Test func suggestionTapPromptUsesManualOverrideHint() {
+        let context = SuggestionTapContext(
+            suggestion: NicheSuggestion(id: "figma-export", prompt: "How do I export this frame?"),
+            suggestionMode: .userOverride,
+            frontmostBundleId: "com.figma.Desktop",
+            frontmostAppDisplayName: "Figma",
+            effectiveNiche: .designer,
+            inferredNiche: .developer,
+            profileIsStable: true,
+            profileConfidence: 0.8,
+            isUserNicheOverride: true
+        )
+
+        let clause = SuggestionTapPromptBuilder.systemPromptClause(for: context)
+
+        #expect(clause.contains("user manually chose the designer suggestion category"))
+        #expect(!clause.contains("inferred developer usage"))
+    }
 }
