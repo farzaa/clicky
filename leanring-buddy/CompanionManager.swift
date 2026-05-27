@@ -94,6 +94,13 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var lastSystemPrompt: String?
     @Published private(set) var lastMatchedSkillNames: [String] = []
     @Published private(set) var lastSkillWriteTrigger: String?
+    @Published private(set) var lastVaultNotesUsed: [String] = []
+    @Published private(set) var lastUserPromptForE2E: String?
+    @Published private(set) var connectedVaultSummaries: [ConnectedVault] = []
+    @Published private(set) var connectedVaultMarkdownFileCount: Int = 0
+    @Published var vaultConnectionErrorMessage: String?
+
+    private let personalKnowledgeManager = PersonalKnowledgeManager()
 
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
@@ -176,6 +183,58 @@ final class CompanionManager: ObservableObject {
         teachingSkillStore.skills(withStatus: status)
     }
 
+    func discoverObsidianVaults() -> [DiscoveredVault] {
+        VaultDiscoveryService.discoverObsidianVaults()
+    }
+
+    func refreshConnectedVaultState() {
+        personalKnowledgeManager.loadConnectedVaults()
+        connectedVaultSummaries = personalKnowledgeManager.connectedVaults
+        connectedVaultMarkdownFileCount = personalKnowledgeManager.countSearchableMarkdownFiles()
+    }
+
+    func connectVault(at folderURL: URL, label: String? = nil) {
+        do {
+            _ = try personalKnowledgeManager.connectVault(at: folderURL, label: label)
+            vaultConnectionErrorMessage = nil
+            refreshConnectedVaultState()
+        } catch {
+            vaultConnectionErrorMessage = error.localizedDescription
+            print("⚠️ Failed to connect vault: \(error)")
+        }
+    }
+
+    func connectDiscoveredVault(_ discoveredVault: DiscoveredVault) {
+        connectVault(at: discoveredVault.folderURL, label: discoveredVault.displayName)
+    }
+
+    func chooseVaultFolderManually() {
+        let openPanel = NSOpenPanel()
+        openPanel.title = "Choose a notes folder"
+        openPanel.message = "Select a folder containing your markdown notes or Obsidian vault."
+        openPanel.canChooseFiles = false
+        openPanel.canChooseDirectories = true
+        openPanel.allowsMultipleSelection = false
+        openPanel.prompt = "Connect"
+
+        guard openPanel.runModal() == .OK, let selectedFolderURL = openPanel.url else {
+            return
+        }
+
+        connectVault(at: selectedFolderURL)
+    }
+
+    func disconnectVault(id: UUID) {
+        do {
+            try personalKnowledgeManager.disconnectVault(id: id)
+            vaultConnectionErrorMessage = nil
+            refreshConnectedVaultState()
+        } catch {
+            vaultConnectionErrorMessage = error.localizedDescription
+            print("⚠️ Failed to disconnect vault: \(error)")
+        }
+    }
+
     /// Allows E2E tests to bypass microphone/STT and exercise the response + skill loop directly.
     func injectTranscriptForE2E(_ transcript: String) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -247,6 +306,8 @@ final class CompanionManager: ObservableObject {
     private func bootstrapTeachingSkills() {
         teachingSkillStore.loadSkills()
         topicHistoryStore.load()
+        teachingSkills = teachingSkillStore.skills
+        refreshConnectedVaultState()
         SkillCurator.curate(store: teachingSkillStore)
         teachingSkills = teachingSkillStore.skills
         runCuratorLLMPassesIfNeeded()
@@ -901,11 +962,27 @@ final class CompanionManager: ObservableObject {
                     ClickyE2EConfiguration.writeLastMatchedSkillIDForE2E(nil)
                 }
 
+                let shouldRetrievePersonalKnowledge = VaultIntentDetector.shouldRetrievePersonalKnowledge(transcript: transcript)
+                let userPrompt: String
+                if shouldRetrievePersonalKnowledge, personalKnowledgeManager.hasConnectedVault {
+                    let retrievedChunks = personalKnowledgeManager.search(query: transcript)
+                    userPrompt = PersonalContextAssembler.buildUserPrompt(
+                        originalTranscript: transcript,
+                        retrievedChunks: retrievedChunks
+                    )
+                    lastVaultNotesUsed = retrievedChunks.map(\.sourceLabel)
+                } else {
+                    userPrompt = transcript
+                    lastVaultNotesUsed = []
+                }
+                lastUserPromptForE2E = userPrompt
+                ClickyE2EConfiguration.writeLastUserPromptForE2E(userPrompt)
+
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
                     systemPrompt: systemPrompt,
                     conversationHistory: historyForAPI,
-                    userPrompt: transcript,
+                    userPrompt: userPrompt,
                     onTextChunk: { _ in
                         // No streaming text display — spinner stays until TTS plays
                     }

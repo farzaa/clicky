@@ -14,10 +14,14 @@ struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
     @State private var isShowingTeachingSkillsLibrary = false
+    @State private var isShowingVaultConnectionSheet = false
+    @State private var discoveredVaults: [DiscoveredVault] = []
     @State private var copiedSuggestionText: String?
 
     var body: some View {
-        if isShowingTeachingSkillsLibrary {
+        if isShowingVaultConnectionSheet {
+            vaultConnectionContent
+        } else if isShowingTeachingSkillsLibrary {
             TeachingSkillsLibraryView(companionManager: companionManager) {
                 isShowingTeachingSkillsLibrary = false
             }
@@ -26,6 +30,25 @@ struct CompanionPanelView: View {
         } else {
             mainPanelContent
         }
+    }
+
+    private var vaultConnectionContent: some View {
+        VaultConnectionSheet(
+            discoveredVaults: discoveredVaults,
+            onConnectDiscoveredVault: { discoveredVault in
+                companionManager.connectDiscoveredVault(discoveredVault)
+                isShowingVaultConnectionSheet = false
+            },
+            onChooseDifferentFolder: {
+                isShowingVaultConnectionSheet = false
+                companionManager.chooseVaultFolderManually()
+            },
+            onCancel: {
+                isShowingVaultConnectionSheet = false
+            }
+        )
+        .frame(width: 320)
+        .background(panelBackground)
     }
 
     private var mainPanelContent: some View {
@@ -44,6 +67,14 @@ struct CompanionPanelView: View {
                     .frame(height: 12)
 
                 teachingSkillsSection
+                    .padding(.horizontal, 16)
+            }
+
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 12)
+
+                personalVaultSection
                     .padding(.horizontal, 16)
             }
 
@@ -816,6 +847,96 @@ struct CompanionPanelView: View {
             }
             .buttonStyle(.plain)
             .pointerCursor()
+        }
+        .padding(.vertical, 4)
+    }
+
+    // MARK: - Personal Vault
+
+    private var personalVaultSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Personal Vault")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                if companionManager.connectedVaultSummaries.isEmpty {
+                    Button("Connect vault") {
+                        discoveredVaults = companionManager.discoverObsidianVaults()
+                        isShowingVaultConnectionSheet = true
+                    }
+                    .buttonStyle(DSTextButtonStyle())
+                    .accessibilityIdentifier("clicky.panel.vault.connect")
+                }
+            }
+
+            if companionManager.connectedVaultSummaries.isEmpty {
+                Text("Connect Obsidian or markdown notes. Clicky reads them only when you ask about your vault or internal knowledge.")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(companionManager.connectedVaultSummaries) { connectedVault in
+                    connectedVaultRow(connectedVault)
+                }
+
+                Text("Connected · \(companionManager.connectedVaultMarkdownFileCount) notes · read-only")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+
+                if !companionManager.lastVaultNotesUsed.isEmpty {
+                    Text("Last turn used \(companionManager.lastVaultNotesUsed.count) note\(companionManager.lastVaultNotesUsed.count == 1 ? "" : "s")")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.accentText)
+                }
+
+                Button("Add another vault") {
+                    discoveredVaults = companionManager.discoverObsidianVaults()
+                    isShowingVaultConnectionSheet = true
+                }
+                .buttonStyle(DSTextButtonStyle())
+                .accessibilityIdentifier("clicky.panel.vault.add-another")
+            }
+
+            if let vaultConnectionErrorMessage = companionManager.vaultConnectionErrorMessage {
+                Text(vaultConnectionErrorMessage)
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.destructiveText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func connectedVaultRow(_ connectedVault: ConnectedVault) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(connectedVault.label)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .lineLimit(1)
+
+                Text(connectedVault.path)
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer()
+
+            Button(action: {
+                companionManager.disconnectVault(id: connectedVault.id)
+            }) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .accessibilityIdentifier("clicky.panel.vault.disconnect.\(connectedVault.id.uuidString)")
         }
         .padding(.vertical, 4)
     }
