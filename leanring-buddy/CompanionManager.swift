@@ -108,6 +108,9 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var connectedVaultSummaries: [ConnectedVault] = []
     @Published private(set) var connectedVaultMarkdownFileCount: Int = 0
     @Published var vaultConnectionErrorMessage: String?
+    @Published var isVaultWriteEnabled: Bool = UserDefaults.standard.bool(forKey: "isVaultWriteEnabled")
+    @Published private(set) var pendingVaultWrite: PendingVaultWrite?
+    @Published private(set) var lastVaultWriteStatusMessage: String?
 
     private let personalKnowledgeManager = PersonalKnowledgeManager()
 
@@ -294,7 +297,9 @@ final class CompanionManager: ObservableObject {
     private func confirmVaultFolderAccess(suggestedFolderURL: URL?, vaultLabel: String?) -> Bool {
         let openPanel = NSOpenPanel()
         openPanel.title = "Allow vault access"
-        openPanel.message = "Select your notes folder so Clicky can read it when you ask about your vault. This stays read-only."
+        openPanel.message = isVaultWriteEnabled
+            ? "Select your notes folder so Clicky can read and save notes when you ask."
+            : "Select your notes folder so Clicky can read it when you ask about your vault. Writes stay off until you enable them in the panel."
         openPanel.canChooseFiles = false
         openPanel.canChooseDirectories = true
         openPanel.allowsMultipleSelection = false
@@ -316,6 +321,130 @@ final class CompanionManager: ObservableObject {
         } catch {
             vaultConnectionErrorMessage = error.localizedDescription
             print("⚠️ Failed to disconnect vault: \(error)")
+        }
+    }
+
+    func setVaultWriteEnabled(_ enabled: Bool) {
+        isVaultWriteEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isVaultWriteEnabled")
+
+        if !enabled {
+            pendingVaultWrite = nil
+            lastVaultWriteStatusMessage = nil
+        }
+    }
+
+    func confirmPendingVaultWrite() {
+        currentResponseTask?.cancel()
+        currentResponseTask = Task {
+            await executePendingVaultWrite()
+        }
+    }
+
+    func cancelPendingVaultWrite() {
+        pendingVaultWrite = nil
+        lastVaultWriteStatusMessage = "Cancelled"
+    }
+
+    private func writeRequestRequiresConnectedVault(_ writeRequest: VaultWriteRequest) -> Bool {
+        switch writeRequest.destination {
+        case .appendMemory:
+            return false
+        case .appendDailyNote, .newNote:
+            return true
+        }
+    }
+
+    /// Returns true when the transcript was handled as a vault write flow and the normal AI pipeline should be skipped.
+    private func handleVaultWriteFlow(transcript: String) async -> Bool {
+        if let pendingVaultWrite {
+            if VaultWriteIntentDetector.isVaultWriteCancellation(transcript: transcript) {
+                self.pendingVaultWrite = nil
+                lastVaultWriteStatusMessage = "Cancelled"
+                await speakVaultWriteResponse("okay, cancelled.")
+                return true
+            }
+
+            if VaultWriteIntentDetector.isVaultWriteConfirmation(transcript: transcript) {
+                await executePendingVaultWrite()
+                return true
+            }
+
+            if let replacementWriteRequest = VaultWriteIntentDetector.parseWriteRequest(transcript: transcript) {
+                return await stageVaultWrite(writeRequest: replacementWriteRequest)
+            }
+
+            return false
+        }
+
+        guard let writeRequest = VaultWriteIntentDetector.parseWriteRequest(transcript: transcript) else {
+            return false
+        }
+
+        return await stageVaultWrite(writeRequest: writeRequest)
+    }
+
+    private func stageVaultWrite(writeRequest: VaultWriteRequest) async -> Bool {
+        guard isVaultWriteEnabled else {
+            lastVaultWriteStatusMessage = "Vault writes are off"
+            await speakVaultWriteResponse(
+                "vault writes are turned off. enable allow vault writes in the personal vault panel first."
+            )
+            return true
+        }
+
+        if writeRequestRequiresConnectedVault(writeRequest),
+           !personalKnowledgeManager.hasConnectedVault {
+            lastVaultWriteStatusMessage = "Connect a vault first"
+            await speakVaultWriteResponse(
+                "connect a vault in the personal vault panel before saving notes there."
+            )
+            return true
+        }
+
+        let pendingWrite = PendingVaultWrite(writeRequest: writeRequest)
+        pendingVaultWrite = pendingWrite
+        lastVaultWriteStatusMessage = nil
+
+        let previewSnippet = String(pendingWrite.previewBody.prefix(120))
+        let confirmationPrompt: String
+        if previewSnippet.isEmpty {
+            confirmationPrompt = "i'll \(pendingWrite.targetDescription.lowercased()). say yes save it to confirm, or cancel."
+        } else {
+            confirmationPrompt = "i'll \(pendingWrite.targetDescription.lowercased()). the note says: \(previewSnippet). say yes save it to confirm, or cancel."
+        }
+
+        await speakVaultWriteResponse(confirmationPrompt)
+        return true
+    }
+
+    private func executePendingVaultWrite() async {
+        guard let pendingVaultWrite else { return }
+
+        let writeRequest = pendingVaultWrite.writeRequest
+        self.pendingVaultWrite = nil
+
+        do {
+            let writeResult = try await personalKnowledgeManager.executeWrite(writeRequest)
+            connectedVaultMarkdownFileCount = personalKnowledgeManager.countSearchableMarkdownFiles()
+            lastVaultWriteStatusMessage = "Saved to \(writeResult.summary)"
+            await speakVaultWriteResponse("saved to \(writeResult.summary).")
+        } catch {
+            lastVaultWriteStatusMessage = error.localizedDescription
+            await speakVaultWriteResponse("couldn't save that. \(error.localizedDescription)")
+        }
+    }
+
+    private func speakVaultWriteResponse(_ message: String) async {
+        voiceState = .processing
+
+        do {
+            try await elevenLabsTTSClient.speakText(message)
+            voiceState = .responding
+        } catch {
+            ClickyAnalytics.trackTTSError(error: error.localizedDescription)
+            print("⚠️ ElevenLabs TTS error during vault write: \(error)")
+            speakCreditsErrorFallback()
         }
     }
 
@@ -1147,6 +1276,13 @@ final class CompanionManager: ObservableObject {
             voiceState = .processing
 
             do {
+                if await handleVaultWriteFlow(transcript: transcript) {
+                    guard !Task.isCancelled else { return }
+                    voiceState = .idle
+                    scheduleTransientHideIfNeeded()
+                    return
+                }
+
                 let shouldRetrievePersonalKnowledge = VaultIntentDetector.shouldRetrievePersonalKnowledge(transcript: transcript)
                     && personalKnowledgeManager.hasConnectedVault
 

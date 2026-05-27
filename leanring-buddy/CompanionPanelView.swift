@@ -941,19 +941,41 @@ struct CompanionPanelView: View {
                     .font(.system(size: 10))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                vaultWriteToggleRow
+
+                if companionManager.isVaultWriteEnabled {
+                    Text("Writes can save to ~/.clicky/brain/MEMORY.md even without a connected vault.")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             } else {
                 ForEach(companionManager.connectedVaultSummaries) { connectedVault in
                     connectedVaultRow(connectedVault)
                 }
 
-                Text("Connected · \(companionManager.connectedVaultMarkdownFileCount) notes · read-only")
+                vaultWriteToggleRow
+
+                Text(vaultConnectionStatusText)
                     .font(.system(size: 10))
                     .foregroundColor(DS.Colors.textTertiary)
+
+                if let pendingVaultWrite = companionManager.pendingVaultWrite {
+                    pendingVaultWriteConfirmationCard(pendingVaultWrite)
+                }
 
                 if !companionManager.lastVaultNotesUsed.isEmpty {
                     Text("Last turn used \(companionManager.lastVaultNotesUsed.count) note\(companionManager.lastVaultNotesUsed.count == 1 ? "" : "s")")
                         .font(.system(size: 10))
                         .foregroundColor(DS.Colors.accentText)
+                }
+
+                if let lastVaultWriteStatusMessage = companionManager.lastVaultWriteStatusMessage {
+                    Text(lastVaultWriteStatusMessage)
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Button("Add another vault") {
@@ -968,6 +990,19 @@ struct CompanionPanelView: View {
                 Text(vaultConnectionErrorMessage)
                     .font(.system(size: 10))
                     .foregroundColor(DS.Colors.destructiveText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let pendingVaultWrite = companionManager.pendingVaultWrite,
+               companionManager.connectedVaultSummaries.isEmpty {
+                pendingVaultWriteConfirmationCard(pendingVaultWrite)
+            }
+
+            if let lastVaultWriteStatusMessage = companionManager.lastVaultWriteStatusMessage,
+               companionManager.connectedVaultSummaries.isEmpty {
+                Text(lastVaultWriteStatusMessage)
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -1003,6 +1038,67 @@ struct CompanionPanelView: View {
             .accessibilityIdentifier("clicky.panel.vault.disconnect.\(connectedVault.id.uuidString)")
         }
         .padding(.vertical, 4)
+    }
+
+    private var vaultConnectionStatusText: String {
+        let writeAccessLabel = companionManager.isVaultWriteEnabled ? "writes enabled" : "read-only"
+        return "Connected · \(companionManager.connectedVaultMarkdownFileCount) notes · \(writeAccessLabel)"
+    }
+
+    private var vaultWriteToggleRow: some View {
+        HStack {
+            Text("Allow vault writes")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { companionManager.isVaultWriteEnabled },
+                set: { companionManager.setVaultWriteEnabled($0) }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .tint(DS.Colors.accent)
+            .scaleEffect(0.8)
+            .accessibilityIdentifier("clicky.panel.vault.write-toggle")
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func pendingVaultWriteConfirmationCard(_ pendingVaultWrite: PendingVaultWrite) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Confirm save")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Text(pendingVaultWrite.targetDescription)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(DS.Colors.textTertiary)
+
+            Text(pendingVaultWrite.previewBody)
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+                .lineLimit(4)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                Button("Save") {
+                    companionManager.confirmPendingVaultWrite()
+                }
+                .buttonStyle(DSPrimaryButtonStyle())
+                .accessibilityIdentifier("clicky.panel.vault.write.confirm")
+
+                Button("Cancel") {
+                    companionManager.cancelPendingVaultWrite()
+                }
+                .buttonStyle(DSTextButtonStyle())
+                .accessibilityIdentifier("clicky.panel.vault.write.cancel")
+            }
+        }
+        .padding(10)
+        .background(DS.Colors.surface2)
+        .cornerRadius(DS.CornerRadius.medium)
     }
 
     // MARK: - Model Picker

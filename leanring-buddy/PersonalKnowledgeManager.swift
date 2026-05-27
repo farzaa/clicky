@@ -518,12 +518,184 @@ final class PersonalKnowledgeManager {
             .filter { $0.count >= 3 }
             .filter { !searchStopWords.contains($0) }
     }
+
+    struct VaultWriteResult: Equatable {
+        let relativePath: String
+        let vaultLabel: String
+
+        var summary: String {
+            "\(vaultLabel)/\(relativePath)"
+        }
+    }
+
+    func executeWrite(_ writeRequest: VaultWriteRequest, vaultID: UUID? = nil) async throws -> VaultWriteResult {
+        let connectedVaultsSnapshot = connectedVaults
+        let brainRootURLSnapshot = brainRootURL
+
+        return try await Task.detached(priority: .userInitiated) {
+            try Self.performWrite(
+                writeRequest: writeRequest,
+                connectedVaults: connectedVaultsSnapshot,
+                brainRootURL: brainRootURLSnapshot,
+                preferredVaultID: vaultID
+            )
+        }.value
+    }
+
+    private static func performWrite(
+        writeRequest: VaultWriteRequest,
+        connectedVaults: [ConnectedVault],
+        brainRootURL: URL,
+        preferredVaultID: UUID?
+    ) throws -> VaultWriteResult {
+        switch writeRequest.destination {
+        case .appendMemory(let noteContent):
+            let memoryFileURL = brainRootURL.appendingPathComponent("MEMORY.md")
+            try appendText(noteContent, to: memoryFileURL, createIfNeeded: true)
+            return VaultWriteResult(relativePath: "MEMORY.md", vaultLabel: "Clicky brain")
+
+        case .appendDailyNote(let noteContent):
+            guard let connectedVault = resolveConnectedVault(
+                connectedVaults: connectedVaults,
+                preferredVaultID: preferredVaultID
+            ) else {
+                throw PersonalKnowledgeError.noConnectedVault
+            }
+
+            guard let vaultRootURL = resolveVaultURL(for: connectedVault) else {
+                throw PersonalKnowledgeError.vaultFolderNotReadable
+            }
+
+            let dailyNoteRelativePath = dailyNoteRelativePath(for: Date())
+            let dailyNoteURL = vaultRootURL.appendingPathComponent(dailyNoteRelativePath)
+            try ensureParentDirectoryExists(for: dailyNoteURL)
+            try appendText(noteContent, to: dailyNoteURL, createIfNeeded: true)
+            return VaultWriteResult(relativePath: dailyNoteRelativePath, vaultLabel: connectedVault.label)
+
+        case .newNote(let noteTitle, let noteContent):
+            guard let connectedVault = resolveConnectedVault(
+                connectedVaults: connectedVaults,
+                preferredVaultID: preferredVaultID
+            ) else {
+                throw PersonalKnowledgeError.noConnectedVault
+            }
+
+            guard let vaultRootURL = resolveVaultURL(for: connectedVault) else {
+                throw PersonalKnowledgeError.vaultFolderNotReadable
+            }
+
+            let noteRelativePath = newNoteRelativePath(noteTitle: noteTitle, vaultRootURL: vaultRootURL)
+            let noteURL = vaultRootURL.appendingPathComponent(noteRelativePath)
+            try ensureParentDirectoryExists(for: noteURL)
+            let noteBody = formattedNewNoteBody(from: noteContent)
+            try noteBody.write(to: noteURL, atomically: true, encoding: .utf8)
+            return VaultWriteResult(relativePath: noteRelativePath, vaultLabel: connectedVault.label)
+        }
+    }
+
+    private static func resolveConnectedVault(
+        connectedVaults: [ConnectedVault],
+        preferredVaultID: UUID?
+    ) -> ConnectedVault? {
+        if let preferredVaultID,
+           let preferredVault = connectedVaults.first(where: { $0.id == preferredVaultID }) {
+            return preferredVault
+        }
+
+        return connectedVaults.first
+    }
+
+    private static func dailyNoteRelativePath(for date: Date) -> String {
+        let dateFormatter = DateFormatter()
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        let formattedDate = dateFormatter.string(from: date)
+        return "Daily Notes/\(formattedDate).md"
+    }
+
+    private static func newNoteRelativePath(noteTitle: String, vaultRootURL: URL) -> String {
+        let sanitizedFileName = sanitizeFileName(noteTitle)
+        let clickyFolderRelativePath = "Clicky/\(sanitizedFileName).md"
+        let clickyFolderURL = vaultRootURL.appendingPathComponent("Clicky", isDirectory: true)
+
+        if FileManager.default.fileExists(atPath: clickyFolderURL.path) {
+            return clickyFolderRelativePath
+        }
+
+        return "\(sanitizedFileName).md"
+    }
+
+    private static func sanitizeFileName(_ rawTitle: String) -> String {
+        let trimmedTitle = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let allowedCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " -_"))
+        let sanitizedScalars = trimmedTitle.unicodeScalars.map { scalar -> Character in
+            allowedCharacters.contains(scalar) ? Character(scalar) : "-"
+        }
+
+        let sanitizedTitle = String(sanitizedScalars)
+            .replacingOccurrences(of: " ", with: "-")
+            .replacingOccurrences(of: "--", with: "-")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+
+        return sanitizedTitle.isEmpty ? "untitled-note" : sanitizedTitle
+    }
+
+    private static func formattedNewNoteBody(from noteContent: String) -> String {
+        let timestampFormatter = DateFormatter()
+        timestampFormatter.locale = Locale(identifier: "en_US_POSIX")
+        timestampFormatter.dateFormat = "yyyy-MM-dd HH:mm"
+        let savedAtLine = "Saved by Clicky · \(timestampFormatter.string(from: Date()))"
+        let trimmedNoteContent = noteContent.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return "\(savedAtLine)\n\n\(trimmedNoteContent)"
+    }
+
+    private static func formattedAppendBlock(from noteContent: String) -> String {
+        let timestampFormatter = DateFormatter()
+        timestampFormatter.locale = Locale(identifier: "en_US_POSIX")
+        timestampFormatter.dateFormat = "yyyy-MM-dd HH:mm"
+        let savedAtLine = "Saved by Clicky · \(timestampFormatter.string(from: Date()))"
+        let trimmedNoteContent = noteContent.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return "\n\n---\n\n\(savedAtLine)\n\n\(trimmedNoteContent)"
+    }
+
+    private static func appendText(_ noteContent: String, to fileURL: URL, createIfNeeded: Bool) throws {
+        let appendBlock = formattedAppendBlock(from: noteContent)
+
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            let fileHandle = try FileHandle(forWritingTo: fileURL)
+            defer { try? fileHandle.close() }
+            try fileHandle.seekToEnd()
+            if let appendData = appendBlock.data(using: .utf8) {
+                try fileHandle.write(contentsOf: appendData)
+            }
+            return
+        }
+
+        guard createIfNeeded else {
+            throw PersonalKnowledgeError.vaultWriteTargetMissing
+        }
+
+        try ensureParentDirectoryExists(for: fileURL)
+        try appendBlock.trimmingCharacters(in: .whitespacesAndNewlines)
+            .appending("\n")
+            .write(to: fileURL, atomically: true, encoding: .utf8)
+    }
+
+    private static func ensureParentDirectoryExists(for fileURL: URL) throws {
+        let parentDirectoryURL = fileURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: parentDirectoryURL, withIntermediateDirectories: true)
+    }
 }
 
 enum PersonalKnowledgeError: LocalizedError {
     case invalidVaultFolder
     case vaultAlreadyConnected
     case vaultFolderNotReadable
+    case noConnectedVault
+    case invalidVaultWriteRequest
+    case vaultWriteTargetMissing
 
     var errorDescription: String? {
         switch self {
@@ -533,6 +705,12 @@ enum PersonalKnowledgeError: LocalizedError {
             return "That vault is already connected."
         case .vaultFolderNotReadable:
             return "Clicky cannot read that folder. Choose it again in the folder picker to grant access."
+        case .noConnectedVault:
+            return "Connect a vault before saving notes."
+        case .invalidVaultWriteRequest:
+            return "That vault write request is invalid."
+        case .vaultWriteTargetMissing:
+            return "The target note does not exist yet."
         }
     }
 }

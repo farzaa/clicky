@@ -134,4 +134,88 @@ struct PersonalKnowledgeTests {
         #expect(discoveredVault.displayName == "Work")
         #expect(discoveredVault.folderURL.path == "/Users/test/Documents/Work")
     }
+
+    @Test func vaultWriteIntentParsesExplicitSaveCommands() {
+        let writeRequest = VaultWriteIntentDetector.parseWriteRequest(
+            transcript: "save to my vault: project kickoff is next Tuesday"
+        )
+
+        #expect(writeRequest != nil)
+        if case .newNote(let noteTitle, let noteContent)? = writeRequest?.destination {
+            #expect(noteTitle == "project kickoff is next Tuesday")
+            #expect(noteContent == "project kickoff is next Tuesday")
+        } else {
+            Issue.record("Expected new note write request")
+        }
+    }
+
+    @Test func vaultWriteIntentParsesDailyNoteCommands() {
+        let writeRequest = VaultWriteIntentDetector.parseWriteRequest(
+            transcript: "add to my daily note: shipped the vault write feature"
+        )
+
+        #expect(writeRequest != nil)
+        if case .appendDailyNote(let noteContent)? = writeRequest?.destination {
+            #expect(noteContent == "shipped the vault write feature")
+        } else {
+            Issue.record("Expected daily note write request")
+        }
+    }
+
+    @Test func vaultWriteIntentParsesMemoryCommands() {
+        let writeRequest = VaultWriteIntentDetector.parseWriteRequest(
+            transcript: "remember in my notes: I prefer concise answers"
+        )
+
+        #expect(writeRequest != nil)
+        if case .appendMemory(let noteContent)? = writeRequest?.destination {
+            #expect(noteContent == "I prefer concise answers")
+        } else {
+            Issue.record("Expected memory write request")
+        }
+    }
+
+    @Test func vaultIntentIgnoresWriteCommands() {
+        #expect(!VaultIntentDetector.shouldRetrievePersonalKnowledge(transcript: "save to my vault: launch checklist"))
+        #expect(!VaultIntentDetector.shouldRetrievePersonalKnowledge(transcript: "add to my daily note: standup notes"))
+    }
+
+    @Test func personalKnowledgeManagerExecutesVaultWrites() async throws {
+        let temporaryRootDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clicky-vault-write-test-\(UUID().uuidString)", isDirectory: true)
+        let temporaryVaultDirectory = temporaryRootDirectory.appendingPathComponent("vault", isDirectory: true)
+        let temporaryBrainDirectory = temporaryRootDirectory.appendingPathComponent("brain", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryVaultDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: temporaryBrainDirectory, withIntermediateDirectories: true)
+
+        defer {
+            try? FileManager.default.removeItem(at: temporaryRootDirectory)
+        }
+
+        let manager = PersonalKnowledgeManager(brainRootURL: temporaryBrainDirectory)
+        _ = try manager.connectVault(at: temporaryVaultDirectory, label: "Test Vault")
+
+        let newNoteRequest = VaultWriteRequest(
+            destination: .newNote(noteTitle: "Launch Plan", noteContent: "Ship vault writes on Thursday."),
+            sourceTranscript: "save to my vault: Ship vault writes on Thursday."
+        )
+        let newNoteResult = try await manager.executeWrite(newNoteRequest)
+        #expect(newNoteResult.relativePath.hasSuffix("Launch-Plan.md"))
+        #expect(newNoteResult.vaultLabel == "Test Vault")
+
+        let dailyNoteRequest = VaultWriteRequest(
+            destination: .appendDailyNote(noteContent: "Finished tests."),
+            sourceTranscript: "add to my daily note: Finished tests."
+        )
+        let dailyNoteResult = try await manager.executeWrite(dailyNoteRequest)
+        #expect(dailyNoteResult.relativePath.hasPrefix("Daily Notes/"))
+
+        let memoryRequest = VaultWriteRequest(
+            destination: .appendMemory(noteContent: "Prefers concise answers."),
+            sourceTranscript: "remember in my notes: Prefers concise answers."
+        )
+        let memoryResult = try await manager.executeWrite(memoryRequest)
+        #expect(memoryResult.relativePath == "MEMORY.md")
+        #expect(memoryResult.vaultLabel == "Clicky brain")
+    }
 }

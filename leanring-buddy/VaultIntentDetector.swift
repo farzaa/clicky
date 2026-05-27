@@ -45,6 +45,10 @@ enum VaultIntentDetector {
             return false
         }
 
+        if VaultWriteIntentDetector.isVaultWriteTranscript(transcript) {
+            return false
+        }
+
         for explicitPhrase in explicitPhrases where normalizedTranscript.contains(explicitPhrase) {
             return true
         }
