@@ -13,6 +13,8 @@ E2E_SUGGESTIONS_FILE="$CLICKY_DIR/e2e-last-suggestions.txt"
 E2E_SELECTED_NICHE_FILE="$CLICKY_DIR/e2e-selected-niche.txt"
 E2E_SKILLS_COUNT_FILE="$CLICKY_DIR/e2e-skills-count.txt"
 E2E_LIBRARY_STATE_FILE="$CLICKY_DIR/e2e-skill-library-state.txt"
+E2E_NICHE_JSON="$CLICKY_DIR/e2e-niche-discovery.json"
+BUNDLE_ID="com.yourcompany.leanring-buddy"
 
 MOCK_WORKER_PID=""
 CLICKY_PID=""
@@ -119,7 +121,8 @@ reset_e2e_artifacts() {
     "$E2E_SUGGESTIONS_FILE" \
     "$E2E_SELECTED_NICHE_FILE" \
     "$E2E_SKILLS_COUNT_FILE" \
-    "$E2E_LIBRARY_STATE_FILE"
+    "$E2E_LIBRARY_STATE_FILE" \
+    "$E2E_NICHE_JSON"
 }
 
 seed_teaching_skill() {

@@ -14,7 +14,7 @@ struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
     @State private var isShowingTeachingSkillsLibrary = false
-    @State private var copiedSuggestionText: String?
+    @State private var showsNicheOverridePicker = false
 
     var body: some View {
         if isShowingTeachingSkillsLibrary {
@@ -47,6 +47,16 @@ struct CompanionPanelView: View {
                     .padding(.horizontal, 16)
             }
 
+            if companionManager.hasCompletedOnboarding
+                && companionManager.allPermissionsGranted
+                && companionManager.voiceState == .idle {
+                Spacer()
+                    .frame(height: 12)
+
+                nicheSuggestionsSection
+                    .padding(.horizontal, 16)
+            }
+
             if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
                 Spacer()
                     .frame(height: 12)
@@ -67,20 +77,7 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 16)
 
-                if !companionManager.nicheDiscoveryManager.hasSelectedUserNiche {
-                    nichePickerSection
-                        .padding(.horizontal, 16)
-                } else {
-                    startButton
-                        .padding(.horizontal, 16)
-                }
-            }
-
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 12)
-
-                nicheSuggestionsSection
+                startButton
                     .padding(.horizontal, 16)
             }
 
@@ -633,101 +630,131 @@ struct CompanionPanelView: View {
 
     // MARK: - Niche Discovery
 
-    private var nichePickerSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("What do you mostly use Clicky for?")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
+    // MARK: - Niche Suggestions
 
-            VStack(spacing: 6) {
-                ForEach(UserNiche.allCases.filter { $0 != .general }) { userNiche in
-                    Button(action: {
-                        companionManager.nicheDiscoveryManager.selectUserNiche(userNiche)
-                    }) {
-                        Text(userNiche.displayName)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(DS.Colors.textSecondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(
-                                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                                    .fill(Color.white.opacity(0.06))
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .pointerCursor()
-                    .accessibilityIdentifier("clicky.panel.niche.\(userNiche.rawValue)")
-                }
+    private var nicheSuggestionsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(companionManager.nicheSuggestionContextLabel ?? "Try asking about your screen:")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ForEach(companionManager.nicheSuggestions) { suggestion in
+                nicheSuggestionCard(suggestion)
             }
+            .id(
+                (companionManager.selectedUserNiche?.rawValue ?? "automatic")
+                    + "-"
+                    + (companionManager.nicheSuggestions.map(\.id).joined(separator: ","))
+            )
 
             Button(action: {
-                companionManager.nicheDiscoveryManager.skipNicheSelection()
+                showsNicheOverridePicker.toggle()
             }) {
-                Text("Skip — show general examples")
-                    .font(.system(size: 11, weight: .medium))
+                Text(showsNicheOverridePicker ? "Hide suggestion tuning" : "Suggestions feel wrong?")
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundColor(DS.Colors.textTertiary)
             }
             .buttonStyle(.plain)
             .pointerCursor()
-            .accessibilityIdentifier("clicky.panel.niche.skip")
-        }
-        .accessibilityIdentifier("clicky.panel.niche.section")
-    }
 
-    private var nicheSuggestionsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Try asking")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
-
-                Spacer()
-
-                if let copiedSuggestionText {
-                    Text("Copied!")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(DS.Colors.success)
-                        .transition(.opacity)
-                        .onAppear {
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                                if self.copiedSuggestionText == copiedSuggestionText {
-                                    self.copiedSuggestionText = nil
-                                }
-                            }
-                        }
-                }
-            }
-
-            Text("Tap to copy — then hold Control+Option and say it.")
-                .font(.system(size: 10))
-                .foregroundColor(DS.Colors.textTertiary)
-
-            ForEach(Array(companionManager.nicheDiscoveryManager.currentSuggestions.enumerated()), id: \.offset) { suggestionIndex, suggestion in
-                Button(action: {
-                    companionManager.nicheDiscoveryManager.handleSuggestionTapped(suggestion)
-                    copiedSuggestionText = suggestion
-                }) {
-                    Text(suggestion)
-                        .font(.system(size: 11))
-                        .foregroundColor(DS.Colors.textSecondary)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                                .fill(Color.white.opacity(0.06))
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-                .accessibilityIdentifier("clicky.panel.suggestion.\(suggestionIndex)")
+            if showsNicheOverridePicker {
+                nicheOverridePicker
             }
         }
         .padding(.vertical, 4)
-        .accessibilityIdentifier("clicky.panel.suggestions.section")
     }
+
+    private var nicheOverridePicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Pick a better fit:")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 72), spacing: 6)],
+                alignment: .leading,
+                spacing: 6
+            ) {
+                ForEach(overrideNicheOptions) { niche in
+                    nicheChipButton(niche)
+                }
+            }
+
+            if companionManager.selectedUserNiche != nil {
+                Button(action: {
+                    companionManager.clearUserNicheOverride()
+                }) {
+                    Text("Use automatic suggestions again")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(DS.Colors.accent)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+        }
+    }
+
+    private var overrideNicheOptions: [NicheDiscoveryManager.Niche] {
+        [.developer, .designer, .contentCreator, .other]
+    }
+
+    private func nicheChipButton(_ niche: NicheDiscoveryManager.Niche) -> some View {
+        let isSelected = companionManager.selectedUserNiche == niche
+        return Button(action: {
+            companionManager.setUserNiche(niche)
+        }) {
+            Text(niche.displayName)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.12) : Color.white.opacity(0.05))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(isSelected ? DS.Colors.accent.opacity(0.5) : DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    private func nicheSuggestionCard(_ suggestion: NicheSuggestion) -> some View {
+        Button(action: {
+            companionManager.askWithSuggestion(suggestion)
+        }) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(DS.Colors.accent)
+                    .padding(.top, 2)
+
+                Text(suggestion.prompt)
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
 
     // MARK: - Teaching Skills
 

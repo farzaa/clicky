@@ -47,6 +47,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         companionManager.start()
 
         companionManager.runE2EBootstrapActionsIfNeeded()
+        companionManager.runE2ENicheDiscoveryChecksIfNeeded()
         companionManager.runE2EInjectSequenceIfNeeded()
         // Auto-open the panel if the user still needs to do something:
         // either they haven't onboarded yet, or permissions were revoked.

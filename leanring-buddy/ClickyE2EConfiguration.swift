@@ -48,6 +48,18 @@ enum ClickyE2EConfiguration {
         argumentValue(for: "-CLICKY_E2E_RESTORE_SKILL=")
     }
 
+    static var e2eSetNicheRawValue: String? {
+        argumentValue(for: "-CLICKY_E2E_SET_NICHE=") ?? selectNicheOnLaunch
+    }
+
+    static var e2eTapSuggestionID: String? {
+        argumentValue(for: "-CLICKY_E2E_TAP_SUGGESTION=")
+    }
+
+    static var e2eFrontmostBundleId: String? {
+        argumentValue(for: "-CLICKY_E2E_FRONTMOST_BUNDLE_ID=") ?? simulateFrontmostBundleID
+    }
+
     static var clickyDirectoryURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".clicky", isDirectory: true)
@@ -77,17 +89,25 @@ enum ClickyE2EConfiguration {
         clickyDirectoryURL.appendingPathComponent("e2e-skill-library-state.txt")
     }
 
+    static var nicheDiscoveryFileURL: URL {
+        clickyDirectoryURL.appendingPathComponent("e2e-niche-discovery.json")
+    }
+
+    struct NicheDiscoveryE2ESnapshot: Codable {
+        let selectedNiche: String
+        let suggestionCount: Int
+        let firstSuggestionId: String
+        let voicePromptClauseContains: String
+        let suggestionContext: String?
+        let isAppAware: Bool
+    }
+
     static func applyLaunchOverrides() {
         guard isEnabled else { return }
 
         UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding")
         UserDefaults.standard.set(true, forKey: "hasSubmittedEmail")
         UserDefaults.standard.set(true, forKey: "isClickyCursorEnabled")
-
-        guard !shouldIncludeNicheFlow else { return }
-
-        UserDefaults.standard.set(true, forKey: NicheDiscoveryManager.hasSelectedUserNicheDefaultsKey)
-        UserDefaults.standard.set(UserNiche.general.rawValue, forKey: NicheDiscoveryManager.selectedUserNicheDefaultsKey)
     }
 
     static func writeLastSystemPromptForE2E(_ systemPrompt: String) {
@@ -143,9 +163,32 @@ enum ClickyE2EConfiguration {
         writeText(jsonString, to: skillLibraryStateFileURL)
     }
 
+    static func writeNicheDiscoveryForE2E(_ snapshot: NicheDiscoveryE2ESnapshot) {
+        guard isEnabled else { return }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
+        guard let data = try? encoder.encode(snapshot) else { return }
+        writeData(data, to: nicheDiscoveryFileURL)
+    }
+
+    static func writeSuggestionsForE2E(_ suggestionPrompts: [String]) {
+        guard isEnabled else { return }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted]
+        guard let data = try? encoder.encode(suggestionPrompts) else { return }
+        writeData(data, to: lastSuggestionsFileURL)
+    }
+
     private static func writeText(_ text: String, to fileURL: URL) {
         try? FileManager.default.createDirectory(at: clickyDirectoryURL, withIntermediateDirectories: true)
         try? text.write(to: fileURL, atomically: true, encoding: .utf8)
+    }
+
+    private static func writeData(_ data: Data, to fileURL: URL) {
+        try? FileManager.default.createDirectory(at: clickyDirectoryURL, withIntermediateDirectories: true)
+        try? data.write(to: fileURL, options: .atomic)
     }
 
     private static func argumentValue(for prefix: String) -> String? {

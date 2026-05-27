@@ -66,14 +66,13 @@ final class CompanionManager: ObservableObject {
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
-    let nicheDiscoveryManager = NicheDiscoveryManager()
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
     private static var workerBaseURL: String {
-        ClickyE2EConfiguration.workerBaseURL ?? "https://your-worker-name.your-subdomain.workers.dev"
+        ClickyE2EConfiguration.workerBaseURL ?? AppBundleConfiguration.workerBaseURL
     }
 
     private let teachingSkillStore = TeachingSkillStore()
@@ -81,6 +80,16 @@ final class CompanionManager: ObservableObject {
     private var sessionTrace: [SessionTraceEntry] = []
     private var skillWriteTask: Task<Void, Never>?
     private var curatorLLMTask: Task<Void, Never>?
+
+    private let nicheDiscoveryManager = NicheDiscoveryManager()
+    private var frontmostAppObserver: NSObjectProtocol?
+
+    @Published private(set) var selectedUserNiche: NicheDiscoveryManager.Niche?
+    @Published private(set) var inferredUserNiche: NicheDiscoveryManager.Niche?
+    @Published private(set) var nicheProfileIsStable = false
+    @Published private(set) var nicheSuggestions: [NicheSuggestion] = []
+    @Published private(set) var nicheSuggestionContextLabel: String?
+    @Published private(set) var nicheSuggestionMode: NicheSuggestionSnapshot.Mode?
 
     /// Skills currently on disk, exposed for the panel UI.
     @Published private(set) var teachingSkills: [TeachingSkill] = []
@@ -132,6 +141,66 @@ final class CompanionManager: ObservableObject {
 
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+
+    func setUserNiche(_ niche: NicheDiscoveryManager.Niche) {
+        nicheDiscoveryManager.setUserNiche(niche)
+        selectedUserNiche = niche
+        refreshNicheSuggestions()
+        ClickyAnalytics.trackNicheSelected(niche: niche.rawValue)
+    }
+
+    func clearUserNicheOverride() {
+        nicheDiscoveryManager.clearUserNicheOverride()
+        selectedUserNiche = nil
+        refreshNicheSuggestions()
+    }
+
+    func refreshNicheSuggestions() {
+        nicheDiscoveryManager.refreshInferredProfile()
+        inferredUserNiche = nicheDiscoveryManager.inferredNiche
+        nicheProfileIsStable = nicheDiscoveryManager.profileIsStable
+        selectedUserNiche = nicheDiscoveryManager.userNicheOverride
+
+        let snapshot = nicheDiscoveryManager.suggestionSnapshot(
+            frontmostBundleId: frontmostApplicationBundleId()
+        )
+        nicheSuggestions = snapshot.suggestions
+        nicheSuggestionContextLabel = snapshot.contextLabel
+        nicheSuggestionMode = snapshot.mode
+    }
+
+    func askWithSuggestion(_ suggestion: NicheSuggestion) {
+        let effectiveNiche = nicheDiscoveryManager.effectiveNiche?.rawValue ?? "unknown"
+        ClickyAnalytics.trackNicheSuggestionTapped(
+            suggestion: suggestion.prompt,
+            niche: effectiveNiche,
+            bundleID: frontmostApplicationBundleId()
+        )
+        ClickyAnalytics.trackSuggestionSpoken(niche: effectiveNiche, promptID: suggestion.id)
+
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+
+        if !isOverlayVisible && isClickyCursorEnabled {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+
+        let suggestionTapContext = makeSuggestionTapContext(for: suggestion)
+        sendTranscriptToClaudeWithScreenshot(
+            transcript: suggestion.prompt,
+            suggestionTapContext: suggestionTapContext
+        )
+    }
+
+    func trackNicheSuggestionTapped(suggestion: NicheSuggestion) {
+        let effectiveNiche = nicheDiscoveryManager.effectiveNiche?.rawValue ?? "unknown"
+        ClickyAnalytics.trackNicheSuggestionTapped(
+            suggestion: suggestion.prompt,
+            niche: effectiveNiche,
+            bundleID: frontmostApplicationBundleId()
+        )
+    }
 
     func setLearningFromSessionsEnabled(_ enabled: Bool) {
         isLearningFromSessionsEnabled = enabled
@@ -185,6 +254,16 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    func runE2ENicheDiscoveryChecksIfNeeded() {
+        guard ClickyE2EConfiguration.isEnabled else { return }
+
+        if let suggestionID = ClickyE2EConfiguration.e2eTapSuggestionID {
+            tapNicheSuggestionForE2E(promptID: suggestionID)
+        }
+
+        writeNicheDiscoveryDebugJSONIfNeeded()
+    }
+
     func runE2EInjectSequenceIfNeeded() {
         guard ClickyE2EConfiguration.isEnabled else { return }
 
@@ -210,38 +289,157 @@ final class CompanionManager: ObservableObject {
         Task {
             try? await Task.sleep(nanoseconds: 500_000_000)
 
-            if let nicheRawValue = ClickyE2EConfiguration.selectNicheOnLaunch,
-               let userNiche = UserNiche(rawValue: nicheRawValue) {
-                nicheDiscoveryManager.selectUserNiche(userNiche)
+            if let nicheRawValue = ClickyE2EConfiguration.e2eSetNicheRawValue,
+               let niche = NicheDiscoveryManager.Niche(rawValue: nicheRawValue) {
+                nicheDiscoveryManager.setUserNiche(niche)
+                refreshNicheSuggestions()
             }
 
-            if let simulatedBundleID = ClickyE2EConfiguration.simulateFrontmostBundleID {
-                nicheDiscoveryManager.setSimulatedFrontmostBundleIDForE2E(simulatedBundleID)
+            if let frontmostBundleId = ClickyE2EConfiguration.e2eFrontmostBundleId {
+                nicheDiscoveryManager.handleFrontmostApplicationChanged(to: frontmostBundleId)
+                refreshNicheSuggestions()
             }
 
             if let restoreSkillID = ClickyE2EConfiguration.restoreSkillID {
                 restoreTeachingSkill(id: restoreSkillID)
             }
 
-            if let suggestionTapText = ClickyE2EConfiguration.injectSuggestionTapText {
-                nicheDiscoveryManager.handleSuggestionTapped(suggestionTapText)
-            }
-
             writeE2EArtifactsIfNeeded()
+            writeNicheDiscoveryDebugJSONIfNeeded()
         }
     }
 
     func writeE2EArtifactsIfNeeded() {
         guard ClickyE2EConfiguration.isEnabled else { return }
 
-        ClickyE2EConfiguration.writeSelectedNicheForE2E(nicheDiscoveryManager.selectedUserNiche.rawValue)
-        ClickyE2EConfiguration.writeLastSuggestionsForE2E(nicheDiscoveryManager.currentSuggestions)
+        let effectiveNicheRawValue = nicheDiscoveryManager.effectiveNiche?.rawValue ?? "unknown"
+        ClickyE2EConfiguration.writeSelectedNicheForE2E(effectiveNicheRawValue)
+        ClickyE2EConfiguration.writeSuggestionsForE2E(nicheSuggestions.map(\.prompt))
         ClickyE2EConfiguration.writeSkillsCountForE2E(teachingSkillStore.skills.count)
         ClickyE2EConfiguration.writeSkillLibraryStateForE2E(teachingSkillStore.skills)
     }
 
+    private func bootstrapNicheDiscovery() {
+        if let nicheRawValue = ClickyE2EConfiguration.e2eSetNicheRawValue,
+           let niche = NicheDiscoveryManager.Niche(rawValue: nicheRawValue) {
+            nicheDiscoveryManager.setUserNiche(niche)
+        }
+
+        nicheDiscoveryManager.startTracking()
+        refreshNicheSuggestions()
+    }
+
+    private func stopNicheDiscovery() {
+        nicheDiscoveryManager.stopTracking()
+    }
+
     private func frontmostApplicationBundleId() -> String? {
-        NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        if let overrideBundleId = ClickyE2EConfiguration.e2eFrontmostBundleId {
+            return overrideBundleId
+        }
+        return NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+    }
+
+    private func startFrontmostAppObservation() {
+        frontmostAppObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self else { return }
+            let bundleId = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
+                .bundleIdentifier
+            self.nicheDiscoveryManager.handleFrontmostApplicationChanged(to: bundleId)
+            self.refreshNicheSuggestions()
+        }
+    }
+
+    deinit {
+        if let frontmostAppObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(frontmostAppObserver)
+        }
+    }
+
+    private func nicheClauseForVoicePrompt() -> String? {
+        guard let effectiveNiche = nicheDiscoveryManager.effectiveNiche else { return nil }
+        return nicheDiscoveryManager.voiceSystemPromptClause(for: effectiveNiche)
+    }
+
+    private func makeSuggestionTapContext(for suggestion: NicheSuggestion) -> SuggestionTapContext {
+        let frontmostBundleId = frontmostApplicationBundleId()
+        let snapshot = nicheDiscoveryManager.suggestionSnapshot(frontmostBundleId: frontmostBundleId)
+
+        return SuggestionTapContext(
+            suggestion: suggestion,
+            suggestionMode: snapshot.mode,
+            frontmostBundleId: frontmostBundleId,
+            frontmostAppDisplayName: frontmostApplicationDisplayName(bundleId: frontmostBundleId),
+            effectiveNiche: nicheDiscoveryManager.effectiveNiche,
+            inferredNiche: nicheDiscoveryManager.inferredNiche,
+            profileIsStable: nicheDiscoveryManager.profileIsStable,
+            profileConfidence: nicheDiscoveryManager.profileConfidence,
+            isUserNicheOverride: nicheDiscoveryManager.userNicheOverride != nil
+        )
+    }
+
+    private func frontmostApplicationDisplayName(bundleId: String?) -> String? {
+        guard let bundleId else { return nil }
+
+        if let mappedDisplayName = NicheAppSuggestionMapping.appDisplayName(bundleId: bundleId) {
+            return mappedDisplayName
+        }
+
+        return NSWorkspace.shared.frontmostApplication?.localizedName
+    }
+
+    private func buildVoiceResponseSystemPrompt(suggestionTapContext: SuggestionTapContext? = nil) -> String {
+        var prompt = Self.companionVoiceResponseSystemPrompt
+        if let suggestionTapContext {
+            prompt += "\n\n\(SuggestionTapPromptBuilder.systemPromptClause(for: suggestionTapContext))"
+        } else if let clause = nicheClauseForVoicePrompt() {
+            prompt += "\n\n\(clause)"
+        }
+        return prompt
+    }
+
+    private func tapNicheSuggestionForE2E(promptID: String) {
+        guard let suggestion = nicheSuggestions.first(where: { $0.id == promptID }) else {
+            print("⚠️ E2E: no niche suggestion with id \(promptID)")
+            return
+        }
+        askWithSuggestion(suggestion)
+    }
+
+    private func writeNicheDiscoveryDebugJSONIfNeeded() {
+        guard ClickyE2EConfiguration.isEnabled else { return }
+
+        let suggestions = nicheSuggestions
+        guard let firstSuggestion = suggestions.first else {
+            print("⚠️ E2E: no niche suggestions loaded")
+            return
+        }
+
+        let effectiveNiche = nicheDiscoveryManager.effectiveNiche ?? .other
+        let snapshot = ClickyE2EConfiguration.NicheDiscoveryE2ESnapshot(
+            selectedNiche: effectiveNiche.rawValue,
+            suggestionCount: suggestions.count,
+            firstSuggestionId: firstSuggestion.id,
+            voicePromptClauseContains: e2eNicheClauseAssertionToken(for: effectiveNiche),
+            suggestionContext: nicheSuggestionContextLabel,
+            isAppAware: nicheSuggestionMode == .appAware
+        )
+        ClickyE2EConfiguration.writeNicheDiscoveryForE2E(snapshot)
+        ClickyE2EConfiguration.writeSuggestionsForE2E(suggestions.map(\.prompt))
+    }
+
+    private func e2eNicheClauseAssertionToken(for niche: NicheDiscoveryManager.Niche) -> String {
+        switch niche {
+        case .contentCreator: return "content creator"
+        case .developer: return "developer"
+        case .student: return "student"
+        case .designer: return "designer"
+        case .other: return "many apps"
+        }
     }
 
     private func bootstrapTeachingSkills() {
@@ -434,6 +632,8 @@ final class CompanionManager: ObservableObject {
 
     func start() {
         bootstrapTeachingSkills()
+        bootstrapNicheDiscovery()
+        startFrontmostAppObservation()
         refreshAllPermissions()
         print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
@@ -848,6 +1048,7 @@ final class CompanionManager: ObservableObject {
     /// the buddy to fly to that element on screen.
     private func sendTranscriptToClaudeWithScreenshot(
         transcript: String,
+        suggestionTapContext: SuggestionTapContext? = nil,
         onComplete: (@MainActor () -> Void)? = nil
     ) {
         currentResponseTask?.cancel()
@@ -879,8 +1080,9 @@ final class CompanionManager: ObservableObject {
 
                 let matchedTeachingSkills = matchedSkills(for: transcript)
                 lastMatchedSkillNames = matchedTeachingSkills.map(\.name)
+                let basePrompt = buildVoiceResponseSystemPrompt(suggestionTapContext: suggestionTapContext)
                 let systemPrompt = TeachingPromptBuilder.buildVoiceResponsePrompt(
-                    basePrompt: Self.companionVoiceResponseSystemPrompt,
+                    basePrompt: basePrompt,
                     matchedSkills: matchedTeachingSkills
                 )
                 lastSystemPrompt = systemPrompt
