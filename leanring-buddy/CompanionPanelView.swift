@@ -19,6 +19,13 @@ struct CompanionPanelView: View {
     @State private var isShowingVaultConnectionSheet = false
     @State private var discoveredVaults: [DiscoveredVault] = []
     @State private var copiedSuggestionText: String?
+    @State private var isPersonalVaultSectionExpanded = UserDefaults.standard.bool(forKey: CompanionPanelView.personalVaultSectionExpandedUserDefaultsKey)
+    @State private var isTeachingSkillsSectionExpanded = UserDefaults.standard.bool(forKey: CompanionPanelView.teachingSkillsSectionExpandedUserDefaultsKey)
+    @State private var isSettingsSectionExpanded = UserDefaults.standard.bool(forKey: CompanionPanelView.settingsSectionExpandedUserDefaultsKey)
+
+    private static let personalVaultSectionExpandedUserDefaultsKey = "panelPersonalVaultSectionExpanded"
+    private static let teachingSkillsSectionExpandedUserDefaultsKey = "panelTeachingSkillsSectionExpanded"
+    private static let settingsSectionExpandedUserDefaultsKey = "panelSettingsSectionExpanded"
 
     var body: some View {
         if isShowingVaultConnectionSheet {
@@ -62,77 +69,56 @@ struct CompanionPanelView: View {
                 .background(DS.Colors.borderSubtle)
                 .padding(.horizontal, 16)
 
-            permissionsCopySection
-                .padding(.top, 16)
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    permissionsCopySection
+                        .padding(.top, 16)
+
+                    if showsSuggestedAsksSection {
+                        Spacer()
+                            .frame(height: 12)
+
+                        nicheSuggestionsSection
+                    }
+
+                    if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                        Spacer()
+                            .frame(height: 12)
+
+                        collapsiblePersonalVaultSection
+                    }
+
+                    if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                        Spacer()
+                            .frame(height: 8)
+
+                        collapsibleTeachingSkillsSection
+                    }
+
+                    if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                        Spacer()
+                            .frame(height: 8)
+
+                        collapsibleSettingsSection
+                    }
+
+                    if !companionManager.allPermissionsGranted {
+                        Spacer()
+                            .frame(height: 16)
+
+                        settingsSection
+                    }
+
+                    if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                        Spacer()
+                            .frame(height: 16)
+
+                        startButton
+                    }
+                }
                 .padding(.horizontal, 16)
-
-            if showsSuggestedAsksSection {
-                Spacer()
-                    .frame(height: 12)
-
-                nicheSuggestionsSection
-                    .padding(.horizontal, 16)
             }
-
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 12)
-
-                teachingSkillsSection
-                    .padding(.horizontal, 16)
-            }
-
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 12)
-
-                personalVaultSection
-                    .padding(.horizontal, 16)
-            }
-
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 12)
-
-                modelPickerRow
-                    .padding(.horizontal, 16)
-            }
-
-            if !companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                settingsSection
-                    .padding(.horizontal, 16)
-            }
-
-            if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                startButton
-                    .padding(.horizontal, 16)
-            }
-
-            // Show Clicky toggle — hidden for now
-            // if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            //     Spacer()
-            //         .frame(height: 16)
-            //
-            //     showClickyCursorToggleRow
-            //         .padding(.horizontal, 16)
-            // }
-
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                dmFarzaButton
-                    .padding(.horizontal, 16)
-            }
-
-            Spacer()
-                .frame(height: 12)
+            .frame(maxHeight: 460)
 
             Divider()
                 .background(DS.Colors.borderSubtle)
@@ -144,6 +130,100 @@ struct CompanionPanelView: View {
         }
         .frame(width: 320)
         .background(panelBackground)
+        .onChange(of: companionManager.pendingVaultWrite?.id) { _, pendingVaultWriteID in
+            guard pendingVaultWriteID != nil else { return }
+            isPersonalVaultSectionExpanded = true
+            UserDefaults.standard.set(true, forKey: Self.personalVaultSectionExpandedUserDefaultsKey)
+        }
+        .onChange(of: isPersonalVaultSectionExpanded) { _, isExpanded in
+            UserDefaults.standard.set(isExpanded, forKey: Self.personalVaultSectionExpandedUserDefaultsKey)
+        }
+        .onChange(of: isTeachingSkillsSectionExpanded) { _, isExpanded in
+            UserDefaults.standard.set(isExpanded, forKey: Self.teachingSkillsSectionExpandedUserDefaultsKey)
+        }
+        .onChange(of: isSettingsSectionExpanded) { _, isExpanded in
+            UserDefaults.standard.set(isExpanded, forKey: Self.settingsSectionExpandedUserDefaultsKey)
+        }
+    }
+
+    // MARK: - Collapsible Sections
+
+    private var collapsiblePersonalVaultSection: some View {
+        panelDisclosureGroup(
+            isExpanded: $isPersonalVaultSectionExpanded,
+            accessibilityIdentifier: "clicky.panel.vault.disclosure"
+        ) {
+            personalVaultSectionLabel
+        } content: {
+            personalVaultSectionContent
+        }
+    }
+
+    private var collapsibleTeachingSkillsSection: some View {
+        panelDisclosureGroup(
+            isExpanded: $isTeachingSkillsSectionExpanded,
+            accessibilityIdentifier: "clicky.panel.teaching-skills.disclosure"
+        ) {
+            teachingSkillsSectionLabel
+        } content: {
+            teachingSkillsSectionContent
+        }
+    }
+
+    private var collapsibleSettingsSection: some View {
+        panelDisclosureGroup(
+            isExpanded: $isSettingsSectionExpanded,
+            accessibilityIdentifier: "clicky.panel.settings.disclosure"
+        ) {
+            settingsSectionLabel
+        } content: {
+            settingsSectionContent
+        }
+    }
+
+    private func panelDisclosureGroup<Label: View, Content: View>(
+        isExpanded: Binding<Bool>,
+        accessibilityIdentifier: String,
+        @ViewBuilder label: @escaping () -> Label,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        DisclosureGroup(isExpanded: isExpanded) {
+            content()
+                .padding(.top, 8)
+        } label: {
+            label()
+        }
+        .disclosureGroupStyle(PanelDisclosureGroupStyle())
+        .padding(.vertical, 6)
+        .accessibilityIdentifier(accessibilityIdentifier)
+    }
+
+    private struct PanelDisclosureGroupStyle: DisclosureGroupStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            VStack(alignment: .leading, spacing: 0) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        configuration.isExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(DS.Colors.textTertiary)
+                            .frame(width: 12)
+
+                        configuration.label
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+
+                if configuration.isExpanded {
+                    configuration.content
+                }
+            }
+        }
     }
 
     // MARK: - Header
@@ -826,11 +906,37 @@ struct CompanionPanelView: View {
 
     // MARK: - Teaching Skills
 
-    private var teachingSkillsSection: some View {
+    private var teachingSkillsSectionLabel: some View {
+        HStack(spacing: 8) {
+            Text("Teaching Skills")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Spacer(minLength: 0)
+
+            Text(teachingSkillsSectionSummary)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(DS.Colors.textTertiary)
+                .lineLimit(1)
+        }
+    }
+
+    private var teachingSkillsSectionSummary: String {
+        let skillCount = companionManager.teachingSkills.count
+        let learningStateLabel = companionManager.isLearningFromSessionsEnabled ? "learning on" : "learning off"
+
+        if skillCount == 0 {
+            return "No skills · \(learningStateLabel)"
+        }
+
+        return "\(skillCount) skill\(skillCount == 1 ? "" : "s") · \(learningStateLabel)"
+    }
+
+    private var teachingSkillsSectionContent: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Teaching Skills")
-                    .font(.system(size: 13, weight: .medium))
+                Text("Learn from sessions")
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
 
                 Spacer()
@@ -874,7 +980,6 @@ struct CompanionPanelView: View {
                 .accessibilityIdentifier("clicky.panel.teaching-skills.view-all")
             }
         }
-        .padding(.vertical, 4)
     }
 
     private func teachingSkillRow(_ skill: TeachingSkill) -> some View {
@@ -917,25 +1022,45 @@ struct CompanionPanelView: View {
 
     // MARK: - Personal Vault
 
-    private var personalVaultSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Personal Vault")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
+    private var personalVaultSectionLabel: some View {
+        HStack(spacing: 8) {
+            Text("Personal Vault")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
 
-                Spacer()
+            Spacer(minLength: 0)
 
-                if companionManager.connectedVaultSummaries.isEmpty {
-                    Button("Connect vault") {
-                        discoveredVaults = companionManager.discoverObsidianVaults()
-                        isShowingVaultConnectionSheet = true
-                    }
-                    .buttonStyle(DSTextButtonStyle())
-                    .accessibilityIdentifier("clicky.panel.vault.connect")
+            if companionManager.connectedVaultSummaries.isEmpty {
+                Button("Connect") {
+                    discoveredVaults = companionManager.discoverObsidianVaults()
+                    isShowingVaultConnectionSheet = true
                 }
+                .buttonStyle(DSTextButtonStyle())
+                .accessibilityIdentifier("clicky.panel.vault.connect")
+            } else {
+                Text(personalVaultSectionSummary)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .lineLimit(1)
             }
+        }
+    }
 
+    private var personalVaultSectionSummary: String {
+        if companionManager.pendingVaultWrite != nil {
+            return "Save pending"
+        }
+
+        if companionManager.connectedVaultSummaries.isEmpty {
+            return "Not connected"
+        }
+
+        let writeAccessLabel = companionManager.isVaultWriteEnabled ? "writes on" : "read-only"
+        return "\(companionManager.connectedVaultMarkdownFileCount) notes · \(writeAccessLabel)"
+    }
+
+    private var personalVaultSectionContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
             if companionManager.connectedVaultSummaries.isEmpty {
                 Text("Connect Obsidian or markdown notes. Clicky reads them only when you ask about your vault or internal knowledge.")
                     .font(.system(size: 10))
@@ -961,21 +1086,10 @@ struct CompanionPanelView: View {
                     .font(.system(size: 10))
                     .foregroundColor(DS.Colors.textTertiary)
 
-                if let pendingVaultWrite = companionManager.pendingVaultWrite {
-                    pendingVaultWriteConfirmationCard(pendingVaultWrite)
-                }
-
                 if !companionManager.lastVaultNotesUsed.isEmpty {
                     Text("Last turn used \(companionManager.lastVaultNotesUsed.count) note\(companionManager.lastVaultNotesUsed.count == 1 ? "" : "s")")
                         .font(.system(size: 10))
                         .foregroundColor(DS.Colors.accentText)
-                }
-
-                if let lastVaultWriteStatusMessage = companionManager.lastVaultWriteStatusMessage {
-                    Text(lastVaultWriteStatusMessage)
-                        .font(.system(size: 10))
-                        .foregroundColor(DS.Colors.textTertiary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Button("Add another vault") {
@@ -986,27 +1100,24 @@ struct CompanionPanelView: View {
                 .accessibilityIdentifier("clicky.panel.vault.add-another")
             }
 
+            if let pendingVaultWrite = companionManager.pendingVaultWrite {
+                pendingVaultWriteConfirmationCard(pendingVaultWrite)
+            }
+
+            if let lastVaultWriteStatusMessage = companionManager.lastVaultWriteStatusMessage {
+                Text(lastVaultWriteStatusMessage)
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             if let vaultConnectionErrorMessage = companionManager.vaultConnectionErrorMessage {
                 Text(vaultConnectionErrorMessage)
                     .font(.system(size: 10))
                     .foregroundColor(DS.Colors.destructiveText)
                     .fixedSize(horizontal: false, vertical: true)
             }
-
-            if let pendingVaultWrite = companionManager.pendingVaultWrite,
-               companionManager.connectedVaultSummaries.isEmpty {
-                pendingVaultWriteConfirmationCard(pendingVaultWrite)
-            }
-
-            if let lastVaultWriteStatusMessage = companionManager.lastVaultWriteStatusMessage,
-               companionManager.connectedVaultSummaries.isEmpty {
-                Text(lastVaultWriteStatusMessage)
-                    .font(.system(size: 10))
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
         }
-        .padding(.vertical, 4)
     }
 
     private func connectedVaultRow(_ connectedVault: ConnectedVault) -> some View {
@@ -1099,6 +1210,35 @@ struct CompanionPanelView: View {
         .padding(10)
         .background(DS.Colors.surface2)
         .cornerRadius(DS.CornerRadius.medium)
+    }
+
+    // MARK: - Settings
+
+    private var settingsSectionLabel: some View {
+        HStack(spacing: 8) {
+            Text("Settings")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Spacer(minLength: 0)
+
+            Text(settingsSectionSummary)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(DS.Colors.textTertiary)
+                .lineLimit(1)
+        }
+    }
+
+    private var settingsSectionSummary: String {
+        companionManager.selectedModel.contains("opus") ? "Opus" : "Sonnet"
+    }
+
+    private var settingsSectionContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            modelPickerRow
+
+            dmFarzaButton
+        }
     }
 
     // MARK: - Model Picker
