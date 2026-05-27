@@ -133,4 +133,11 @@ enum ClickyAnalytics {
             "prompt_id": promptID
         ])
     }
+
+    static func trackSuggestionSpoken(niche: String, promptID: String) {
+        PostHogSDK.shared.capture("suggestion_spoken", properties: [
+            "niche": niche,
+            "prompt_id": promptID
+        ])
+    }
 }

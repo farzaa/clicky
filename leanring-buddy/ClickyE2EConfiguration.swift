@@ -50,6 +50,11 @@ enum ClickyE2EConfiguration {
             .appendingPathComponent(".clicky/e2e-niche-discovery.json")
     }
 
+    static var lastSuggestionsFileURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".clicky/e2e-last-suggestions.txt")
+    }
+
     struct NicheDiscoveryE2ESnapshot: Codable {
         let selectedNiche: String
         let suggestionCount: Int
@@ -85,6 +90,18 @@ enum ClickyE2EConfiguration {
         encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
         guard let data = try? encoder.encode(snapshot) else { return }
         try? data.write(to: nicheDiscoveryFileURL, options: .atomic)
+    }
+
+    static func writeSuggestionsForE2E(_ suggestionPrompts: [String]) {
+        guard isEnabled else { return }
+
+        let directory = lastSuggestionsFileURL.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted]
+        guard let data = try? encoder.encode(suggestionPrompts) else { return }
+        try? data.write(to: lastSuggestionsFileURL, options: .atomic)
     }
 
     private static func argumentValue(for prefix: String) -> String? {

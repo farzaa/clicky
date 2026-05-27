@@ -14,7 +14,7 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
-    @State private var nicheSuggestionHintMessage: String?
+    @State private var showsNicheOverridePicker = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -27,11 +27,13 @@ struct CompanionPanelView: View {
                 .padding(.top, 16)
                 .padding(.horizontal, 16)
 
-            if companionManager.allPermissionsGranted {
+            if companionManager.hasCompletedOnboarding
+                && companionManager.allPermissionsGranted
+                && companionManager.voiceState == .idle {
                 Spacer()
                     .frame(height: 12)
 
-                nicheDiscoverySection
+                nicheSuggestionsSection
                     .padding(.horizontal, 16)
             }
 
@@ -137,10 +139,17 @@ struct CompanionPanelView: View {
     @ViewBuilder
     private var permissionsCopySection: some View {
         if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            Text("Hold Control+Option to talk.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Hold ^ Control + ⌥ Option to talk.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Text("Use Control (not ⌘ Command). Speak while holding, then release.")
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         } else if companionManager.allPermissionsGranted && !companionManager.hasSubmittedEmail {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Drop your email to get started.")
@@ -606,59 +615,79 @@ struct CompanionPanelView: View {
         .padding(.vertical, 4)
     }
 
-    // MARK: - Niche Discovery
+    // MARK: - Niche Suggestions
 
-    private var nicheDiscoverySection: some View {
+    private var nicheSuggestionsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("What do you use Clicky for?")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-
-            Text("Hold Control+Option, ask out loud, and Clicky will look at your screen and point.")
-                .font(.system(size: 10))
+            Text(companionManager.nicheSuggestionContextLabel ?? "Try asking about your screen:")
+                .font(.system(size: 11, weight: .medium))
                 .foregroundColor(DS.Colors.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            nichePickerChips
+            ForEach(companionManager.nicheSuggestions) { suggestion in
+                nicheSuggestionCard(suggestion)
+            }
+            .id(
+                (companionManager.selectedUserNiche?.rawValue ?? "automatic")
+                    + "-"
+                    + (companionManager.nicheSuggestions.map(\.id).joined(separator: ","))
+            )
 
-            if let selectedNiche = companionManager.selectedUserNiche {
-                Text(companionManager.nicheSuggestionContextLabel ?? "Try saying one of these:")
-                    .font(.system(size: 11, weight: .medium))
+            Button(action: {
+                showsNicheOverridePicker.toggle()
+            }) {
+                Text(showsNicheOverridePicker ? "Hide suggestion tuning" : "Suggestions feel wrong?")
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundColor(DS.Colors.textTertiary)
-                    .padding(.top, 2)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
 
-                ForEach(companionManager.nicheSuggestions) { suggestion in
-                    nicheSuggestionCard(suggestion)
-                }
-
-                if let nicheSuggestionHintMessage {
-                    Text(nicheSuggestionHintMessage)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(DS.Colors.accent)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+            if showsNicheOverridePicker {
+                nicheOverridePicker
             }
         }
         .padding(.vertical, 4)
     }
 
-    private var nichePickerChips: some View {
-        LazyVGrid(
-            columns: [GridItem(.adaptive(minimum: 72), spacing: 6)],
-            alignment: .leading,
-            spacing: 6
-        ) {
-            ForEach(NicheDiscoveryManager.Niche.allCases) { niche in
-                nicheChipButton(niche)
+    private var nicheOverridePicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Pick a better fit:")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 72), spacing: 6)],
+                alignment: .leading,
+                spacing: 6
+            ) {
+                ForEach(overrideNicheOptions) { niche in
+                    nicheChipButton(niche)
+                }
+            }
+
+            if companionManager.selectedUserNiche != nil {
+                Button(action: {
+                    companionManager.clearUserNicheOverride()
+                }) {
+                    Text("Use automatic suggestions again")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(DS.Colors.accent)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
             }
         }
+    }
+
+    private var overrideNicheOptions: [NicheDiscoveryManager.Niche] {
+        [.developer, .designer, .contentCreator, .other]
     }
 
     private func nicheChipButton(_ niche: NicheDiscoveryManager.Niche) -> some View {
         let isSelected = companionManager.selectedUserNiche == niche
         return Button(action: {
             companionManager.setUserNiche(niche)
-            nicheSuggestionHintMessage = nil
         }) {
             Text(niche.displayName)
                 .font(.system(size: 11, weight: .medium))
@@ -680,13 +709,10 @@ struct CompanionPanelView: View {
 
     private func nicheSuggestionCard(_ suggestion: NicheSuggestion) -> some View {
         Button(action: {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(suggestion.prompt, forType: .string)
-            companionManager.trackNicheSuggestionTapped(suggestion: suggestion)
-            nicheSuggestionHintMessage = "Copied — hold Control+Option and say this while looking at your screen."
+            companionManager.askWithSuggestion(suggestion)
         }) {
             HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "mic.fill")
+                Image(systemName: "sparkles")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(DS.Colors.accent)
                     .padding(.top, 2)
@@ -698,18 +724,15 @@ struct CompanionPanelView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 Spacer(minLength: 0)
-
-                Image(systemName: "doc.on.doc")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(DS.Colors.textTertiary)
             }
-            .padding(10)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.white.opacity(0.04))
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
                     .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
             )
         }

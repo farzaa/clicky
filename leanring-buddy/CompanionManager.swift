@@ -72,15 +72,18 @@ final class CompanionManager: ObservableObject {
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
     private static var workerBaseURL: String {
-        ClickyE2EConfiguration.workerBaseURL ?? "https://your-worker-name.your-subdomain.workers.dev"
+        ClickyE2EConfiguration.workerBaseURL ?? AppBundleConfiguration.workerBaseURL
     }
 
     private let nicheDiscoveryManager = NicheDiscoveryManager()
     private var frontmostAppObserver: NSObjectProtocol?
 
     @Published private(set) var selectedUserNiche: NicheDiscoveryManager.Niche?
+    @Published private(set) var inferredUserNiche: NicheDiscoveryManager.Niche?
+    @Published private(set) var nicheProfileIsStable = false
     @Published private(set) var nicheSuggestions: [NicheSuggestion] = []
     @Published private(set) var nicheSuggestionContextLabel: String?
+    @Published private(set) var nicheSuggestionMode: NicheSuggestionSnapshot.Mode?
 
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
@@ -121,38 +124,65 @@ final class CompanionManager: ObservableObject {
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
 
     func setUserNiche(_ niche: NicheDiscoveryManager.Niche) {
-        nicheDiscoveryManager.setNiche(niche)
+        nicheDiscoveryManager.setUserNiche(niche)
         selectedUserNiche = niche
         refreshNicheSuggestions()
         ClickyAnalytics.trackNicheSelected(niche: niche.rawValue)
     }
 
+    func clearUserNicheOverride() {
+        nicheDiscoveryManager.clearUserNicheOverride()
+        selectedUserNiche = nil
+        refreshNicheSuggestions()
+    }
+
     func refreshNicheSuggestions() {
-        guard let selectedUserNiche else {
-            nicheSuggestions = []
-            nicheSuggestionContextLabel = nil
-            return
+        nicheDiscoveryManager.refreshInferredProfile()
+        inferredUserNiche = nicheDiscoveryManager.inferredNiche
+        nicheProfileIsStable = nicheDiscoveryManager.profileIsStable
+        selectedUserNiche = nicheDiscoveryManager.userNicheOverride
+
+        let snapshot = nicheDiscoveryManager.suggestionSnapshot(
+            frontmostBundleId: frontmostApplicationBundleId()
+        )
+        nicheSuggestions = snapshot.suggestions
+        nicheSuggestionContextLabel = snapshot.contextLabel
+        nicheSuggestionMode = snapshot.mode
+    }
+
+    func askWithSuggestion(_ suggestion: NicheSuggestion) {
+        let effectiveNiche = nicheDiscoveryManager.effectiveNiche?.rawValue ?? "unknown"
+        ClickyAnalytics.trackSuggestionTapped(niche: effectiveNiche, promptID: suggestion.id)
+        ClickyAnalytics.trackSuggestionSpoken(niche: effectiveNiche, promptID: suggestion.id)
+
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+
+        if !isOverlayVisible && isClickyCursorEnabled {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
         }
 
-        let frontmostBundleId = frontmostApplicationBundleId()
-        nicheSuggestions = nicheDiscoveryManager.suggestions(
-            for: selectedUserNiche,
-            frontmostBundleId: frontmostBundleId
-        )
-        nicheSuggestionContextLabel = nicheDiscoveryManager.contextLabel(
-            for: selectedUserNiche,
-            frontmostBundleId: frontmostBundleId
-        )
+        sendTranscriptToClaudeWithScreenshot(transcript: suggestion.prompt)
     }
 
     func trackNicheSuggestionTapped(suggestion: NicheSuggestion) {
-        guard let selectedUserNiche else { return }
-        ClickyAnalytics.trackSuggestionTapped(niche: selectedUserNiche.rawValue, promptID: suggestion.id)
+        let effectiveNiche = nicheDiscoveryManager.effectiveNiche?.rawValue ?? "unknown"
+        ClickyAnalytics.trackSuggestionTapped(niche: effectiveNiche, promptID: suggestion.id)
     }
 
     private func bootstrapNicheDiscovery() {
-        selectedUserNiche = nicheDiscoveryManager.selectedNiche
+        if let nicheRawValue = ClickyE2EConfiguration.e2eSetNicheRawValue,
+           let niche = NicheDiscoveryManager.Niche(rawValue: nicheRawValue) {
+            nicheDiscoveryManager.setUserNiche(niche)
+        }
+
+        nicheDiscoveryManager.startTracking()
         refreshNicheSuggestions()
+    }
+
+    private func stopNicheDiscovery() {
+        nicheDiscoveryManager.stopTracking()
     }
 
     private func frontmostApplicationBundleId() -> String? {
@@ -167,8 +197,12 @@ final class CompanionManager: ObservableObject {
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
-            self?.refreshNicheSuggestions()
+        ) { [weak self] notification in
+            guard let self else { return }
+            let bundleId = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
+                .bundleIdentifier
+            self.nicheDiscoveryManager.handleFrontmostApplicationChanged(to: bundleId)
+            self.refreshNicheSuggestions()
         }
     }
 
@@ -179,8 +213,8 @@ final class CompanionManager: ObservableObject {
     }
 
     private func nicheClauseForVoicePrompt() -> String? {
-        guard let selectedUserNiche else { return nil }
-        return nicheDiscoveryManager.voiceSystemPromptClause(for: selectedUserNiche)
+        guard let effectiveNiche = nicheDiscoveryManager.effectiveNiche else { return nil }
+        return nicheDiscoveryManager.voiceSystemPromptClause(for: effectiveNiche)
     }
 
     private func buildVoiceResponseSystemPrompt() -> String {
@@ -201,11 +235,6 @@ final class CompanionManager: ObservableObject {
 
     func runE2ENicheDiscoveryChecksIfNeeded() {
         guard ClickyE2EConfiguration.isEnabled else { return }
-
-        if let nicheRawValue = ClickyE2EConfiguration.e2eSetNicheRawValue,
-           let niche = NicheDiscoveryManager.Niche(rawValue: nicheRawValue) {
-            setUserNiche(niche)
-        }
 
         if let suggestionID = ClickyE2EConfiguration.e2eTapSuggestionID {
             tapNicheSuggestionForE2E(promptID: suggestionID)
@@ -229,28 +258,29 @@ final class CompanionManager: ObservableObject {
             print("⚠️ E2E: no niche suggestion with id \(promptID)")
             return
         }
-        trackNicheSuggestionTapped(suggestion: suggestion)
+        askWithSuggestion(suggestion)
     }
 
     private func writeNicheDiscoveryDebugJSONIfNeeded() {
         guard ClickyE2EConfiguration.isEnabled else { return }
-        guard let selectedUserNiche else { return }
 
         let suggestions = nicheSuggestions
         guard let firstSuggestion = suggestions.first else {
-            print("⚠️ E2E: no niche suggestions loaded for \(selectedUserNiche.rawValue)")
+            print("⚠️ E2E: no niche suggestions loaded")
             return
         }
 
+        let effectiveNiche = nicheDiscoveryManager.effectiveNiche ?? .other
         let snapshot = ClickyE2EConfiguration.NicheDiscoveryE2ESnapshot(
-            selectedNiche: selectedUserNiche.rawValue,
+            selectedNiche: effectiveNiche.rawValue,
             suggestionCount: suggestions.count,
             firstSuggestionId: firstSuggestion.id,
-            voicePromptClauseContains: e2eNicheClauseAssertionToken(for: selectedUserNiche),
+            voicePromptClauseContains: e2eNicheClauseAssertionToken(for: effectiveNiche),
             suggestionContext: nicheSuggestionContextLabel,
-            isAppAware: nicheSuggestionContextLabel != nil
+            isAppAware: nicheSuggestionMode == .appAware
         )
         ClickyE2EConfiguration.writeNicheDiscoveryForE2E(snapshot)
+        ClickyE2EConfiguration.writeSuggestionsForE2E(suggestions.map(\.prompt))
     }
 
     private func e2eNicheClauseAssertionToken(for niche: NicheDiscoveryManager.Niche) -> String {

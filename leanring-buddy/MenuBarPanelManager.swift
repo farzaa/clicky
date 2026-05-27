@@ -33,7 +33,7 @@ final class MenuBarPanelManager: NSObject {
 
     private let companionManager: CompanionManager
     private let panelWidth: CGFloat = 320
-    private let panelHeight: CGFloat = 380
+    private let panelHeight: CGFloat = 520
 
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
@@ -131,6 +131,7 @@ final class MenuBarPanelManager: NSObject {
             createPanel()
         }
 
+        companionManager.refreshNicheSuggestions()
         positionPanelBelowStatusItem()
 
         panel?.makeKeyAndOrderFront(nil)

@@ -14,42 +14,85 @@ struct NicheDiscoveryTests {
         for niche in NicheDiscoveryManager.Niche.allCases {
             let suggestions = manager.suggestions(for: niche)
             #expect(suggestions.count >= 3, "Expected at least 3 suggestions for \(niche.rawValue)")
-            #expect(suggestions.count <= 5, "Expected at most 5 suggestions for \(niche.rawValue)")
             #expect(suggestions.allSatisfy { !$0.id.isEmpty && !$0.prompt.isEmpty })
         }
     }
 
-    @Test func contentCreatorSuggestionsDifferFromDeveloper() {
+    @Test func suggestionSnapshotLimitsToThreeCards() {
         let manager = NicheDiscoveryManager()
-        let creatorPrompts = Set(manager.suggestions(for: .contentCreator).map(\.prompt))
-        let developerPrompts = Set(manager.suggestions(for: .developer).map(\.prompt))
-        #expect(creatorPrompts != developerPrompts)
+        let snapshot = manager.suggestionSnapshot(frontmostBundleId: "com.apple.dt.Xcode")
+        #expect(snapshot.suggestions.count == 3)
+        #expect(snapshot.mode == .appAware)
+        #expect(snapshot.contextLabel.contains("Xcode"))
     }
 
-    @Test func persistsSelectedNicheAcrossInstances() {
+    @Test func ghosttyUsesAppAwareSuggestionsWithoutManualNiche() {
+        let manager = NicheDiscoveryManager()
+        let snapshot = manager.suggestionSnapshot(frontmostBundleId: "com.mitchellh.ghostty")
+        #expect(snapshot.mode == .appAware)
+        #expect(snapshot.suggestions.first?.id == "ghostty-command")
+    }
+
+    @Test func persistsUserNicheOverrideAcrossInstances() {
         let userDefaults = UserDefaults(suiteName: "NicheDiscoveryTests")!
         userDefaults.removePersistentDomain(forName: "NicheDiscoveryTests")
 
         let firstManager = NicheDiscoveryManager(userDefaults: userDefaults)
-        firstManager.setNiche(.designer)
-        #expect(firstManager.selectedNiche == .designer)
+        firstManager.setUserNiche(.designer)
+        #expect(firstManager.userNicheOverride == .designer)
 
         let secondManager = NicheDiscoveryManager(userDefaults: userDefaults)
-        #expect(secondManager.selectedNiche == .designer)
-        #expect(secondManager.suggestionsForCurrentNiche().count >= 3)
+        #expect(secondManager.userNicheOverride == .designer)
 
         userDefaults.removePersistentDomain(forName: "NicheDiscoveryTests")
     }
 
-    @Test func suggestionsForCurrentNicheEmptyWhenUnset() {
-        let userDefaults = UserDefaults(suiteName: "NicheDiscoveryTests.unset")!
-        userDefaults.removePersistentDomain(forName: "NicheDiscoveryTests.unset")
+    @Test func infersDeveloperProfileFromTrackedUsage() {
+        let usageFileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clicky-niche-tests-\(UUID().uuidString).json")
+        let collector = AppUsageCollector(usageFileURL: usageFileURL)
+        collector.start()
+        collector.recordFrontmostApplicationChange(to: "com.mitchellh.ghostty")
+        Thread.sleep(forTimeInterval: 0.05)
+        collector.recordFrontmostApplicationChange(to: "com.apple.dt.Xcode")
+        Thread.sleep(forTimeInterval: 0.05)
+        collector.recordFrontmostApplicationChange(to: nil)
+
+        let classifier = NicheClassifier()
+        let result = classifier.classify(
+            weightedSecondsByBundleId: collector.weightedSecondsByBundleId()
+        )
+
+        #expect(result.primaryNiche == .developer)
+        try? FileManager.default.removeItem(at: usageFileURL)
+    }
+
+    @Test func neutralSafariUsesGeneralFallbackWithoutStableProfile() {
+        let manager = NicheDiscoveryManager()
+        let snapshot = manager.suggestionSnapshot(frontmostBundleId: "com.apple.Safari")
+        #expect(snapshot.mode == .generalFallback)
+    }
+
+    @Test func userNicheOverrideReplacesAppAwareSuggestions() {
+        let userDefaults = UserDefaults(suiteName: "NicheDiscoveryTests.override")!
+        userDefaults.removePersistentDomain(forName: "NicheDiscoveryTests.override")
 
         let manager = NicheDiscoveryManager(userDefaults: userDefaults)
-        #expect(manager.selectedNiche == nil)
-        #expect(manager.suggestionsForCurrentNiche().isEmpty)
+        let automaticSnapshot = manager.suggestionSnapshot(frontmostBundleId: "com.mitchellh.ghostty")
+        #expect(automaticSnapshot.mode == .appAware)
+        #expect(automaticSnapshot.suggestions.first?.id == "ghostty-command")
 
-        userDefaults.removePersistentDomain(forName: "NicheDiscoveryTests.unset")
+        manager.setUserNiche(.designer)
+        let designerSnapshot = manager.suggestionSnapshot(frontmostBundleId: "com.mitchellh.ghostty")
+        #expect(designerSnapshot.mode == .userOverride)
+        #expect(!designerSnapshot.suggestions.map(\.id).contains("ghostty-command"))
+
+        manager.setUserNiche(.developer)
+        let developerSnapshot = manager.suggestionSnapshot(frontmostBundleId: "com.mitchellh.ghostty")
+        #expect(developerSnapshot.mode == .userOverride)
+        #expect(developerSnapshot.suggestions.map(\.id) != designerSnapshot.suggestions.map(\.id))
+
+        userDefaults.removePersistentDomain(forName: "NicheDiscoveryTests.override")
     }
 
     @Test func voicePromptClausePresentForEachNiche() {
@@ -58,36 +101,5 @@ struct NicheDiscoveryTests {
             let clause = manager.voiceSystemPromptClause(for: niche)
             #expect(!clause.isEmpty)
         }
-    }
-
-    @Test func xcodeBundleIdReturnsAppSpecificDeveloperSuggestions() {
-        let manager = NicheDiscoveryManager()
-        let suggestions = manager.suggestions(
-            for: .developer,
-            frontmostBundleId: "com.apple.dt.Xcode"
-        )
-        #expect(!suggestions.isEmpty)
-        #expect(suggestions.first?.id == "xcode-source-control")
-        #expect(suggestions.allSatisfy { $0.id.hasPrefix("xcode-") })
-    }
-
-    @Test func unknownBundleIdFallsBackToBundledDeveloperSuggestions() {
-        let manager = NicheDiscoveryManager()
-        let bundledSuggestions = manager.suggestions(for: .developer)
-        let suggestions = manager.suggestions(
-            for: .developer,
-            frontmostBundleId: "com.unknown.app"
-        )
-        #expect(suggestions.map(\.id) == bundledSuggestions.map(\.id))
-        #expect(suggestions.first?.id == "commit-changes")
-    }
-
-    @Test func contextLabelMentionsXcodeForDeveloperNiche() {
-        let manager = NicheDiscoveryManager()
-        let label = manager.contextLabel(
-            for: .developer,
-            frontmostBundleId: "com.apple.dt.Xcode"
-        )
-        #expect(label?.contains("Xcode") == true)
     }
 }

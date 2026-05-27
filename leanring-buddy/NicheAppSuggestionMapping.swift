@@ -2,22 +2,53 @@
 //  NicheAppSuggestionMapping.swift
 //  leanring-buddy
 //
-//  Maps common macOS app bundle IDs to niche-specific example prompts shown
-//  when the frontmost app matches the user's selected niche.
+//  Maps common macOS app bundle IDs to app-aware example prompts.
 //
 
 import Foundation
 
 enum NicheAppSuggestionMapping {
     private struct AppSuggestionEntry {
-        let niche: NicheDiscoveryManager.Niche
         let appDisplayName: String
         let suggestions: [NicheSuggestion]
     }
 
     private static let entriesByBundleId: [String: AppSuggestionEntry] = [
+        "com.mitchellh.ghostty": AppSuggestionEntry(
+            appDisplayName: "Ghostty",
+            suggestions: [
+                NicheSuggestion(
+                    id: "ghostty-command",
+                    prompt: "Explain this terminal command on my screen."
+                ),
+                NicheSuggestion(
+                    id: "ghostty-flag",
+                    prompt: "What does this flag do?"
+                ),
+                NicheSuggestion(
+                    id: "ghostty-git",
+                    prompt: "Walk me through the git output I'm looking at."
+                )
+            ]
+        ),
+        "com.todesktop.230313mzl4w4u92": AppSuggestionEntry(
+            appDisplayName: "Cursor",
+            suggestions: [
+                NicheSuggestion(
+                    id: "cursor-agent",
+                    prompt: "Where is the agent panel?"
+                ),
+                NicheSuggestion(
+                    id: "cursor-diff",
+                    prompt: "Explain the diff on my screen."
+                ),
+                NicheSuggestion(
+                    id: "cursor-run",
+                    prompt: "How do I run this project from here?"
+                )
+            ]
+        ),
         "com.apple.dt.Xcode": AppSuggestionEntry(
-            niche: .developer,
             appDisplayName: "Xcode",
             suggestions: [
                 NicheSuggestion(
@@ -43,7 +74,6 @@ enum NicheAppSuggestionMapping {
             ]
         ),
         "com.apple.Terminal": AppSuggestionEntry(
-            niche: .developer,
             appDisplayName: "Terminal",
             suggestions: [
                 NicheSuggestion(
@@ -61,7 +91,6 @@ enum NicheAppSuggestionMapping {
             ]
         ),
         "com.microsoft.VSCode": AppSuggestionEntry(
-            niche: .developer,
             appDisplayName: "VS Code",
             suggestions: [
                 NicheSuggestion(
@@ -79,7 +108,6 @@ enum NicheAppSuggestionMapping {
             ]
         ),
         "com.apple.FinalCut": AppSuggestionEntry(
-            niche: .contentCreator,
             appDisplayName: "Final Cut Pro",
             suggestions: [
                 NicheSuggestion(
@@ -101,7 +129,6 @@ enum NicheAppSuggestionMapping {
             ]
         ),
         "com.apple.iMovieApp": AppSuggestionEntry(
-            niche: .contentCreator,
             appDisplayName: "iMovie",
             suggestions: [
                 NicheSuggestion(
@@ -119,7 +146,6 @@ enum NicheAppSuggestionMapping {
             ]
         ),
         "com.figma.Desktop": AppSuggestionEntry(
-            niche: .designer,
             appDisplayName: "Figma",
             suggestions: [
                 NicheSuggestion(
@@ -141,7 +167,6 @@ enum NicheAppSuggestionMapping {
             ]
         ),
         "com.bohemiancoding.sketch3": AppSuggestionEntry(
-            niche: .designer,
             appDisplayName: "Sketch",
             suggestions: [
                 NicheSuggestion(
@@ -159,7 +184,6 @@ enum NicheAppSuggestionMapping {
             ]
         ),
         "com.apple.Notes": AppSuggestionEntry(
-            niche: .student,
             appDisplayName: "Notes",
             suggestions: [
                 NicheSuggestion(
@@ -177,7 +201,6 @@ enum NicheAppSuggestionMapping {
             ]
         ),
         "com.apple.iWork.Pages": AppSuggestionEntry(
-            niche: .student,
             appDisplayName: "Pages",
             suggestions: [
                 NicheSuggestion(
@@ -195,7 +218,6 @@ enum NicheAppSuggestionMapping {
             ]
         ),
         "com.apple.TextEdit": AppSuggestionEntry(
-            niche: .other,
             appDisplayName: "TextEdit",
             suggestions: [
                 NicheSuggestion(
@@ -213,7 +235,6 @@ enum NicheAppSuggestionMapping {
             ]
         ),
         "com.apple.Safari": AppSuggestionEntry(
-            niche: .other,
             appDisplayName: "Safari",
             suggestions: [
                 NicheSuggestion(
@@ -231,7 +252,6 @@ enum NicheAppSuggestionMapping {
             ]
         ),
         "com.apple.mail": AppSuggestionEntry(
-            niche: .other,
             appDisplayName: "Mail",
             suggestions: [
                 NicheSuggestion(
@@ -249,7 +269,6 @@ enum NicheAppSuggestionMapping {
             ]
         ),
         "com.apple.finder": AppSuggestionEntry(
-            niche: .other,
             appDisplayName: "Finder",
             suggestions: [
                 NicheSuggestion(
@@ -267,7 +286,6 @@ enum NicheAppSuggestionMapping {
             ]
         ),
         "com.notion.id": AppSuggestionEntry(
-            niche: .student,
             appDisplayName: "Notion",
             suggestions: [
                 NicheSuggestion(
@@ -285,7 +303,6 @@ enum NicheAppSuggestionMapping {
             ]
         ),
         "com.spotify.client": AppSuggestionEntry(
-            niche: .other,
             appDisplayName: "Spotify",
             suggestions: [
                 NicheSuggestion(
@@ -304,23 +321,12 @@ enum NicheAppSuggestionMapping {
         )
     ]
 
-    static func appSpecificSuggestions(
-        bundleId: String,
-        selectedNiche: NicheDiscoveryManager.Niche
-    ) -> [NicheSuggestion]? {
-        guard let entry = entriesByBundleId[bundleId], entry.niche == selectedNiche else {
-            return nil
-        }
-        return entry.suggestions
+    static func appSpecificSuggestions(bundleId: String) -> [NicheSuggestion]? {
+        entriesByBundleId[bundleId]?.suggestions
     }
 
-    static func contextLabel(
-        bundleId: String,
-        selectedNiche: NicheDiscoveryManager.Niche
-    ) -> String? {
-        guard let entry = entriesByBundleId[bundleId], entry.niche == selectedNiche else {
-            return nil
-        }
+    static func contextLabel(bundleId: String) -> String? {
+        guard let entry = entriesByBundleId[bundleId] else { return nil }
         return "While you're in \(entry.appDisplayName), try saying one of these:"
     }
 }
