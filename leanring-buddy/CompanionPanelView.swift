@@ -8,15 +8,27 @@
 //
 
 import AVFoundation
-import AppKit
 import SwiftUI
 
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    @State private var isShowingTeachingSkillsLibrary = false
     @State private var showsNicheOverridePicker = false
 
     var body: some View {
+        if isShowingTeachingSkillsLibrary {
+            TeachingSkillsLibraryView(companionManager: companionManager) {
+                isShowingTeachingSkillsLibrary = false
+            }
+            .frame(width: 320)
+            .background(panelBackground)
+        } else {
+            mainPanelContent
+        }
+    }
+
+    private var mainPanelContent: some View {
         VStack(alignment: .leading, spacing: 0) {
             panelHeader
             Divider()
@@ -26,6 +38,14 @@ struct CompanionPanelView: View {
             permissionsCopySection
                 .padding(.top, 16)
                 .padding(.horizontal, 16)
+
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 12)
+
+                teachingSkillsSection
+                    .padding(.horizontal, 16)
+            }
 
             if companionManager.hasCompletedOnboarding
                 && companionManager.allPermissionsGranted
@@ -139,17 +159,10 @@ struct CompanionPanelView: View {
     @ViewBuilder
     private var permissionsCopySection: some View {
         if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Hold ^ Control + ⌥ Option to talk.")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
-
-                Text("Use Control (not ⌘ Command). Speak while holding, then release.")
-                    .font(.system(size: 11))
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Text("Hold Control+Option to talk.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
         } else if companionManager.allPermissionsGranted && !companionManager.hasSubmittedEmail {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Drop your email to get started.")
@@ -615,6 +628,8 @@ struct CompanionPanelView: View {
         .padding(.vertical, 4)
     }
 
+    // MARK: - Niche Discovery
+
     // MARK: - Niche Suggestions
 
     private var nicheSuggestionsSection: some View {
@@ -738,6 +753,98 @@ struct CompanionPanelView: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
+    }
+
+
+    // MARK: - Teaching Skills
+
+    private var teachingSkillsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Teaching Skills")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                Toggle("", isOn: Binding(
+                    get: { companionManager.isLearningFromSessionsEnabled },
+                    set: { companionManager.setLearningFromSessionsEnabled($0) }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .tint(DS.Colors.accent)
+                .scaleEffect(0.8)
+                .accessibilityIdentifier("clicky.panel.teaching-skills.learn-toggle")
+            }
+
+            Text(companionManager.isLearningFromSessionsEnabled
+                 ? "Clicky learns from successful tutoring sessions."
+                 : "Learning paused — saved skills still apply.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+
+            if companionManager.teachingSkills.isEmpty {
+                Text("No skills yet. Teach Clicky something on screen and confirm it worked.")
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(companionManager.teachingSkills.prefix(4)) { skill in
+                    teachingSkillRow(skill)
+                }
+
+                Button(action: {
+                    isShowingTeachingSkillsLibrary = true
+                }) {
+                    Text("View all")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.accent)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .accessibilityIdentifier("clicky.panel.teaching-skills.view-all")
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func teachingSkillRow(_ skill: TeachingSkill) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(skill.name)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .lineLimit(1)
+
+                Text("\(skill.usageCount) uses • \(skill.status.rawValue)")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+
+            Spacer()
+
+            Button(action: {
+                companionManager.setTeachingSkillPinned(id: skill.id, pinned: !skill.isPinned)
+            }) {
+                Image(systemName: skill.isPinned ? "pin.fill" : "pin")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(skill.isPinned ? DS.Colors.accent : DS.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+
+            Button(action: {
+                companionManager.deleteTeachingSkill(id: skill.id)
+            }) {
+                Image(systemName: "trash")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+        }
+        .padding(.vertical, 4)
     }
 
     // MARK: - Model Picker
