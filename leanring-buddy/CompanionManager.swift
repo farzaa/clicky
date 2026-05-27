@@ -1115,6 +1115,17 @@ final class CompanionManager: ObservableObject {
     - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
     """
 
+    private static let vaultKnowledgeResponseSystemPrompt = """
+    you're clicky. the user is asking about their personal vault notes. their message includes excerpts from those notes — use them to answer. your reply will be spoken aloud, so write the way you'd actually talk.
+
+    rules:
+    - default to one or two sentences unless they ask for more detail.
+    - all lowercase, casual, warm. no emojis, lists, bullet points, or markdown.
+    - write for the ear, not the eye.
+    - if the note excerpts don't contain the answer, say you couldn't find that in their vault.
+    - do not mention screenshots or screen pointing — this is a vault-only question.
+    """
+
     // MARK: - AI Response Pipeline
 
     /// Captures a screenshot, sends it along with the transcript to Claude,
@@ -1136,74 +1147,93 @@ final class CompanionManager: ObservableObject {
             voiceState = .processing
 
             do {
-                // Capture all connected screens so the AI has full context
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
-
-                guard !Task.isCancelled else { return }
-
-                // Build image labels with the actual screenshot pixel dimensions
-                // so Claude's coordinate space matches the image it sees. We
-                // scale from screenshot pixels to display points ourselves.
-                let labeledImages = screenCaptures.map { capture in
-                    let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
-                    return (data: capture.imageData, label: capture.label + dimensionInfo)
-                }
-
-                // Pass conversation history so Claude remembers prior exchanges
-                let historyForAPI = conversationHistory.map { entry in
-                    (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
-                }
-
-                let matchedTeachingSkills = matchedSkills(for: transcript)
-                lastMatchedSkillNames = matchedTeachingSkills.map(\.name)
-                let basePrompt = buildVoiceResponseSystemPrompt(suggestionTapContext: suggestionTapContext)
-                let systemPrompt = TeachingPromptBuilder.buildVoiceResponsePrompt(
-                    basePrompt: basePrompt,
-                    matchedSkills: matchedTeachingSkills
-                )
-                lastSystemPrompt = systemPrompt
-                ClickyE2EConfiguration.writeLastSystemPromptForE2E(systemPrompt)
-
-                for skill in matchedTeachingSkills {
-                    _ = try? teachingSkillStore.markUsed(skill)
-                }
-                teachingSkills = teachingSkillStore.skills
-
-                if !matchedTeachingSkills.isEmpty {
-                    ClickyAnalytics.trackTeachingSkillsMatched(
-                        skillIDs: matchedTeachingSkills.map(\.id),
-                        bundleID: frontmostApplicationBundleId()
-                    )
-                    ClickyE2EConfiguration.writeLastMatchedSkillIDForE2E(matchedTeachingSkills.first?.id)
-                } else {
-                    ClickyE2EConfiguration.writeLastMatchedSkillIDForE2E(nil)
-                }
-
                 let shouldRetrievePersonalKnowledge = VaultIntentDetector.shouldRetrievePersonalKnowledge(transcript: transcript)
-                let userPrompt: String
-                if shouldRetrievePersonalKnowledge, personalKnowledgeManager.hasConnectedVault {
-                    let retrievedChunks = personalKnowledgeManager.search(query: transcript)
-                    userPrompt = PersonalContextAssembler.buildUserPrompt(
+                    && personalKnowledgeManager.hasConnectedVault
+
+                let fullResponseText: String
+                var screenCaptures: [CompanionScreenCapture] = []
+
+                if shouldRetrievePersonalKnowledge {
+                    // Vault questions are text-only — skip screen capture and vision API.
+                    // Sending multi-monitor JPEGs blocks the main thread during base64 encoding
+                    // and adds several seconds of latency for no benefit.
+                    print("📚 Vault query — using text-only path (no screenshots)")
+
+                    let retrievedChunks = await personalKnowledgeManager.search(query: transcript)
+                    let userPrompt = PersonalContextAssembler.buildUserPrompt(
                         originalTranscript: transcript,
                         retrievedChunks: retrievedChunks
                     )
                     lastVaultNotesUsed = retrievedChunks.map(\.sourceLabel)
-                } else {
-                    userPrompt = transcript
-                    lastVaultNotesUsed = []
-                }
-                lastUserPromptForE2E = userPrompt
-                ClickyE2EConfiguration.writeLastUserPromptForE2E(userPrompt)
+                    lastUserPromptForE2E = userPrompt
+                    ClickyE2EConfiguration.writeLastUserPromptForE2E(userPrompt)
+                    lastSystemPrompt = Self.vaultKnowledgeResponseSystemPrompt
+                    ClickyE2EConfiguration.writeLastSystemPromptForE2E(Self.vaultKnowledgeResponseSystemPrompt)
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: systemPrompt,
-                    conversationHistory: historyForAPI,
-                    userPrompt: userPrompt,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
+                    let vaultResponse = try await claudeAPI.sendTextMessage(
+                        systemPrompt: Self.vaultKnowledgeResponseSystemPrompt,
+                        userPrompt: userPrompt
+                    )
+                    fullResponseText = vaultResponse.text
+                } else {
+                    // Capture all connected screens so the AI has full context
+                    screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+
+                    guard !Task.isCancelled else { return }
+
+                    // Build image labels with the actual screenshot pixel dimensions
+                    // so Claude's coordinate space matches the image it sees. We
+                    // scale from screenshot pixels to display points ourselves.
+                    let labeledImages = screenCaptures.map { capture in
+                        let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
+                        return (data: capture.imageData, label: capture.label + dimensionInfo)
                     }
-                )
+
+                    // Pass conversation history so Claude remembers prior exchanges
+                    let historyForAPI = conversationHistory.map { entry in
+                        (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
+                    }
+
+                    let matchedTeachingSkills = matchedSkills(for: transcript)
+                    lastMatchedSkillNames = matchedTeachingSkills.map(\.name)
+                    let basePrompt = buildVoiceResponseSystemPrompt(suggestionTapContext: suggestionTapContext)
+                    let systemPrompt = TeachingPromptBuilder.buildVoiceResponsePrompt(
+                        basePrompt: basePrompt,
+                        matchedSkills: matchedTeachingSkills
+                    )
+                    lastSystemPrompt = systemPrompt
+                    ClickyE2EConfiguration.writeLastSystemPromptForE2E(systemPrompt)
+
+                    for skill in matchedTeachingSkills {
+                        _ = try? teachingSkillStore.markUsed(skill)
+                    }
+                    teachingSkills = teachingSkillStore.skills
+
+                    if !matchedTeachingSkills.isEmpty {
+                        ClickyAnalytics.trackTeachingSkillsMatched(
+                            skillIDs: matchedTeachingSkills.map(\.id),
+                            bundleID: frontmostApplicationBundleId()
+                        )
+                        ClickyE2EConfiguration.writeLastMatchedSkillIDForE2E(matchedTeachingSkills.first?.id)
+                    } else {
+                        ClickyE2EConfiguration.writeLastMatchedSkillIDForE2E(nil)
+                    }
+
+                    lastUserPromptForE2E = transcript
+                    ClickyE2EConfiguration.writeLastUserPromptForE2E(transcript)
+                    lastVaultNotesUsed = []
+
+                    let screenResponse = try await claudeAPI.analyzeImageStreaming(
+                        images: labeledImages,
+                        systemPrompt: systemPrompt,
+                        conversationHistory: historyForAPI,
+                        userPrompt: transcript,
+                        onTextChunk: { _ in
+                            // No streaming text display — spinner stays until TTS plays
+                        }
+                    )
+                    fullResponseText = screenResponse.text
+                }
 
                 guard !Task.isCancelled else { return }
 

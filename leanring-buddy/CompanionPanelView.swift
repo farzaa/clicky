@@ -14,14 +14,11 @@ struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
     @State private var isShowingTeachingSkillsLibrary = false
-<<<<<<< HEAD
     @State private var showsNicheOverridePicker = false
     @State private var showsSuggestedAsks = false
-=======
     @State private var isShowingVaultConnectionSheet = false
     @State private var discoveredVaults: [DiscoveredVault] = []
     @State private var copiedSuggestionText: String?
->>>>>>> origin/feature/personal-vault
 
     var body: some View {
         if isShowingVaultConnectionSheet {

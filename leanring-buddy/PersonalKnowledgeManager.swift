@@ -45,17 +45,29 @@ final class PersonalKnowledgeManager {
         defaultBrainRootURL.appendingPathComponent("sources.json")
     }
 
-    private let brainRootURL: URL
-    private let sourcesFileURL: URL
-
-    private(set) var connectedVaults: [ConnectedVault] = []
-
-    private let excludedPathComponents: Set<String> = [
+    private static let excludedPathComponents: Set<String> = [
         ".git",
+        ".obsidian",
         "node_modules",
         ".trash",
         "Trash"
     ]
+
+    private static let searchStopWords: Set<String> = [
+        "tell", "what", "whats", "when", "where", "which", "about", "from", "that", "this",
+        "have", "with", "your", "mine", "the", "and", "for", "are", "was", "were", "can",
+        "you", "how", "does", "did", "will", "would", "should", "could", "ask", "show",
+        "give", "read", "look", "into", "note", "notes", "vault", "obsidian", "clicky"
+    ]
+
+    private static let maxMarkdownFilesToScan = 120
+    private static let maxMarkdownFileBytesToRead = 65_536
+    private static let maxVaultOverviewNotes = 12
+
+    private let brainRootURL: URL
+    private let sourcesFileURL: URL
+
+    private(set) var connectedVaults: [ConnectedVault] = []
 
     private let excludedFileNamePatterns: [String] = [
         ".env",
@@ -154,14 +166,42 @@ final class PersonalKnowledgeManager {
         return markdownFileCount
     }
 
-    func search(query: String, maxChunks: Int = 4) -> [PersonalKnowledgeChunk] {
+    /// Runs vault search off the main thread so large Obsidian vaults cannot freeze the UI.
+    func search(query: String, maxChunks: Int = 4) async -> [PersonalKnowledgeChunk] {
+        let connectedVaultsSnapshot = connectedVaults
+        let brainRootURLSnapshot = brainRootURL
+
+        return await Task.detached(priority: .userInitiated) {
+            Self.searchVaultContents(
+                query: query,
+                connectedVaults: connectedVaultsSnapshot,
+                brainRootURL: brainRootURLSnapshot,
+                maxChunks: maxChunks
+            )
+        }.value
+    }
+
+    private static func searchVaultContents(
+        query: String,
+        connectedVaults: [ConnectedVault],
+        brainRootURL: URL,
+        maxChunks: Int
+    ) -> [PersonalKnowledgeChunk] {
+        if isVaultOverviewQuery(query) {
+            return buildVaultOverviewChunks(
+                connectedVaults: connectedVaults,
+                brainRootURL: brainRootURL,
+                maxChunks: maxChunks
+            )
+        }
+
         let queryTokens = tokenize(query)
         guard !queryTokens.isEmpty else { return [] }
 
         var scoredChunks: [PersonalKnowledgeChunk] = []
 
         for vault in connectedVaults {
-            guard let resolvedURL = resolveVaultURL(vault) else { continue }
+            guard let resolvedURL = resolveVaultURL(for: vault) else { continue }
             let vaultChunks = searchMarkdownFiles(
                 in: resolvedURL,
                 vaultLabel: vault.label,
@@ -170,7 +210,10 @@ final class PersonalKnowledgeManager {
             scoredChunks.append(contentsOf: vaultChunks)
         }
 
-        scoredChunks.append(contentsOf: searchBrainMarkdownFiles(queryTokens: queryTokens))
+        scoredChunks.append(contentsOf: searchBrainMarkdownFiles(
+            brainRootURL: brainRootURL,
+            queryTokens: queryTokens
+        ))
 
         return scoredChunks
             .sorted { lhs, rhs in
@@ -179,6 +222,62 @@ final class PersonalKnowledgeManager {
             }
             .prefix(maxChunks)
             .map { $0 }
+    }
+
+    private static func isVaultOverviewQuery(_ query: String) -> Bool {
+        let normalizedQuery = query
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        let overviewPhrases = [
+            "what's in my vault",
+            "whats in my vault",
+            "what is in my vault",
+            "tell me what's in my vault",
+            "tell me whats in my vault",
+            "show me what's in my vault",
+            "show me whats in my vault",
+            "what do i have in my vault",
+            "what do i have in my notes"
+        ]
+
+        return overviewPhrases.contains(where: { normalizedQuery.contains($0) })
+    }
+
+    private static func buildVaultOverviewChunks(
+        connectedVaults: [ConnectedVault],
+        brainRootURL: URL,
+        maxChunks: Int
+    ) -> [PersonalKnowledgeChunk] {
+        var overviewChunks: [PersonalKnowledgeChunk] = []
+
+        for vault in connectedVaults {
+            guard let resolvedURL = resolveVaultURL(for: vault) else { continue }
+
+            let markdownFileURLs = collectMarkdownFileURLs(in: resolvedURL)
+                .sorted { lhs, rhs in
+                    let lhsDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                    let rhsDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                    return lhsDate > rhsDate
+                }
+
+            let recentMarkdownFileURLs = markdownFileURLs.prefix(maxVaultOverviewNotes)
+
+            for fileURL in recentMarkdownFileURLs {
+                let relativePath = relativePath(from: resolvedURL, to: fileURL)
+                let sourceLabel = "\(vault.label)/\(relativePath)"
+                overviewChunks.append(
+                    PersonalKnowledgeChunk(
+                        sourcePath: fileURL.path,
+                        sourceLabel: sourceLabel,
+                        excerpt: "recent note: \(relativePath)",
+                        score: 1
+                    )
+                )
+            }
+        }
+
+        return Array(overviewChunks.prefix(maxChunks))
     }
 
     private func saveConnectedVaults() throws {
@@ -193,7 +292,7 @@ final class PersonalKnowledgeManager {
         try data.write(to: sourcesFileURL, options: .atomic)
     }
 
-    private func resolveVaultURL(_ vault: ConnectedVault) -> URL? {
+    private static func resolveVaultURL(for vault: ConnectedVault) -> URL? {
         if let bookmarkData = vault.bookmarkData {
             var isStale = false
             if let resolvedURL = try? URL(
@@ -212,7 +311,10 @@ final class PersonalKnowledgeManager {
         return folderURL
     }
 
-    private func searchBrainMarkdownFiles(queryTokens: [String]) -> [PersonalKnowledgeChunk] {
+    private static func searchBrainMarkdownFiles(
+        brainRootURL: URL,
+        queryTokens: [String]
+    ) -> [PersonalKnowledgeChunk] {
         let brainFileNames = ["USER.md", "MEMORY.md"]
         var chunks: [PersonalKnowledgeChunk] = []
 
@@ -231,30 +333,61 @@ final class PersonalKnowledgeManager {
         return chunks
     }
 
-    private func searchMarkdownFiles(
+    private static func searchMarkdownFiles(
         in rootURL: URL,
         vaultLabel: String,
         queryTokens: [String]
     ) -> [PersonalKnowledgeChunk] {
         let markdownFileURLs = collectMarkdownFileURLs(in: rootURL)
-        return markdownFileURLs.compactMap { fileURL in
+        var scoredChunks: [PersonalKnowledgeChunk] = []
+
+        for fileURL in markdownFileURLs {
             let relativePath = relativePath(from: rootURL, to: fileURL)
-            let sourceLabel = "\(vaultLabel)/\(relativePath)"
-            return scoreMarkdownFile(at: fileURL, sourceLabel: sourceLabel, queryTokens: queryTokens)
+
+            var filenameScore = 0
+            let lowercasedRelativePath = relativePath.lowercased()
+            for token in queryTokens where lowercasedRelativePath.contains(token) {
+                filenameScore += 1
+            }
+
+            guard let chunk = scoreMarkdownFile(
+                at: fileURL,
+                sourceLabel: "\(vaultLabel)/\(relativePath)",
+                queryTokens: queryTokens,
+                filenameScore: filenameScore
+            ) else {
+                continue
+            }
+
+            scoredChunks.append(chunk)
+
+            if scoredChunks.count >= maxMarkdownFilesToScan {
+                break
+            }
         }
+
+        return scoredChunks
     }
 
-    private func scoreMarkdownFile(
+    private static func scoreMarkdownFile(
         at fileURL: URL,
         sourceLabel: String,
-        queryTokens: [String]
+        queryTokens: [String],
+        filenameScore: Int = 0
     ) -> PersonalKnowledgeChunk? {
-        guard let fileContents = try? String(contentsOf: fileURL, encoding: .utf8) else {
-            return nil
+        guard let fileContents = readLimitedFileContents(at: fileURL) else {
+            return filenameScore > 0
+                ? PersonalKnowledgeChunk(
+                    sourcePath: fileURL.path,
+                    sourceLabel: sourceLabel,
+                    excerpt: "(matched filename: \(fileURL.lastPathComponent))",
+                    score: filenameScore
+                )
+                : nil
         }
 
         let normalizedContents = fileContents.lowercased()
-        var score = 0
+        var score = filenameScore
 
         for token in queryTokens where normalizedContents.contains(token) {
             score += 1
@@ -270,7 +403,21 @@ final class PersonalKnowledgeManager {
         )
     }
 
-    private func excerpt(from fileContents: String, matchingTokens: [String], maxLength: Int = 800) -> String {
+    private static func readLimitedFileContents(at fileURL: URL) -> String? {
+        guard let fileData = try? Data(contentsOf: fileURL, options: [.mappedIfSafe]) else {
+            return nil
+        }
+
+        let limitedData = fileData.prefix(maxMarkdownFileBytesToRead)
+        return String(data: limitedData, encoding: .utf8)
+    }
+
+    private static func readLimitedFilePreview(at fileURL: URL, maxLength: Int) -> String {
+        guard let fileContents = readLimitedFileContents(at: fileURL) else { return "" }
+        return String(fileContents.prefix(maxLength)).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func excerpt(from fileContents: String, matchingTokens: [String], maxLength: Int = 800) -> String {
         let trimmedContents = fileContents.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedContents.isEmpty else { return "" }
 
@@ -297,7 +444,11 @@ final class PersonalKnowledgeManager {
         return String(trimmedContents.prefix(maxLength))
     }
 
-    private func collectMarkdownFileURLs(in rootURL: URL) -> [URL] {
+    private func countMarkdownFiles(in rootURL: URL) -> Int {
+        Self.collectMarkdownFileURLs(in: rootURL).count
+    }
+
+    private static func collectMarkdownFileURLs(in rootURL: URL) -> [URL] {
         let fileManager = FileManager.default
         guard let enumerator = fileManager.enumerator(
             at: rootURL,
@@ -321,13 +472,13 @@ final class PersonalKnowledgeManager {
 
             guard fileURL.pathExtension.lowercased() == "md" else { continue }
             markdownFileURLs.append(fileURL)
+
+            if markdownFileURLs.count >= maxMarkdownFilesToScan {
+                break
+            }
         }
 
         return markdownFileURLs
-    }
-
-    private func countMarkdownFiles(in rootURL: URL) -> Int {
-        collectMarkdownFileURLs(in: rootURL).count
     }
 
     private func countBrainMarkdownFiles() -> Int {
@@ -337,19 +488,19 @@ final class PersonalKnowledgeManager {
         }.count
     }
 
-    private func shouldSkipURL(_ fileURL: URL) -> Bool {
+    private static func shouldSkipURL(_ fileURL: URL) -> Bool {
         let pathComponents = fileURL.pathComponents
         if pathComponents.contains(where: { excludedPathComponents.contains($0) }) {
             return true
         }
 
         let fileName = fileURL.lastPathComponent.lowercased()
-        return excludedFileNamePatterns.contains { pattern in
-            fileName.contains(pattern)
-        }
+        return fileName.contains(".env")
+            || fileName.contains("id_rsa")
+            || fileName.contains(".pem")
     }
 
-    private func relativePath(from rootURL: URL, to fileURL: URL) -> String {
+    private static func relativePath(from rootURL: URL, to fileURL: URL) -> String {
         let rootPath = (rootURL.path as NSString).standardizingPath
         let filePath = (fileURL.path as NSString).standardizingPath
 
@@ -360,11 +511,12 @@ final class PersonalKnowledgeManager {
         return fileURL.lastPathComponent
     }
 
-    private func tokenize(_ text: String) -> [String] {
+    private static func tokenize(_ text: String) -> [String] {
         text
             .lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { $0.count >= 3 }
+            .filter { !searchStopWords.contains($0) }
     }
 }
 

@@ -54,7 +54,12 @@ struct PersonalKnowledgeTests {
         #expect(userPrompt == "what did I write about project alpha?")
     }
 
-    @Test func personalKnowledgeManagerSearchesConnectedVault() throws {
+    @Test func vaultIntentDetectsVaultOverviewQuestions() {
+        #expect(VaultIntentDetector.shouldRetrievePersonalKnowledge(transcript: "tell me what's in my vault"))
+        #expect(VaultIntentDetector.shouldRetrievePersonalKnowledge(transcript: "tell me whats in my vault"))
+    }
+
+    @Test func personalKnowledgeManagerUsesStopWordsForSearch() async throws {
         let temporaryRootDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("clicky-vault-test-\(UUID().uuidString)", isDirectory: true)
         let temporaryVaultDirectory = temporaryRootDirectory.appendingPathComponent("vault", isDirectory: true)
@@ -72,7 +77,31 @@ struct PersonalKnowledgeTests {
         let manager = PersonalKnowledgeManager(brainRootURL: temporaryBrainDirectory)
         _ = try manager.connectVault(at: temporaryVaultDirectory, label: "Test Vault")
 
-        let chunks = manager.search(query: "what did I write about project alpha?")
+        let overviewChunks = await manager.search(query: "tell me whats in my vault")
+        #expect(!overviewChunks.isEmpty)
+        #expect(overviewChunks.contains(where: { $0.sourceLabel.contains("Projects.md") }))
+        #expect(overviewChunks.first?.excerpt.contains("recent note:") == true)
+    }
+
+    @Test func personalKnowledgeManagerSearchesConnectedVault() async throws {
+        let temporaryRootDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clicky-vault-test-\(UUID().uuidString)", isDirectory: true)
+        let temporaryVaultDirectory = temporaryRootDirectory.appendingPathComponent("vault", isDirectory: true)
+        let temporaryBrainDirectory = temporaryRootDirectory.appendingPathComponent("brain", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryVaultDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: temporaryBrainDirectory, withIntermediateDirectories: true)
+
+        let noteURL = temporaryVaultDirectory.appendingPathComponent("Projects.md")
+        try "Project Alpha is blocked on design review.".write(to: noteURL, atomically: true, encoding: .utf8)
+
+        defer {
+            try? FileManager.default.removeItem(at: temporaryRootDirectory)
+        }
+
+        let manager = PersonalKnowledgeManager(brainRootURL: temporaryBrainDirectory)
+        _ = try manager.connectVault(at: temporaryVaultDirectory, label: "Test Vault")
+
+        let chunks = await manager.search(query: "what did I write about project alpha?")
         #expect(chunks.contains(where: { $0.excerpt.contains("Project Alpha") }))
     }
 
