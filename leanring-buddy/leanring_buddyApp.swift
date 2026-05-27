@@ -49,7 +49,11 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         companionManager.runE2EInjectSequenceIfNeeded()
         // Auto-open the panel if the user still needs to do something:
         // either they haven't onboarded yet, or permissions were revoked.
-        if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
+        // Skip during headless E2E — the ad-hoc E2E build has a different code
+        // signature than the Xcode Debug app, so TCC checks (accessibility, etc.)
+        // will look "denied" even when the dev build is already approved.
+        if !ClickyE2EConfiguration.isEnabled,
+           !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
             menuBarPanelManager?.showPanelOnLaunch()
         }
         registerAsLoginItemIfNeeded()

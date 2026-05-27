@@ -176,13 +176,23 @@ final class CompanionManager: ObservableObject {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
 
             if let firstTranscript = ClickyE2EConfiguration.injectTranscript {
+                print("🧪 E2E inject 1: \(firstTranscript)")
                 await injectTranscriptForE2E(firstTranscript)
 
                 if let secondTranscript = ClickyE2EConfiguration.injectTranscript2 {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    print("🧪 E2E inject 2: \(secondTranscript)")
                     await injectTranscriptForE2E(secondTranscript)
                 }
+
+                if let thirdTranscript = ClickyE2EConfiguration.injectTranscript3 {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    print("🧪 E2E inject 3: \(thirdTranscript)")
+                    await injectTranscriptForE2E(thirdTranscript)
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                }
             } else if let thirdTranscript = ClickyE2EConfiguration.injectTranscript3 {
+                print("🧪 E2E inject read-path: \(thirdTranscript)")
                 await injectTranscriptForE2E(thirdTranscript)
             }
         }
@@ -200,9 +210,10 @@ final class CompanionManager: ObservableObject {
     }
 
     private func matchedSkills(for transcript: String) -> [TeachingSkill] {
+        let bundleId = TeachingSkill.detectBundleId(in: transcript) ?? frontmostApplicationBundleId()
         let matches = SkillMatcher.matchSkills(
             from: teachingSkillStore.skills,
-            bundleId: frontmostApplicationBundleId(),
+            bundleId: bundleId,
             transcript: transcript
         )
         return matches.map(\.skill)
@@ -251,20 +262,25 @@ final class CompanionManager: ObservableObject {
         ClickyAnalytics.trackTeachingSkillWriteTriggered(reason: trigger.reason.rawValue, topic: trigger.topic)
 
         let traceSnapshot = sessionTrace
-        let bundleId = frontmostApplicationBundleId()
+        let targetBundleId = SkillTargetAppResolver.resolveTargetBundleId(
+            from: traceSnapshot,
+            frontmostBundleId: frontmostApplicationBundleId()
+        )
+        let primaryQuestion = SkillTriggerEvaluator.primaryTeachingQuestion(from: traceSnapshot) ?? trigger.topic
         skillWriteTask?.cancel()
         skillWriteTask = Task {
             do {
-                let existingSkill = SkillMatcher.findSimilarSkill(
+                let existingSkill = SkillMatcher.findSkillForUpdate(
                     in: teachingSkillStore.skills,
-                    bundleId: bundleId,
-                    topic: trigger.topic
+                    targetBundleId: targetBundleId,
+                    primaryQuestion: primaryQuestion
                 )
 
                 let synthesized = try await SkillSynthesizer.synthesizeSkillContent(
                     sessionTrace: traceSnapshot,
                     trigger: trigger,
                     existingSkill: existingSkill,
+                    targetBundleId: targetBundleId,
                     claudeAPI: claudeAPI
                 )
 
@@ -273,7 +289,7 @@ final class CompanionManager: ObservableObject {
                 let metadata = SkillSynthesizer.buildSkillMetadata(
                     sessionTrace: traceSnapshot,
                     trigger: trigger,
-                    bundleId: bundleId
+                    targetBundleId: targetBundleId
                 )
 
                 let skill = SkillSynthesizer.buildSkill(
@@ -281,7 +297,9 @@ final class CompanionManager: ObservableObject {
                     name: synthesized.name,
                     description: synthesized.description,
                     body: synthesized.body,
-                    bundleId: bundleId,
+                    targetBundleId: targetBundleId,
+                    taskSlug: metadata.taskSlug,
+                    primaryQuestion: primaryQuestion,
                     existingSkill: existingSkill
                 )
 
@@ -290,7 +308,7 @@ final class CompanionManager: ObservableObject {
                 teachingSkills = teachingSkillStore.skills
                 topicHistoryStore.recordTopic(
                     topic: trigger.topic,
-                    bundleId: bundleId,
+                    bundleId: targetBundleId,
                     skillId: skill.id
                 )
                 sessionTrace.removeAll()
@@ -932,14 +950,17 @@ final class CompanionManager: ObservableObject {
                 // Play the response via TTS. Keep the spinner (processing state)
                 // until the audio actually starts playing, then switch to responding.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    do {
-                        try await elevenLabsTTSClient.speakText(spokenText)
-                        // speakText returns after player.play() — audio is now playing
-                        voiceState = .responding
-                    } catch {
-                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ ElevenLabs TTS error: \(error)")
-                        speakCreditsErrorFallback()
+                    if ClickyE2EConfiguration.isEnabled {
+                        voiceState = .idle
+                    } else {
+                        do {
+                            try await elevenLabsTTSClient.speakText(spokenText)
+                            voiceState = .responding
+                        } catch {
+                            ClickyAnalytics.trackTTSError(error: error.localizedDescription)
+                            print("⚠️ ElevenLabs TTS error: \(error)")
+                            speakCreditsErrorFallback()
+                        }
                     }
                 }
             } catch is CancellationError {
