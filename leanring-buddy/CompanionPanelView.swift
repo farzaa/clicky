@@ -15,6 +15,7 @@ struct CompanionPanelView: View {
     @State private var emailInput: String = ""
     @State private var isShowingTeachingSkillsLibrary = false
     @State private var showsNicheOverridePicker = false
+    @State private var showsSuggestedAsks = false
 
     var body: some View {
         if isShowingTeachingSkillsLibrary {
@@ -47,9 +48,7 @@ struct CompanionPanelView: View {
                     .padding(.horizontal, 16)
             }
 
-            if companionManager.hasCompletedOnboarding
-                && companionManager.allPermissionsGranted
-                && companionManager.voiceState == .idle {
+            if showsSuggestedAsksSection {
                 Spacer()
                     .frame(height: 12)
 
@@ -159,10 +158,18 @@ struct CompanionPanelView: View {
     @ViewBuilder
     private var permissionsCopySection: some View {
         if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            Text("Hold Control+Option to talk.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(alignment: .center, spacing: 8) {
+                Text("Hold Control+Option to talk.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer(minLength: 0)
+
+                if companionManager.voiceState == .idle {
+                    suggestedAsksToggleButton
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         } else if companionManager.allPermissionsGranted && !companionManager.hasSubmittedEmail {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Drop your email to get started.")
@@ -630,7 +637,34 @@ struct CompanionPanelView: View {
 
     // MARK: - Niche Discovery
 
-    // MARK: - Niche Suggestions
+    private var showsSuggestedAsksSection: Bool {
+        companionManager.hasCompletedOnboarding
+            && companionManager.allPermissionsGranted
+            && companionManager.voiceState == .idle
+            && showsSuggestedAsks
+    }
+
+    private var suggestedAsksToggleButton: some View {
+        Button(action: {
+            showsSuggestedAsks.toggle()
+            if !showsSuggestedAsks {
+                showsNicheOverridePicker = false
+            }
+        }) {
+            Image(systemName: showsSuggestedAsks ? "questionmark.circle.fill" : "questionmark.circle")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(showsSuggestedAsks ? DS.Colors.accent : DS.Colors.textTertiary)
+                .frame(width: 24, height: 24)
+                .background(
+                    Circle()
+                        .fill(showsSuggestedAsks ? DS.Colors.accent.opacity(0.15) : Color.white.opacity(0.08))
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+        .accessibilityLabel(showsSuggestedAsks ? "Hide suggested asks" : "Show suggested asks")
+        .accessibilityIdentifier("clicky.panel.suggested-asks.toggle")
+    }
 
     private var nicheSuggestionsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
