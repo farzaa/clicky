@@ -73,6 +73,10 @@ enum ClickyE2EConfiguration {
         clickyDirectoryURL.appendingPathComponent("e2e-last-matched-skill-id.txt")
     }
 
+    static var lastUserPromptFileURL: URL {
+        clickyDirectoryURL.appendingPathComponent("e2e-last-user-prompt.txt")
+    }
+
     static var lastSuggestionsFileURL: URL {
         clickyDirectoryURL.appendingPathComponent("e2e-last-suggestions.txt")
     }
@@ -113,6 +117,11 @@ enum ClickyE2EConfiguration {
     static func writeLastSystemPromptForE2E(_ systemPrompt: String) {
         guard isEnabled else { return }
         writeText(systemPrompt, to: lastSystemPromptFileURL)
+    }
+
+    static func writeLastUserPromptForE2E(_ userPrompt: String) {
+        guard isEnabled else { return }
+        writeText(userPrompt, to: lastUserPromptFileURL)
     }
 
     static func writeLastMatchedSkillIDForE2E(_ skillID: String?) {
