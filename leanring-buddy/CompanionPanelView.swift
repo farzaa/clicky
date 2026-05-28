@@ -10,6 +10,22 @@
 import AVFoundation
 import SwiftUI
 
+private enum CompanionPanelTab: String, CaseIterable, Identifiable {
+    case home
+    case brain
+    case settings
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .home: return "Home"
+        case .brain: return "Brain"
+        case .settings: return "Settings"
+        }
+    }
+}
+
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
@@ -19,13 +35,9 @@ struct CompanionPanelView: View {
     @State private var isShowingVaultConnectionSheet = false
     @State private var discoveredVaults: [DiscoveredVault] = []
     @State private var copiedSuggestionText: String?
-    @State private var isPersonalVaultSectionExpanded = UserDefaults.standard.bool(forKey: CompanionPanelView.personalVaultSectionExpandedUserDefaultsKey)
-    @State private var isTeachingSkillsSectionExpanded = UserDefaults.standard.bool(forKey: CompanionPanelView.teachingSkillsSectionExpandedUserDefaultsKey)
-    @State private var isSettingsSectionExpanded = UserDefaults.standard.bool(forKey: CompanionPanelView.settingsSectionExpandedUserDefaultsKey)
+    @State private var selectedPanelTab: CompanionPanelTab = CompanionPanelView.loadSelectedPanelTab()
 
-    private static let personalVaultSectionExpandedUserDefaultsKey = "panelPersonalVaultSectionExpanded"
-    private static let teachingSkillsSectionExpandedUserDefaultsKey = "panelTeachingSkillsSectionExpanded"
-    private static let settingsSectionExpandedUserDefaultsKey = "panelSettingsSectionExpanded"
+    private static let selectedPanelTabUserDefaultsKey = "panelSelectedTab"
 
     var body: some View {
         if isShowingVaultConnectionSheet {
@@ -69,56 +81,19 @@ struct CompanionPanelView: View {
                 .background(DS.Colors.borderSubtle)
                 .padding(.horizontal, 16)
 
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 0) {
-                    permissionsCopySection
-                        .padding(.top, 16)
+            if showsPanelTabs {
+                panelTabBar
 
-                    if showsSuggestedAsksSection {
-                        Spacer()
-                            .frame(height: 12)
+                Divider()
+                    .background(DS.Colors.borderSubtle)
+                    .padding(.horizontal, 16)
 
-                        nicheSuggestionsSection
-                    }
-
-                    if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                        Spacer()
-                            .frame(height: 12)
-
-                        collapsiblePersonalVaultSection
-                    }
-
-                    if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                        Spacer()
-                            .frame(height: 8)
-
-                        collapsibleTeachingSkillsSection
-                    }
-
-                    if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                        Spacer()
-                            .frame(height: 8)
-
-                        collapsibleSettingsSection
-                    }
-
-                    if !companionManager.allPermissionsGranted {
-                        Spacer()
-                            .frame(height: 16)
-
-                        settingsSection
-                    }
-
-                    if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                        Spacer()
-                            .frame(height: 16)
-
-                        startButton
-                    }
-                }
-                .padding(.horizontal, 16)
+                selectedTabContent
+                    .padding(.horizontal, 16)
+            } else {
+                setupPanelBody
+                    .padding(.horizontal, 16)
             }
-            .frame(maxHeight: 460)
 
             Divider()
                 .background(DS.Colors.borderSubtle)
@@ -126,104 +101,265 @@ struct CompanionPanelView: View {
 
             footerSection
                 .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.top, 12)
+                .padding(.bottom, 18)
         }
         .frame(width: 320)
         .background(panelBackground)
         .onChange(of: companionManager.pendingVaultWrite?.id) { _, pendingVaultWriteID in
             guard pendingVaultWriteID != nil else { return }
-            isPersonalVaultSectionExpanded = true
-            UserDefaults.standard.set(true, forKey: Self.personalVaultSectionExpandedUserDefaultsKey)
+            selectPanelTab(.brain)
         }
-        .onChange(of: isPersonalVaultSectionExpanded) { _, isExpanded in
-            UserDefaults.standard.set(isExpanded, forKey: Self.personalVaultSectionExpandedUserDefaultsKey)
+        .onChange(of: selectedPanelTab) { _, _ in
+            persistSelectedPanelTab()
+            notifyPanelLayoutDidChange()
         }
-        .onChange(of: isTeachingSkillsSectionExpanded) { _, isExpanded in
-            UserDefaults.standard.set(isExpanded, forKey: Self.teachingSkillsSectionExpandedUserDefaultsKey)
-        }
-        .onChange(of: isSettingsSectionExpanded) { _, isExpanded in
-            UserDefaults.standard.set(isExpanded, forKey: Self.settingsSectionExpandedUserDefaultsKey)
+        .onChange(of: showsSuggestedAsks) { _, _ in
+            notifyPanelLayoutDidChange()
         }
     }
 
-    // MARK: - Collapsible Sections
-
-    private var collapsiblePersonalVaultSection: some View {
-        panelDisclosureGroup(
-            isExpanded: $isPersonalVaultSectionExpanded,
-            accessibilityIdentifier: "clicky.panel.vault.disclosure"
-        ) {
-            personalVaultSectionLabel
-        } content: {
-            personalVaultSectionContent
-        }
+    private var showsPanelTabs: Bool {
+        companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted
     }
 
-    private var collapsibleTeachingSkillsSection: some View {
-        panelDisclosureGroup(
-            isExpanded: $isTeachingSkillsSectionExpanded,
-            accessibilityIdentifier: "clicky.panel.teaching-skills.disclosure"
-        ) {
-            teachingSkillsSectionLabel
-        } content: {
-            teachingSkillsSectionContent
-        }
-    }
-
-    private var collapsibleSettingsSection: some View {
-        panelDisclosureGroup(
-            isExpanded: $isSettingsSectionExpanded,
-            accessibilityIdentifier: "clicky.panel.settings.disclosure"
-        ) {
-            settingsSectionLabel
-        } content: {
-            settingsSectionContent
-        }
-    }
-
-    private func panelDisclosureGroup<Label: View, Content: View>(
-        isExpanded: Binding<Bool>,
-        accessibilityIdentifier: String,
-        @ViewBuilder label: @escaping () -> Label,
-        @ViewBuilder content: @escaping () -> Content
-    ) -> some View {
-        DisclosureGroup(isExpanded: isExpanded) {
-            content()
-                .padding(.top, 8)
-        } label: {
-            label()
-        }
-        .disclosureGroupStyle(PanelDisclosureGroupStyle())
-        .padding(.vertical, 6)
-        .accessibilityIdentifier(accessibilityIdentifier)
-    }
-
-    private struct PanelDisclosureGroupStyle: DisclosureGroupStyle {
-        func makeBody(configuration: Configuration) -> some View {
-            VStack(alignment: .leading, spacing: 0) {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        configuration.isExpanded.toggle()
-                    }
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(DS.Colors.textTertiary)
-                            .frame(width: 12)
-
-                        configuration.label
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-
-                if configuration.isExpanded {
-                    configuration.content
-                }
+    private var selectedTabContent: some View {
+        Group {
+            switch selectedPanelTab {
+            case .home:
+                homeTabContent
+            case .brain:
+                brainTabContent
+            case .settings:
+                settingsTabContent
             }
         }
+        .padding(.top, 16)
+        .padding(.bottom, 20)
+        .fixedSize(horizontal: false, vertical: true)
+        .onAppear {
+            notifyPanelLayoutDidChange()
+        }
+    }
+
+    private var setupPanelBody: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            permissionsCopySection
+                .padding(.top, 16)
+
+            if !companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 16)
+
+                settingsSection
+            }
+
+            if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 16)
+
+                startButton
+            }
+        }
+        .padding(.bottom, 20)
+        .fixedSize(horizontal: false, vertical: true)
+        .onAppear {
+            notifyPanelLayoutDidChange()
+        }
+    }
+
+    // MARK: - Tab Bar
+
+    private var panelTabBar: some View {
+        HStack(spacing: 4) {
+            ForEach(CompanionPanelTab.allCases) { panelTab in
+                panelTabButton(panelTab)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    private func panelTabButton(_ panelTab: CompanionPanelTab) -> some View {
+        let isSelected = selectedPanelTab == panelTab
+
+        return Button {
+            selectPanelTab(panelTab)
+        } label: {
+            HStack(spacing: 5) {
+                Text(panelTab.title)
+                    .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+
+                if panelTab == .brain && companionManager.pendingVaultWrite != nil {
+                    Circle()
+                        .fill(DS.Colors.accent)
+                        .frame(width: 6, height: 6)
+                }
+            }
+            .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .stroke(isSelected ? DS.Colors.borderSubtle : Color.clear, lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+        .accessibilityIdentifier("clicky.panel.tab.\(panelTab.rawValue)")
+    }
+
+    // MARK: - Home Tab
+
+    private var homeTabContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            permissionsCopySection
+
+            if let pendingVaultWrite = companionManager.pendingVaultWrite {
+                pendingVaultWriteHomeBanner(pendingVaultWrite)
+            }
+
+            if showsSuggestedAsksSection {
+                nicheSuggestionsSection
+            }
+        }
+    }
+
+    private func pendingVaultWriteHomeBanner(_ pendingVaultWrite: PendingVaultWrite) -> some View {
+        Button(action: {
+            selectPanelTab(.brain)
+        }) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "doc.badge.clock")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(DS.Colors.accent)
+                    .padding(.top, 1)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Vault save pending")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(DS.Colors.textSecondary)
+
+                    Text(pendingVaultWrite.targetDescription)
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+
+                    Text("Open Brain tab to confirm")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(DS.Colors.accent)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .background(DS.Colors.surface2)
+            .cornerRadius(DS.CornerRadius.medium)
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+        .accessibilityIdentifier("clicky.panel.home.pending-vault-write")
+    }
+
+    // MARK: - Brain Tab
+
+    private var brainTabContent: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 8) {
+                brainTabSectionHeader(
+                    title: "Personal Vault",
+                    trailingContent: {
+                        if companionManager.connectedVaultSummaries.isEmpty {
+                            Button("Connect vault") {
+                                discoveredVaults = companionManager.discoverObsidianVaults()
+                                isShowingVaultConnectionSheet = true
+                            }
+                            .buttonStyle(DSTextButtonStyle())
+                            .accessibilityIdentifier("clicky.panel.vault.connect")
+                        }
+                    }
+                )
+
+                personalVaultSectionContent
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                brainTabSectionHeader(title: "Teaching Skills")
+                teachingSkillsSectionContent
+            }
+        }
+    }
+
+    private func brainTabSectionHeader<TrailingContent: View>(
+        title: String,
+        @ViewBuilder trailingContent: () -> TrailingContent = { EmptyView() }
+    ) -> some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Spacer(minLength: 0)
+
+            trailingContent()
+        }
+    }
+
+    // MARK: - Settings Tab
+
+    private var settingsTabContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            modelPickerRow
+            showClickyCursorToggleRow
+            speechToTextProviderRow
+
+            VStack(spacing: 2) {
+                Text("PERMISSIONS")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.bottom, 6)
+
+                microphonePermissionRow
+                accessibilityPermissionRow
+                screenRecordingPermissionRow
+
+                if companionManager.hasScreenRecordingPermission {
+                    screenContentPermissionRow
+                }
+            }
+
+            dmFarzaButton
+        }
+    }
+
+    private static func loadSelectedPanelTab() -> CompanionPanelTab {
+        guard let savedTabRawValue = UserDefaults.standard.string(forKey: selectedPanelTabUserDefaultsKey),
+              let savedPanelTab = CompanionPanelTab(rawValue: savedTabRawValue) else {
+            return .home
+        }
+
+        return savedPanelTab
+    }
+
+    private func selectPanelTab(_ panelTab: CompanionPanelTab) {
+        selectedPanelTab = panelTab
+        persistSelectedPanelTab()
+        notifyPanelLayoutDidChange()
+    }
+
+    private func persistSelectedPanelTab() {
+        UserDefaults.standard.set(selectedPanelTab.rawValue, forKey: Self.selectedPanelTabUserDefaultsKey)
+    }
+
+    private func notifyPanelLayoutDidChange() {
+        NotificationCenter.default.post(name: .clickyPanelLayoutDidChange, object: nil)
     }
 
     // MARK: - Header
@@ -906,32 +1042,6 @@ struct CompanionPanelView: View {
 
     // MARK: - Teaching Skills
 
-    private var teachingSkillsSectionLabel: some View {
-        HStack(spacing: 8) {
-            Text("Teaching Skills")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-
-            Spacer(minLength: 0)
-
-            Text(teachingSkillsSectionSummary)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(DS.Colors.textTertiary)
-                .lineLimit(1)
-        }
-    }
-
-    private var teachingSkillsSectionSummary: String {
-        let skillCount = companionManager.teachingSkills.count
-        let learningStateLabel = companionManager.isLearningFromSessionsEnabled ? "learning on" : "learning off"
-
-        if skillCount == 0 {
-            return "No skills · \(learningStateLabel)"
-        }
-
-        return "\(skillCount) skill\(skillCount == 1 ? "" : "s") · \(learningStateLabel)"
-    }
-
     private var teachingSkillsSectionContent: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -1021,43 +1131,6 @@ struct CompanionPanelView: View {
     }
 
     // MARK: - Personal Vault
-
-    private var personalVaultSectionLabel: some View {
-        HStack(spacing: 8) {
-            Text("Personal Vault")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-
-            Spacer(minLength: 0)
-
-            if companionManager.connectedVaultSummaries.isEmpty {
-                Button("Connect") {
-                    discoveredVaults = companionManager.discoverObsidianVaults()
-                    isShowingVaultConnectionSheet = true
-                }
-                .buttonStyle(DSTextButtonStyle())
-                .accessibilityIdentifier("clicky.panel.vault.connect")
-            } else {
-                Text(personalVaultSectionSummary)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .lineLimit(1)
-            }
-        }
-    }
-
-    private var personalVaultSectionSummary: String {
-        if companionManager.pendingVaultWrite != nil {
-            return "Save pending"
-        }
-
-        if companionManager.connectedVaultSummaries.isEmpty {
-            return "Not connected"
-        }
-
-        let writeAccessLabel = companionManager.isVaultWriteEnabled ? "writes on" : "read-only"
-        return "\(companionManager.connectedVaultMarkdownFileCount) notes · \(writeAccessLabel)"
-    }
 
     private var personalVaultSectionContent: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1210,35 +1283,6 @@ struct CompanionPanelView: View {
         .padding(10)
         .background(DS.Colors.surface2)
         .cornerRadius(DS.CornerRadius.medium)
-    }
-
-    // MARK: - Settings
-
-    private var settingsSectionLabel: some View {
-        HStack(spacing: 8) {
-            Text("Settings")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-
-            Spacer(minLength: 0)
-
-            Text(settingsSectionSummary)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(DS.Colors.textTertiary)
-                .lineLimit(1)
-        }
-    }
-
-    private var settingsSectionSummary: String {
-        companionManager.selectedModel.contains("opus") ? "Opus" : "Sonnet"
-    }
-
-    private var settingsSectionContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            modelPickerRow
-
-            dmFarzaButton
-        }
     }
 
     // MARK: - Model Picker

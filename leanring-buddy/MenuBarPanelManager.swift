@@ -12,10 +12,12 @@
 //
 
 import AppKit
+import QuartzCore
 import SwiftUI
 
 extension Notification.Name {
     static let clickyDismissPanel = Notification.Name("clickyDismissPanel")
+    static let clickyPanelLayoutDidChange = Notification.Name("clickyPanelLayoutDidChange")
 }
 
 /// Custom NSPanel subclass that can become the key window even with
@@ -30,10 +32,14 @@ final class MenuBarPanelManager: NSObject {
     private var panel: NSPanel?
     private var clickOutsideMonitor: Any?
     private var dismissPanelObserver: NSObjectProtocol?
+    private var panelLayoutObserver: NSObjectProtocol?
+    private var panelLayoutUpdateWorkItem: DispatchWorkItem?
 
     private let companionManager: CompanionManager
     private let panelWidth: CGFloat = 320
     private let panelHeight: CGFloat = 520
+    private let maxPanelHeight: CGFloat = 720
+    private let panelResizeAnimationDuration: TimeInterval = 0.22
 
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
@@ -47,6 +53,14 @@ final class MenuBarPanelManager: NSObject {
         ) { [weak self] _ in
             self?.hidePanel()
         }
+
+        panelLayoutObserver = NotificationCenter.default.addObserver(
+            forName: .clickyPanelLayoutDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.schedulePanelLayoutUpdate()
+        }
     }
 
     deinit {
@@ -54,6 +68,9 @@ final class MenuBarPanelManager: NSObject {
             NSEvent.removeMonitor(monitor)
         }
         if let observer = dismissPanelObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = panelLayoutObserver {
             NotificationCenter.default.removeObserver(observer)
         }
     }
@@ -132,7 +149,7 @@ final class MenuBarPanelManager: NSObject {
         }
 
         companionManager.refreshNicheSuggestions()
-        positionPanelBelowStatusItem()
+        positionPanelBelowStatusItem(animated: false)
 
         panel?.makeKeyAndOrderFront(nil)
         panel?.orderFrontRegardless()
@@ -171,31 +188,75 @@ final class MenuBarPanelManager: NSObject {
         menuBarPanel.isMovableByWindowBackground = false
         menuBarPanel.titleVisibility = .hidden
         menuBarPanel.titlebarAppearsTransparent = true
+        menuBarPanel.contentView?.wantsLayer = true
+        menuBarPanel.contentView?.layer?.masksToBounds = true
 
         menuBarPanel.contentView = hostingView
         panel = menuBarPanel
     }
 
-    private func positionPanelBelowStatusItem() {
+    private func schedulePanelLayoutUpdate() {
+        panelLayoutUpdateWorkItem?.cancel()
+
+        let layoutUpdateWorkItem = DispatchWorkItem { [weak self] in
+            self?.updatePanelFrameIfVisible(animated: true)
+        }
+        panelLayoutUpdateWorkItem = layoutUpdateWorkItem
+
+        // Wait for SwiftUI to finish laying out expanded/collapsed content before measuring.
+        DispatchQueue.main.async {
+            DispatchQueue.main.async(execute: layoutUpdateWorkItem)
+        }
+    }
+
+    private func updatePanelFrameIfVisible(animated: Bool) {
+        guard let panel, panel.isVisible else { return }
+        positionPanelBelowStatusItem(animated: animated)
+    }
+
+    private func positionPanelBelowStatusItem(animated: Bool = false) {
         guard let panel else { return }
         guard let buttonWindow = statusItem?.button?.window else { return }
 
         let statusItemFrame = buttonWindow.frame
         let gapBelowMenuBar: CGFloat = 4
+        let panelTopY = statusItemFrame.minY - gapBelowMenuBar
 
-        // Calculate the panel's content height from the hosting view's fitting size
-        // so the panel snugly wraps the SwiftUI content instead of using a fixed height.
+        if let hostingView = panel.contentView {
+            hostingView.invalidateIntrinsicContentSize()
+            hostingView.layoutSubtreeIfNeeded()
+        }
+
         let fittingSize = panel.contentView?.fittingSize ?? CGSize(width: panelWidth, height: panelHeight)
-        let actualPanelHeight = fittingSize.height
+        let availableHeightBelowMenuBar = statusItemFrame.minY - gapBelowMenuBar - 16
+        let maxAllowedPanelHeight = min(maxPanelHeight, max(availableHeightBelowMenuBar, 280))
+        let targetPanelHeight = min(fittingSize.height, maxAllowedPanelHeight)
 
-        // Horizontally center the panel beneath the status item icon
         let panelOriginX = statusItemFrame.midX - (panelWidth / 2)
-        let panelOriginY = statusItemFrame.minY - actualPanelHeight - gapBelowMenuBar
-
-        panel.setFrame(
-            NSRect(x: panelOriginX, y: panelOriginY, width: panelWidth, height: actualPanelHeight),
-            display: true
+        let panelOriginY = panelTopY - targetPanelHeight
+        let targetFrame = NSRect(
+            x: panelOriginX,
+            y: panelOriginY,
+            width: panelWidth,
+            height: targetPanelHeight
         )
+
+        let hasSameFrame = abs(panel.frame.origin.x - targetFrame.origin.x) < 0.5
+            && abs(panel.frame.origin.y - targetFrame.origin.y) < 0.5
+            && abs(panel.frame.width - targetFrame.width) < 0.5
+            && abs(panel.frame.height - targetFrame.height) < 0.5
+
+        guard !hasSameFrame else { return }
+
+        if animated {
+            NSAnimationContext.runAnimationGroup { animationContext in
+                animationContext.duration = panelResizeAnimationDuration
+                animationContext.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                panel.animator().setFrame(targetFrame, display: true)
+            }
+        } else {
+            panel.setFrame(targetFrame, display: true)
+        }
     }
 
     // MARK: - Click Outside Dismissal
