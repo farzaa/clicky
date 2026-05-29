@@ -28,9 +28,29 @@ enum ClickyE2EConfiguration {
         argumentValue(for: "-CLICKY_INJECT_TRANSCRIPT_3=")
     }
 
-    static var lastSystemPromptFileURL: URL {
+    static var restoreSkillID: String? {
+        argumentValue(for: "-CLICKY_E2E_RESTORE_SKILL=")
+    }
+
+    static var clickyDirectoryURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".clicky/e2e-last-system-prompt.txt")
+            .appendingPathComponent(".clicky", isDirectory: true)
+    }
+
+    static var lastSystemPromptFileURL: URL {
+        clickyDirectoryURL.appendingPathComponent("e2e-last-system-prompt.txt")
+    }
+
+    static var lastMatchedSkillIDFileURL: URL {
+        clickyDirectoryURL.appendingPathComponent("e2e-last-matched-skill-id.txt")
+    }
+
+    static var skillsCountFileURL: URL {
+        clickyDirectoryURL.appendingPathComponent("e2e-skills-count.txt")
+    }
+
+    static var skillLibraryStateFileURL: URL {
+        clickyDirectoryURL.appendingPathComponent("e2e-skill-library-state.txt")
     }
 
     static func applyLaunchOverrides() {
@@ -43,10 +63,45 @@ enum ClickyE2EConfiguration {
 
     static func writeLastSystemPromptForE2E(_ systemPrompt: String) {
         guard isEnabled else { return }
+        writeText(systemPrompt, to: lastSystemPromptFileURL)
+    }
 
-        let directory = lastSystemPromptFileURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try? systemPrompt.write(to: lastSystemPromptFileURL, atomically: true, encoding: .utf8)
+    static func writeLastMatchedSkillIDForE2E(_ skillID: String?) {
+        guard isEnabled else { return }
+
+        if let skillID {
+            writeText(skillID, to: lastMatchedSkillIDFileURL)
+        } else {
+            try? FileManager.default.removeItem(at: lastMatchedSkillIDFileURL)
+        }
+    }
+
+    static func writeSkillsCountForE2E(_ skillsCount: Int) {
+        guard isEnabled else { return }
+        writeText(String(skillsCount), to: skillsCountFileURL)
+    }
+
+    static func writeSkillLibraryStateForE2E(_ skills: [TeachingSkill]) {
+        guard isEnabled else { return }
+
+        let libraryEntries = skills.map { skill in
+            [
+                "id": skill.id,
+                "status": skill.status.rawValue,
+                "pinned": skill.isPinned
+            ] as [String: Any]
+        }
+
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: libraryEntries, options: [.prettyPrinted]),
+              let jsonString = String(data: jsonData, encoding: .utf8) else {
+            return
+        }
+        writeText(jsonString, to: skillLibraryStateFileURL)
+    }
+
+    private static func writeText(_ text: String, to fileURL: URL) {
+        try? FileManager.default.createDirectory(at: clickyDirectoryURL, withIntermediateDirectories: true)
+        try? text.write(to: fileURL, atomically: true, encoding: .utf8)
     }
 
     private static func argumentValue(for prefix: String) -> String? {

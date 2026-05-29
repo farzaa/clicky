@@ -13,8 +13,21 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    @State private var isShowingTeachingSkillsLibrary = false
 
     var body: some View {
+        if isShowingTeachingSkillsLibrary {
+            TeachingSkillsLibraryView(companionManager: companionManager) {
+                isShowingTeachingSkillsLibrary = false
+            }
+            .frame(width: 320)
+            .background(panelBackground)
+        } else {
+            mainPanelContent
+        }
+    }
+
+    private var mainPanelContent: some View {
         VStack(alignment: .leading, spacing: 0) {
             panelHeader
             Divider()
@@ -719,6 +732,7 @@ struct CompanionPanelView: View {
                 .labelsHidden()
                 .tint(DS.Colors.accent)
                 .scaleEffect(0.8)
+                .accessibilityIdentifier("clicky.panel.teaching-skills.learn-toggle")
             }
 
             Text(companionManager.isLearningFromSessionsEnabled
@@ -736,6 +750,17 @@ struct CompanionPanelView: View {
                 ForEach(companionManager.teachingSkills.prefix(4)) { skill in
                     teachingSkillRow(skill)
                 }
+
+                Button(action: {
+                    isShowingTeachingSkillsLibrary = true
+                }) {
+                    Text("View all")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.accent)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .accessibilityIdentifier("clicky.panel.teaching-skills.view-all")
             }
         }
         .padding(.vertical, 4)

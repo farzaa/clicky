@@ -5,15 +5,17 @@ on:
     branches:
       - main
       - feature/teaching-skills
+      - feature/teaching-skills-upstream
   pull_request:
     branches:
       - main
       - feature/teaching-skills
+      - feature/teaching-skills-upstream
 
 jobs:
   teaching-skills-e2e:
     name: Teaching skills E2E (macOS)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
 
     steps:
@@ -27,7 +29,7 @@ jobs:
 
       - name: Run teaching-skills E2E
         run: |
-          chmod +x tests/e2e/run-all.sh tests/e2e/teaching-skills.sh
+          chmod +x tests/e2e/run-all.sh tests/e2e/teaching-skills.sh tests/e2e/skills-library.sh tests/e2e/lib/common.sh
           ./tests/e2e/run-all.sh
 
       - name: Upload E2E logs on failure

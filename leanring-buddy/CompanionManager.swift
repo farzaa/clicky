@@ -85,6 +85,7 @@ final class CompanionManager: ObservableObject {
     private let topicHistoryStore = TeachingTopicHistoryStore()
     private var sessionTrace: [SessionTraceEntry] = []
     private var skillWriteTask: Task<Void, Never>?
+    private var curatorLLMTask: Task<Void, Never>?
 
     /// Skills currently on disk, exposed for the panel UI.
     @Published private(set) var teachingSkills: [TeachingSkill] = []
@@ -169,6 +170,20 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    func restoreTeachingSkill(id: String) {
+        do {
+            try teachingSkillStore.restoreSkill(id: id)
+            teachingSkills = teachingSkillStore.skills
+            writeE2EArtifactsIfNeeded()
+        } catch {
+            print("⚠️ Failed to restore teaching skill \(id): \(error)")
+        }
+    }
+
+    func teachingSkills(withStatus status: TeachingSkillStatus?) -> [TeachingSkill] {
+        teachingSkillStore.skills(withStatus: status)
+    }
+
     /// Allows E2E tests to bypass microphone/STT and exercise the response + skill loop directly.
     func injectTranscriptForE2E(_ transcript: String) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -207,6 +222,27 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    func runE2EBootstrapActionsIfNeeded() {
+        guard ClickyE2EConfiguration.isEnabled else { return }
+
+        Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+
+            if let restoreSkillID = ClickyE2EConfiguration.restoreSkillID {
+                restoreTeachingSkill(id: restoreSkillID)
+            }
+
+            writeE2EArtifactsIfNeeded()
+        }
+    }
+
+    func writeE2EArtifactsIfNeeded() {
+        guard ClickyE2EConfiguration.isEnabled else { return }
+
+        ClickyE2EConfiguration.writeSkillsCountForE2E(teachingSkillStore.skills.count)
+        ClickyE2EConfiguration.writeSkillLibraryStateForE2E(teachingSkillStore.skills)
+    }
+
     private func frontmostApplicationBundleId() -> String? {
         NSWorkspace.shared.frontmostApplication?.bundleIdentifier
     }
@@ -216,6 +252,16 @@ final class CompanionManager: ObservableObject {
         topicHistoryStore.load()
         SkillCurator.curate(store: teachingSkillStore)
         teachingSkills = teachingSkillStore.skills
+        runCuratorLLMPassesIfNeeded()
+        writeE2EArtifactsIfNeeded()
+    }
+
+    private func runCuratorLLMPassesIfNeeded() {
+        curatorLLMTask?.cancel()
+        curatorLLMTask = Task {
+            await SkillCurator.curateWithLLMPasses(store: teachingSkillStore, claudeAPI: claudeAPI)
+            teachingSkills = teachingSkillStore.skills
+        }
     }
 
     private func matchedSkills(for transcript: String) -> [TeachingSkill] {
@@ -315,6 +361,7 @@ final class CompanionManager: ObservableObject {
                 _ = try teachingSkillStore.saveSkill(skill)
                 SkillCurator.curate(store: teachingSkillStore)
                 teachingSkills = teachingSkillStore.skills
+                runCuratorLLMPassesIfNeeded()
                 topicHistoryStore.recordTopic(
                     topic: trigger.topic,
                     bundleId: targetBundleId,
@@ -327,6 +374,7 @@ final class CompanionManager: ObservableObject {
                     reason: trigger.reason.rawValue,
                     updatedExisting: existingSkill != nil
                 )
+                writeE2EArtifactsIfNeeded()
                 print("📚 Saved teaching skill: \(skill.id)")
             } catch {
                 print("⚠️ Failed to synthesize teaching skill: \(error)")
@@ -868,6 +916,9 @@ final class CompanionManager: ObservableObject {
                         skillIDs: matchedTeachingSkills.map(\.id),
                         bundleID: frontmostApplicationBundleId()
                     )
+                    ClickyE2EConfiguration.writeLastMatchedSkillIDForE2E(matchedTeachingSkills.first?.id)
+                } else {
+                    ClickyE2EConfiguration.writeLastMatchedSkillIDForE2E(nil)
                 }
 
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(

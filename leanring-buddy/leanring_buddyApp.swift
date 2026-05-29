@@ -47,6 +47,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         companionManager.start()
 
         companionManager.runE2EInjectSequenceIfNeeded()
+        companionManager.runE2EBootstrapActionsIfNeeded()
         // Auto-open the panel if the user still needs to do something:
         // either they haven't onboarded yet, or permissions were revoked.
         // Skip during headless E2E — the ad-hoc E2E build has a different code

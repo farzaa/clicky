@@ -86,4 +86,16 @@ final class TeachingSkillStore {
         skill.isPinned = pinned
         _ = try saveSkill(skill)
     }
+
+    func restoreSkill(id: String) throws {
+        guard var skill = skill(withID: id) else { return }
+        skill.status = .active
+        skill.lastUsed = Date()
+        _ = try saveSkill(skill)
+    }
+
+    func skills(withStatus status: TeachingSkillStatus?) -> [TeachingSkill] {
+        guard let status else { return skills }
+        return skills.filter { $0.status == status }
+    }
 }
