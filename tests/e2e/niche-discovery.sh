@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 trap e2e_cleanup EXIT
 
-# Force bundled JSON suggestions in Phase A/B (avoid app-aware Terminal/VS Code ids in CI).
+# No mapped niche app in Phase A/B — suggestions stay empty until usage or a matching app is frontmost.
 E2E_UNMAPPED_BUNDLE_ID="com.unknown.app"
 
 read_niche_json_field() {
@@ -32,8 +32,13 @@ assert_phase_a_json() {
     return 1
   fi
 
-  if [[ "$suggestion_count" -lt 3 ]]; then
-    echo "FAIL: suggestionCount is $suggestion_count, expected >= 3"
+  if [[ "$suggestion_count" -ne 0 ]]; then
+    echo "FAIL: suggestionCount is $suggestion_count, expected 0 without matching apps"
+    return 1
+  fi
+
+  if [[ -n "$first_id" ]]; then
+    echo "FAIL: firstSuggestionId should be empty without matching apps, got '$first_id'"
     return 1
   fi
 
@@ -42,22 +47,20 @@ assert_phase_a_json() {
     return 1
   fi
 
-  local is_app_aware
+  local is_app_aware suggestion_context
   is_app_aware="$(read_niche_json_field isAppAware)"
+  suggestion_context="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('suggestionContext') or '')" "$E2E_NICHE_JSON")"
   if [[ "$is_app_aware" == "True" ]]; then
-    echo "FAIL: expected bundled suggestions (isAppAware false), got true"
+    echo "FAIL: expected no app-aware suggestions without matching apps, got true"
     return 1
   fi
 
-  case "$first_id" in
-    commit-changes|run-tests|debug-breakpoint|terminal-command|find-setting) ;;
-    *)
-      echo "FAIL: firstSuggestionId '$first_id' is not a developer.json id"
-      return 1
-      ;;
-  esac
+  if [[ "$suggestion_context" != *"developer app you use"* ]]; then
+    echo "FAIL: expected empty-state context about developer apps, got '$suggestion_context'"
+    return 1
+  fi
 
-  echo "PASS: niche discovery JSON — niche=$selected_niche count=$suggestion_count first=$first_id"
+  echo "PASS: niche discovery JSON — niche=$selected_niche count=$suggestion_count (app-only suggestions)"
   return 0
 }
 

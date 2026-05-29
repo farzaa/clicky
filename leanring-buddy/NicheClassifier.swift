@@ -19,6 +19,9 @@ final class NicheClassifier {
     static let profileConfidenceThreshold = 0.60
     static let minimumTrackedSeconds: TimeInterval = 7200
 
+    static let minimumTrackedSecondsForAppRanking: TimeInterval = 120
+    static let minimumTrackedSecondsForExplicitNicheAppRanking: TimeInterval = 30
+
     private struct BundleNicheEntry: Decodable {
         struct NicheWeights: Decodable {
             let developer: Double?
@@ -106,6 +109,36 @@ final class NicheClassifier {
 
     func isNeutralApp(bundleId: String) -> Bool {
         bundleMap[bundleId]?.neutral == true
+    }
+
+    func nicheAffinity(bundleId: String, for niche: NicheDiscoveryManager.Niche) -> Double {
+        guard let entry = bundleMap[bundleId], let weights = entry.niches else { return 0 }
+        let normalizedWeights = normalizedWeights(from: weights)
+        return normalizedWeights[niche] ?? 0
+    }
+
+    func appMatchesNiche(
+        bundleId: String,
+        niche: NicheDiscoveryManager.Niche,
+        minimumAffinity: Double = 0.35
+    ) -> Bool {
+        nicheAffinity(bundleId: bundleId, for: niche) >= minimumAffinity
+    }
+
+    func rankedBundleIdsMatchingNiche(
+        niche: NicheDiscoveryManager.Niche,
+        weightedSecondsByBundleId: [String: TimeInterval],
+        minimumAffinity: Double = 0.35,
+        minimumTrackedSeconds: TimeInterval = NicheClassifier.minimumTrackedSecondsForAppRanking
+    ) -> [String] {
+        weightedSecondsByBundleId
+            .filter { bundleId, trackedSeconds in
+                trackedSeconds >= minimumTrackedSeconds
+                    && appMatchesNiche(bundleId: bundleId, niche: niche, minimumAffinity: minimumAffinity)
+                    && NicheAppSuggestionMapping.appSpecificSuggestions(bundleId: bundleId) != nil
+            }
+            .sorted { lhs, rhs in lhs.value > rhs.value }
+            .map(\.key)
     }
 
     private func normalizedWeights(from weights: BundleNicheEntry.NicheWeights) -> [NicheDiscoveryManager.Niche: Double] {

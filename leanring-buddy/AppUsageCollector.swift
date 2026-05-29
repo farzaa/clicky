@@ -61,6 +61,20 @@ final class AppUsageCollector {
         save()
     }
 
+    func mostRecentlyUsedBundleId(excludingBundleIds: Set<String> = [], now: Date = Date()) -> String? {
+        pruneExpiredSessions(now: now)
+
+        if let activeSession,
+           !excludingBundleIds.contains(activeSession.bundleId) {
+            return activeSession.bundleId
+        }
+
+        return sessions
+            .filter { !excludingBundleIds.contains($0.bundleId) }
+            .max(by: { ($0.endedAt ?? .distantPast) < ($1.endedAt ?? .distantPast) })?
+            .bundleId
+    }
+
     func weightedSecondsByBundleId(now: Date = Date()) -> [String: TimeInterval] {
         pruneExpiredSessions(now: now)
         var totals: [String: TimeInterval] = [:]

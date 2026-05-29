@@ -19,6 +19,7 @@ struct NicheSuggestionsFile: Codable {
 struct NicheSuggestionSnapshot: Equatable {
     enum Mode: String, Equatable {
         case appAware = "app-aware"
+        case usageBased = "usage-based"
         case profileBiased = "profile-biased"
         case userOverride = "user-override"
         case generalFallback = "general-fallback"
@@ -128,46 +129,93 @@ final class NicheDiscoveryManager {
     }
 
     func suggestionSnapshot(frontmostBundleId: String?) -> NicheSuggestionSnapshot {
-        if let userNicheOverride {
-            return NicheSuggestionSnapshot(
-                mode: .userOverride,
-                contextLabel: "Showing \(userNicheOverride.displayName.lowercased()) suggestions:",
-                suggestions: limitedSuggestions(suggestions(for: userNicheOverride)),
-                effectiveNiche: userNicheOverride
-            )
-        }
+        let usageByBundleId = appUsageCollector.weightedSecondsByBundleId()
+        let isExplicitNicheOverride = userNicheOverride != nil
+        let bundleIdForSuggestions = frontmostBundleIdForSuggestions(systemFrontmostBundleId: frontmostBundleId)
 
-        if let frontmostBundleId,
-           let appSpecificSuggestions = NicheAppSuggestionMapping.appSpecificSuggestions(bundleId: frontmostBundleId),
-           let contextLabel = NicheAppSuggestionMapping.contextLabel(bundleId: frontmostBundleId) {
+        guard let nicheForSuggestions = resolvedNicheForSuggestions() else {
             return NicheSuggestionSnapshot(
-                mode: .appAware,
-                contextLabel: contextLabel,
-                suggestions: limitedSuggestions(appSpecificSuggestions),
-                effectiveNiche: effectiveNiche
-            )
-        }
-
-        if let frontmostBundleId,
-           nicheClassifier.isNeutralApp(bundleId: frontmostBundleId),
-           profileIsStable,
-           let inferredNiche {
-            let nicheSuggestions = suggestions(for: inferredNiche)
-            return NicheSuggestionSnapshot(
-                mode: .profileBiased,
-                contextLabel: "Try asking about your screen:",
-                suggestions: limitedSuggestions(nicheSuggestions),
+                mode: .generalFallback,
+                contextLabel: "Pick your niche below — suggestions will match the apps you use:",
+                suggestions: [],
                 effectiveNiche: inferredNiche
             )
         }
 
-        let fallbackNiche = effectiveNiche ?? .other
-        return NicheSuggestionSnapshot(
-            mode: .generalFallback,
-            contextLabel: "Try asking about your screen:",
-            suggestions: limitedSuggestions(suggestions(for: fallbackNiche)),
-            effectiveNiche: fallbackNiche
+        if let bundleIdForSuggestions,
+           nicheClassifier.appMatchesNiche(bundleId: bundleIdForSuggestions, niche: nicheForSuggestions),
+           let appSpecificSuggestions = NicheAppSuggestionMapping.appSpecificSuggestions(bundleId: bundleIdForSuggestions),
+           let contextLabel = NicheAppSuggestionMapping.contextLabel(bundleId: bundleIdForSuggestions) {
+            return NicheSuggestionSnapshot(
+                mode: isExplicitNicheOverride ? .userOverride : .appAware,
+                contextLabel: contextLabel,
+                suggestions: limitedSuggestions(appSpecificSuggestions),
+                effectiveNiche: nicheForSuggestions
+            )
+        }
+
+        let minimumTrackedSecondsForRanking = isExplicitNicheOverride
+            ? NicheClassifier.minimumTrackedSecondsForExplicitNicheAppRanking
+            : NicheClassifier.minimumTrackedSecondsForAppRanking
+
+        let rankedMatchingBundleIds = nicheClassifier.rankedBundleIdsMatchingNiche(
+            niche: nicheForSuggestions,
+            weightedSecondsByBundleId: usageByBundleId,
+            minimumTrackedSeconds: minimumTrackedSecondsForRanking
         )
+
+        for rankedBundleId in rankedMatchingBundleIds {
+            guard let appSpecificSuggestions = NicheAppSuggestionMapping.appSpecificSuggestions(bundleId: rankedBundleId),
+                  let appDisplayName = NicheAppSuggestionMapping.appDisplayName(bundleId: rankedBundleId) else {
+                continue
+            }
+
+            return NicheSuggestionSnapshot(
+                mode: isExplicitNicheOverride ? .userOverride : .usageBased,
+                contextLabel: "From the \(nicheForSuggestions.displayName.lowercased()) apps you use — try in \(appDisplayName):",
+                suggestions: limitedSuggestions(appSpecificSuggestions),
+                effectiveNiche: nicheForSuggestions
+            )
+        }
+
+        return NicheSuggestionSnapshot(
+            mode: isExplicitNicheOverride ? .userOverride : (profileIsStable ? .profileBiased : .generalFallback),
+            contextLabel: noMatchingAppsContextLabel(for: nicheForSuggestions),
+            suggestions: [],
+            effectiveNiche: nicheForSuggestions
+        )
+    }
+
+    private func noMatchingAppsContextLabel(for niche: Niche) -> String {
+        "Open a \(niche.displayName.lowercased()) app you use — suggestions will match what's on screen:"
+    }
+
+    private func frontmostBundleIdForSuggestions(systemFrontmostBundleId: String?) -> String? {
+        let clickyBundleId = bundle.bundleIdentifier
+        var excludedBundleIds = Set<String>()
+        if let clickyBundleId {
+            excludedBundleIds.insert(clickyBundleId)
+        }
+
+        if let systemFrontmostBundleId,
+           !excludedBundleIds.contains(systemFrontmostBundleId),
+           !nicheClassifier.isNeutralApp(bundleId: systemFrontmostBundleId) {
+            return systemFrontmostBundleId
+        }
+
+        return appUsageCollector.mostRecentlyUsedBundleId(excludingBundleIds: excludedBundleIds)
+    }
+
+    private func resolvedNicheForSuggestions() -> Niche? {
+        if let userNicheOverride {
+            return userNicheOverride
+        }
+
+        if profileIsStable, let inferredNiche {
+            return inferredNiche
+        }
+
+        return nil
     }
 
     func suggestions(for niche: Niche) -> [NicheSuggestion] {

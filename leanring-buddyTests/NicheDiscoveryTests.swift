@@ -19,17 +19,27 @@ struct NicheDiscoveryTests {
     }
 
     @Test func suggestionSnapshotLimitsToThreeCards() {
-        let manager = NicheDiscoveryManager()
+        let userDefaults = UserDefaults(suiteName: "NicheDiscoveryTests.xcode")!
+        defer { userDefaults.removePersistentDomain(forName: "NicheDiscoveryTests.xcode") }
+
+        let manager = NicheDiscoveryManager(userDefaults: userDefaults)
+        manager.setUserNiche(.developer)
         let snapshot = manager.suggestionSnapshot(frontmostBundleId: "com.apple.dt.Xcode")
+
         #expect(snapshot.suggestions.count == 3)
-        #expect(snapshot.mode == .appAware)
         #expect(snapshot.contextLabel.contains("Xcode"))
+        #expect(snapshot.suggestions.first?.id == "xcode-source-control")
     }
 
-    @Test func ghosttyUsesAppAwareSuggestionsWithoutManualNiche() {
-        let manager = NicheDiscoveryManager()
+    @Test func developerNicheUsesAppSpecificSuggestionsForFrontmostApp() {
+        let userDefaults = UserDefaults(suiteName: "NicheDiscoveryTests.ghostty")!
+        defer { userDefaults.removePersistentDomain(forName: "NicheDiscoveryTests.ghostty") }
+
+        let manager = NicheDiscoveryManager(userDefaults: userDefaults)
+        manager.setUserNiche(.developer)
         let snapshot = manager.suggestionSnapshot(frontmostBundleId: "com.mitchellh.ghostty")
-        #expect(snapshot.mode == .appAware)
+
+        #expect(snapshot.mode == .userOverride)
         #expect(snapshot.suggestions.first?.id == "ghostty-command")
     }
 
@@ -67,32 +77,109 @@ struct NicheDiscoveryTests {
         try? FileManager.default.removeItem(at: usageFileURL)
     }
 
-    @Test func neutralSafariUsesGeneralFallbackWithoutStableProfile() {
+    @Test func neutralSafariRequiresExplicitOrStableNicheBeforeSuggesting() {
         let manager = NicheDiscoveryManager()
         let snapshot = manager.suggestionSnapshot(frontmostBundleId: "com.apple.Safari")
+
         #expect(snapshot.mode == .generalFallback)
+        #expect(snapshot.suggestions.isEmpty)
+        #expect(snapshot.contextLabel.contains("Pick your niche"))
     }
 
-    @Test func userNicheOverrideReplacesAppAwareSuggestions() {
+    @Test func userNicheOverridePrefersAppSpecificPromptsOverGenericNicheJson() {
         let userDefaults = UserDefaults(suiteName: "NicheDiscoveryTests.override")!
         userDefaults.removePersistentDomain(forName: "NicheDiscoveryTests.override")
 
         let manager = NicheDiscoveryManager(userDefaults: userDefaults)
-        let automaticSnapshot = manager.suggestionSnapshot(frontmostBundleId: "com.mitchellh.ghostty")
-        #expect(automaticSnapshot.mode == .appAware)
-        #expect(automaticSnapshot.suggestions.first?.id == "ghostty-command")
+        manager.setUserNiche(.developer)
+        let developerSnapshot = manager.suggestionSnapshot(frontmostBundleId: "com.mitchellh.ghostty")
+        #expect(developerSnapshot.mode == .userOverride)
+        #expect(developerSnapshot.suggestions.first?.id == "ghostty-command")
 
         manager.setUserNiche(.designer)
         let designerSnapshot = manager.suggestionSnapshot(frontmostBundleId: "com.mitchellh.ghostty")
         #expect(designerSnapshot.mode == .userOverride)
         #expect(!designerSnapshot.suggestions.map(\.id).contains("ghostty-command"))
-
-        manager.setUserNiche(.developer)
-        let developerSnapshot = manager.suggestionSnapshot(frontmostBundleId: "com.mitchellh.ghostty")
-        #expect(developerSnapshot.mode == .userOverride)
-        #expect(developerSnapshot.suggestions.map(\.id) != designerSnapshot.suggestions.map(\.id))
+        #expect(designerSnapshot.suggestions.map(\.id) != developerSnapshot.suggestions.map(\.id))
 
         userDefaults.removePersistentDomain(forName: "NicheDiscoveryTests.override")
+    }
+
+    @Test func developerNicheWithNoMatchingAppsShowsEmptySuggestions() {
+        let userDefaults = UserDefaults(suiteName: "NicheDiscoveryTests.empty")!
+        defer { userDefaults.removePersistentDomain(forName: "NicheDiscoveryTests.empty") }
+
+        let manager = NicheDiscoveryManager(userDefaults: userDefaults)
+        manager.setUserNiche(.developer)
+        let snapshot = manager.suggestionSnapshot(frontmostBundleId: "com.unknown.app")
+
+        #expect(snapshot.mode == .userOverride)
+        #expect(snapshot.suggestions.isEmpty)
+        #expect(snapshot.contextLabel.contains("developer app you use"))
+    }
+
+    @Test func usageBasedSuggestionsPreferTrackedAppsMatchingNiche() throws {
+        let usageFileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clicky-niche-usage-\(UUID().uuidString).json")
+        let userDefaults = UserDefaults(suiteName: "NicheDiscoveryTests.usage")!
+        defer {
+            userDefaults.removePersistentDomain(forName: "NicheDiscoveryTests.usage")
+            try? FileManager.default.removeItem(at: usageFileURL)
+        }
+
+        let sessionStart = Date().addingTimeInterval(-300)
+        let sessionEnd = Date()
+        let payload = AppUsageStoreFile(sessions: [
+            AppUsageSession(bundleId: "com.apple.FinalCut", startedAt: sessionStart, endedAt: sessionEnd)
+        ])
+        let payloadData = try JSONEncoder().encode(payload)
+        try payloadData.write(to: usageFileURL, options: .atomic)
+
+        let collector = AppUsageCollector(usageFileURL: usageFileURL)
+        collector.start()
+
+        let manager = NicheDiscoveryManager(
+            userDefaults: userDefaults,
+            appUsageCollector: collector,
+            nicheClassifier: NicheClassifier()
+        )
+        manager.setUserNiche(.contentCreator)
+
+        let snapshot = manager.suggestionSnapshot(frontmostBundleId: "com.apple.Safari")
+        #expect(snapshot.mode == .userOverride)
+        #expect(snapshot.contextLabel.contains("Final Cut Pro"))
+        #expect(snapshot.suggestions.first?.id == "finalcut-export")
+    }
+
+    @Test func prefersRecentNonNeutralAppWhenFrontmostIsNeutral() throws {
+        let usageFileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clicky-niche-recent-\(UUID().uuidString).json")
+        let userDefaults = UserDefaults(suiteName: "NicheDiscoveryTests.recent")!
+        defer {
+            userDefaults.removePersistentDomain(forName: "NicheDiscoveryTests.recent")
+            try? FileManager.default.removeItem(at: usageFileURL)
+        }
+
+        let sessionStart = Date().addingTimeInterval(-300)
+        let sessionEnd = Date()
+        let payload = AppUsageStoreFile(sessions: [
+            AppUsageSession(bundleId: "com.mitchellh.ghostty", startedAt: sessionStart, endedAt: sessionEnd)
+        ])
+        try JSONEncoder().encode(payload).write(to: usageFileURL, options: .atomic)
+
+        let collector = AppUsageCollector(usageFileURL: usageFileURL)
+        collector.start()
+
+        let manager = NicheDiscoveryManager(
+            userDefaults: userDefaults,
+            appUsageCollector: collector,
+            nicheClassifier: NicheClassifier()
+        )
+        manager.setUserNiche(.developer)
+
+        let snapshot = manager.suggestionSnapshot(frontmostBundleId: "com.apple.Safari")
+        #expect(snapshot.suggestions.first?.id == "ghostty-command")
+        #expect(snapshot.contextLabel.contains("Ghostty"))
     }
 
     @Test func voicePromptClausePresentForEachNiche() {

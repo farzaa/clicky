@@ -617,19 +617,14 @@ final class CompanionManager: ObservableObject {
         guard ClickyE2EConfiguration.isEnabled else { return }
 
         let suggestions = nicheSuggestions
-        guard let firstSuggestion = suggestions.first else {
-            print("⚠️ E2E: no niche suggestions loaded")
-            return
-        }
-
         let effectiveNiche = nicheDiscoveryManager.effectiveNiche ?? .other
         let snapshot = ClickyE2EConfiguration.NicheDiscoveryE2ESnapshot(
             selectedNiche: effectiveNiche.rawValue,
             suggestionCount: suggestions.count,
-            firstSuggestionId: firstSuggestion.id,
+            firstSuggestionId: suggestions.first?.id ?? "",
             voicePromptClauseContains: e2eNicheClauseAssertionToken(for: effectiveNiche),
             suggestionContext: nicheSuggestionContextLabel,
-            isAppAware: nicheSuggestionMode == .appAware
+            isAppAware: nicheSuggestionMode == .appAware || nicheSuggestionMode == .usageBased
         )
         ClickyE2EConfiguration.writeNicheDiscoveryForE2E(snapshot)
         ClickyE2EConfiguration.writeSuggestionsForE2E(suggestions.map(\.prompt))
