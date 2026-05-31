@@ -59,6 +59,10 @@ final class SessionManager {
     private(set) var audioLevel: Float = 0
     private(set) var audioWarning: String?
     private(set) var inFlightMarkerCount: Int = 0
+    /// True while the active recording is a mic-only voice note (⌃⌥V) rather
+    /// than a screen clip (⌃⌥D). Lets the UI label the indicator, and is
+    /// stamped onto the resulting clip's `audioOnly` flag when it finalizes.
+    private(set) var isAudioOnlyRecording: Bool = false
     private(set) var availableDisplays: [DisplayInfo] = []
     var selectedDisplayID: CGDirectDisplayID?
 
@@ -87,6 +91,13 @@ final class SessionManager {
         modifiers: [.control, .option],
         keyCode: UInt16(kVK_ANSI_M)
     )
+
+    @ObservationIgnored
+    private let voiceNoteHotkey = HotkeyMonitor(
+        mode: .toggle,
+        modifiers: [.control, .option],
+        keyCode: UInt16(kVK_ANSI_V)
+    )  // ⌃⌥V, toggle — record a mic-only voice note (no screen capture)
 
     @ObservationIgnored
     private let projectStore: ProjectStore
@@ -161,6 +172,12 @@ final class SessionManager {
         markerHotkey.onPress = { [weak self] in
             self?.handleMarkerHotkey()
         }
+        voiceNoteHotkey.onPress = { [weak self] in
+            self?.handleVoiceNoteHotkeyPress()
+        }
+        voiceNoteHotkey.onRelease = { [weak self] in
+            self?.handleVoiceNoteHotkeyRelease()
+        }
     }
 
     @ObservationIgnored
@@ -169,7 +186,8 @@ final class SessionManager {
     func start() {
         recordingHotkey.start()
         markerHotkey.start()
-        Logger.session.info("SessionManager started — recording (⌃⌥D) and marker (⌃⌥M) hotkeys armed")
+        voiceNoteHotkey.start()
+        Logger.session.info("SessionManager started — recording (⌃⌥D), marker (⌃⌥M), and voice-note (⌃⌥V) hotkeys armed")
         selectedAudioDeviceID = UserDefaults.standard.string(forKey: "selectedAudioDeviceID")
         refreshAudioDevices()
         Task { await refreshDisplays() }
@@ -218,6 +236,7 @@ final class SessionManager {
     func stop() {
         recordingHotkey.stop()
         markerHotkey.stop()
+        voiceNoteHotkey.stop()
         idleTimer?.invalidate()
         idleTimer = nil
         for observer in deviceObservers {
@@ -321,7 +340,12 @@ final class SessionManager {
 
     private func handleRecordingHotkeyPress() {
         switch status {
-        case .recording, .finishing: return
+        case .recording, .finishing:
+            // Something is already recording (possibly a voice note). Ignore,
+            // and clear the toggle so the next ⌃⌥D press starts fresh instead
+            // of being read as the toggle-off of the other recording.
+            recordingHotkey.reset()
+            return
         default: break
         }
 
@@ -407,10 +431,12 @@ final class SessionManager {
         guard status == .recording else { return }
         guard let recorder = activeRecorder, let draft = activeClipDraft else {
             status = .idle
+            isAudioOnlyRecording = false
             return
         }
         let startTask = activeStartTask
         let markersAtStop = activeMarkers
+        let wasAudioOnly = isAudioOnlyRecording
         status = .finishing
 
         Task { @MainActor in
@@ -433,6 +459,7 @@ final class SessionManager {
                 self.inFlightMarkerCount = 0
                 self.recordingStartedAt = nil
                 self.audioWarning = nil
+                self.isAudioOnlyRecording = false
 
                 guard duration >= self.minimumClipDuration else {
                     Logger.session.info("Discarded short clip (\(duration, privacy: .public)s, threshold \(self.minimumClipDuration, privacy: .public)s)")
@@ -452,7 +479,8 @@ final class SessionManager {
                     sessionID: sessionID,
                     fileName: draft.fileName,
                     durationSeconds: duration,
-                    markers: validMarkers
+                    markers: validMarkers,
+                    audioOnly: wasAudioOnly
                 )
                 try self.clipStore.add(clip)
                 Logger.session.info("Saved clip \(clip.id.uuidString, privacy: .public) (\(duration, privacy: .public)s, \(validMarkers.count, privacy: .public) markers)")
@@ -464,6 +492,95 @@ final class SessionManager {
                 self.cleanupAfterFailure(message: error.localizedDescription)
             }
         }
+    }
+
+    // MARK: - Voice-note hotkey (⌃⌥V)
+
+    private func handleVoiceNoteHotkeyPress() {
+        switch status {
+        case .recording, .finishing:
+            // A voice note and a screen clip both grab the mic, so only one can
+            // record at a time. Ignore, and clear the toggle so the next ⌃⌥V is
+            // read as a fresh start rather than the toggle-off of the other one.
+            voiceNoteHotkey.reset()
+            return
+        case .idle, .failed:
+            break
+        }
+        startVoiceNote()
+    }
+
+    private func handleVoiceNoteHotkeyRelease() {
+        // The voice note shares the screen-clip teardown path; `finalizeRecording`
+        // reads `isAudioOnlyRecording` to stamp the clip correctly.
+        finalizeRecording()
+    }
+
+    /// Mirrors `startRecording()` but captures mic audio only: no display, no
+    /// camera overlay, an `.m4a` output, and `audioOnly: true` on the recorder.
+    /// Voice notes attach to the active project's session exactly like clips do.
+    private func startVoiceNote() {
+        guard let project = projectStore.activeProject else {
+            Logger.session.warning("Voice-note hotkey pressed with no active project")
+            status = .failed(message: "Select a project before recording.")
+            voiceNoteHotkey.reset()
+            return
+        }
+
+        let clipID = UUID()
+        let safeName = project.name
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
+            .lowercased()
+            .prefix(40)
+        let stamp = Self.fileNameDateFormatter.string(from: Date())
+        let fileName = "\(safeName)_\(stamp).m4a"
+        guard let clipsDir = clipStore.clipsDirectory(for: project.id) else {
+            Logger.session.error("No location registered for project \(project.id.uuidString, privacy: .public)")
+            status = .failed(message: "Project location not configured.")
+            voiceNoteHotkey.reset()
+            return
+        }
+        let outputURL = clipsDir.appendingPathComponent(fileName)
+
+        do {
+            try FileManager.default.createDirectory(at: clipsDir, withIntermediateDirectories: true)
+        } catch {
+            Logger.session.error("Could not create clips directory: \(error.localizedDescription, privacy: .public)")
+            status = .failed(message: "Could not prepare clips directory: \(error.localizedDescription)")
+            voiceNoteHotkey.reset()
+            return
+        }
+
+        let recorder = SessionRecorder(
+            outputURL: outputURL,
+            micDeviceUniqueID: selectedAudioDeviceID,
+            audioOnly: true
+        )
+        recorder.onAudioLevel = { [weak self] level in
+            Task { @MainActor [weak self] in
+                self?.audioLevel = level
+            }
+        }
+        recorder.onAudioNotDetected = { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.audioWarning = "No audio detected — check your mic input"
+            }
+        }
+        activeRecorder = recorder
+        activeClipDraft = ClipDraft(id: clipID, projectID: project.id, fileName: fileName)
+        activeMarkers = []
+        inFlightMarkerCount = 0
+        recordingStartedAt = Date()
+        isAudioOnlyRecording = true
+        // Hold the start Task so the release handler awaits it before stop() —
+        // same fast-toggle race protection as the screen-clip path.
+        activeStartTask = Task<Void, Error> {
+            try await recorder.start()
+        }
+        status = .recording
+        Logger.session.info("Voice note started for clip \(clipID.uuidString, privacy: .public) in project \(project.name, privacy: .public)")
     }
 
     // MARK: - Marker hotkey
@@ -529,6 +646,7 @@ final class SessionManager {
         self.inFlightMarkerCount = 0
         self.recordingStartedAt = nil
         self.audioWarning = nil
+        self.isAudioOnlyRecording = false
         self.status = .failed(message: message)
     }
 

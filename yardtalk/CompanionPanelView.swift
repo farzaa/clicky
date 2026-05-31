@@ -317,7 +317,7 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(DS.Colors.textSecondary)
 
-                Text("Press ⌃⌥D anywhere on your Mac to start recording a narrated screen clip; press again to stop. ⌃⌥M drops a marker on the moment you're capturing.")
+                Text("Press ⌃⌥D anywhere on your Mac to start recording a narrated screen clip; press again to stop. ⌃⌥V records a voice-only note (no screen). ⌃⌥M drops a marker on the moment you're capturing.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -728,7 +728,7 @@ struct CompanionPanelView: View {
                 let clips = clipsForSession(session)
                 let preview = clips.suffix(3)
                 if preview.isEmpty {
-                    Text("Press ⌃⌥D to record the first clip in this session.")
+                    Text("Press ⌃⌥D to record a clip, or ⌃⌥V for a voice note.")
                         .font(.system(size: 10))
                         .foregroundColor(DS.Colors.textTertiary)
                         .padding(.vertical, 4)
@@ -902,18 +902,19 @@ struct CompanionPanelView: View {
                 Image(systemName: "circle")
                     .foregroundColor(DS.Colors.textTertiary)
                     .font(.system(size: 9, weight: .semibold))
-                Text("⌃⌥D to record · ⌃⌥M to mark")
+                Text("⌃⌥D to record · ⌃⌥V for voice note · ⌃⌥M to mark")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
                 Spacer()
             }
         case .recording:
+            let isVoice = companionManager.sessionManager.isAudioOnlyRecording
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
-                    Image(systemName: "circle.fill")
-                        .foregroundColor(.red)
+                    Image(systemName: isVoice ? "mic.fill" : "circle.fill")
+                        .foregroundColor(isVoice ? DS.Colors.accent : .red)
                         .font(.system(size: 9))
-                    Text("Recording…")
+                    Text(isVoice ? "Recording voice note…" : "Recording…")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(DS.Colors.textPrimary)
                     if companionManager.sessionManager.inFlightMarkerCount > 0 {
@@ -970,6 +971,12 @@ struct CompanionPanelView: View {
                 Text("\(Int(clip.durationSeconds.rounded()))s")
                     .font(.system(size: 10))
                     .foregroundColor(DS.Colors.textTertiary)
+                if clip.audioOnly {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 9))
+                        .foregroundColor(DS.Colors.accent)
+                        .help("Voice note (audio only)")
+                }
                 if !clip.markers.isEmpty {
                     HStack(spacing: 3) {
                         ForEach(Array(clip.markers.prefix(3).enumerated()), id: \.offset) { _, _ in

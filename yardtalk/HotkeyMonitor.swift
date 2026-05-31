@@ -85,6 +85,13 @@ final class HotkeyMonitor {
         }
     }
 
+    /// Clears toggle state without firing `onPress`/`onRelease`. Used when a
+    /// press is rejected (e.g. the other recorder is busy) so the *next* press
+    /// is read as a fresh start rather than the toggle-off of the rejected one.
+    func reset() {
+        isActive = false
+    }
+
     private func handleKeyDown(_ event: NSEvent) {
         guard !event.isARepeat else { return }
         let activeModifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)

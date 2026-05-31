@@ -325,7 +325,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = 6D7X9GGZAW;
+				DEVELOPMENT_TEAM = 263YH9X3BU;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -389,7 +389,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = 6D7X9GGZAW;
+				DEVELOPMENT_TEAM = 263YH9X3BU;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -429,8 +429,8 @@
 				INFOPLIST_FILE = yardtalk/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = YardTalk;
 				INFOPLIST_KEY_CFBundleName = YardTalk;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSScreenCaptureUsageDescription = "YardTalk needs screen recording access to see your screen and help you.";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "© 2026 By Way of MJ";
+				INFOPLIST_KEY_NSScreenCaptureUsageDescription = "YardTalk records short screen clips while you narrate so it can summarize what you worked on. It only records while you have a recording running.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -467,8 +467,8 @@
 				INFOPLIST_FILE = yardtalk/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = YardTalk;
 				INFOPLIST_KEY_CFBundleName = YardTalk;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSScreenCaptureUsageDescription = "YardTalk needs screen recording access to see your screen and help you.";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "© 2026 By Way of MJ";
+				INFOPLIST_KEY_NSScreenCaptureUsageDescription = "YardTalk records short screen clips while you narrate so it can summarize what you worked on. It only records while you have a recording running.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

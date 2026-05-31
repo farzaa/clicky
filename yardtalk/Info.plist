@@ -4,6 +4,8 @@
 <dict>
 	<key>LSUIElement</key>
 	<true/>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -15,19 +17,11 @@
 			</array>
 		</dict>
 	</array>
-	<key>SUFeedURL</key>
-	<string>https://raw.githubusercontent.com/julianjear/makesomething-mac-app/main/appcast.xml</string>
-	<key>SUPublicEDKey</key>
-	<string>/l3d2rw5ZZFRU3AadP/w2Zf8FHfhA6bKv16BQOV5OSk=</string>
-	<key>VoiceTranscriptionProvider</key>
-	<string>assemblyai</string>
 	<key>NSCameraUsageDescription</key>
-	<string>YardTalk uses your camera for an optional face cam overlay during screen recordings.</string>
+	<string>YardTalk uses your camera only for the optional face-cam overlay you can switch on while recording a screen clip.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>YardTalk uses your microphone so you can talk to it</string>
+	<string>YardTalk records your narration and voice notes so it can transcribe them on your Mac and summarize your work sessions.</string>
 	<key>NSScreenCaptureUsageDescription</key>
-	<string>YardTalk needs screen recording access to see your screen and help you.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>YardTalk uses speech recognition to transcribe your voice when you talk to it</string>
+	<string>YardTalk records short screen clips while you narrate so it can summarize what you worked on. It only records while you have a recording running.</string>
 </dict>
 </plist>

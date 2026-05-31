@@ -3,10 +3,12 @@
 //  yardtalk
 //
 //  A single recorded clip belonging to a YardTalkProject and (in the
-//  session model added in M1) to a YardTalkSession. The clip is a short
-//  MP4 (screen video + mic audio) saved alongside its metadata JSON under
-//  the project's clips/ directory. The transcript is filled in
-//  asynchronously by FluidAudio after recording finishes.
+//  session model added in M1) to a YardTalkSession. A clip is either a
+//  short MP4 (screen video + mic audio) or — when `audioOnly` is true — a
+//  voice note: an M4A with mic audio and no screen capture. Both are saved
+//  alongside their metadata JSON under the project's clips/ directory. The
+//  transcript is filled in asynchronously by FluidAudio after recording
+//  finishes; that path is identical for both kinds.
 //
 
 import Foundation
@@ -31,6 +33,10 @@ struct YardTalkClip: Codable, Identifiable, Equatable, Sendable {
     /// templates (M8) — pen-test "proof moment" markers and HyperFrames
     /// B-roll cut lists both consume this directly.
     var markers: [TimeInterval]
+    /// True when this clip is a voice-only note (mic audio, no screen
+    /// capture) stored as M4A. Defaults to false so clips persisted before
+    /// this field existed decode cleanly as ordinary screen clips.
+    var audioOnly: Bool
 
     init(
         id: UUID = UUID(),
@@ -41,7 +47,8 @@ struct YardTalkClip: Codable, Identifiable, Equatable, Sendable {
         durationSeconds: Double = 0,
         transcript: String? = nil,
         transcriptionError: String? = nil,
-        markers: [TimeInterval] = []
+        markers: [TimeInterval] = [],
+        audioOnly: Bool = false
     ) {
         self.id = id
         self.projectID = projectID
@@ -52,11 +59,12 @@ struct YardTalkClip: Codable, Identifiable, Equatable, Sendable {
         self.transcript = transcript
         self.transcriptionError = transcriptionError
         self.markers = markers
+        self.audioOnly = audioOnly
     }
 
-    // Custom decoder so clip JSONs written before M1 (no `sessionID`, no
-    // `markers`) still load. The synthesized init(from:) would throw
-    // keyNotFound on `markers` since it isn't optional.
+    // Custom decoder so clip JSONs written before later fields existed
+    // (no `sessionID`, no `markers`, no `audioOnly`) still load. The
+    // synthesized init(from:) would throw keyNotFound on the missing keys.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try c.decode(UUID.self, forKey: .id)
@@ -68,5 +76,6 @@ struct YardTalkClip: Codable, Identifiable, Equatable, Sendable {
         self.transcript = try c.decodeIfPresent(String.self, forKey: .transcript)
         self.transcriptionError = try c.decodeIfPresent(String.self, forKey: .transcriptionError)
         self.markers = try c.decodeIfPresent([TimeInterval].self, forKey: .markers) ?? []
+        self.audioOnly = try c.decodeIfPresent(Bool.self, forKey: .audioOnly) ?? false
     }
 }

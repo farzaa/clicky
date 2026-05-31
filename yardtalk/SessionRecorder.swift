@@ -98,12 +98,20 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
 
     private let includeSelfInRecording: Bool
 
-    nonisolated init(outputURL: URL, displayID: CGDirectDisplayID? = nil, micDeviceUniqueID: String? = nil, cameraOverlayWindowID: CGWindowID? = nil, includeSelfInRecording: Bool = false) {
+    /// When true, capture mic audio only — no ScreenCaptureKit stream, no
+    /// video track — and write an `.m4a` instead of an `.mp4`. This is the
+    /// voice-note path: lighter, and it never touches SCShareableContent so
+    /// it doesn't require the Screen Recording permission. That matters when
+    /// the screen holds sensitive content the user deliberately won't capture.
+    private let audioOnly: Bool
+
+    nonisolated init(outputURL: URL, displayID: CGDirectDisplayID? = nil, micDeviceUniqueID: String? = nil, cameraOverlayWindowID: CGWindowID? = nil, includeSelfInRecording: Bool = false, audioOnly: Bool = false) {
         self.outputURL = outputURL
         self.targetDisplayID = displayID
         self.micDeviceUniqueID = micDeviceUniqueID
         self.cameraOverlayWindowID = cameraOverlayWindowID
         self.includeSelfInRecording = includeSelfInRecording
+        self.audioOnly = audioOnly
         super.init()
     }
 
@@ -114,7 +122,9 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
     nonisolated func start() async throws {
         Logger.recorder.info("start() begin — output: \(self.outputURL.lastPathComponent, privacy: .public)")
         try prepareWriter()
-        try await configureScreenCapture()
+        if !audioOnly {
+            try await configureScreenCapture()
+        }
         try configureMicCapture()
 
         guard let writer, writer.startWriting() else {
@@ -195,7 +205,7 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
     private nonisolated func prepareWriter() throws {
         try? FileManager.default.removeItem(at: outputURL)
         do {
-            writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
+            writer = try AVAssetWriter(outputURL: outputURL, fileType: audioOnly ? .m4a : .mp4)
         } catch {
             throw SessionRecorderError.writerSetupFailed(error.localizedDescription)
         }
@@ -311,7 +321,7 @@ final class SessionRecorder: NSObject, @unchecked Sendable {
         // to .failed mid-recording and finishWriting() then no-ops, leaving
         // a moov-atom-less MP4. Forcing a sane default bitrate when one
         // isn't recommended fixes that.
-        var audioSettings: [String: Any] = audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mp4)
+        var audioSettings: [String: Any] = audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: audioOnly ? .m4a : .mp4)
             ?? [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
                 AVSampleRateKey: 48_000,
