@@ -8,6 +8,10 @@
 import Testing
 @testable import YardTalk
 
+// The methods under test are @MainActor-isolated (the project builds with
+// SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor), so the tests must run on the
+// main actor to call them.
+@MainActor
 struct yardtalkTests {
 
     @Test func firstPermissionRequestUsesSystemPromptOnly() async throws {
