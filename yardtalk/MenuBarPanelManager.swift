@@ -70,40 +70,24 @@ final class MenuBarPanelManager: NSObject {
         button.target = self
     }
 
-    /// Draws the triangle as a menu bar icon. Uses the same shape
-    /// and rotation as the in-app cursor so the menu bar icon matches.
+    /// The YardTalk menu bar glyph: a monochrome silhouette of the island
+    /// from the logo (the "MenuBarGlyph" asset), as a template image so macOS
+    /// tints it for light/dark menu bars. Constrained to the menu bar's usable
+    /// height; the asset keeps the island's natural ~2.5:1 width. Falls back to
+    /// an SF Symbol if the asset is ever missing so the status item is never
+    /// blank.
     private func makeMenuBarIcon() -> NSImage {
-        let iconSize: CGFloat = 18
-        let image = NSImage(size: NSSize(width: iconSize, height: iconSize))
-        image.lockFocus()
-
-        let triangleSize = iconSize * 0.7
-        let cx = iconSize * 0.50
-        let cy = iconSize * 0.50
-        let height = triangleSize * sqrt(3.0) / 2.0
-
-        let top = CGPoint(x: cx, y: cy + height / 1.5)
-        let bottomLeft = CGPoint(x: cx - triangleSize / 2, y: cy - height / 3)
-        let bottomRight = CGPoint(x: cx + triangleSize / 2, y: cy - height / 3)
-
-        let angle = 35.0 * .pi / 180.0
-        func rotate(_ point: CGPoint) -> CGPoint {
-            let dx = point.x - cx, dy = point.y - cy
-            let cosA = CGFloat(cos(angle)), sinA = CGFloat(sin(angle))
-            return CGPoint(x: cx + cosA * dx - sinA * dy, y: cy + sinA * dx + cosA * dy)
+        let menuBarHeight: CGFloat = 16
+        if let glyph = NSImage(named: "MenuBarGlyph") {
+            let aspect = glyph.size.width / max(glyph.size.height, 1)
+            glyph.size = NSSize(width: menuBarHeight * aspect, height: menuBarHeight)
+            glyph.isTemplate = true
+            return glyph
         }
-
-        let path = NSBezierPath()
-        path.move(to: rotate(top))
-        path.line(to: rotate(bottomLeft))
-        path.line(to: rotate(bottomRight))
-        path.close()
-
-        NSColor.black.setFill()
-        path.fill()
-
-        image.unlockFocus()
-        return image
+        let fallback = NSImage(systemSymbolName: "waveform", accessibilityDescription: "YardTalk")
+            ?? NSImage(size: NSSize(width: menuBarHeight, height: menuBarHeight))
+        fallback.isTemplate = true
+        return fallback
     }
 
     /// Opens the panel automatically on app launch so the user sees
