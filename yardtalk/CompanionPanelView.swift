@@ -2,11 +2,10 @@
 //  CompanionPanelView.swift
 //  yardtalk
 //
-//  The SwiftUI content hosted inside the menu bar panel during the YardTalk
-//  skeleton phase. Shows app status and the four permission rows. The Clicky
-//  panel UI (model picker, push-to-talk hints, onboarding flow, cursor
-//  toggle, "DM Farza" link) was stripped — session controls land here once
-//  Pile C ships.
+//  The SwiftUI content hosted inside the menu bar panel. Shows the permission
+//  rows during setup, then the active project, recording status (screen clip
+//  or voice note), and the current session's timeline once permissions are
+//  granted.
 //
 
 import AVFoundation

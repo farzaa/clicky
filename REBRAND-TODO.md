@@ -18,12 +18,12 @@ Tasks to complete the Clicky → YardTalk transition. Xcode-side tasks must be d
 - [x] Rename `ClickyAnalytics.swift` → `Analytics.swift` (stubbed no-ops)
 - [x] Remove the upstream `SUFeedURL` (it pointed at the original author's repo); Sparkle left dormant
 - [x] Menu bar glyph → "YT" monogram (`MenuBarGlyph` asset), replacing Clicky's triangle (an island silhouette was tried first but read as a blob at 16px)
-- [x] Grep/clean `clicky`/`farzaa` from Swift source (0 references; attribution kept in README/LICENSE)
+- [x] Grep/clean `clicky`/`farzaa` from Swift source (0 references remain; attribution kept in README/LICENSE)
 
 ### Leftover Clicky code/assets — removed ✓
 
 - [x] `AssemblyAIStreamingTranscriptionProvider.swift`, `OpenAIAudioTranscriptionProvider.swift`, `OpenAIAPI.swift`, `ElevenLabsTTSClient.swift`, `ElementLocationDetector.swift`, `AppleSpeechTranscriptionProvider.swift`, `BuddyDictationManager.swift`, `BuddyTranscriptionProvider.swift`, `BuddyAudioConversionSupport.swift`, `CompanionResponseOverlay.swift`, `CompanionScreenCaptureUtility.swift`
-- [x] `steve.jpg`, `codex-add-project.png`, `clicky-demo.gif`, `enter.mp3`, `eshop.mp3`, `ff.mp3` (only stale copies under `build/` remain, which is gitignored)
+- [x] `steve.jpg`, `codex-add-project.png`, `clicky-demo.gif`, `enter.mp3`, `eshop.mp3`, `ff.mp3` (removed from the repo; only stale copies under `build/` remain, which is gitignored)
 - [x] `ClaudeAPI.swift` — adapted for BYOK synthesis (direct Anthropic calls, user key in Keychain)
 
 ## Rebrand — still pending
