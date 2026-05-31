@@ -70,12 +70,13 @@ final class MenuBarPanelManager: NSObject {
         button.target = self
     }
 
-    /// The YardTalk menu bar glyph: a monochrome silhouette of the island
-    /// from the logo (the "MenuBarGlyph" asset), as a template image so macOS
-    /// tints it for light/dark menu bars. Constrained to the menu bar's usable
-    /// height; the asset keeps the island's natural ~2.5:1 width. Falls back to
-    /// an SF Symbol if the asset is ever missing so the status item is never
-    /// blank.
+    /// The YardTalk menu bar glyph: a monochrome "YT" monogram (the
+    /// "MenuBarGlyph" asset), as a template image so macOS tints it for
+    /// light/dark menu bars. Constrained to the menu bar's usable height,
+    /// preserving the asset's aspect ratio (the monogram is square). A
+    /// recognizable letter mark reads far better at ~16px than the full
+    /// island silhouette did. Falls back to an SF Symbol if the asset is ever
+    /// missing so the status item is never blank.
     private func makeMenuBarIcon() -> NSImage {
         let menuBarHeight: CGFloat = 16
         if let glyph = NSImage(named: "MenuBarGlyph") {

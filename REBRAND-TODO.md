@@ -17,7 +17,7 @@ Tasks to complete the Clicky → YardTalk transition. Xcode-side tasks must be d
 - [x] Set signing team → `263YH9X3BU` (Developer ID Application cert)
 - [x] Rename `ClickyAnalytics.swift` → `Analytics.swift` (stubbed no-ops)
 - [x] Remove the upstream `SUFeedURL` (it pointed at the original author's repo); Sparkle left dormant
-- [x] Menu bar glyph → Jamaica-island silhouette (`MenuBarGlyph` asset), replacing Clicky's triangle
+- [x] Menu bar glyph → "YT" monogram (`MenuBarGlyph` asset), replacing Clicky's triangle (an island silhouette was tried first but read as a blob at 16px)
 - [x] Grep/clean `clicky`/`farzaa` from Swift source (0 references; attribution kept in README/LICENSE)
 
 ### Leftover Clicky code/assets — removed ✓
