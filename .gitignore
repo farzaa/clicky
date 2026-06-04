@@ -1,5 +1,6 @@
 worker/node_modules/
 worker/.dev.vars
+worker/.wrangler/
 .DS_Store
 *.xcuserstate
 build/
