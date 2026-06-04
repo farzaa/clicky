@@ -7,6 +7,8 @@
  * Routes:
  *   POST /chat  → Anthropic Messages API (streaming)
  *   POST /tts   → ElevenLabs TTS API
+ *   POST /memory/search → Supermemory hybrid search
+ *   POST /memory/add    → Supermemory document ingestion
  */
 
 interface Env {
@@ -14,6 +16,7 @@ interface Env {
   ELEVENLABS_API_KEY: string;
   ELEVENLABS_VOICE_ID: string;
   ASSEMBLYAI_API_KEY: string;
+  SUPERMEMORY_API_KEY: string;
 }
 
 export default {
@@ -35,6 +38,14 @@ export default {
 
       if (url.pathname === "/transcribe-token") {
         return await handleTranscribeToken(env);
+      }
+
+      if (url.pathname === "/memory/search") {
+        return await handleMemorySearch(request, env);
+      }
+
+      if (url.pathname === "/memory/add") {
+        return await handleMemoryAdd(request, env);
       }
     } catch (error) {
       console.error(`[${url.pathname}] Unhandled error:`, error);
@@ -76,6 +87,95 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       "content-type": response.headers.get("content-type") || "text/event-stream",
       "cache-control": "no-cache",
     },
+  });
+}
+
+async function handleMemorySearch(request: Request, env: Env): Promise<Response> {
+  const incomingBody = await request.json() as {
+    q?: string;
+    containerTag?: string;
+    limit?: number;
+  };
+
+  if (!incomingBody.q || !incomingBody.containerTag) {
+    return new Response(
+      JSON.stringify({ error: "q and containerTag are required" }),
+      { status: 400, headers: { "content-type": "application/json" } }
+    );
+  }
+
+  const response = await fetch("https://api.supermemory.ai/v4/search", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${env.SUPERMEMORY_API_KEY}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      q: incomingBody.q,
+      containerTag: incomingBody.containerTag,
+      searchMode: "hybrid",
+      limit: Math.min(Math.max(incomingBody.limit ?? 5, 1), 10),
+      threshold: 0.45,
+    }),
+  });
+
+  const responseBody = await response.text();
+  if (!response.ok) {
+    console.error(`[/memory/search] Supermemory error ${response.status}: ${responseBody}`);
+    return new Response(responseBody, {
+      status: response.status,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  return new Response(responseBody, {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+async function handleMemoryAdd(request: Request, env: Env): Promise<Response> {
+  const incomingBody = await request.json() as {
+    content?: string;
+    containerTag?: string;
+    metadata?: Record<string, unknown>;
+  };
+
+  if (!incomingBody.content || !incomingBody.containerTag) {
+    return new Response(
+      JSON.stringify({ error: "content and containerTag are required" }),
+      { status: 400, headers: { "content-type": "application/json" } }
+    );
+  }
+
+  const response = await fetch("https://api.supermemory.ai/v3/documents", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${env.SUPERMEMORY_API_KEY}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      content: incomingBody.content,
+      containerTags: [incomingBody.containerTag, "clicky"],
+      metadata: {
+        source: "clicky",
+        ...incomingBody.metadata,
+      },
+    }),
+  });
+
+  const responseBody = await response.text();
+  if (!response.ok) {
+    console.error(`[/memory/add] Supermemory error ${response.status}: ${responseBody}`);
+    return new Response(responseBody, {
+      status: response.status,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  return new Response(responseBody, {
+    status: response.status,
+    headers: { "content-type": "application/json" },
   });
 }
 

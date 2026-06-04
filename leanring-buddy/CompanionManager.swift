@@ -80,9 +80,24 @@ final class CompanionManager: ObservableObject {
         return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
     }()
 
+    private lazy var supermemoryClient: SupermemoryClient = {
+        return SupermemoryClient(workerBaseURL: Self.workerBaseURL)
+    }()
+
     /// Conversation history so Claude remembers prior exchanges within a session.
     /// Each entry is the user's transcript and Claude's response.
     private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
+
+    private var supermemoryContainerTag: String {
+        let defaultsKey = "supermemoryUserContainerTag"
+        if let existingContainerTag = UserDefaults.standard.string(forKey: defaultsKey) {
+            return existingContainerTag
+        }
+
+        let newContainerTag = "clicky_user_\(UUID().uuidString)"
+        UserDefaults.standard.set(newContainerTag, forKey: defaultsKey)
+        return newContainerTag
+    }
 
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
@@ -539,6 +554,61 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    private func relevantLongTermMemoryContext(for transcript: String) async -> String {
+        do {
+            let searchResults = try await supermemoryClient.searchMemories(
+                query: transcript,
+                containerTag: supermemoryContainerTag,
+                limit: 5
+            )
+
+            let memories = searchResults
+                .map(\.content)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+
+            guard !memories.isEmpty else { return "" }
+
+            print("🧠 Supermemory retrieved \(memories.count) memories")
+            let formattedMemories = memories.enumerated()
+                .map { index, memory in "\(index + 1). \(memory)" }
+                .joined(separator: "\n")
+
+            return """
+            relevant long-term memories:
+            \(formattedMemories)
+
+            Use these only if they help answer the user's current request. Do not mention memory unless it is directly useful.
+            """
+        } catch {
+            print("⚠️ Supermemory search failed: \(error.localizedDescription)")
+            return ""
+        }
+    }
+
+    private func saveLongTermMemory(userTranscript: String, assistantResponse: String) {
+        let memoryContent = """
+        User said: \(userTranscript)
+        Clicky replied: \(assistantResponse)
+        """
+
+        Task {
+            do {
+                try await supermemoryClient.addMemory(
+                    content: memoryContent,
+                    containerTag: supermemoryContainerTag,
+                    metadata: [
+                        "type": "voice_exchange",
+                        "created_at": ISO8601DateFormatter().string(from: Date()),
+                    ]
+                )
+                print("🧠 Supermemory saved voice exchange")
+            } catch {
+                print("⚠️ Supermemory save failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
     // MARK: - Companion Prompt
 
     private static let companionVoiceResponseSystemPrompt = """
@@ -552,6 +622,7 @@ final class CompanionManager: ObservableObject {
     - if the user's question relates to what's on their screen, reference specific things you see.
     - if the screenshot doesn't seem relevant to their question, just answer the question directly.
     - you can help with anything — coding, writing, general knowledge, brainstorming.
+    - you may receive long-term memories from previous conversations. use them to resolve references, user preferences, recurring workflows, names, and prior intent.
     - never say "simply" or "just".
     - don't read out code verbatim. describe what the code does or what needs to change conversationally.
     - focus on giving a thorough, useful explanation. don't end with simple yes/no questions like "want me to explain more?" or "should i show you?" — those are dead ends that force the user to just say yes.
@@ -610,11 +681,19 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
+                let longTermMemoryContext = await relevantLongTermMemoryContext(for: transcript)
+                let userPromptWithMemory = [longTermMemoryContext, transcript]
+                    .compactMap { promptSection in
+                        let trimmedPromptSection = promptSection.trimmingCharacters(in: .whitespacesAndNewlines)
+                        return trimmedPromptSection.isEmpty ? nil : trimmedPromptSection
+                    }
+                    .joined(separator: "\n\n")
+
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt,
                     conversationHistory: historyForAPI,
-                    userPrompt: transcript,
+                    userPrompt: userPromptWithMemory,
                     onTextChunk: { _ in
                         // No streaming text display — spinner stays until TTS plays
                     }
@@ -696,6 +775,7 @@ final class CompanionManager: ObservableObject {
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")
 
                 ClickyAnalytics.trackAIResponseReceived(response: spokenText)
+                saveLongTermMemory(userTranscript: transcript, assistantResponse: spokenText)
 
                 // Play the response via TTS. Keep the spinner (processing state)
                 // until the audio actually starts playing, then switch to responding.
