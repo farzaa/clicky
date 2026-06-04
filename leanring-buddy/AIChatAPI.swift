@@ -1,12 +1,12 @@
 //
-//  ClaudeAPI.swift
-//  Claude API Implementation with streaming support
+//  AIChatAPI.swift
+//  Worker-backed AI chat client with streaming support
 //
 
 import Foundation
 
-/// Claude API helper with streaming for progressive text display.
-class ClaudeAPI {
+/// Worker-backed chat helper with streaming for progressive text display.
+class AIChatAPI {
     private static let tlsWarmupLock = NSLock()
     private static var hasStartedTLSWarmup = false
 
@@ -95,7 +95,7 @@ class ClaudeAPI {
         }.resume()
     }
 
-    /// Send a vision request to Claude with streaming.
+    /// Sends a vision request through the Worker with streaming.
     /// Calls `onTextChunk` on the main actor each time new text arrives so the UI updates progressively.
     /// Returns the full accumulated text and total duration when the stream completes.
     func analyzeImageStreaming(
@@ -150,14 +150,14 @@ class ClaudeAPI {
         let bodyData = try JSONSerialization.data(withJSONObject: body)
         request.httpBody = bodyData
         let payloadMB = Double(bodyData.count) / 1_048_576.0
-        print("🌐 Claude streaming request: \(String(format: "%.1f", payloadMB))MB, \(images.count) image(s)")
+        print("🌐 AI chat streaming request: \(String(format: "%.1f", payloadMB))MB, \(images.count) image(s)")
 
         // Use bytes streaming for SSE (Server-Sent Events)
         let (byteStream, response) = try await session.bytes(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw NSError(
-                domain: "ClaudeAPI",
+                domain: "AIChatAPI",
                 code: -1,
                 userInfo: [NSLocalizedDescriptionKey: "Invalid HTTP response"]
             )
@@ -171,7 +171,7 @@ class ClaudeAPI {
             }
             let errorBody = errorBodyChunks.joined(separator: "\n")
             throw NSError(
-                domain: "ClaudeAPI",
+                domain: "AIChatAPI",
                 code: httpResponse.statusCode,
                 userInfo: [NSLocalizedDescriptionKey: "API Error (\(httpResponse.statusCode)): \(errorBody)"]
             )
@@ -260,7 +260,7 @@ class ClaudeAPI {
         let bodyData = try JSONSerialization.data(withJSONObject: body)
         request.httpBody = bodyData
         let payloadMB = Double(bodyData.count) / 1_048_576.0
-        print("🌐 Claude request: \(String(format: "%.1f", payloadMB))MB, \(images.count) image(s)")
+        print("🌐 AI chat request: \(String(format: "%.1f", payloadMB))MB, \(images.count) image(s)")
 
         let (data, response) = try await session.data(for: request)
 
@@ -268,7 +268,7 @@ class ClaudeAPI {
               (200...299).contains(httpResponse.statusCode) else {
             let responseString = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw NSError(
-                domain: "ClaudeAPI",
+                domain: "AIChatAPI",
                 code: (response as? HTTPURLResponse)?.statusCode ?? -1,
                 userInfo: [NSLocalizedDescriptionKey: "API Error: \(responseString)"]
             )
@@ -279,7 +279,7 @@ class ClaudeAPI {
               let textBlock = content.first(where: { ($0["type"] as? String) == "text" }),
               let text = textBlock["text"] as? String else {
             throw NSError(
-                domain: "ClaudeAPI",
+                domain: "AIChatAPI",
                 code: -1,
                 userInfo: [NSLocalizedDescriptionKey: "Invalid response format"]
             )

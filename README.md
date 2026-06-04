@@ -62,6 +62,7 @@ Now add your secrets. Wrangler will prompt you to paste each one:
 
 ```bash
 npx wrangler secret put ANTHROPIC_API_KEY
+npx wrangler secret put GEMINI_API_KEY
 npx wrangler secret put ASSEMBLYAI_API_KEY
 npx wrangler secret put ELEVENLABS_API_KEY
 ```
@@ -94,6 +95,7 @@ This starts a local server (usually `http://localhost:8787`) that behaves exactl
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
+GEMINI_API_KEY=...
 ASSEMBLYAI_API_KEY=...
 ELEVENLABS_API_KEY=...
 ELEVENLABS_VOICE_ID=...
@@ -110,7 +112,7 @@ grep -r "clicky-proxy" leanring-buddy/
 ```
 
 You'll find it in:
-- `CompanionManager.swift` — Claude chat + ElevenLabs TTS
+- `CompanionManager.swift` — AI chat + ElevenLabs TTS
 - `AssemblyAIStreamingTranscriptionProvider.swift` — AssemblyAI token endpoint
 
 ### 4. Open in Xcode and run
@@ -137,7 +139,7 @@ The app will appear in your menu bar (not the dock). Click the icon to open the 
 
 If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
 
-**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied through a Cloudflare Worker.
+**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to the selected AI model via streaming SSE, and plays the response through ElevenLabs TTS. Models can embed `[POINT:x,y:label:screenN]` tags in responses to make the cursor fly to specific UI elements across multiple monitors. External APIs are proxied through a Cloudflare Worker.
 
 ## Project structure
 
@@ -145,7 +147,7 @@ If you want the full technical breakdown, read `CLAUDE.md`. But here's the short
 leanring-buddy/          # Swift source (yes, the typo stays)
   CompanionManager.swift    # Central state machine
   CompanionPanelView.swift  # Menu bar panel UI
-  ClaudeAPI.swift           # Claude streaming client
+  AIChatAPI.swift           # Worker-backed streaming chat client
   ElevenLabsTTSClient.swift # Text-to-speech playback
   OverlayWindow.swift       # Blue cursor overlay
   AssemblyAI*.swift         # Real-time transcription
