@@ -2,80 +2,82 @@
 //  ElevenLabsTTSClient.swift
 //  leanring-buddy
 //
-//  Streams text-to-speech audio from ElevenLabs and plays it back
-//  through the system audio output. Uses the streaming endpoint so
-//  playback begins before the full audio has been generated.
+//  Text-to-speech using macOS AVSpeechSynthesizer (local, free, no network).
+//  The class name is intentionally kept the same so CompanionManager needs
+//  minimal changes — only the implementation changed.
 //
 
 import AVFoundation
 import Foundation
 
 @MainActor
-final class ElevenLabsTTSClient {
-    private let proxyURL: URL
-    private let session: URLSession
+final class ElevenLabsTTSClient: NSObject, AVSpeechSynthesizerDelegate {
+    private let speechSynthesizer = AVSpeechSynthesizer()
 
-    /// The audio player for the current TTS playback. Kept alive so the
-    /// audio finishes playing even if the caller doesn't hold a reference.
-    private var audioPlayer: AVAudioPlayer?
+    /// True while the synthesizer is speaking. Polled by CompanionManager
+    /// to know when to fade out the transient cursor overlay.
+    private(set) var isPlaying: Bool = false
 
-    init(proxyURL: String) {
-        self.proxyURL = URL(string: proxyURL)!
-
-        let configuration = URLSessionConfiguration.default
-        configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 60
-        self.session = URLSession(configuration: configuration)
+    override init() {
+        super.init()
+        speechSynthesizer.delegate = self
     }
 
-    /// Sends `text` to ElevenLabs TTS and plays the resulting audio.
-    /// Throws on network or decoding errors. Cancellation-safe.
+    /// Speaks `text` using the macOS system TTS voice. Returns immediately
+    /// after speech begins (does not wait for it to finish).
     func speakText(_ text: String) async throws {
-        var request = URLRequest(url: proxyURL)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
+        // Stop any currently running speech before starting new utterance
+        if speechSynthesizer.isSpeaking {
+            speechSynthesizer.stopSpeaking(at: .immediate)
+        }
 
-        let body: [String: Any] = [
-            "text": text,
-            "model_id": "eleven_flash_v2_5",
-            "voice_settings": [
-                "stability": 0.5,
-                "similarity_boost": 0.75
-            ]
+        let utterance = AVSpeechUtterance(string: text)
+
+        // Prefer the premium Siri voices (downloaded separately in System Settings →
+        // Accessibility → Spoken Content → System Voice). These sound significantly
+        // more natural than the default compact voices. Fall back by quality tier
+        // until we find one that's installed, then fall back to the system default.
+        let premiumVoiceIdentifiers = [
+            "com.apple.ttsbundle.siri_female_en-US_premium",   // Siri (US, female) — most natural
+            "com.apple.ttsbundle.siri_male_en-US_premium",     // Siri (US, male)
+            "com.apple.voice.enhanced.en-US.Samantha",         // Samantha Enhanced
+            "com.apple.ttsbundle.Samantha-premium",            // Samantha Premium
         ]
+        let selectedVoice = premiumVoiceIdentifiers
+            .compactMap { AVSpeechSynthesisVoice(identifier: $0) }
+            .first
+            ?? AVSpeechSynthesisVoice(language: "en-US")
 
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        utterance.voice = selectedVoice
+        // Slightly faster than default (0.5) — more natural for a conversational assistant
+        utterance.rate = 0.52
+        utterance.pitchMultiplier = 1.0
+        utterance.volume = 1.0
 
-        let (data, response) = try await session.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw NSError(domain: "ElevenLabsTTS", code: -1,
-                          userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
-        }
-
-        guard (200...299).contains(httpResponse.statusCode) else {
-            let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
-            throw NSError(domain: "ElevenLabsTTS", code: httpResponse.statusCode,
-                          userInfo: [NSLocalizedDescriptionKey: "TTS API error (\(httpResponse.statusCode)): \(errorBody)"])
-        }
-
-        try Task.checkCancellation()
-
-        let player = try AVAudioPlayer(data: data)
-        self.audioPlayer = player
-        player.play()
-        print("🔊 ElevenLabs TTS: playing \(data.count / 1024)KB audio")
+        isPlaying = true
+        speechSynthesizer.speak(utterance)
+        print("🔊 Apple TTS: speaking \(text.count) characters")
     }
 
-    /// Whether TTS audio is currently playing back.
-    var isPlaying: Bool {
-        audioPlayer?.isPlaying ?? false
-    }
-
-    /// Stops any in-progress playback immediately.
+    /// Stops any in-progress speech immediately.
     func stopPlayback() {
-        audioPlayer?.stop()
-        audioPlayer = nil
+        if speechSynthesizer.isSpeaking {
+            speechSynthesizer.stopSpeaking(at: .immediate)
+        }
+        isPlaying = false
+    }
+
+    // MARK: - AVSpeechSynthesizerDelegate
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            self.isPlaying = false
+        }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            self.isPlaying = false
+        }
     }
 }

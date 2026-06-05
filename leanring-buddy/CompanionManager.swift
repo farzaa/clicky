@@ -70,14 +70,18 @@ final class CompanionManager: ObservableObject {
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
+    private static let workerBaseURL = "https://clicky-proxy.mandouix-clicky.workers.dev"
 
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
     }()
 
+    private lazy var geminiAPI: GeminiAPI = {
+        return GeminiAPI(proxyURL: "\(Self.workerBaseURL)/gemini", model: "gemini-2.5-flash")
+    }()
+
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
-        return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
+        return ElevenLabsTTSClient()
     }()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
@@ -107,13 +111,23 @@ final class CompanionManager: ObservableObject {
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
 
-    /// The Claude model used for voice responses. Persisted to UserDefaults.
-    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+    /// The AI model used for voice responses. Persisted to UserDefaults.
+    /// Can be a Claude model (e.g. "claude-sonnet-4-6") or a Gemini model (e.g. "gemini-2.0-flash").
+    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "gemini-2.5-flash"
+
+    /// True when the selected model is a Gemini model, so the pipeline routes to GeminiAPI instead of ClaudeAPI.
+    var isGeminiModelSelected: Bool {
+        selectedModel.hasPrefix("gemini")
+    }
 
     func setSelectedModel(_ model: String) {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
-        claudeAPI.model = model
+        if model.hasPrefix("gemini") {
+            geminiAPI.model = model
+        } else {
+            claudeAPI.model = model
+        }
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -610,15 +624,26 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
-                    conversationHistory: historyForAPI,
-                    userPrompt: transcript,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
+                // Route to Gemini or Claude depending on the selected model
+                let (fullResponseText, _) = try await {
+                    if isGeminiModelSelected {
+                        return try await geminiAPI.analyzeImageStreaming(
+                            images: labeledImages,
+                            systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                            conversationHistory: historyForAPI,
+                            userPrompt: transcript,
+                            onTextChunk: { _ in }
+                        )
+                    } else {
+                        return try await claudeAPI.analyzeImageStreaming(
+                            images: labeledImages,
+                            systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                            conversationHistory: historyForAPI,
+                            userPrompt: transcript,
+                            onTextChunk: { _ in }
+                        )
                     }
-                )
+                }()
 
                 guard !Task.isCancelled else { return }
 
@@ -706,7 +731,7 @@ final class CompanionManager: ObservableObject {
                         voiceState = .responding
                     } catch {
                         ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ ElevenLabs TTS error: \(error)")
+                        print("⚠️ Apple TTS error: \(error)")
                         speakCreditsErrorFallback()
                     }
                 }
@@ -755,14 +780,12 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Speaks a hardcoded error message using macOS system TTS when API
-    /// credits run out. Uses NSSpeechSynthesizer so it works even when
-    /// ElevenLabs is down.
+    /// Speaks a hardcoded error message when the AI response pipeline fails.
     private func speakCreditsErrorFallback() {
-        let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
-        voiceState = .responding
+        Task {
+            try? await elevenLabsTTSClient.speakText("Something went wrong. Please try again.")
+            voiceState = .responding
+        }
     }
 
     // MARK: - Point Tag Parsing

@@ -14,6 +14,7 @@ interface Env {
   ELEVENLABS_API_KEY: string;
   ELEVENLABS_VOICE_ID: string;
   ASSEMBLYAI_API_KEY: string;
+  GEMINI_API_KEY: string;
 }
 
 export default {
@@ -35,6 +36,10 @@ export default {
 
       if (url.pathname === "/transcribe-token") {
         return await handleTranscribeToken(env);
+      }
+
+      if (url.pathname === "/gemini") {
+        return await handleGemini(request, env);
       }
     } catch (error) {
       console.error(`[${url.pathname}] Unhandled error:`, error);
@@ -103,6 +108,40 @@ async function handleTranscribeToken(env: Env): Promise<Response> {
   return new Response(data, {
     status: 200,
     headers: { "content-type": "application/json" },
+  });
+}
+
+async function handleGemini(request: Request, env: Env): Promise<Response> {
+  const body = await request.text();
+  const parsedBody = JSON.parse(body);
+  const model = parsedBody.model || "gemini-2.0-flash";
+
+  // Gemini uses server-sent events for streaming via the streamGenerateContent endpoint
+  const geminiURL = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${env.GEMINI_API_KEY}`;
+
+  const response = await fetch(geminiURL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(parsedBody.geminiRequest),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    console.error(`[/gemini] Gemini API error ${response.status}: ${errorBody}`);
+    return new Response(errorBody, {
+      status: response.status,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  return new Response(response.body, {
+    status: response.status,
+    headers: {
+      "content-type": response.headers.get("content-type") || "text/event-stream",
+      "cache-control": "no-cache",
+    },
   });
 }
 
