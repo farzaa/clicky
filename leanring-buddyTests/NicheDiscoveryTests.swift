@@ -7,6 +7,7 @@ import Foundation
 import Testing
 @testable import leanring_buddy
 
+@MainActor
 struct NicheDiscoveryTests {
     @Test func loadsBundledSuggestionsForEachNiche() throws {
         let manager = NicheDiscoveryManager()
