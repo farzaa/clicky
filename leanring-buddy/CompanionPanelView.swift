@@ -15,7 +15,6 @@ struct CompanionPanelView: View {
     @State private var emailInput: String = ""
     @State private var isShowingMemoriesLibrary = false
     @State private var initialSelectedMemoryID: String?
-    @State private var memoryPendingDelete: Memory?
 
     var body: some View {
         Group {
@@ -40,27 +39,6 @@ struct CompanionPanelView: View {
         .onChange(of: companionManager.pendingMemoryIDToOpenInLibrary) { _, _ in
             handlePendingMemoryLibraryOpen()
         }
-        .confirmationDialog(
-            "Delete this memory?",
-            isPresented: Binding(
-                get: { memoryPendingDelete != nil },
-                set: { isPresented in
-                    if !isPresented {
-                        memoryPendingDelete = nil
-                    }
-                }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) {
-                confirmDeletePendingMemoryFromPanel()
-            }
-            Button("Cancel", role: .cancel) {
-                memoryPendingDelete = nil
-            }
-        } message: {
-            Text("This can't be undone.")
-        }
     }
 
     private func handlePendingMemoryLibraryOpen() {
@@ -68,12 +46,6 @@ struct CompanionPanelView: View {
         initialSelectedMemoryID = memoryID
         isShowingMemoriesLibrary = true
         companionManager.clearPendingMemoryLibraryOpen()
-    }
-
-    private func confirmDeletePendingMemoryFromPanel() {
-        guard let memory = memoryPendingDelete else { return }
-        companionManager.deleteMemory(id: memory.id, category: memory.category)
-        memoryPendingDelete = nil
     }
 
     private var mainPanelContent: some View {
@@ -832,36 +804,24 @@ struct CompanionPanelView: View {
     }
 
     private func memoryRow(_ memory: Memory) -> some View {
-        HStack(spacing: 8) {
-            Button(action: {
-                initialSelectedMemoryID = memory.id
-                isShowingMemoriesLibrary = true
-            }) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(memory.title)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(DS.Colors.textSecondary)
-                        .lineLimit(1)
+        Button(action: {
+            initialSelectedMemoryID = memory.id
+            isShowingMemoriesLibrary = true
+        }) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(memory.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .lineLimit(1)
 
-                    Text(memory.relativeSavedLabel())
-                        .font(.system(size: 10))
-                        .foregroundColor(DS.Colors.textTertiary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.plain)
-            .pointerCursor()
-
-            Button(action: {
-                memoryPendingDelete = memory
-            }) {
-                Image(systemName: "trash")
-                    .font(.system(size: 11, weight: .medium))
+                Text(memory.relativeSavedLabel())
+                    .font(.system(size: 10))
                     .foregroundColor(DS.Colors.textTertiary)
             }
-            .buttonStyle(.plain)
-            .pointerCursor()
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .buttonStyle(.plain)
+        .pointerCursor()
         .padding(.vertical, 4)
     }
 

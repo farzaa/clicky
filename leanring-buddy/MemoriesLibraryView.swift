@@ -131,36 +131,24 @@ struct MemoriesLibraryView: View {
     }
 
     private func memoryRow(_ memory: Memory) -> some View {
-        HStack(spacing: 8) {
-            Button(action: {
-                selectedMemory = memory
-                isEditingSelectedMemory = false
-            }) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(memory.title)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(DS.Colors.textSecondary)
-                        .lineLimit(1)
+        Button(action: {
+            selectedMemory = memory
+            isEditingSelectedMemory = false
+        }) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(memory.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .lineLimit(1)
 
-                    Text(memory.relativeSavedLabel())
-                        .font(.system(size: 10))
-                        .foregroundColor(DS.Colors.textTertiary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.plain)
-            .pointerCursor()
-
-            Button(action: {
-                memoryPendingDelete = memory
-            }) {
-                Image(systemName: "trash")
-                    .font(.system(size: 11, weight: .medium))
+                Text(memory.relativeSavedLabel())
+                    .font(.system(size: 10))
                     .foregroundColor(DS.Colors.textTertiary)
             }
-            .buttonStyle(.plain)
-            .pointerCursor()
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .buttonStyle(.plain)
+        .pointerCursor()
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .accessibilityIdentifier("clicky.panel.memories-library.row.\(memory.id)")
