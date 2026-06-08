@@ -235,24 +235,6 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    func setMemoryPinned(id: String, category: MemoryCategory, pinned: Bool) {
-        switch category {
-        case .skill:
-            setTeachingSkillPinned(id: id, pinned: pinned)
-        case .preference, .routine:
-            break
-        }
-    }
-
-    func restoreMemory(id: String, category: MemoryCategory) {
-        switch category {
-        case .skill:
-            restoreTeachingSkill(id: id)
-        case .preference, .routine:
-            break
-        }
-    }
-
     private func syncTeachingSkillsFromStore() {
         teachingSkills = teachingSkillStore.skills
         rebuildMemories()
@@ -332,6 +314,7 @@ final class CompanionManager: ObservableObject {
 
     private func bootstrapTeachingSkills() {
         teachingSkillStore.loadSkills()
+        DummyMemorySeeder.seedMissingDummyMemories(store: teachingSkillStore)
         topicHistoryStore.load()
         sessionStore.deleteSessionsOlderThan(days: 7)
         SkillCurator.curate(store: teachingSkillStore)

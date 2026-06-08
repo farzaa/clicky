@@ -243,12 +243,6 @@ struct MemoriesLibraryView: View {
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundColor(DS.Colors.textSecondary)
                             .lineLimit(1)
-
-                        if memory.isPinned {
-                            Image(systemName: "pin.fill")
-                                .font(.system(size: 9))
-                                .foregroundColor(DS.Colors.accent)
-                        }
                     }
 
                     Text("\(memory.category.displayLabel) • \(memory.usageCount) uses • \(memory.status.rawValue)")
@@ -256,28 +250,6 @@ struct MemoriesLibraryView: View {
                         .foregroundColor(DS.Colors.textTertiary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.plain)
-            .pointerCursor()
-
-            if memory.status == .archived || memory.status == .stale {
-                Button(action: {
-                    companionManager.restoreMemory(id: memory.id, category: memory.category)
-                }) {
-                    Image(systemName: "arrow.uturn.backward")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(DS.Colors.textTertiary)
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-            }
-
-            Button(action: {
-                companionManager.setMemoryPinned(id: memory.id, category: memory.category, pinned: !memory.isPinned)
-            }) {
-                Image(systemName: memory.isPinned ? "pin.fill" : "pin")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(memory.isPinned ? DS.Colors.accent : DS.Colors.textTertiary)
             }
             .buttonStyle(.plain)
             .pointerCursor()

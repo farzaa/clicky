@@ -798,16 +798,6 @@ struct CompanionPanelView: View {
             Spacer()
 
             Button(action: {
-                companionManager.setMemoryPinned(id: memory.id, category: memory.category, pinned: !memory.isPinned)
-            }) {
-                Image(systemName: memory.isPinned ? "pin.fill" : "pin")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(memory.isPinned ? DS.Colors.accent : DS.Colors.textTertiary)
-            }
-            .buttonStyle(.plain)
-            .pointerCursor()
-
-            Button(action: {
                 companionManager.deleteMemory(id: memory.id, category: memory.category)
             }) {
                 Image(systemName: "trash")
