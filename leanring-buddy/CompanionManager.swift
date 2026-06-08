@@ -698,7 +698,31 @@ final class CompanionManager: ObservableObject {
         detectedElementBubbleText = nil
     }
 
+    /// Called on app termination before `stop()` tears everything down. Persists
+    /// an in-flight session (so MemoryGate runs) and waits — bounded — for any
+    /// pending skill synthesis to finish, so quitting right after "got it" does
+    /// not drop the session JSON or the skill write.
+    func finishPendingWorkBeforeTermination() async {
+        finalizeAndPersistSession()
+
+        guard let pendingSkillWriteTask = skillWriteTask else { return }
+
+        // Bound the wait so a slow or hung synthesis network call can never
+        // block app termination indefinitely.
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await pendingSkillWriteTask.value }
+            group.addTask { try? await Task.sleep(nanoseconds: 8_000_000_000) }
+            _ = await group.next()
+            group.cancelAll()
+        }
+    }
+
     func stop() {
+        // Safety net: persist any session still open if termination reached here
+        // without going through finishPendingWorkBeforeTermination(). No-op when
+        // a session was already finalized (guarded on sessionStartedAt).
+        finalizeAndPersistSession()
+
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()

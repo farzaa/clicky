@@ -68,6 +68,17 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         companionManager.schedulePermissionRefreshBurstAfterReturningFromSettings()
     }
 
+    /// Defer termination until any in-flight session is persisted and pending
+    /// skill distillation finishes (bounded). Otherwise quitting right after a
+    /// session ends would drop the session JSON and its skill write.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        Task { @MainActor in
+            await companionManager.finishPendingWorkBeforeTermination()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         companionManager.stop()
         MacOSScreenshotFloatingThumbnailSuppression.restoreAfterAppTermination()
