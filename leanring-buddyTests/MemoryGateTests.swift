@@ -277,6 +277,9 @@ struct MemoryGateTests {
 
         #expect(decision.shouldDistillSkill)
         #expect(decision.passedCategories[.skill]?.contains(.repeatedTopic) == true)
+        // A repeat-driven flow must report repeatedTopic as its primary reason,
+        // not the generic screenTeaching baseline.
+        #expect(decision.passedCategories[.skill]?.first == .repeatedTopic)
     }
 
     @Test func aggregatesMultipleGateReasons() throws {

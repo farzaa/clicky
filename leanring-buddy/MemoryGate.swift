@@ -74,6 +74,24 @@ enum MemoryGate {
             return blockedDecision(sessionId: session.sessionId, reason: .abandonedWithoutConfirmation)
         }
 
+        let topic = SkillTriggerEvaluator.deriveTopic(from: session.turns)
+        let resolvedBundleId = SkillTargetAppResolver.resolveTargetBundleId(
+            from: session.turns,
+            frontmostBundleId: session.turns.last?.bundleId
+        )
+        let hasRepeatedTopic = TeachingTopicHistoryStore.hasRepeatedTopic(
+            topic: topic,
+            bundleId: resolvedBundleId,
+            withinDays: 7,
+            in: topicHistory,
+            now: now
+        )
+
+        // Collect reasons most-specific first so the primary reported reason
+        // (`gateReasons.first`, used for analytics and the skill-write trigger)
+        // reflects the strongest signal. `.screenTeaching` is the generic
+        // baseline and is always recorded last so it never masks a more
+        // specific reason like `.repeatedTopic`.
         var skillReasons: [GateReason] = []
 
         if let lastTurn = session.turns.last,
@@ -81,31 +99,15 @@ enum MemoryGate {
             skillReasons.append(.userConfirmed)
         }
 
+        if hasRepeatedTopic {
+            skillReasons.append(.repeatedTopic)
+        }
+
         if session.turns.filter(\.pointed).count >= 2 {
             skillReasons.append(.multiStepPointing)
         }
 
         skillReasons.append(.screenTeaching)
-
-        let topic = SkillTriggerEvaluator.deriveTopic(from: session.turns)
-        let resolvedBundleId = SkillTargetAppResolver.resolveTargetBundleId(
-            from: session.turns,
-            frontmostBundleId: session.turns.last?.bundleId
-        )
-
-        if TeachingTopicHistoryStore.hasRepeatedTopic(
-            topic: topic,
-            bundleId: resolvedBundleId,
-            withinDays: 7,
-            in: topicHistory,
-            now: now
-        ) {
-            skillReasons.append(.repeatedTopic)
-        }
-
-        guard !skillReasons.isEmpty else {
-            return blockedDecision(sessionId: session.sessionId, reason: .genericOffScreenQA)
-        }
 
         return MemoryGateDecision(
             sessionId: session.sessionId,

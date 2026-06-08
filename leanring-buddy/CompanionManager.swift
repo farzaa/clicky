@@ -330,7 +330,7 @@ final class CompanionManager: ObservableObject {
 
     private func restartSessionIdleTimer() {
         sessionIdleTimer?.invalidate()
-        sessionIdleTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
+        let idleTimer = Timer(timeInterval: 30, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
                 // If the assistant is still speaking when the timer fires, defer the
@@ -343,6 +343,11 @@ final class CompanionManager: ObservableObject {
                 self.finalizeAndPersistSession()
             }
         }
+        // Add in `.common` modes so the idle boundary still fires while a modal
+        // run-loop mode is active (e.g. the menu bar panel is open). Otherwise
+        // session finalize and MemoryGate distillation stall until the panel closes.
+        RunLoop.main.add(idleTimer, forMode: .common)
+        sessionIdleTimer = idleTimer
     }
 
     private func finalizeAndPersistSession(outcome explicitOutcome: SessionOutcome? = nil) {
