@@ -44,6 +44,17 @@ struct Memory: Identifiable, Equatable {
             return categoryMatches && statusMatches
         }
     }
+
+    func relativeSavedLabel(now: Date = Date()) -> String {
+        Memory.relativeSavedLabel(lastUsed: lastUsed, now: now)
+    }
+
+    static func relativeSavedLabel(lastUsed: Date?, now: Date = Date()) -> String {
+        guard let lastUsed else { return "Saved just now" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return "Saved \(formatter.localizedString(for: lastUsed, relativeTo: now))"
+    }
 }
 
 struct MemoryEdit: Equatable {

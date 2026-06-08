@@ -17,6 +17,8 @@ import SwiftUI
 final class CompanionResponseOverlayViewModel: ObservableObject {
     @Published var streamingResponseText: String = ""
     @Published var isShowingResponse: Bool = false
+    @Published var showsViewActionHint: Bool = false
+    var onTransientMessageTap: (() -> Void)?
 }
 
 // MARK: - Overlay Manager
@@ -38,6 +40,9 @@ final class CompanionResponseOverlayManager {
     func showOverlayAndBeginStreaming() {
         autoHideWorkItem?.cancel()
         autoHideWorkItem = nil
+        overlayViewModel.onTransientMessageTap = nil
+        overlayViewModel.showsViewActionHint = false
+        overlayPanel?.ignoresMouseEvents = true
 
         overlayViewModel.streamingResponseText = ""
         overlayViewModel.isShowingResponse = true
@@ -59,13 +64,20 @@ final class CompanionResponseOverlayManager {
     }
 
     /// Shows a one-shot message near the cursor, then fades out automatically.
-    func showTransientMessage(_ message: String, hideAfter seconds: TimeInterval = 4) {
+    func showTransientMessage(
+        _ message: String,
+        hideAfter seconds: TimeInterval = 4,
+        onTap: (() -> Void)? = nil
+    ) {
         autoHideWorkItem?.cancel()
         autoHideWorkItem = nil
 
         overlayViewModel.streamingResponseText = message
         overlayViewModel.isShowingResponse = true
+        overlayViewModel.showsViewActionHint = onTap != nil
+        overlayViewModel.onTransientMessageTap = onTap
         createOverlayPanelIfNeeded()
+        overlayPanel?.ignoresMouseEvents = onTap == nil
         startCursorTracking()
         overlayPanel?.alphaValue = 1
         overlayPanel?.orderFrontRegardless()
@@ -89,6 +101,9 @@ final class CompanionResponseOverlayManager {
         stopCursorTracking()
         overlayViewModel.isShowingResponse = false
         overlayViewModel.streamingResponseText = ""
+        overlayViewModel.showsViewActionHint = false
+        overlayViewModel.onTransientMessageTap = nil
+        overlayPanel?.ignoresMouseEvents = true
         overlayPanel?.orderOut(nil)
     }
 
@@ -216,23 +231,45 @@ private struct CompanionResponseOverlayView: View {
 
     var body: some View {
         if viewModel.isShowingResponse {
+            Group {
+                if viewModel.showsViewActionHint, let onTap = viewModel.onTransientMessageTap {
+                    Button(action: onTap) {
+                        messageBubble
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                } else {
+                    messageBubble
+                }
+            }
+        }
+    }
+
+    private var messageBubble: some View {
+        VStack(alignment: .leading, spacing: 6) {
             Text(viewModel.streamingResponseText.isEmpty ? "..." : viewModel.streamingResponseText)
                 .font(.system(size: 13, weight: .regular))
                 .foregroundColor(DS.Colors.textPrimary)
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: 300, alignment: .leading)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(DS.Colors.surface1.opacity(0.95))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .stroke(DS.Colors.borderSubtle.opacity(0.5), lineWidth: 0.8)
-                        )
-                        .shadow(color: Color.black.opacity(0.35), radius: 16, x: 0, y: 8)
-                )
+
+            if viewModel.showsViewActionHint {
+                Text("View")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(DS.Colors.accentText)
+            }
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(DS.Colors.surface1.opacity(0.95))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle.opacity(0.5), lineWidth: 0.8)
+                )
+                .shadow(color: Color.black.opacity(0.35), radius: 16, x: 0, y: 8)
+        )
     }
 }

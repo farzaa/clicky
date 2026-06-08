@@ -162,4 +162,12 @@ struct MemoryTests {
             #expect(store.skills.isEmpty)
         }
     }
+
+    @Test func relativeSavedLabelUsesFriendlyText() {
+        let now = Date()
+        let twoDaysAgo = Calendar.current.date(byAdding: .day, value: -2, to: now)!
+
+        #expect(Memory.relativeSavedLabel(lastUsed: nil, now: now) == "Saved just now")
+        #expect(Memory.relativeSavedLabel(lastUsed: twoDaysAgo, now: now).hasPrefix("Saved "))
+    }
 }

@@ -99,6 +99,9 @@ final class CompanionManager: ObservableObject {
     /// Unified memories across all categories (skills today; preferences/routines later).
     @Published private(set) var memories: [Memory] = []
 
+    /// When set, the menu bar panel opens the memories library to this memory ID.
+    @Published var pendingMemoryIDToOpenInLibrary: String?
+
     /// When disabled, Clicky still reads skills but will not create new ones.
     @Published var isLearningFromSessionsEnabled: Bool = ClickyDefaults.shared.object(forKey: "isLearningFromSessionsEnabled") == nil
         ? true
@@ -204,6 +207,15 @@ final class CompanionManager: ObservableObject {
 
     func memories(category: MemoryCategory?, status: TeachingSkillStatus?) -> [Memory] {
         Memory.filtered(memories, category: category, status: status)
+    }
+
+    func requestOpenMemoriesLibrary(memoryID: String?) {
+        pendingMemoryIDToOpenInLibrary = memoryID
+        NotificationCenter.default.post(name: .clickyShowCompanionPanel, object: nil)
+    }
+
+    func clearPendingMemoryLibraryOpen() {
+        pendingMemoryIDToOpenInLibrary = nil
     }
 
     func updateMemory(id: String, category: MemoryCategory, edit: MemoryEdit) {
@@ -443,8 +455,8 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Coarse outcome heuristic for capture-time persistence. The future memory gate
-    /// can refine this; keep the rules simple and predictable here.
+    /// Coarse outcome heuristic for capture-time persistence. MemoryGate applies
+    /// its own rules at distill time; keep this simple and predictable here.
     private func deriveSessionOutcome(from turns: [SessionTraceEntry]) -> SessionOutcome {
         if let lastTurn = turns.last,
            SkillTriggerEvaluator.isConfirmationTranscript(lastTurn.userTranscript) {
@@ -565,7 +577,10 @@ final class CompanionManager: ObservableObject {
                 let toastMessage = existingSkill != nil
                     ? "Updated a memory: \(skill.name)"
                     : "Saved a new memory: \(skill.name)"
-                memorySavedToastManager.showTransientMessage(toastMessage)
+                memorySavedToastManager.showTransientMessage(toastMessage, hideAfter: 6, onTap: { [weak self] in
+                    self?.memorySavedToastManager.hideOverlay()
+                    self?.requestOpenMemoriesLibrary(memoryID: skill.id)
+                })
                 writeE2EArtifactsIfNeeded()
                 print("📚 Saved teaching skill: \(skill.id)")
             } catch {
