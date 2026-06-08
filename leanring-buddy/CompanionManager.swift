@@ -96,6 +96,9 @@ final class CompanionManager: ObservableObject {
     /// Skills currently on disk, exposed for the panel UI.
     @Published private(set) var teachingSkills: [TeachingSkill] = []
 
+    /// Unified memories across all categories (skills today; preferences/routines later).
+    @Published private(set) var memories: [Memory] = []
+
     /// When disabled, Clicky still reads skills but will not create new ones.
     @Published var isLearningFromSessionsEnabled: Bool = ClickyDefaults.shared.object(forKey: "isLearningFromSessionsEnabled") == nil
         ? true
@@ -133,6 +136,7 @@ final class CompanionManager: ObservableObject {
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
+    private let memorySavedToastManager = CompanionResponseOverlayManager()
 
     /// Path to the Clicky.app bundle for this run. Shown when TCC must target this build.
     var runningApplicationBundlePath: String {
@@ -162,13 +166,13 @@ final class CompanionManager: ObservableObject {
 
     func refreshTeachingSkills() {
         teachingSkillStore.loadSkills()
-        teachingSkills = teachingSkillStore.skills
+        syncTeachingSkillsFromStore()
     }
 
     func deleteTeachingSkill(id: String) {
         do {
             try teachingSkillStore.deleteSkill(id: id)
-            teachingSkills = teachingSkillStore.skills
+            syncTeachingSkillsFromStore()
             ClickyAnalytics.trackTeachingSkillDeleted(skillID: id)
         } catch {
             print("⚠️ Failed to delete teaching skill \(id): \(error)")
@@ -178,7 +182,7 @@ final class CompanionManager: ObservableObject {
     func setTeachingSkillPinned(id: String, pinned: Bool) {
         do {
             try teachingSkillStore.setPinned(id: id, pinned: pinned)
-            teachingSkills = teachingSkillStore.skills
+            syncTeachingSkillsFromStore()
         } catch {
             print("⚠️ Failed to pin teaching skill \(id): \(error)")
         }
@@ -187,7 +191,7 @@ final class CompanionManager: ObservableObject {
     func restoreTeachingSkill(id: String) {
         do {
             try teachingSkillStore.restoreSkill(id: id)
-            teachingSkills = teachingSkillStore.skills
+            syncTeachingSkillsFromStore()
             writeE2EArtifactsIfNeeded()
         } catch {
             print("⚠️ Failed to restore teaching skill \(id): \(error)")
@@ -196,6 +200,71 @@ final class CompanionManager: ObservableObject {
 
     func teachingSkills(withStatus status: TeachingSkillStatus?) -> [TeachingSkill] {
         teachingSkillStore.skills(withStatus: status)
+    }
+
+    func memories(category: MemoryCategory?, status: TeachingSkillStatus?) -> [Memory] {
+        Memory.filtered(memories, category: category, status: status)
+    }
+
+    func updateMemory(id: String, category: MemoryCategory, edit: MemoryEdit) {
+        switch category {
+        case .skill:
+            guard var skill = teachingSkillStore.skill(withID: id) else { return }
+            skill.name = edit.title
+            skill.description = edit.summary
+            skill.body = edit.body
+            skill.bundleIds = edit.bundleIds
+            skill.status = edit.status
+            do {
+                _ = try teachingSkillStore.saveSkill(skill)
+                syncTeachingSkillsFromStore()
+            } catch {
+                print("⚠️ Failed to update memory \(id): \(error)")
+            }
+        case .preference, .routine:
+            break
+        }
+    }
+
+    func deleteMemory(id: String, category: MemoryCategory) {
+        switch category {
+        case .skill:
+            deleteTeachingSkill(id: id)
+        case .preference, .routine:
+            break
+        }
+    }
+
+    func setMemoryPinned(id: String, category: MemoryCategory, pinned: Bool) {
+        switch category {
+        case .skill:
+            setTeachingSkillPinned(id: id, pinned: pinned)
+        case .preference, .routine:
+            break
+        }
+    }
+
+    func restoreMemory(id: String, category: MemoryCategory) {
+        switch category {
+        case .skill:
+            restoreTeachingSkill(id: id)
+        case .preference, .routine:
+            break
+        }
+    }
+
+    private func syncTeachingSkillsFromStore() {
+        teachingSkills = teachingSkillStore.skills
+        rebuildMemories()
+    }
+
+    private func rebuildMemories() {
+        memories = teachingSkillStore.skills
+            .map(Memory.init(skill:))
+            .sorted { lhs, rhs in
+                if lhs.usageCount != rhs.usageCount { return lhs.usageCount > rhs.usageCount }
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
     }
 
     /// Allows E2E tests to bypass microphone/STT and exercise the response + skill loop directly.
@@ -266,7 +335,7 @@ final class CompanionManager: ObservableObject {
         topicHistoryStore.load()
         sessionStore.deleteSessionsOlderThan(days: 7)
         SkillCurator.curate(store: teachingSkillStore)
-        teachingSkills = teachingSkillStore.skills
+        syncTeachingSkillsFromStore()
         runCuratorLLMPassesIfNeeded()
         writeE2EArtifactsIfNeeded()
     }
@@ -275,7 +344,7 @@ final class CompanionManager: ObservableObject {
         curatorLLMTask?.cancel()
         curatorLLMTask = Task {
             await SkillCurator.curateWithLLMPasses(store: teachingSkillStore, claudeAPI: claudeAPI)
-            teachingSkills = teachingSkillStore.skills
+            syncTeachingSkillsFromStore()
         }
     }
 
@@ -497,7 +566,7 @@ final class CompanionManager: ObservableObject {
 
                 _ = try teachingSkillStore.saveSkill(skill)
                 SkillCurator.curate(store: teachingSkillStore)
-                teachingSkills = teachingSkillStore.skills
+                syncTeachingSkillsFromStore()
                 runCuratorLLMPassesIfNeeded()
                 topicHistoryStore.recordTopic(
                     topic: trigger.topic,
@@ -510,6 +579,10 @@ final class CompanionManager: ObservableObject {
                     reason: trigger.reason.rawValue,
                     updatedExisting: existingSkill != nil
                 )
+                let toastMessage = existingSkill != nil
+                    ? "Updated a memory: \(skill.name)"
+                    : "Saved a new memory: \(skill.name)"
+                memorySavedToastManager.showTransientMessage(toastMessage)
                 writeE2EArtifactsIfNeeded()
                 print("📚 Saved teaching skill: \(skill.id)")
             } catch {
@@ -1178,7 +1251,7 @@ final class CompanionManager: ObservableObject {
                 for skill in matchedTeachingSkills {
                     _ = try? teachingSkillStore.markUsed(skill)
                 }
-                teachingSkills = teachingSkillStore.skills
+                syncTeachingSkillsFromStore()
 
                 if !matchedTeachingSkills.isEmpty {
                     ClickyAnalytics.trackTeachingSkillsMatched(

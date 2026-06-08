@@ -55,11 +55,32 @@ final class CompanionResponseOverlayManager {
     func finishStreaming() {
         // Keep the response visible for a few seconds after streaming ends,
         // then fade out so the user has time to read the last chunk.
+        scheduleAutoHide(after: 6)
+    }
+
+    /// Shows a one-shot message near the cursor, then fades out automatically.
+    func showTransientMessage(_ message: String, hideAfter seconds: TimeInterval = 4) {
+        autoHideWorkItem?.cancel()
+        autoHideWorkItem = nil
+
+        overlayViewModel.streamingResponseText = message
+        overlayViewModel.isShowingResponse = true
+        createOverlayPanelIfNeeded()
+        startCursorTracking()
+        overlayPanel?.alphaValue = 1
+        overlayPanel?.orderFrontRegardless()
+        resizePanelToFitContent()
+        repositionPanelNearCursor()
+        scheduleAutoHide(after: seconds)
+    }
+
+    private func scheduleAutoHide(after seconds: TimeInterval) {
+        autoHideWorkItem?.cancel()
         let hideWork = DispatchWorkItem { [weak self] in
             self?.fadeOutAndHide()
         }
         autoHideWorkItem = hideWork
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: hideWork)
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: hideWork)
     }
 
     func hideOverlay() {

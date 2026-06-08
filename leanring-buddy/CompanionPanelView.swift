@@ -13,12 +13,12 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
-    @State private var isShowingTeachingSkillsLibrary = false
+    @State private var isShowingMemoriesLibrary = false
 
     var body: some View {
-        if isShowingTeachingSkillsLibrary {
-            TeachingSkillsLibraryView(companionManager: companionManager) {
-                isShowingTeachingSkillsLibrary = false
+        if isShowingMemoriesLibrary {
+            MemoriesLibraryView(companionManager: companionManager) {
+                isShowingMemoriesLibrary = false
             }
             .frame(width: 320)
             .background(panelBackground)
@@ -42,7 +42,7 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 12)
 
-                teachingSkillsSection
+                memoriesSection
                     .padding(.horizontal, 16)
             }
 
@@ -729,12 +729,12 @@ struct CompanionPanelView: View {
         .padding(.vertical, 4)
     }
 
-    // MARK: - Teaching Skills
+    // MARK: - Memories
 
-    private var teachingSkillsSection: some View {
+    private var memoriesSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Teaching Skills")
+                Text("Memories")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
 
@@ -748,27 +748,27 @@ struct CompanionPanelView: View {
                 .labelsHidden()
                 .tint(DS.Colors.accent)
                 .scaleEffect(0.8)
-                .accessibilityIdentifier("clicky.panel.teaching-skills.learn-toggle")
+                .accessibilityIdentifier("clicky.panel.memories.learn-toggle")
             }
 
             Text(companionManager.isLearningFromSessionsEnabled
                  ? "Clicky learns from successful tutoring sessions."
-                 : "Learning paused — saved skills still apply.")
+                 : "Learning paused — saved memories still apply.")
                 .font(.system(size: 10))
                 .foregroundColor(DS.Colors.textTertiary)
 
-            if companionManager.teachingSkills.isEmpty {
-                Text("No skills yet. Teach Clicky something on screen and confirm it worked.")
+            if companionManager.memories.isEmpty {
+                Text("No memories yet. Teach Clicky something on screen and confirm it worked.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                ForEach(companionManager.teachingSkills.prefix(4)) { skill in
-                    teachingSkillRow(skill)
+                ForEach(companionManager.memories.prefix(4)) { memory in
+                    memoryRow(memory)
                 }
 
                 Button(action: {
-                    isShowingTeachingSkillsLibrary = true
+                    isShowingMemoriesLibrary = true
                 }) {
                     Text("View all")
                         .font(.system(size: 11, weight: .medium))
@@ -776,21 +776,21 @@ struct CompanionPanelView: View {
                 }
                 .buttonStyle(.plain)
                 .pointerCursor()
-                .accessibilityIdentifier("clicky.panel.teaching-skills.view-all")
+                .accessibilityIdentifier("clicky.panel.memories.view-all")
             }
         }
         .padding(.vertical, 4)
     }
 
-    private func teachingSkillRow(_ skill: TeachingSkill) -> some View {
+    private func memoryRow(_ memory: Memory) -> some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(skill.name)
+                Text(memory.title)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(DS.Colors.textSecondary)
                     .lineLimit(1)
 
-                Text("\(skill.usageCount) uses • \(skill.status.rawValue)")
+                Text("\(memory.category.displayLabel) • \(memory.usageCount) uses • \(memory.status.rawValue)")
                     .font(.system(size: 10))
                     .foregroundColor(DS.Colors.textTertiary)
             }
@@ -798,17 +798,17 @@ struct CompanionPanelView: View {
             Spacer()
 
             Button(action: {
-                companionManager.setTeachingSkillPinned(id: skill.id, pinned: !skill.isPinned)
+                companionManager.setMemoryPinned(id: memory.id, category: memory.category, pinned: !memory.isPinned)
             }) {
-                Image(systemName: skill.isPinned ? "pin.fill" : "pin")
+                Image(systemName: memory.isPinned ? "pin.fill" : "pin")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(skill.isPinned ? DS.Colors.accent : DS.Colors.textTertiary)
+                    .foregroundColor(memory.isPinned ? DS.Colors.accent : DS.Colors.textTertiary)
             }
             .buttonStyle(.plain)
             .pointerCursor()
 
             Button(action: {
-                companionManager.deleteTeachingSkill(id: skill.id)
+                companionManager.deleteMemory(id: memory.id, category: memory.category)
             }) {
                 Image(systemName: "trash")
                     .font(.system(size: 11, weight: .medium))
