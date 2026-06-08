@@ -15,10 +15,9 @@ struct TeachingTopicHistoryEntry: Codable, Equatable {
 }
 
 final class TeachingTopicHistoryStore {
-    static let historyFileURL: URL = {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".clicky/topic-history.json")
-    }()
+    static var historyFileURL: URL {
+        ClickyPaths.topicHistory
+    }
 
     private(set) var entries: [TeachingTopicHistoryEntry] = []
     private let maxEntryCount = 200

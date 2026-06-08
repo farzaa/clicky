@@ -91,9 +91,9 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var teachingSkills: [TeachingSkill] = []
 
     /// When disabled, Clicky still reads skills but will not create new ones.
-    @Published var isLearningFromSessionsEnabled: Bool = UserDefaults.standard.object(forKey: "isLearningFromSessionsEnabled") == nil
+    @Published var isLearningFromSessionsEnabled: Bool = ClickyDefaults.shared.object(forKey: "isLearningFromSessionsEnabled") == nil
         ? true
-        : UserDefaults.standard.bool(forKey: "isLearningFromSessionsEnabled")
+        : ClickyDefaults.shared.bool(forKey: "isLearningFromSessionsEnabled")
 
     /// Exposed for automated E2E assertions.
     @Published private(set) var lastSystemPrompt: String?
@@ -139,11 +139,11 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var isOverlayVisible: Bool = false
 
     /// The Claude model used for voice responses. Persisted to UserDefaults.
-    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+    @Published var selectedModel: String = ClickyDefaults.shared.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
 
     func setLearningFromSessionsEnabled(_ enabled: Bool) {
         isLearningFromSessionsEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "isLearningFromSessionsEnabled")
+        ClickyDefaults.shared.set(enabled, forKey: "isLearningFromSessionsEnabled")
     }
 
     func refreshTeachingSkills() {
@@ -384,20 +384,20 @@ final class CompanionManager: ObservableObject {
 
     func setSelectedModel(_ model: String) {
         selectedModel = model
-        UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
+        ClickyDefaults.shared.set(model, forKey: "selectedClaudeModel")
         claudeAPI.model = model
     }
 
     /// User preference for whether the Clicky cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
-    @Published var isClickyCursorEnabled: Bool = UserDefaults.standard.object(forKey: "isClickyCursorEnabled") == nil
+    @Published var isClickyCursorEnabled: Bool = ClickyDefaults.shared.object(forKey: "isClickyCursorEnabled") == nil
         ? true
-        : UserDefaults.standard.bool(forKey: "isClickyCursorEnabled")
+        : ClickyDefaults.shared.bool(forKey: "isClickyCursorEnabled")
 
     func setClickyCursorEnabled(_ enabled: Bool) {
         isClickyCursorEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "isClickyCursorEnabled")
+        ClickyDefaults.shared.set(enabled, forKey: "isClickyCursorEnabled")
         transientHideTask?.cancel()
         transientHideTask = nil
 
@@ -414,12 +414,12 @@ final class CompanionManager: ObservableObject {
     /// Whether the user has completed onboarding at least once. Persisted
     /// to UserDefaults so the Start button only appears on first launch.
     var hasCompletedOnboarding: Bool {
-        get { UserDefaults.standard.bool(forKey: "hasCompletedOnboarding") }
-        set { UserDefaults.standard.set(newValue, forKey: "hasCompletedOnboarding") }
+        get { ClickyDefaults.shared.bool(forKey: "hasCompletedOnboarding") }
+        set { ClickyDefaults.shared.set(newValue, forKey: "hasCompletedOnboarding") }
     }
 
     /// Whether the user has submitted their email during onboarding.
-    @Published var hasSubmittedEmail: Bool = UserDefaults.standard.bool(forKey: "hasSubmittedEmail")
+    @Published var hasSubmittedEmail: Bool = ClickyDefaults.shared.bool(forKey: "hasSubmittedEmail")
 
     /// Submits the user's email to FormSpark and identifies them in PostHog.
     func submitEmail(_ email: String) {
@@ -427,7 +427,7 @@ final class CompanionManager: ObservableObject {
         guard !trimmedEmail.isEmpty else { return }
 
         hasSubmittedEmail = true
-        UserDefaults.standard.set(true, forKey: "hasSubmittedEmail")
+        ClickyDefaults.shared.set(true, forKey: "hasSubmittedEmail")
 
         // Identify user in PostHog
         PostHogSDK.shared.identify(trimmedEmail, userProperties: [
@@ -625,7 +625,7 @@ final class CompanionManager: ObservableObject {
         // Screen content permission is persisted — once the user has approved the
         // SCShareableContent picker, we don't need to re-check it.
         if !hasScreenContentPermission {
-            hasScreenContentPermission = UserDefaults.standard.bool(forKey: "hasScreenContentPermission")
+            hasScreenContentPermission = ClickyDefaults.shared.bool(forKey: "hasScreenContentPermission")
         }
 
         if !previouslyHadAll && allPermissionsGranted {
@@ -661,7 +661,7 @@ final class CompanionManager: ObservableObject {
                     isRequestingScreenContent = false
                     guard didCapture else { return }
                     hasScreenContentPermission = true
-                    UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
+                    ClickyDefaults.shared.set(true, forKey: "hasScreenContentPermission")
                     ClickyAnalytics.trackPermissionGranted(permission: "screen_content")
 
                     // If onboarding was already completed, show the cursor overlay now

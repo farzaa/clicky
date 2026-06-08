@@ -37,6 +37,11 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     }
 
     func start() {
+        if ClickyLaunchArguments.isPresent("-CLICKY_DISABLE_GLOBAL_PTT=1") {
+            Self.logger.notice("Global push-to-talk disabled via launch flag")
+            return
+        }
+
         guard WindowPositionManager.hasInputMonitoringPermission() else {
             Self.logger.error("Input Monitoring permission missing — push-to-talk hotkey inactive")
             stop()

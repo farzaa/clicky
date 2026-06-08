@@ -33,8 +33,7 @@ enum ClickyE2EConfiguration {
     }
 
     static var clickyDirectoryURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".clicky", isDirectory: true)
+        ClickyPaths.home
     }
 
     static var lastSystemPromptFileURL: URL {
@@ -56,9 +55,9 @@ enum ClickyE2EConfiguration {
     static func applyLaunchOverrides() {
         guard isEnabled else { return }
 
-        UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding")
-        UserDefaults.standard.set(true, forKey: "hasSubmittedEmail")
-        UserDefaults.standard.set(true, forKey: "isClickyCursorEnabled")
+        ClickyDefaults.shared.set(true, forKey: "hasCompletedOnboarding")
+        ClickyDefaults.shared.set(true, forKey: "hasSubmittedEmail")
+        ClickyDefaults.shared.set(true, forKey: "isClickyCursorEnabled")
     }
 
     static func writeLastSystemPromptForE2E(_ systemPrompt: String) {
@@ -105,11 +104,6 @@ enum ClickyE2EConfiguration {
     }
 
     private static func argumentValue(for prefix: String) -> String? {
-        ProcessInfo.processInfo.arguments
-            .first(where: { $0.hasPrefix(prefix) })
-            .map { String($0.dropFirst(prefix.count)) }
-            .flatMap { value in
-                value.isEmpty ? nil : value
-            }
+        ClickyLaunchArguments.value(forPrefix: prefix)
     }
 }

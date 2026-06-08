@@ -78,7 +78,10 @@ class WindowPositionManager {
     // MARK: - Input Monitoring Permission
 
     /// Returns true if the app can install the global CGEvent tap used for push-to-talk.
-    static func hasInputMonitoringPermission() -> Bool {
+    /// `nonisolated` because it only reads the live TCC state via a pure C preflight call
+    /// (no main-actor state), so the nonisolated push-to-talk monitor can call it directly.
+    /// Without this, Xcode 16.4 rejects the call from `GlobalPushToTalkShortcutMonitor.start()`.
+    nonisolated static func hasInputMonitoringPermission() -> Bool {
         CGPreflightListenEventAccess()
     }
 
@@ -115,7 +118,7 @@ class WindowPositionManager {
     static func hasScreenRecordingPermission() -> Bool {
         let hasScreenRecordingPermissionNow = CGPreflightScreenCaptureAccess()
         if hasScreenRecordingPermissionNow {
-            UserDefaults.standard.set(true, forKey: hasPreviouslyConfirmedScreenRecordingPermissionUserDefaultsKey)
+            ClickyDefaults.shared.set(true, forKey: hasPreviouslyConfirmedScreenRecordingPermissionUserDefaultsKey)
         }
         return hasScreenRecordingPermissionNow
     }
@@ -127,7 +130,7 @@ class WindowPositionManager {
     static func shouldTreatScreenRecordingPermissionAsGrantedForSessionLaunch() -> Bool {
         shouldTreatScreenRecordingPermissionAsGrantedForSessionLaunch(
             hasScreenRecordingPermissionNow: hasScreenRecordingPermission(),
-            hasPreviouslyConfirmedScreenRecordingPermission: UserDefaults.standard.bool(forKey: hasPreviouslyConfirmedScreenRecordingPermissionUserDefaultsKey)
+            hasPreviouslyConfirmedScreenRecordingPermission: ClickyDefaults.shared.bool(forKey: hasPreviouslyConfirmedScreenRecordingPermissionUserDefaultsKey)
         )
     }
 
@@ -139,7 +142,7 @@ class WindowPositionManager {
     }
 
     static func clearPreviouslyConfirmedScreenRecordingPermission() {
-        UserDefaults.standard.removeObject(forKey: hasPreviouslyConfirmedScreenRecordingPermissionUserDefaultsKey)
+        ClickyDefaults.shared.removeObject(forKey: hasPreviouslyConfirmedScreenRecordingPermissionUserDefaultsKey)
     }
 
     /// Prompts the system dialog for Screen Recording permission.
