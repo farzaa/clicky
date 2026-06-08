@@ -8,8 +8,7 @@
 
 import AppKit
 import ApplicationServices
-import ScreenCaptureKit
-
+import CoreGraphics
 enum PermissionRequestPresentationDestination: Equatable {
     case alreadyGranted
     case systemPrompt
@@ -19,6 +18,7 @@ enum PermissionRequestPresentationDestination: Equatable {
 @MainActor
 class WindowPositionManager {
     private static var hasAttemptedAccessibilitySystemPromptDuringCurrentLaunch = false
+    private static var hasAttemptedInputMonitoringSystemPromptDuringCurrentLaunch = false
     private static var hasAttemptedScreenRecordingSystemPromptDuringCurrentLaunch = false
     private static let hasPreviouslyConfirmedScreenRecordingPermissionUserDefaultsKey = "com.learningbuddy.hasPreviouslyConfirmedScreenRecordingPermission"
 
@@ -71,15 +71,78 @@ class WindowPositionManager {
     static func revealAppInFinder() {
         guard let appURL = Bundle.main.bundleURL as URL? else { return }
         NSWorkspace.shared.activateFileViewerSelecting([appURL])
+        print("🔑 Finder opened this build — drag it into Accessibility / Input Monitoring: \(appURL.path)")
+    }
+
+    /// Opens Finder + Settings so the user can drag the current debug build in.
+    static func prepareAccessibilityReGrantFromFinder() {
+        hasAttemptedAccessibilitySystemPromptDuringCurrentLaunch = false
+        revealAppInFinder()
+        openAccessibilitySettings()
+    }
+
+    /// Opens Finder + Settings so the user can drag the current debug build in.
+    static func prepareInputMonitoringReGrantFromFinder() {
+        hasAttemptedInputMonitoringSystemPromptDuringCurrentLaunch = false
+        revealAppInFinder()
+        openInputMonitoringSettings()
+    }
+
+    /// Re-checks accessibility trust without showing the prompt.
+    static func refreshAccessibilityTrustCache() {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): false] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+    }
+
+    // MARK: - Input Monitoring Permission
+
+    /// Returns true if the app can install the global CGEvent tap used for push-to-talk.
+    /// `nonisolated` because it only reads the live TCC state via a pure C preflight call
+    /// (no main-actor state), so the nonisolated push-to-talk monitor can call it directly.
+    /// Without this, Xcode 16.4 rejects the call from `GlobalPushToTalkShortcutMonitor.start()`.
+    nonisolated static func hasInputMonitoringPermission() -> Bool {
+        CGPreflightListenEventAccess()
+    }
+
+    /// Presents the system Input Monitoring prompt once, then opens System Settings.
+    @discardableResult
+    static func requestInputMonitoringPermission() -> PermissionRequestPresentationDestination {
+        let presentationDestination = permissionRequestPresentationDestination(
+            hasPermissionNow: hasInputMonitoringPermission(),
+            hasAttemptedSystemPrompt: hasAttemptedInputMonitoringSystemPromptDuringCurrentLaunch
+        )
+
+        switch presentationDestination {
+        case .alreadyGranted:
+            return .alreadyGranted
+        case .systemPrompt:
+            hasAttemptedInputMonitoringSystemPromptDuringCurrentLaunch = true
+            _ = CGRequestListenEventAccess()
+        case .systemSettings:
+            openInputMonitoringSettings()
+        }
+
+        return presentationDestination
+    }
+
+    /// Opens System Settings to the Input Monitoring pane.
+    static func openInputMonitoringSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     // MARK: - Screen Recording Permission
 
+    /// Live TCC check — does not use cached UserDefaults fallbacks.
+    static func isScreenCapturePreflightGranted() -> Bool {
+        CGPreflightScreenCaptureAccess()
+    }
+
     /// Returns true if Screen Recording permission is granted.
     static func hasScreenRecordingPermission() -> Bool {
-        let hasScreenRecordingPermissionNow = CGPreflightScreenCaptureAccess()
+        let hasScreenRecordingPermissionNow = isScreenCapturePreflightGranted()
         if hasScreenRecordingPermissionNow {
-            UserDefaults.standard.set(true, forKey: hasPreviouslyConfirmedScreenRecordingPermissionUserDefaultsKey)
+            ClickyDefaults.shared.set(true, forKey: hasPreviouslyConfirmedScreenRecordingPermissionUserDefaultsKey)
         }
         return hasScreenRecordingPermissionNow
     }
@@ -91,7 +154,7 @@ class WindowPositionManager {
     static func shouldTreatScreenRecordingPermissionAsGrantedForSessionLaunch() -> Bool {
         shouldTreatScreenRecordingPermissionAsGrantedForSessionLaunch(
             hasScreenRecordingPermissionNow: hasScreenRecordingPermission(),
-            hasPreviouslyConfirmedScreenRecordingPermission: UserDefaults.standard.bool(forKey: hasPreviouslyConfirmedScreenRecordingPermissionUserDefaultsKey)
+            hasPreviouslyConfirmedScreenRecordingPermission: ClickyDefaults.shared.bool(forKey: hasPreviouslyConfirmedScreenRecordingPermissionUserDefaultsKey)
         )
     }
 
@@ -103,7 +166,19 @@ class WindowPositionManager {
     }
 
     static func clearPreviouslyConfirmedScreenRecordingPermission() {
-        UserDefaults.standard.removeObject(forKey: hasPreviouslyConfirmedScreenRecordingPermissionUserDefaultsKey)
+        ClickyDefaults.shared.removeObject(forKey: hasPreviouslyConfirmedScreenRecordingPermissionUserDefaultsKey)
+    }
+
+    static func clearCachedScreenContentPermission() {
+        ClickyDefaults.shared.removeObject(forKey: "hasScreenContentPermission")
+    }
+
+    /// One-time startup diagnostics when permissions are incomplete.
+    static func logPermissionDiagnosticsSnapshot() {
+        let bundlePath = Bundle.main.bundlePath
+        print("🔑 Permission diagnostics — enable THIS build in System Settings:")
+        print("🔑   \(bundlePath)")
+        print("🔑 TCC snapshot — accessibility: \(hasAccessibilityPermission()), inputMonitoring: \(hasInputMonitoringPermission()), screenRecordingPreflight: \(CGPreflightScreenCaptureAccess())")
     }
 
     /// Prompts the system dialog for Screen Recording permission.

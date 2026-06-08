@@ -13,8 +13,21 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    @State private var isShowingTeachingSkillsLibrary = false
 
     var body: some View {
+        if isShowingTeachingSkillsLibrary {
+            TeachingSkillsLibraryView(companionManager: companionManager) {
+                isShowingTeachingSkillsLibrary = false
+            }
+            .frame(width: 320)
+            .background(panelBackground)
+        } else {
+            mainPanelContent
+        }
+    }
+
+    private var mainPanelContent: some View {
         VStack(alignment: .leading, spacing: 0) {
             panelHeader
             Divider()
@@ -24,6 +37,14 @@ struct CompanionPanelView: View {
             permissionsCopySection
                 .padding(.top, 16)
                 .padding(.horizontal, 16)
+
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 12)
+
+                teachingSkillsSection
+                    .padding(.horizontal, 16)
+            }
 
             if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
                 Spacer()
@@ -127,10 +148,31 @@ struct CompanionPanelView: View {
     @ViewBuilder
     private var permissionsCopySection: some View {
         if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            Text("Hold Control+Option to talk.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Hold ^ Control + ⌥ Option to talk.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Text("Use Control (not ⌘ Command). Speak while holding, then release.")
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if !companionManager.isPushToTalkHotkeyActive {
+                    Text("Push-to-talk is inactive. Enable Input Monitoring for Clicky, then quit and reopen the app.")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if !AppBundleConfiguration.isWorkerBaseURLConfigured {
+                    Text("API proxy is not configured. Set ClickyWorkerBaseURL in Info.plist to your Cloudflare Worker URL.")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         } else if companionManager.allPermissionsGranted && !companionManager.hasSubmittedEmail {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Drop your email to get started.")
@@ -153,8 +195,18 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(DS.Colors.textSecondary)
 
-                Text("Some permissions were revoked. Grant all four below to keep using Clicky.")
+                Text("Some permissions were revoked. Grant all five below to keep using Clicky.")
                     .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("Enable THIS build: tap Find App, drag Clicky.app into the list, then quit and reopen Clicky.")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(companionManager.runningApplicationBundlePath)
+                    .font(.system(size: 9, design: .monospaced))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -254,6 +306,8 @@ struct CompanionPanelView: View {
 
             accessibilityPermissionRow
 
+            inputMonitoringPermissionRow
+
             screenRecordingPermissionRow
 
             if companionManager.hasScreenRecordingPermission {
@@ -272,9 +326,17 @@ struct CompanionPanelView: View {
                     .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
                     .frame(width: 16)
 
-                Text("Accessibility")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Accessibility")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+
+                    if !isGranted {
+                        Text("Use Find App, enable this build, then quit and reopen")
+                            .font(.system(size: 10))
+                            .foregroundColor(DS.Colors.textTertiary)
+                    }
+                }
             }
 
             Spacer()
@@ -293,7 +355,7 @@ struct CompanionPanelView: View {
                     Button(action: {
                         // Triggers the system accessibility prompt (AXIsProcessTrustedWithOptions)
                         // on first attempt, then opens System Settings on subsequent attempts.
-                        WindowPositionManager.requestAccessibilityPermission()
+                        companionManager.requestAccessibilityPermissionFromPanel()
                     }) {
                         Text("Grant")
                             .font(.system(size: 11, weight: .semibold))
@@ -312,8 +374,79 @@ struct CompanionPanelView: View {
                         // Reveals the app in Finder so the user can drag it into
                         // the Accessibility list if it doesn't appear automatically
                         // (common with unsigned dev builds).
-                        WindowPositionManager.revealAppInFinder()
-                        WindowPositionManager.openAccessibilitySettings()
+                        WindowPositionManager.prepareAccessibilityReGrantFromFinder()
+                    }) {
+                        Text("Find App")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(DS.Colors.textSecondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(
+                                Capsule()
+                                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.8)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                }
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
+    private var inputMonitoringPermissionRow: some View {
+        let isGranted = companionManager.hasInputMonitoringPermission
+        return HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "keyboard")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
+                    .frame(width: 16)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Input Monitoring")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+
+                    Text(isGranted
+                         ? "Required for Control+Option push-to-talk"
+                         : "Use Find App, enable this build, then quit and reopen")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+            }
+
+            Spacer()
+
+            if isGranted {
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(DS.Colors.success)
+                        .frame(width: 6, height: 6)
+                    Text("Granted")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.success)
+                }
+            } else {
+                HStack(spacing: 6) {
+                    Button(action: {
+                        companionManager.requestInputMonitoringPermissionFromPanel()
+                    }) {
+                        Text("Grant")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(DS.Colors.textOnAccent)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(
+                                Capsule()
+                                    .fill(DS.Colors.accent)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+
+                    Button(action: {
+                        WindowPositionManager.prepareInputMonitoringReGrantFromFinder()
                     }) {
                         Text("Find App")
                             .font(.system(size: 11, weight: .semibold))
@@ -371,7 +504,7 @@ struct CompanionPanelView: View {
                     // Triggers the native macOS screen recording prompt on first
                     // attempt (auto-adds app to the list), then opens System Settings
                     // on subsequent attempts.
-                    WindowPositionManager.requestScreenRecordingPermission()
+                    companionManager.requestScreenRecordingPermissionFromPanel()
                 }) {
                     Text("Grant")
                         .font(.system(size: 11, weight: .semibold))
@@ -592,6 +725,97 @@ struct CompanionPanelView: View {
             Text(companionManager.buddyDictationManager.transcriptionProviderDisplayName)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(DS.Colors.textTertiary)
+        }
+        .padding(.vertical, 4)
+    }
+
+    // MARK: - Teaching Skills
+
+    private var teachingSkillsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Teaching Skills")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                Toggle("", isOn: Binding(
+                    get: { companionManager.isLearningFromSessionsEnabled },
+                    set: { companionManager.setLearningFromSessionsEnabled($0) }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .tint(DS.Colors.accent)
+                .scaleEffect(0.8)
+                .accessibilityIdentifier("clicky.panel.teaching-skills.learn-toggle")
+            }
+
+            Text(companionManager.isLearningFromSessionsEnabled
+                 ? "Clicky learns from successful tutoring sessions."
+                 : "Learning paused — saved skills still apply.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+
+            if companionManager.teachingSkills.isEmpty {
+                Text("No skills yet. Teach Clicky something on screen and confirm it worked.")
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(companionManager.teachingSkills.prefix(4)) { skill in
+                    teachingSkillRow(skill)
+                }
+
+                Button(action: {
+                    isShowingTeachingSkillsLibrary = true
+                }) {
+                    Text("View all")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.accent)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .accessibilityIdentifier("clicky.panel.teaching-skills.view-all")
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func teachingSkillRow(_ skill: TeachingSkill) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(skill.name)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .lineLimit(1)
+
+                Text("\(skill.usageCount) uses • \(skill.status.rawValue)")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+
+            Spacer()
+
+            Button(action: {
+                companionManager.setTeachingSkillPinned(id: skill.id, pinned: !skill.isPinned)
+            }) {
+                Image(systemName: skill.isPinned ? "pin.fill" : "pin")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(skill.isPinned ? DS.Colors.accent : DS.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+
+            Button(action: {
+                companionManager.deleteTeachingSkill(id: skill.id)
+            }) {
+                Image(systemName: "trash")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
         }
         .padding(.vertical, 4)
     }

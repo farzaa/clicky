@@ -11,12 +11,21 @@ import AppKit
 import Combine
 import CoreGraphics
 import Foundation
+import os
 
 final class GlobalPushToTalkShortcutMonitor: ObservableObject {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.yourcompany.leanring-buddy",
+        category: "PushToTalk"
+    )
+
     let shortcutTransitionPublisher = PassthroughSubject<BuddyPushToTalkShortcut.ShortcutTransition, Never>()
 
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
+    /// True once a CGEvent tap is installed and enabled for this process.
+    @Published private(set) var isEventTapInstalled = false
+
     /// Mutated exclusively from the CGEvent tap callback, which runs on
     /// `CFRunLoopGetMain()` and therefore always executes on the main thread.
     /// Published so the overlay can hide immediately on key release without
@@ -28,11 +37,26 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     }
 
     func start() {
-        // If the event tap is already running, don't restart it.
-        // Restarting resets isShortcutCurrentlyPressed, which would kill
-        // the waveform overlay mid-press when the permission poller calls
-        // refreshAllPermissions → start() every few seconds.
-        guard globalEventTap == nil else { return }
+        if ClickyLaunchArguments.isPresent("-CLICKY_DISABLE_GLOBAL_PTT=1") {
+            Self.logger.notice("Global push-to-talk disabled via launch flag")
+            return
+        }
+
+        guard WindowPositionManager.hasInputMonitoringPermission() else {
+            Self.logger.error("Input Monitoring permission missing — push-to-talk hotkey inactive")
+            stop()
+            return
+        }
+
+        if let globalEventTap, !CGEvent.tapIsEnabled(tap: globalEventTap) {
+            Self.logger.notice("Recreating disabled CGEvent tap")
+            stop()
+        }
+
+        guard globalEventTap == nil else {
+            isEventTapInstalled = true
+            return
+        }
 
         let monitoredEventTypes: [CGEventType] = [.flagsChanged, .keyDown, .keyUp]
         let eventMask = monitoredEventTypes.reduce(CGEventMask(0)) { currentMask, eventType in
@@ -62,7 +86,14 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             callback: eventTapCallback,
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
-            print("⚠️ Global push-to-talk: couldn't create CGEvent tap")
+            if !CGPreflightListenEventAccess() {
+                Self.logger.error("Input Monitoring permission required for push-to-talk")
+                print("⚠️ Global push-to-talk: Input Monitoring permission is required (System Settings → Privacy & Security → Input Monitoring)")
+            } else {
+                Self.logger.error("CGEvent tapCreate returned nil despite Input Monitoring being granted")
+                print("⚠️ Global push-to-talk: couldn't create CGEvent tap — quit and reopen Clicky")
+            }
+            isEventTapInstalled = false
             return
         }
 
@@ -72,7 +103,9 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             0
         ) else {
             CFMachPortInvalidate(globalEventTap)
+            Self.logger.error("Couldn't create CGEvent tap run loop source")
             print("⚠️ Global push-to-talk: couldn't create event tap run loop source")
+            isEventTapInstalled = false
             return
         }
 
@@ -81,10 +114,13 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
         CFRunLoopAddSource(CFRunLoopGetMain(), globalEventTapRunLoopSource, .commonModes)
         CGEvent.tapEnable(tap: globalEventTap, enable: true)
+        isEventTapInstalled = CGEvent.tapIsEnabled(tap: globalEventTap)
+        Self.logger.notice("CGEvent tap installed (enabled=\(self.isEventTapInstalled, privacy: .public))")
     }
 
     func stop() {
         isShortcutCurrentlyPressed = false
+        isEventTapInstalled = false
 
         if let globalEventTapRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), globalEventTapRunLoopSource, .commonModes)
@@ -102,8 +138,10 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         event: CGEvent
     ) -> Unmanaged<CGEvent>? {
         if eventType == .tapDisabledByTimeout || eventType == .tapDisabledByUserInput {
+            Self.logger.notice("CGEvent tap disabled by system — re-enabling")
             if let globalEventTap {
                 CGEvent.tapEnable(tap: globalEventTap, enable: true)
+                isEventTapInstalled = CGEvent.tapIsEnabled(tap: globalEventTap)
             }
             return Unmanaged.passUnretained(event)
         }
@@ -120,9 +158,11 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         case .none:
             break
         case .pressed:
+            Self.logger.notice("Push-to-talk shortcut pressed")
             isShortcutCurrentlyPressed = true
             shortcutTransitionPublisher.send(.pressed)
         case .released:
+            Self.logger.notice("Push-to-talk shortcut released")
             isShortcutCurrentlyPressed = false
             shortcutTransitionPublisher.send(.released)
         }

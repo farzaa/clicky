@@ -16,6 +16,7 @@ import SwiftUI
 
 extension Notification.Name {
     static let clickyDismissPanel = Notification.Name("clickyDismissPanel")
+    static let clickyCompanionPanelDidClose = Notification.Name("clickyCompanionPanelDidClose")
 }
 
 /// Custom NSPanel subclass that can become the key window even with
@@ -131,6 +132,8 @@ final class MenuBarPanelManager: NSObject {
             createPanel()
         }
 
+        companionManager.refreshAllPermissions()
+
         positionPanelBelowStatusItem()
 
         panel?.makeKeyAndOrderFront(nil)
@@ -141,6 +144,7 @@ final class MenuBarPanelManager: NSObject {
     private func hidePanel() {
         panel?.orderOut(nil)
         removeClickOutsideMonitor()
+        NotificationCenter.default.post(name: .clickyCompanionPanelDidClose, object: nil)
     }
 
     private func createPanel() {
