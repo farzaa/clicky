@@ -186,6 +186,62 @@ struct MemoryGateTests {
         #expect(decision.blockReasons == [.genericOffScreenQA])
     }
 
+    @Test func blocksGenericOffScreenQAEvenWhileAppFocused() {
+        let session = makeSession(turns: [
+            SessionTraceEntry(
+                timestamp: Date(),
+                userTranscript: "what is the capital of france?",
+                assistantResponse: "paris",
+                bundleId: "com.apple.TextEdit",
+                pointed: false
+            )
+        ])
+
+        let decision = MemoryGate.evaluate(
+            session: session,
+            topicHistory: [],
+            isLearningEnabled: true
+        )
+
+        #expect(!decision.shouldDistillSkill)
+        #expect(decision.blockReasons == [.genericOffScreenQA])
+    }
+
+    @Test func passesSkillOnRepeatedSingleWordTopic() throws {
+        let tempHistoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clicky-memory-gate-singleword-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: tempHistoryURL) }
+
+        let topicHistoryStore = TeachingTopicHistoryStore(historyFileURL: tempHistoryURL)
+        topicHistoryStore.load()
+
+        let bundleId = "com.apple.FinalCut"
+
+        topicHistoryStore.recordTopic(topic: "export", bundleId: bundleId)
+        topicHistoryStore.recordTopic(topic: "export", bundleId: bundleId)
+
+        let session = makeSession(
+            outcome: .unknown,
+            turns: [
+                SessionTraceEntry(
+                    timestamp: Date(),
+                    userTranscript: "how do i export",
+                    assistantResponse: "use the share menu",
+                    bundleId: bundleId,
+                    pointed: true
+                )
+            ]
+        )
+
+        let decision = MemoryGate.evaluate(
+            session: session,
+            topicHistory: topicHistoryStore.entries,
+            isLearningEnabled: true
+        )
+
+        #expect(decision.passedCategories[.skill]?.contains(.repeatedTopic) == true)
+    }
+
     @Test func passesSkillOnRepeatedTopic() throws {
         let tempHistoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("clicky-memory-gate-history-\(UUID().uuidString).json")

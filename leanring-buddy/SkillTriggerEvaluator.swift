@@ -55,9 +55,13 @@ enum SkillTriggerEvaluator {
         return tokens.prefix(6).joined(separator: " ")
     }
 
+    /// A session counts as screen teaching only when the cursor pointed at the UI
+    /// or the user/assistant explicitly named an app. The mere presence of a
+    /// frontmost `bundleId` is NOT enough: `recordSessionExchange` stamps the
+    /// frontmost app on every turn, so a generic off-screen question asked while
+    /// any app happens to be focused would otherwise look like screen teaching.
     static func isScreenTeachingSession(_ sessionTrace: [SessionTraceEntry]) -> Bool {
         sessionTrace.contains(where: \.pointed) ||
-        sessionTrace.contains(where: { $0.bundleId != nil }) ||
         sessionTrace.contains { entry in
             TeachingSkill.detectBundleId(in: entry.userTranscript) != nil ||
             TeachingSkill.detectBundleId(in: entry.assistantResponse) != nil

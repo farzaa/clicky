@@ -88,11 +88,17 @@ final class TeachingTopicHistoryStore {
         let topicTokens = Set(SkillMatcher.meaningfulTokens(topic))
         guard topicTokens.count >= 1 else { return false }
 
+        // Require two overlapping tokens for multi-word topics, but fall back to a
+        // single exact-token match for one-word topics (e.g. "export"). Otherwise
+        // a topic that collapses to one meaningful token could never be detected
+        // as repeated, since it can never reach an overlap of two.
+        let requiredOverlap = min(2, topicTokens.count)
+
         let cutoff = Calendar.current.date(byAdding: .day, value: -withinDays, to: now) ?? .distantPast
         let matchingEntries = entries.filter { entry in
             entry.timestamp >= cutoff &&
             bundleIdsMatch(entry.bundleId, bundleId) &&
-            tokenOverlapCount(Set(entry.topicTokens), topicTokens) >= 2
+            tokenOverlapCount(Set(entry.topicTokens), topicTokens) >= requiredOverlap
         }
 
         return matchingEntries.count >= 2
