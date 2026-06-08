@@ -316,6 +316,46 @@ struct MemoryGateTests {
         #expect(reasons.contains(.screenTeaching))
     }
 
+    @Test func negativeFeedbackDoesNotCountAsConfirmation() {
+        #expect(SkillTriggerEvaluator.isConfirmationTranscript("that was not helpful") == false)
+        #expect(SkillTriggerEvaluator.isConfirmationTranscript("that didn't work") == false)
+        #expect(SkillTriggerEvaluator.isConfirmationTranscript("imperfect") == false)
+        #expect(SkillTriggerEvaluator.isConfirmationTranscript("got it thanks") == true)
+        #expect(SkillTriggerEvaluator.isConfirmationTranscript("perfect") == true)
+    }
+
+    @Test func lastTurnNegationDoesNotRecordUserConfirmed() {
+        let session = makeSession(
+            outcome: .unknown,
+            turns: [
+                SessionTraceEntry(
+                    timestamp: Date(),
+                    userTranscript: "how do i export this clip?",
+                    assistantResponse: "use the share menu",
+                    bundleId: "com.apple.FinalCut",
+                    pointed: true
+                ),
+                SessionTraceEntry(
+                    timestamp: Date(),
+                    userTranscript: "that was not helpful",
+                    assistantResponse: "let me try again",
+                    bundleId: "com.apple.FinalCut",
+                    pointed: true
+                )
+            ]
+        )
+
+        let decision = MemoryGate.evaluate(
+            session: session,
+            topicHistory: [],
+            isLearningEnabled: true
+        )
+
+        #expect(decision.passedCategories[.skill]?.contains(.userConfirmed) == false)
+        // Still distills on the two-pointing path, just not as a false confirmation.
+        #expect(decision.passedCategories[.skill]?.contains(.multiStepPointing) == true)
+    }
+
     @Test func makeSkillWriteTriggerUsesPrimaryGateReason() {
         let session = makeSession(turns: [
             SessionTraceEntry(

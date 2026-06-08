@@ -37,12 +37,50 @@ enum SkillTriggerEvaluator {
             .first { !isConfirmationTranscript($0) }
     }
 
+    /// Negations that flip an otherwise positive phrase ("not helpful",
+    /// "didn't work"). Stored apostrophe-free because `words(from:)` strips
+    /// apostrophes before tokenizing.
+    private static let negationTokens: Set<String> = [
+        "not", "never", "dont", "doesnt", "didnt",
+        "isnt", "wasnt", "wont", "wouldnt", "couldnt", "cant"
+    ]
+
     static func isConfirmationTranscript(_ transcript: String) -> Bool {
         let normalized = transcript
             .lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return true }
-        return confirmationPhrases.contains { normalized.contains($0) }
+
+        let transcriptWords = words(from: normalized)
+        let transcriptWordSet = Set(transcriptWords)
+
+        // A negation anywhere in the transcript means the user did not confirm
+        // success ("not helpful", "that didn't work").
+        guard negationTokens.isDisjoint(with: transcriptWordSet) else { return false }
+
+        // Match each phrase on whole-word boundaries so "imperfect" does not
+        // match "perfect" and "unhelpful" does not match "helpful".
+        return confirmationPhrases.contains { phrase in
+            containsContiguousWords(words(from: phrase), in: transcriptWords)
+        }
+    }
+
+    private static func words(from text: String) -> [String] {
+        text
+            .replacingOccurrences(of: "'", with: "")
+            .replacingOccurrences(of: "\u{2019}", with: "")
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+    }
+
+    private static func containsContiguousWords(_ phraseWords: [String], in transcriptWords: [String]) -> Bool {
+        guard !phraseWords.isEmpty, phraseWords.count <= transcriptWords.count else { return false }
+        for startIndex in 0...(transcriptWords.count - phraseWords.count) {
+            if Array(transcriptWords[startIndex..<startIndex + phraseWords.count]) == phraseWords {
+                return true
+            }
+        }
+        return false
     }
 
     static func deriveTopic(from sessionTrace: [SessionTraceEntry]) -> String {

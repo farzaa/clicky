@@ -90,7 +90,7 @@ enum MemoryGate {
         let topic = SkillTriggerEvaluator.deriveTopic(from: session.turns)
         let resolvedBundleId = SkillTargetAppResolver.resolveTargetBundleId(
             from: session.turns,
-            frontmostBundleId: session.appsUsed.last
+            frontmostBundleId: session.turns.last?.bundleId
         )
 
         if TeachingTopicHistoryStore.hasRepeatedTopic(

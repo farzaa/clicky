@@ -451,7 +451,7 @@ final class CompanionManager: ObservableObject {
 
         let targetBundleId = SkillTargetAppResolver.resolveTargetBundleId(
             from: turns,
-            frontmostBundleId: session.appsUsed.last ?? frontmostApplicationBundleId()
+            frontmostBundleId: session.turns.last?.bundleId ?? frontmostApplicationBundleId()
         )
         let primaryQuestion = SkillTriggerEvaluator.primaryTeachingQuestion(from: turns) ?? trigger.topic
         skillWriteTask?.cancel()
