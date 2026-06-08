@@ -314,7 +314,10 @@ final class CompanionManager: ObservableObject {
             sessionTrace.removeFirst(sessionTrace.count - 20)
         }
 
-        restartSessionIdleTimer()
+        // The 30s idle timer is intentionally NOT armed here. recordSessionExchange
+        // runs before the assistant's TTS playback, so arming now could let the timer
+        // fire mid-speech on a long reply and split one conversation into two sessions.
+        // It is armed when the response task returns to idle (after TTS) instead.
 
         if !SkillTriggerEvaluator.isConfirmationTranscript(transcript) {
             let topic = SkillTriggerEvaluator.deriveTopic(fromQuestion: transcript)
@@ -363,12 +366,15 @@ final class CompanionManager: ObservableObject {
         do {
             let savedURL = try sessionStore.save(session)
             print("💾 Persisted session to \(savedURL.path)")
+            // Only discard the in-memory session once it is safely on disk.
+            sessionStartedAt = nil
+            sessionTrace.removeAll()
         } catch {
-            print("⚠️ Failed to persist session: \(error)")
+            // Keep the trace and re-arm the idle timer so a transient I/O error
+            // gets another chance to persist instead of silently losing the capture.
+            print("⚠️ Failed to persist session, will retry on next idle: \(error)")
+            restartSessionIdleTimer()
         }
-
-        sessionStartedAt = nil
-        sessionTrace.removeAll()
     }
 
     /// Coarse outcome heuristic for capture-time persistence. The future memory gate
@@ -1260,6 +1266,12 @@ final class CompanionManager: ObservableObject {
             if !Task.isCancelled {
                 voiceState = .idle
                 isPushToTalkInteractionActive = false
+                // Arm the idle boundary now that the assistant has finished speaking,
+                // so the 30s countdown measures genuine user inactivity rather than
+                // overlapping with TTS playback. Only relevant while a session is open.
+                if sessionStartedAt != nil {
+                    restartSessionIdleTimer()
+                }
                 scheduleTransientHideIfNeeded()
             }
         }
