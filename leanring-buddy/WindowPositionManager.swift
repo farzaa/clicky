@@ -9,8 +9,6 @@
 import AppKit
 import ApplicationServices
 import CoreGraphics
-import ScreenCaptureKit
-
 enum PermissionRequestPresentationDestination: Equatable {
     case alreadyGranted
     case systemPrompt
@@ -73,6 +71,27 @@ class WindowPositionManager {
     static func revealAppInFinder() {
         guard let appURL = Bundle.main.bundleURL as URL? else { return }
         NSWorkspace.shared.activateFileViewerSelecting([appURL])
+        print("🔑 Finder opened this build — drag it into Accessibility / Input Monitoring: \(appURL.path)")
+    }
+
+    /// Opens Finder + Settings so the user can drag the current debug build in.
+    static func prepareAccessibilityReGrantFromFinder() {
+        hasAttemptedAccessibilitySystemPromptDuringCurrentLaunch = false
+        revealAppInFinder()
+        openAccessibilitySettings()
+    }
+
+    /// Opens Finder + Settings so the user can drag the current debug build in.
+    static func prepareInputMonitoringReGrantFromFinder() {
+        hasAttemptedInputMonitoringSystemPromptDuringCurrentLaunch = false
+        revealAppInFinder()
+        openInputMonitoringSettings()
+    }
+
+    /// Re-checks accessibility trust without showing the prompt.
+    static func refreshAccessibilityTrustCache() {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): false] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
     }
 
     // MARK: - Input Monitoring Permission
@@ -114,9 +133,14 @@ class WindowPositionManager {
 
     // MARK: - Screen Recording Permission
 
+    /// Live TCC check — does not use cached UserDefaults fallbacks.
+    static func isScreenCapturePreflightGranted() -> Bool {
+        CGPreflightScreenCaptureAccess()
+    }
+
     /// Returns true if Screen Recording permission is granted.
     static func hasScreenRecordingPermission() -> Bool {
-        let hasScreenRecordingPermissionNow = CGPreflightScreenCaptureAccess()
+        let hasScreenRecordingPermissionNow = isScreenCapturePreflightGranted()
         if hasScreenRecordingPermissionNow {
             ClickyDefaults.shared.set(true, forKey: hasPreviouslyConfirmedScreenRecordingPermissionUserDefaultsKey)
         }
@@ -143,6 +167,18 @@ class WindowPositionManager {
 
     static func clearPreviouslyConfirmedScreenRecordingPermission() {
         ClickyDefaults.shared.removeObject(forKey: hasPreviouslyConfirmedScreenRecordingPermissionUserDefaultsKey)
+    }
+
+    static func clearCachedScreenContentPermission() {
+        ClickyDefaults.shared.removeObject(forKey: "hasScreenContentPermission")
+    }
+
+    /// One-time startup diagnostics when permissions are incomplete.
+    static func logPermissionDiagnosticsSnapshot() {
+        let bundlePath = Bundle.main.bundlePath
+        print("🔑 Permission diagnostics — enable THIS build in System Settings:")
+        print("🔑   \(bundlePath)")
+        print("🔑 TCC snapshot — accessibility: \(hasAccessibilityPermission()), inputMonitoring: \(hasInputMonitoringPermission()), screenRecordingPreflight: \(CGPreflightScreenCaptureAccess())")
     }
 
     /// Prompts the system dialog for Screen Recording permission.

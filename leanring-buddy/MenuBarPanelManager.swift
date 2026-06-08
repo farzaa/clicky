@@ -131,6 +131,8 @@ final class MenuBarPanelManager: NSObject {
             createPanel()
         }
 
+        companionManager.refreshAllPermissions()
+
         positionPanelBelowStatusItem()
 
         panel?.makeKeyAndOrderFront(nil)

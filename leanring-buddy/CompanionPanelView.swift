@@ -199,6 +199,16 @@ struct CompanionPanelView: View {
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                Text("Enable THIS build: tap Find App, drag Clicky.app into the list, then quit and reopen Clicky.")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(companionManager.runningApplicationBundlePath)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
@@ -316,9 +326,17 @@ struct CompanionPanelView: View {
                     .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
                     .frame(width: 16)
 
-                Text("Accessibility")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Accessibility")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+
+                    if !isGranted {
+                        Text("Use Find App, enable this build, then quit and reopen")
+                            .font(.system(size: 10))
+                            .foregroundColor(DS.Colors.textTertiary)
+                    }
+                }
             }
 
             Spacer()
@@ -337,7 +355,7 @@ struct CompanionPanelView: View {
                     Button(action: {
                         // Triggers the system accessibility prompt (AXIsProcessTrustedWithOptions)
                         // on first attempt, then opens System Settings on subsequent attempts.
-                        WindowPositionManager.requestAccessibilityPermission()
+                        companionManager.requestAccessibilityPermissionFromPanel()
                     }) {
                         Text("Grant")
                             .font(.system(size: 11, weight: .semibold))
@@ -356,8 +374,7 @@ struct CompanionPanelView: View {
                         // Reveals the app in Finder so the user can drag it into
                         // the Accessibility list if it doesn't appear automatically
                         // (common with unsigned dev builds).
-                        WindowPositionManager.revealAppInFinder()
-                        WindowPositionManager.openAccessibilitySettings()
+                        WindowPositionManager.prepareAccessibilityReGrantFromFinder()
                     }) {
                         Text("Find App")
                             .font(.system(size: 11, weight: .semibold))
@@ -393,7 +410,7 @@ struct CompanionPanelView: View {
 
                     Text(isGranted
                          ? "Required for Control+Option push-to-talk"
-                         : "Enable this for the global hotkey to work")
+                         : "Use Find App, enable this build, then quit and reopen")
                         .font(.system(size: 10))
                         .foregroundColor(DS.Colors.textTertiary)
                 }
@@ -413,7 +430,7 @@ struct CompanionPanelView: View {
             } else {
                 HStack(spacing: 6) {
                     Button(action: {
-                        WindowPositionManager.requestInputMonitoringPermission()
+                        companionManager.requestInputMonitoringPermissionFromPanel()
                     }) {
                         Text("Grant")
                             .font(.system(size: 11, weight: .semibold))
@@ -429,8 +446,7 @@ struct CompanionPanelView: View {
                     .pointerCursor()
 
                     Button(action: {
-                        WindowPositionManager.revealAppInFinder()
-                        WindowPositionManager.openInputMonitoringSettings()
+                        WindowPositionManager.prepareInputMonitoringReGrantFromFinder()
                     }) {
                         Text("Find App")
                             .font(.system(size: 11, weight: .semibold))
@@ -488,7 +504,7 @@ struct CompanionPanelView: View {
                     // Triggers the native macOS screen recording prompt on first
                     // attempt (auto-adds app to the list), then opens System Settings
                     // on subsequent attempts.
-                    WindowPositionManager.requestScreenRecordingPermission()
+                    companionManager.requestScreenRecordingPermissionFromPanel()
                 }) {
                     Text("Grant")
                         .font(.system(size: 11, weight: .semibold))

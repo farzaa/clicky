@@ -12,7 +12,6 @@ import AppKit
 import Combine
 import Foundation
 import PostHog
-import ScreenCaptureKit
 import SwiftUI
 
 enum CompanionVoiceState {
@@ -120,10 +119,18 @@ final class CompanionManager: ObservableObject {
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
+    private var workspaceActivationObserver: NSObjectProtocol?
+    private var permissionRefreshBurstTask: Task<Void, Never>?
+    private var hasLoggedPermissionDiagnostics = false
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
+
+    /// Path to the Clicky.app bundle for this run. Shown when TCC must target this build.
+    var runningApplicationBundlePath: String {
+        Bundle.main.bundlePath
+    }
 
     /// True when all required permissions are granted. Used by the panel to show a single "all good" state.
     var allPermissionsGranted: Bool {
@@ -449,6 +456,7 @@ final class CompanionManager: ObservableObject {
         refreshAllPermissions()
         print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), inputMonitoring: \(hasInputMonitoringPermission), pushToTalkActive: \(isPushToTalkHotkeyActive), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
+        startWorkspaceActivationObservation()
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
@@ -575,15 +583,43 @@ final class CompanionManager: ObservableObject {
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
+        permissionRefreshBurstTask?.cancel()
+        permissionRefreshBurstTask = nil
+        if let workspaceActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(workspaceActivationObserver)
+            self.workspaceActivationObserver = nil
+        }
+    }
+
+    func requestAccessibilityPermissionFromPanel() {
+        _ = WindowPositionManager.requestAccessibilityPermission()
+        schedulePermissionRefreshBurst()
+    }
+
+    func requestInputMonitoringPermissionFromPanel() {
+        _ = WindowPositionManager.requestInputMonitoringPermission()
+        schedulePermissionRefreshBurst()
+    }
+
+    func requestScreenRecordingPermissionFromPanel() {
+        _ = WindowPositionManager.requestScreenRecordingPermission()
+        schedulePermissionRefreshBurst()
+    }
+
+    func schedulePermissionRefreshBurstAfterReturningFromSettings() {
+        schedulePermissionRefreshBurst()
     }
 
     func refreshAllPermissions() {
+        clearStalePermissionUserDefaultsIfLiveTCCDenied()
+
         let previouslyHadAccessibility = hasAccessibilityPermission
         let previouslyHadInputMonitoring = hasInputMonitoringPermission
         let previouslyHadScreenRecording = hasScreenRecordingPermission
         let previouslyHadMicrophone = hasMicrophonePermission
         let previouslyHadAll = allPermissionsGranted
 
+        WindowPositionManager.refreshAccessibilityTrustCache()
         let currentlyHasAccessibility = WindowPositionManager.hasAccessibilityPermission()
         hasAccessibilityPermission = currentlyHasAccessibility
 
@@ -596,7 +632,8 @@ final class CompanionManager: ObservableObject {
             globalPushToTalkShortcutMonitor.stop()
         }
 
-        hasScreenRecordingPermission = WindowPositionManager.hasScreenRecordingPermission()
+        hasScreenRecordingPermission = WindowPositionManager
+            .shouldTreatScreenRecordingPermissionAsGrantedForSessionLaunch()
 
         let micAuthStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         hasMicrophonePermission = micAuthStatus == .authorized
@@ -622,60 +659,83 @@ final class CompanionManager: ObservableObject {
         if !previouslyHadMicrophone && hasMicrophonePermission {
             ClickyAnalytics.trackPermissionGranted(permission: "microphone")
         }
-        // Screen content permission is persisted — once the user has approved the
-        // SCShareableContent picker, we don't need to re-check it.
-        if !hasScreenContentPermission {
-            hasScreenContentPermission = ClickyDefaults.shared.bool(forKey: "hasScreenContentPermission")
-        }
+        refreshScreenContentPermissionFromCaptureTest()
 
         if !previouslyHadAll && allPermissionsGranted {
             ClickyAnalytics.trackAllPermissionsGranted()
         }
+
+        if !allPermissionsGranted && !hasLoggedPermissionDiagnostics {
+            hasLoggedPermissionDiagnostics = true
+            WindowPositionManager.logPermissionDiagnosticsSnapshot()
+        }
     }
 
-    /// Triggers the macOS screen content picker by performing a dummy
-    /// screenshot capture. Once the user approves, we persist the grant
-    /// so they're never asked again during onboarding.
+    /// Screen content uses the same macOS screen-recording permission as capture.
+    /// This avoids ScreenCaptureKit, which on Tahoe triggers screencaptureui popups.
     @Published private(set) var isRequestingScreenContent = false
 
     func requestScreenContentPermission() {
         guard !isRequestingScreenContent else { return }
         isRequestingScreenContent = true
-        Task {
-            do {
-                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-                guard let display = content.displays.first else {
-                    await MainActor.run { isRequestingScreenContent = false }
-                    return
-                }
-                let filter = SCContentFilter(display: display, excludingWindows: [])
-                let config = SCStreamConfiguration()
-                config.width = 320
-                config.height = 240
-                let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-                // Verify the capture actually returned real content — a 0x0 or
-                // fully-empty image means the user denied the prompt.
-                let didCapture = image.width > 0 && image.height > 0
-                print("🔑 Screen content capture result — width: \(image.width), height: \(image.height), didCapture: \(didCapture)")
-                await MainActor.run {
-                    isRequestingScreenContent = false
-                    guard didCapture else { return }
-                    hasScreenContentPermission = true
-                    ClickyDefaults.shared.set(true, forKey: "hasScreenContentPermission")
-                    ClickyAnalytics.trackPermissionGranted(permission: "screen_content")
 
-                    // If onboarding was already completed, show the cursor overlay now
-                    if hasCompletedOnboarding && allPermissionsGranted && !isOverlayVisible && isClickyCursorEnabled {
-                        overlayWindowManager.hasShownOverlayBefore = true
-                        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
-                        isOverlayVisible = true
-                    }
+        if !hasScreenRecordingPermission {
+            _ = WindowPositionManager.requestScreenRecordingPermission()
+        }
+
+        Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            await MainActor.run {
+                self.isRequestingScreenContent = false
+                self.refreshScreenContentPermissionFromCaptureTest()
+
+                if self.hasScreenContentPermission {
+                    ClickyAnalytics.trackPermissionGranted(permission: "screen_content")
                 }
-            } catch {
-                print("⚠️ Screen content permission request failed: \(error)")
-                await MainActor.run { isRequestingScreenContent = false }
+
+                if self.hasCompletedOnboarding
+                    && self.allPermissionsGranted
+                    && !self.isOverlayVisible
+                    && self.isClickyCursorEnabled {
+                    self.overlayWindowManager.hasShownOverlayBefore = true
+                    self.overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+                    self.isOverlayVisible = true
+                }
             }
         }
+    }
+
+    private func refreshScreenContentPermissionFromCaptureTest() {
+        guard WindowPositionManager.isScreenCapturePreflightGranted() else {
+            hasScreenContentPermission = false
+            return
+        }
+
+        if ClickyDefaults.shared.bool(forKey: "hasScreenContentPermission") {
+            hasScreenContentPermission = true
+            return
+        }
+
+        guard hasScreenRecordingPermission else {
+            hasScreenContentPermission = false
+            return
+        }
+        guard CompanionScreenCaptureUtility.verifyScreenCaptureAccess() else {
+            hasScreenContentPermission = false
+            return
+        }
+
+        hasScreenContentPermission = true
+        ClickyDefaults.shared.set(true, forKey: "hasScreenContentPermission")
+    }
+
+    /// Old builds can leave screen-permission prefs set while this binary has no TCC access.
+    private func clearStalePermissionUserDefaultsIfLiveTCCDenied() {
+        guard !WindowPositionManager.isScreenCapturePreflightGranted() else { return }
+
+        WindowPositionManager.clearPreviouslyConfirmedScreenRecordingPermission()
+        WindowPositionManager.clearCachedScreenContentPermission()
+        hasScreenContentPermission = false
     }
 
     // MARK: - Private
@@ -695,9 +755,40 @@ final class CompanionManager: ObservableObject {
     /// user grants them in System Settings. Screen Recording is the exception —
     /// macOS requires an app restart for that one to take effect.
     private func startPermissionPolling() {
-        accessibilityCheckTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+        let permissionPollingTimer = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.refreshAllPermissions()
+            }
+        }
+        // .common keeps polling alive while the user is in System Settings.
+        RunLoop.main.add(permissionPollingTimer, forMode: .common)
+        accessibilityCheckTimer = permissionPollingTimer
+    }
+
+    private func startWorkspaceActivationObservation() {
+        workspaceActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self else { return }
+            guard let activatedApplication = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  activatedApplication.bundleIdentifier == Bundle.main.bundleIdentifier else {
+                return
+            }
+            self.refreshAllPermissions()
+        }
+    }
+
+    /// Polls several times after a Grant tap or return from System Settings.
+    private func schedulePermissionRefreshBurst() {
+        permissionRefreshBurstTask?.cancel()
+        permissionRefreshBurstTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            for _ in 0..<12 {
+                if Task.isCancelled { return }
+                refreshAllPermissions()
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
     }

@@ -37,11 +37,12 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         print("🎯 Clicky: Starting...")
         print("🎯 Clicky: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
 
-        UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
+        ClickyDefaults.shared.register(defaults: ["NSInitialToolTipDelay": 0])
 
         ClickyAnalytics.configure()
         ClickyAnalytics.trackAppOpened()
         ClickyE2EConfiguration.applyLaunchOverrides()
+        MacOSScreenshotFloatingThumbnailSuppression.enableForAppLifetime()
 
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
         companionManager.start()
@@ -61,8 +62,15 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         // startSparkleUpdater()
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        // Re-check TCC after the user returns from System Settings.
+        companionManager.refreshAllPermissions()
+        companionManager.schedulePermissionRefreshBurstAfterReturningFromSettings()
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         companionManager.stop()
+        MacOSScreenshotFloatingThumbnailSuppression.restoreAfterAppTermination()
     }
 
     /// Registers the app as a login item so it launches automatically on
