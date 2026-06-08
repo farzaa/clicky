@@ -377,6 +377,7 @@ final class CompanionManager: ObservableObject {
             // Only discard the in-memory session once it is safely on disk.
             sessionStartedAt = nil
             sessionTrace.removeAll()
+            runMemoryGate(on: session)
         } catch {
             // Keep the trace and re-arm the idle timer so a transient I/O error
             // gets another chance to persist instead of silently losing the capture.
@@ -414,26 +415,45 @@ final class CompanionManager: ObservableObject {
         return orderedBundleIds
     }
 
-    private func maybeWriteTeachingSkill(after transcript: String) {
-        guard isLearningFromSessionsEnabled else { return }
-        guard SkillTriggerEvaluator.isScreenTeachingSession(sessionTrace) else { return }
-        guard let trigger = SkillTriggerEvaluator.shouldWriteSkill(
-            sessionTrace: sessionTrace,
-            latestTranscript: transcript,
-            topicHistory: topicHistoryStore.entries
-        ) else {
-            return
-        }
+    private func runMemoryGate(on session: PersistedSession) {
+        let decision = MemoryGate.evaluate(
+            session: session,
+            topicHistory: topicHistoryStore.entries,
+            isLearningEnabled: isLearningFromSessionsEnabled
+        )
 
-        lastSkillWriteTrigger = trigger.reason.rawValue
+        let skillGateReasons = decision.passedCategories[.skill] ?? []
+        lastSkillWriteTrigger = skillGateReasons.first?.rawValue
+
+        ClickyAnalytics.trackMemoryGateDecision(
+            sessionId: session.sessionId.uuidString,
+            passedCategories: decision.passedCategories.keys.map(\.rawValue),
+            gateReasons: skillGateReasons.map(\.rawValue),
+            blockReasons: decision.blockReasons.map(\.rawValue)
+        )
+
+        guard decision.shouldDistillSkill else { return }
+
+        distillSkill(
+            from: session.turns,
+            gateReasons: skillGateReasons,
+            session: session
+        )
+    }
+
+    private func distillSkill(
+        from turns: [SessionTraceEntry],
+        gateReasons: [GateReason],
+        session: PersistedSession
+    ) {
+        let trigger = MemoryGate.makeSkillWriteTrigger(for: session, gateReasons: gateReasons)
         ClickyAnalytics.trackTeachingSkillWriteTriggered(reason: trigger.reason.rawValue, topic: trigger.topic)
 
-        let traceSnapshot = sessionTrace
         let targetBundleId = SkillTargetAppResolver.resolveTargetBundleId(
-            from: traceSnapshot,
-            frontmostBundleId: frontmostApplicationBundleId()
+            from: turns,
+            frontmostBundleId: session.appsUsed.last ?? frontmostApplicationBundleId()
         )
-        let primaryQuestion = SkillTriggerEvaluator.primaryTeachingQuestion(from: traceSnapshot) ?? trigger.topic
+        let primaryQuestion = SkillTriggerEvaluator.primaryTeachingQuestion(from: turns) ?? trigger.topic
         skillWriteTask?.cancel()
         skillWriteTask = Task {
             do {
@@ -444,7 +464,7 @@ final class CompanionManager: ObservableObject {
                 )
 
                 let synthesized = try await SkillSynthesizer.synthesizeSkillContent(
-                    sessionTrace: traceSnapshot,
+                    sessionTrace: turns,
                     trigger: trigger,
                     existingSkill: existingSkill,
                     targetBundleId: targetBundleId,
@@ -454,7 +474,7 @@ final class CompanionManager: ObservableObject {
                 guard !Task.isCancelled else { return }
 
                 let metadata = SkillSynthesizer.buildSkillMetadata(
-                    sessionTrace: traceSnapshot,
+                    sessionTrace: turns,
                     trigger: trigger,
                     targetBundleId: targetBundleId
                 )
@@ -479,15 +499,6 @@ final class CompanionManager: ObservableObject {
                     bundleId: targetBundleId,
                     skillId: skill.id
                 )
-                // Only wipe the live trace if it still holds the same turns this
-                // task synthesized. Skill synthesis is async (a multi-second Claude
-                // call); by the time it finishes, finalizeAndPersistSession may have
-                // already cleared the trace and a NEW session may have started. An
-                // unconditional removeAll() here would wipe that new session's turns
-                // before they can be persisted.
-                if sessionTrace == traceSnapshot {
-                    sessionTrace.removeAll()
-                }
 
                 ClickyAnalytics.trackTeachingSkillSaved(
                     skillID: skill.id,
@@ -1240,7 +1251,6 @@ final class CompanionManager: ObservableObject {
                     spokenResponse: spokenText,
                     pointed: hasPointCoordinate
                 )
-                maybeWriteTeachingSkill(after: transcript)
                 if SkillTriggerEvaluator.isConfirmationTranscript(transcript) {
                     finalizeAndPersistSession(outcome: .success)
                 }

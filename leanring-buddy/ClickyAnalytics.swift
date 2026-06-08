@@ -129,6 +129,21 @@ enum ClickyAnalytics {
         ])
     }
 
+    static func trackMemoryGateDecision(
+        sessionId: String,
+        passedCategories: [String],
+        gateReasons: [String],
+        blockReasons: [String]
+    ) {
+        PostHogSDK.shared.capture("memory_gate_decision", properties: [
+            "session_id": sessionId,
+            "passed_categories": passedCategories,
+            "gate_reasons": gateReasons,
+            "block_reasons": blockReasons,
+            "should_distill_skill": !gateReasons.isEmpty
+        ])
+    }
+
     static func trackTeachingSkillWriteTriggered(reason: String, topic: String) {
         PostHogSDK.shared.capture("teaching_skill_write_triggered", properties: [
             "reason": reason,

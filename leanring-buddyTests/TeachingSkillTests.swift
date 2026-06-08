@@ -60,7 +60,7 @@ struct TeachingSkillTests {
         #expect(matches.first?.skill.id == "teach-textedit-save")
     }
 
-    @Test func triggerFiresOnUserConfirmation() {
+    @Test func memoryGatePassesOnUserConfirmation() {
         let trace = [
             SessionTraceEntry(
                 timestamp: Date(),
@@ -68,18 +68,37 @@ struct TeachingSkillTests {
                 assistantResponse: "click file then save",
                 bundleId: "com.apple.TextEdit",
                 pointed: true
+            ),
+            SessionTraceEntry(
+                timestamp: Date(),
+                userTranscript: "got it thanks that worked",
+                assistantResponse: "great",
+                bundleId: "com.apple.TextEdit",
+                pointed: false
             )
         ]
 
-        let trigger = SkillTriggerEvaluator.shouldWriteSkill(
-            sessionTrace: trace,
-            latestTranscript: "got it thanks that worked"
+        let session = PersistedSession(
+            sessionId: UUID(),
+            startedAt: trace[0].timestamp,
+            endedAt: trace[1].timestamp,
+            outcome: .success,
+            privacyOptOut: false,
+            appsUsed: ["com.apple.TextEdit"],
+            turns: trace
         )
 
-        #expect(trigger?.reason == .userConfirmed)
+        let decision = MemoryGate.evaluate(
+            session: session,
+            topicHistory: [],
+            isLearningEnabled: true
+        )
+
+        #expect(decision.shouldDistillSkill)
+        #expect(decision.passedCategories[.skill]?.contains(.userConfirmed) == true)
     }
 
-    @Test func doesNotWriteBeforeUserConfirmation() {
+    @Test func memoryGatePassesOnMultiStepPointingBeforeConfirmation() {
         let trace = [
             SessionTraceEntry(
                 timestamp: Date(),
@@ -97,12 +116,24 @@ struct TeachingSkillTests {
             )
         ]
 
-        let trigger = SkillTriggerEvaluator.shouldWriteSkill(
-            sessionTrace: trace,
-            latestTranscript: "where is the save button?"
+        let session = PersistedSession(
+            sessionId: UUID(),
+            startedAt: trace[0].timestamp,
+            endedAt: trace[1].timestamp,
+            outcome: .unknown,
+            privacyOptOut: false,
+            appsUsed: ["com.apple.TextEdit"],
+            turns: trace
         )
 
-        #expect(trigger == nil)
+        let decision = MemoryGate.evaluate(
+            session: session,
+            topicHistory: [],
+            isLearningEnabled: true
+        )
+
+        #expect(decision.shouldDistillSkill)
+        #expect(decision.passedCategories[.skill]?.contains(.multiStepPointing) == true)
     }
 
     @Test func topicIgnoresConfirmationPhrase() {
@@ -146,13 +177,22 @@ struct TeachingSkillTests {
             )
         ]
 
-        let trigger = SkillTriggerEvaluator.shouldWriteSkill(
-            sessionTrace: trace,
-            latestTranscript: "got it thanks that worked"
+        let session = PersistedSession(
+            sessionId: UUID(),
+            startedAt: trace[0].timestamp,
+            endedAt: trace[1].timestamp,
+            outcome: .success,
+            privacyOptOut: false,
+            appsUsed: ["com.apple.TextEdit"],
+            turns: trace
+        )
+        let trigger = MemoryGate.makeSkillWriteTrigger(
+            for: session,
+            gateReasons: [.userConfirmed, .screenTeaching]
         )
         let metadata = SkillSynthesizer.buildSkillMetadata(
             sessionTrace: trace,
-            trigger: try #require(trigger),
+            trigger: trigger,
             targetBundleId: "com.apple.TextEdit"
         )
 
@@ -165,7 +205,7 @@ struct TeachingSkillTests {
         #expect(!metadata.id.contains("worked"))
     }
 
-    @Test func crossSessionRepeatDoesNotAutoWriteWithoutConfirmation() throws {
+    @Test func crossSessionRepeatPassesMemoryGateWithoutConfirmation() throws {
         let tempHistoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("clicky-topic-history-test-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: tempHistoryURL) }
@@ -190,13 +230,24 @@ struct TeachingSkillTests {
 
         topicHistoryStore.recordTopic(topic: topic, bundleId: bundleId)
 
-        let trigger = SkillTriggerEvaluator.shouldWriteSkill(
-            sessionTrace: trace,
-            latestTranscript: "how do I save this document?",
-            topicHistory: topicHistoryStore.entries
+        let session = PersistedSession(
+            sessionId: UUID(),
+            startedAt: trace[0].timestamp,
+            endedAt: trace[0].timestamp,
+            outcome: .unknown,
+            privacyOptOut: false,
+            appsUsed: [bundleId],
+            turns: trace
         )
 
-        #expect(trigger == nil)
+        let decision = MemoryGate.evaluate(
+            session: session,
+            topicHistory: topicHistoryStore.entries,
+            isLearningEnabled: true
+        )
+
+        #expect(decision.shouldDistillSkill)
+        #expect(decision.passedCategories[.skill]?.contains(.repeatedTopic) == true)
     }
 
     @Test func resolvesTargetAppFromMentionedAppNotFrontmostBundle() {

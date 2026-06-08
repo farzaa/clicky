@@ -10,6 +10,9 @@ import Foundation
 struct SkillWriteTrigger: Equatable {
     enum Reason: String, Equatable {
         case userConfirmed
+        case multiStepPointing
+        case repeatedTopic
+        case screenTeaching
     }
 
     let reason: Reason
@@ -27,26 +30,6 @@ enum SkillTriggerEvaluator {
         "makes sense now",
         "that helps"
     ]
-
-    /// Hermes-style write gate: persist skills only after explicit user confirmation.
-    static func shouldWriteSkill(
-        sessionTrace: [SessionTraceEntry],
-        latestTranscript: String,
-        topicHistory: [TeachingTopicHistoryEntry] = []
-    ) -> SkillWriteTrigger? {
-        guard !sessionTrace.isEmpty else { return nil }
-
-        let normalizedTranscript = latestTranscript
-            .lowercased()
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard confirmationPhrases.contains(where: { normalizedTranscript.contains($0) }) else {
-            return nil
-        }
-
-        let topic = deriveTopic(from: sessionTrace)
-        return SkillWriteTrigger(reason: .userConfirmed, topic: topic)
-    }
 
     static func primaryTeachingQuestion(from sessionTrace: [SessionTraceEntry]) -> String? {
         sessionTrace

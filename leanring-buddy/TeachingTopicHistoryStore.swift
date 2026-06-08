@@ -69,6 +69,22 @@ final class TeachingTopicHistoryStore {
         withinDays: Int = 7,
         now: Date = Date()
     ) -> Bool {
+        Self.hasRepeatedTopic(
+            topic: topic,
+            bundleId: bundleId,
+            withinDays: withinDays,
+            in: entries,
+            now: now
+        )
+    }
+
+    static func hasRepeatedTopic(
+        topic: String,
+        bundleId: String?,
+        withinDays: Int = 7,
+        in entries: [TeachingTopicHistoryEntry],
+        now: Date = Date()
+    ) -> Bool {
         let topicTokens = Set(SkillMatcher.meaningfulTokens(topic))
         guard topicTokens.count >= 1 else { return false }
 
@@ -82,7 +98,7 @@ final class TeachingTopicHistoryStore {
         return matchingEntries.count >= 2
     }
 
-    private func bundleIdsMatch(_ lhs: String?, _ rhs: String?) -> Bool {
+    private static func bundleIdsMatch(_ lhs: String?, _ rhs: String?) -> Bool {
         switch (lhs, rhs) {
         case (nil, nil):
             return true
@@ -93,7 +109,7 @@ final class TeachingTopicHistoryStore {
         }
     }
 
-    private func tokenOverlapCount(_ lhs: Set<String>, _ rhs: Set<String>) -> Int {
+    private static func tokenOverlapCount(_ lhs: Set<String>, _ rhs: Set<String>) -> Int {
         lhs.intersection(rhs).count
     }
 }
