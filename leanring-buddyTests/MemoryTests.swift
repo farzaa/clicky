@@ -170,4 +170,27 @@ struct MemoryTests {
         #expect(Memory.relativeSavedLabel(lastUsed: nil, now: now) == "Saved just now")
         #expect(Memory.relativeSavedLabel(lastUsed: twoDaysAgo, now: now).hasPrefix("Saved "))
     }
+
+    @Test func auxiliaryMemoryStorePersistsPreferenceAndRoutineMemories() throws {
+        let isolatedHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clicky-aux-memory-tests-\(UUID().uuidString)", isDirectory: true)
+
+        try ClickyTestHomeIsolation.withIsolatedHome(isolatedHome) {
+            let store = AuxiliaryMemoryStore()
+            let preferenceMemory = Memory(
+                id: "pref-test",
+                category: .preference,
+                title: "Prefer concise answers",
+                summary: "Short responses by default",
+                body: "Keep it brief."
+            )
+
+            try store.save(preferenceMemory)
+            store.load()
+
+            let loadedMemory = try #require(store.memory(withID: "pref-test"))
+            #expect(loadedMemory.category == .preference)
+            #expect(loadedMemory.title == "Prefer concise answers")
+        }
+    }
 }

@@ -2,20 +2,27 @@
 //  DummyMemorySeeder.swift
 //  leanring-buddy
 //
-//  Seeds sample teaching skills as memories for local UI testing.
+//  Seeds sample memories for local UI testing.
 //  DEBUG builds only — adds any dummy entries not already on disk.
 //
 
 import Foundation
 
 enum DummyMemorySeeder {
-    static func seedMissingDummyMemories(store: TeachingSkillStore) {
+    static func seedMissingDummyMemories(
+        skillStore: TeachingSkillStore,
+        auxiliaryStore: AuxiliaryMemoryStore
+    ) {
         #if DEBUG
-        let dummySkills = makeDummySkills()
         var seededCount = 0
 
-        for dummySkill in dummySkills where store.skill(withID: dummySkill.id) == nil {
-            try? store.saveSkill(dummySkill)
+        for dummySkill in makeDummySkills() where skillStore.skill(withID: dummySkill.id) == nil {
+            try? skillStore.saveSkill(dummySkill)
+            seededCount += 1
+        }
+
+        for dummyMemory in makeDummyAuxiliaryMemories() where auxiliaryStore.memory(withID: dummyMemory.id) == nil {
+            try? auxiliaryStore.save(dummyMemory)
             seededCount += 1
         }
 
@@ -90,6 +97,48 @@ enum DummyMemorySeeder {
                 2. Choose **Add Bookmark**.
                 3. Name it and pick a folder, then click **Add**.
                 """
+            )
+        ]
+    }
+
+    private static func makeDummyAuxiliaryMemories() -> [Memory] {
+        [
+            Memory(
+                id: "pref-concise-answers",
+                category: .preference,
+                title: "Prefer concise answers",
+                summary: "Keep explanations short unless more detail is asked for",
+                body: """
+                When helping with quick tasks, favor short step lists over long explanations.
+                Offer to expand only if the user asks follow-up questions.
+                """,
+                usageCount: 2,
+                lastUsed: Date().addingTimeInterval(-259200)
+            ),
+            Memory(
+                id: "pref-dark-apps",
+                category: .preference,
+                title: "Use dark mode in dev tools",
+                summary: "Default to dark themes in Xcode and terminal apps",
+                body: """
+                When pointing at appearance settings, assume dark mode is preferred in developer tools.
+                """,
+                usageCount: 1,
+                lastUsed: Date().addingTimeInterval(-432000)
+            ),
+            Memory(
+                id: "routine-standup-prep",
+                category: .routine,
+                title: "Morning standup prep",
+                summary: "Review yesterday's commits before the daily standup",
+                body: """
+                1. Open Xcode Source Control or git log.
+                2. Scan commits from the previous workday.
+                3. Note blockers to mention in standup.
+                """,
+                bundleIds: ["com.apple.dt.Xcode"],
+                usageCount: 4,
+                lastUsed: Date().addingTimeInterval(-345600)
             )
         ]
     }

@@ -7,11 +7,39 @@
 
 import SwiftUI
 
+enum MemoriesCategoryFilter: String, CaseIterable, Identifiable {
+    case all
+    case skill
+    case preference
+    case routine
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .all: return "All"
+        case .skill: return "Skills"
+        case .preference: return "Preferences"
+        case .routine: return "Routines"
+        }
+    }
+
+    var memoryCategory: MemoryCategory? {
+        switch self {
+        case .all: return nil
+        case .skill: return .skill
+        case .preference: return .preference
+        case .routine: return .routine
+        }
+    }
+}
+
 struct MemoriesLibraryView: View {
     @ObservedObject var companionManager: CompanionManager
     let initialSelectedMemoryID: String?
     let onBack: () -> Void
 
+    @State private var selectedCategoryFilter: MemoriesCategoryFilter = .all
     @State private var selectedMemory: Memory?
     @State private var isEditingSelectedMemory = false
     @State private var memoryEdit = MemoryEdit(
@@ -23,10 +51,16 @@ struct MemoriesLibraryView: View {
     )
     @State private var memoryPendingDelete: Memory?
 
-    private var allMemories: [Memory] {
-        companionManager.memories
+    private var filteredMemories: [Memory] {
+        companionManager.memories(
+            category: selectedCategoryFilter.memoryCategory,
+            status: nil
+        )
     }
 
+    private var hasAnyMemories: Bool {
+        !companionManager.memories.isEmpty
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             libraryHeader
@@ -38,6 +72,10 @@ struct MemoriesLibraryView: View {
             if let selectedMemory {
                 memoryDetailView(selectedMemory)
             } else {
+                categoryFilterPicker
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+
                 memoriesList
             }
         }
@@ -106,9 +144,45 @@ struct MemoriesLibraryView: View {
         .padding(.vertical, 14)
     }
 
+    private var categoryFilterPicker: some View {
+        HStack(spacing: 4) {
+            ForEach(MemoriesCategoryFilter.allCases) { filter in
+                Button(action: {
+                    selectedCategoryFilter = filter
+                }) {
+                    Text(filter.label)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(
+                            selectedCategoryFilter == filter ? DS.Colors.textOnAccent : DS.Colors.textTertiary
+                        )
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: DS.CornerRadius.small, style: .continuous)
+                                .fill(selectedCategoryFilter == filter ? DS.Colors.accent : Color.white.opacity(0.06))
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .accessibilityIdentifier("clicky.panel.memories-library.category.\(filter.rawValue)")
+            }
+        }
+    }
+
     private var memoriesList: some View {
         ScrollView {
-            if allMemories.isEmpty {
+            if selectedCategoryFilter == .all {
+                groupedMemoriesList
+            } else {
+                singleCategoryMemoriesList
+            }
+        }
+        .frame(maxHeight: 300)
+    }
+
+    private var groupedMemoriesList: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if !hasAnyMemories {
                 Text("No memories yet. Teach Clicky something on screen and confirm it worked.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
@@ -116,8 +190,26 @@ struct MemoriesLibraryView: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
             } else {
+                ForEach(MemoryCategory.allCases, id: \.self) { category in
+                    memoryCategorySection(category)
+                }
+                .padding(.top, 8)
+            }
+        }
+    }
+
+    private var singleCategoryMemoriesList: some View {
+        Group {
+            if filteredMemories.isEmpty, let category = selectedCategoryFilter.memoryCategory {
+                Text(category.emptyStateMessage)
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+            } else {
                 VStack(spacing: 0) {
-                    ForEach(allMemories) { memory in
+                    ForEach(filteredMemories) { memory in
                         memoryRow(memory)
                         Divider()
                             .background(DS.Colors.borderSubtle.opacity(0.5))
@@ -127,7 +219,52 @@ struct MemoriesLibraryView: View {
                 .padding(.top, 8)
             }
         }
-        .frame(maxHeight: 280)
+    }
+
+    private func memoryCategorySection(_ category: MemoryCategory) -> some View {
+        let categoryMemories = companionManager.memories(category: category, status: nil)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: category.systemImageName)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(DS.Colors.textTertiary)
+
+                Text(category.pluralDisplayLabel)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Text("\(categoryMemories.count)")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(Color.white.opacity(0.08))
+                    )
+            }
+            .padding(.horizontal, 16)
+
+            if categoryMemories.isEmpty {
+                Text(category.emptyStateMessage)
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(categoryMemories) { memory in
+                        memoryRow(memory)
+                        if memory.id != categoryMemories.last?.id {
+                            Divider()
+                                .background(DS.Colors.borderSubtle.opacity(0.5))
+                                .padding(.leading, 16)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private func memoryRow(_ memory: Memory) -> some View {
@@ -141,9 +278,21 @@ struct MemoriesLibraryView: View {
                     .foregroundColor(DS.Colors.textSecondary)
                     .lineLimit(1)
 
-                Text(memory.relativeSavedLabel())
-                    .font(.system(size: 10))
-                    .foregroundColor(DS.Colors.textTertiary)
+                HStack(spacing: 6) {
+                    Text(memory.category.displayLabel)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(Color.white.opacity(0.08))
+                        )
+
+                    Text(memory.relativeSavedLabel())
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -177,9 +326,21 @@ struct MemoriesLibraryView: View {
                     .font(.system(size: 12))
                     .foregroundColor(DS.Colors.textSecondary)
 
-                Text(memory.relativeSavedLabel())
-                    .font(.system(size: 10))
-                    .foregroundColor(DS.Colors.textTertiary)
+                HStack(spacing: 6) {
+                    Text(memory.category.displayLabel)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(Color.white.opacity(0.08))
+                        )
+
+                    Text(memory.relativeSavedLabel())
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
             }
 
             HStack(spacing: 12) {
@@ -328,6 +489,9 @@ struct MemoriesLibraryView: View {
             return
         }
 
+        selectedCategoryFilter = memory.category == .skill ? .skill
+            : memory.category == .preference ? .preference
+            : .routine
         selectedMemory = memory
         isEditingSelectedMemory = false
     }

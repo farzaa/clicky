@@ -81,6 +81,7 @@ final class CompanionManager: ObservableObject {
     }
 
     private let teachingSkillStore = TeachingSkillStore()
+    private let auxiliaryMemoryStore = AuxiliaryMemoryStore()
     private let topicHistoryStore = TeachingTopicHistoryStore()
     private let sessionStore = SessionStore()
     private var sessionTrace: [SessionTraceEntry] = []
@@ -234,7 +235,18 @@ final class CompanionManager: ObservableObject {
                 print("⚠️ Failed to update memory \(id): \(error)")
             }
         case .preference, .routine:
-            break
+            guard var memory = auxiliaryMemoryStore.memory(withID: id) else { return }
+            memory.title = edit.title
+            memory.summary = edit.summary
+            memory.body = edit.body
+            memory.bundleIds = edit.bundleIds
+            memory.status = edit.status
+            do {
+                _ = try auxiliaryMemoryStore.save(memory)
+                syncTeachingSkillsFromStore()
+            } catch {
+                print("⚠️ Failed to update memory \(id): \(error)")
+            }
         }
     }
 
@@ -243,7 +255,12 @@ final class CompanionManager: ObservableObject {
         case .skill:
             deleteTeachingSkill(id: id)
         case .preference, .routine:
-            break
+            do {
+                try auxiliaryMemoryStore.delete(id: id)
+                syncTeachingSkillsFromStore()
+            } catch {
+                print("⚠️ Failed to delete memory \(id): \(error)")
+            }
         }
     }
 
@@ -253,8 +270,9 @@ final class CompanionManager: ObservableObject {
     }
 
     private func rebuildMemories() {
-        memories = teachingSkillStore.skills
-            .map(Memory.init(skill:))
+        let skillMemories = teachingSkillStore.skills.map(Memory.init(skill:))
+        let auxiliaryMemories = auxiliaryMemoryStore.memories
+        memories = (skillMemories + auxiliaryMemories)
             .sorted { lhs, rhs in
                 if lhs.usageCount != rhs.usageCount { return lhs.usageCount > rhs.usageCount }
                 return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
@@ -326,7 +344,11 @@ final class CompanionManager: ObservableObject {
 
     private func bootstrapTeachingSkills() {
         teachingSkillStore.loadSkills()
-        DummyMemorySeeder.seedMissingDummyMemories(store: teachingSkillStore)
+        auxiliaryMemoryStore.load()
+        DummyMemorySeeder.seedMissingDummyMemories(
+            skillStore: teachingSkillStore,
+            auxiliaryStore: auxiliaryMemoryStore
+        )
         topicHistoryStore.load()
         sessionStore.deleteSessionsOlderThan(days: 7)
         SkillCurator.curate(store: teachingSkillStore)

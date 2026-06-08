@@ -86,8 +86,9 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `SkillTriggerEvaluator.swift` | ~120 | Decides when to create or update a teaching skill from session traces. |
 | `TeachingPromptBuilder.swift` | ~35 | Composes voice response system prompt with matched teaching skills. |
 | `TeachingSkillsLibraryView.swift` | ~260 | Full skills library UI with status filters, detail view, pin/delete/restore. |
-| `Memory.swift` | ~75 | Category-aware memory model and `MemoryEdit` for the unified memories UI. |
-| `MemoriesLibraryView.swift` | ~380 | Unified memories library with category/status filters, detail view, inline edit, pin/delete/restore. |
+| `Memory.swift` | ~120 | Category-aware memory model and `MemoryEdit` for the unified memories UI. |
+| `AuxiliaryMemoryStore.swift` | ~75 | Persists preference and routine memories until dedicated generators land. |
+| `MemoriesLibraryView.swift` | ~430 | Unified memories library with category filters, grouped sections, detail view, inline edit, and delete. |
 | `ClickyE2EConfiguration.swift` | ~75 | Launch flags and E2E debug artifact paths for automated tests. |
 | `NicheDiscoveryManager.swift` | ~175 | Niche onboarding, static/app-aware suggestion cards, local override loading. |
 | `UserNiche.swift` | ~35 | User niche enum (general, content creator, developer, student, designer). |

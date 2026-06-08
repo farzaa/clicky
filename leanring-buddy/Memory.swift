@@ -8,7 +8,7 @@
 
 import Foundation
 
-struct Memory: Identifiable, Equatable {
+struct Memory: Identifiable, Equatable, Codable {
     let id: String
     let category: MemoryCategory
     var title: String
@@ -19,6 +19,30 @@ struct Memory: Identifiable, Equatable {
     var isPinned: Bool
     var usageCount: Int
     var lastUsed: Date?
+
+    init(
+        id: String,
+        category: MemoryCategory,
+        title: String,
+        summary: String,
+        body: String,
+        bundleIds: [String] = [],
+        status: TeachingSkillStatus = .active,
+        isPinned: Bool = false,
+        usageCount: Int = 0,
+        lastUsed: Date? = nil
+    ) {
+        self.id = id
+        self.category = category
+        self.title = title
+        self.summary = summary
+        self.body = body
+        self.bundleIds = bundleIds
+        self.status = status
+        self.isPinned = isPinned
+        self.usageCount = usageCount
+        self.lastUsed = lastUsed
+    }
 
     init(skill: TeachingSkill) {
         id = skill.id
@@ -79,6 +103,33 @@ extension MemoryCategory {
         case .skill: return "Skill"
         case .preference: return "Preference"
         case .routine: return "Routine"
+        }
+    }
+
+    var pluralDisplayLabel: String {
+        switch self {
+        case .skill: return "Skills"
+        case .preference: return "Preferences"
+        case .routine: return "Routines"
+        }
+    }
+
+    var emptyStateMessage: String {
+        switch self {
+        case .skill:
+            return "No skills yet. Teach Clicky something on screen and confirm it worked."
+        case .preference:
+            return "No preferences yet. Clicky will save these as it learns how you like to work."
+        case .routine:
+            return "No routines yet. Clicky will save these when it notices repeated workflows."
+        }
+    }
+
+    var systemImageName: String {
+        switch self {
+        case .skill: return "lightbulb"
+        case .preference: return "slider.horizontal.3"
+        case .routine: return "arrow.triangle.2.circlepath"
         }
     }
 }
