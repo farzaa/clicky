@@ -19,6 +19,7 @@ struct TeachingSkillTests {
         lastUsed: 2026-05-24
         usageCount: 3
         pinned: true
+        taskSlug: commit
         ---
 
         step one: open source control.
@@ -31,6 +32,7 @@ struct TeachingSkillTests {
         #expect(skill.bundleIds == ["com.apple.dt.Xcode"])
         #expect(skill.usageCount == 3)
         #expect(skill.isPinned)
+        #expect(skill.taskSlug == "commit")
         #expect(skill.body.contains("step one"))
     }
 
@@ -44,6 +46,7 @@ struct TeachingSkillTests {
             lastUsed: Date(),
             usageCount: 2,
             isPinned: false,
+            taskSlug: "save",
             body: "click file then save or use command s"
         )
 
@@ -57,7 +60,7 @@ struct TeachingSkillTests {
         #expect(matches.first?.skill.id == "teach-textedit-save")
     }
 
-    @Test func triggerFiresOnUserConfirmation() {
+    @Test func memoryGatePassesOnUserConfirmation() {
         let trace = [
             SessionTraceEntry(
                 timestamp: Date(),
@@ -65,15 +68,72 @@ struct TeachingSkillTests {
                 assistantResponse: "click file then save",
                 bundleId: "com.apple.TextEdit",
                 pointed: true
+            ),
+            SessionTraceEntry(
+                timestamp: Date(),
+                userTranscript: "got it thanks that worked",
+                assistantResponse: "great",
+                bundleId: "com.apple.TextEdit",
+                pointed: false
             )
         ]
 
-        let trigger = SkillTriggerEvaluator.shouldWriteSkill(
-            sessionTrace: trace,
-            latestTranscript: "got it thanks that worked"
+        let session = PersistedSession(
+            sessionId: UUID(),
+            startedAt: trace[0].timestamp,
+            endedAt: trace[1].timestamp,
+            outcome: .success,
+            privacyOptOut: false,
+            appsUsed: ["com.apple.TextEdit"],
+            turns: trace
         )
 
-        #expect(trigger?.reason == .userConfirmed)
+        let decision = MemoryGate.evaluate(
+            session: session,
+            topicHistory: [],
+            isLearningEnabled: true
+        )
+
+        #expect(decision.shouldDistillSkill)
+        #expect(decision.passedCategories[.skill]?.contains(.userConfirmed) == true)
+    }
+
+    @Test func memoryGatePassesOnMultiStepPointingBeforeConfirmation() {
+        let trace = [
+            SessionTraceEntry(
+                timestamp: Date(),
+                userTranscript: "how do I save this document?",
+                assistantResponse: "click file then save",
+                bundleId: "com.apple.TextEdit",
+                pointed: true
+            ),
+            SessionTraceEntry(
+                timestamp: Date(),
+                userTranscript: "where is the save button?",
+                assistantResponse: "pointing at file menu",
+                bundleId: "com.apple.TextEdit",
+                pointed: true
+            )
+        ]
+
+        let session = PersistedSession(
+            sessionId: UUID(),
+            startedAt: trace[0].timestamp,
+            endedAt: trace[1].timestamp,
+            outcome: .unknown,
+            privacyOptOut: false,
+            appsUsed: ["com.apple.TextEdit"],
+            turns: trace
+        )
+
+        let decision = MemoryGate.evaluate(
+            session: session,
+            topicHistory: [],
+            isLearningEnabled: true
+        )
+
+        #expect(decision.shouldDistillSkill)
+        #expect(decision.passedCategories[.skill]?.contains(.multiStepPointing) == true)
     }
 
     @Test func topicIgnoresConfirmationPhrase() {
@@ -117,25 +177,35 @@ struct TeachingSkillTests {
             )
         ]
 
-        let trigger = SkillTriggerEvaluator.shouldWriteSkill(
-            sessionTrace: trace,
-            latestTranscript: "got it thanks that worked"
+        let session = PersistedSession(
+            sessionId: UUID(),
+            startedAt: trace[0].timestamp,
+            endedAt: trace[1].timestamp,
+            outcome: .success,
+            privacyOptOut: false,
+            appsUsed: ["com.apple.TextEdit"],
+            turns: trace
+        )
+        let trigger = MemoryGate.makeSkillWriteTrigger(
+            for: session,
+            gateReasons: [.userConfirmed, .screenTeaching]
         )
         let metadata = SkillSynthesizer.buildSkillMetadata(
             sessionTrace: trace,
-            trigger: try #require(trigger),
-            bundleId: "com.apple.TextEdit"
+            trigger: trigger,
+            targetBundleId: "com.apple.TextEdit"
         )
 
         #expect(metadata.id == "teach-textedit-save")
         #expect(metadata.name == "Save in TextEdit")
         #expect(metadata.description == "Walk the user through save document")
+        #expect(metadata.taskSlug == "save")
         #expect(!metadata.id.contains("got"))
         #expect(!metadata.id.contains("thanks"))
         #expect(!metadata.id.contains("worked"))
     }
 
-    @Test func crossSessionRepeatDetectionWithin7Days() throws {
+    @Test func crossSessionRepeatPassesMemoryGateWithoutConfirmation() throws {
         let tempHistoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("clicky-topic-history-test-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: tempHistoryURL) }
@@ -160,14 +230,89 @@ struct TeachingSkillTests {
 
         topicHistoryStore.recordTopic(topic: topic, bundleId: bundleId)
 
-        let trigger = SkillTriggerEvaluator.shouldWriteSkill(
-            sessionTrace: trace,
-            latestTranscript: "how do I save this document?",
-            topicHistory: topicHistoryStore.entries
+        let session = PersistedSession(
+            sessionId: UUID(),
+            startedAt: trace[0].timestamp,
+            endedAt: trace[0].timestamp,
+            outcome: .unknown,
+            privacyOptOut: false,
+            appsUsed: [bundleId],
+            turns: trace
         )
 
-        #expect(trigger?.reason == .repeatedTopic)
-        #expect(trigger?.topic == "save document")
+        let decision = MemoryGate.evaluate(
+            session: session,
+            topicHistory: topicHistoryStore.entries,
+            isLearningEnabled: true
+        )
+
+        #expect(decision.shouldDistillSkill)
+        #expect(decision.passedCategories[.skill]?.contains(.repeatedTopic) == true)
+    }
+
+    @Test func resolvesTargetAppFromMentionedAppNotFrontmostBundle() {
+        let trace = [
+            SessionTraceEntry(
+                timestamp: Date(),
+                userTranscript: "how do I save this document in TextEdit?",
+                assistantResponse: "use command s",
+                bundleId: "com.mitchellh.ghostty",
+                pointed: true
+            )
+        ]
+
+        let targetBundleId = SkillTargetAppResolver.resolveTargetBundleId(
+            from: trace,
+            frontmostBundleId: "com.mitchellh.ghostty"
+        )
+
+        #expect(targetBundleId == "com.apple.TextEdit")
+    }
+
+    @Test func findSkillForUpdateUsesStableIdentity() {
+        let existingSkill = TeachingSkill(
+            id: "teach-textedit-save",
+            name: "Save in TextEdit",
+            description: "Walk the user through saving a document",
+            bundleIds: ["com.apple.TextEdit"],
+            status: .active,
+            lastUsed: Date(),
+            usageCount: 2,
+            isPinned: false,
+            taskSlug: "save",
+            body: "click file then save or use command s"
+        )
+
+        let matchedSkill = SkillMatcher.findSkillForUpdate(
+            in: [existingSkill],
+            targetBundleId: "com.apple.TextEdit",
+            primaryQuestion: "how do I save this document?"
+        )
+
+        #expect(matchedSkill?.id == "teach-textedit-save")
+    }
+
+    @Test func findSkillForUpdateMatchesRefinementToExistingSkill() {
+        let existingSkill = TeachingSkill(
+            id: "teach-textedit-save",
+            name: "Save in TextEdit",
+            description: "Walk the user through saving a document",
+            bundleIds: ["com.apple.TextEdit"],
+            status: .active,
+            lastUsed: Date(),
+            usageCount: 2,
+            isPinned: false,
+            taskSlug: "save",
+            body: "click file then save or use command s"
+        )
+
+        let matchedSkill = SkillMatcher.findSkillForUpdate(
+            in: [existingSkill],
+            targetBundleId: "com.mitchellh.ghostty",
+            primaryQuestion: "how do I save this document in TextEdit?"
+        )
+
+        #expect(matchedSkill?.id == "teach-textedit-save")
     }
 
     @Test func promptBuilderInjectsMatchedSkills() {
@@ -180,6 +325,7 @@ struct TeachingSkillTests {
             lastUsed: nil,
             usageCount: 0,
             isPinned: false,
+            taskSlug: "save",
             body: "use file > save"
         )
 
@@ -204,6 +350,7 @@ struct TeachingSkillTests {
             lastUsed: nil,
             usageCount: 0,
             isPinned: false,
+            taskSlug: "save",
             body: "click file then save or use command s"
         )
 
@@ -233,6 +380,7 @@ struct TeachingSkillTests {
             lastUsed: Date(),
             usageCount: 3,
             isPinned: false,
+            taskSlug: "save",
             body: "click file then save or use command s shortcut"
         )
         let duplicateSaveSkill = TeachingSkill(
@@ -244,6 +392,7 @@ struct TeachingSkillTests {
             lastUsed: Date().addingTimeInterval(-86400),
             usageCount: 1,
             isPinned: false,
+            taskSlug: "save",
             body: "open file menu then choose save for the document"
         )
 
@@ -267,6 +416,7 @@ struct TeachingSkillTests {
             lastUsed: Date(),
             usageCount: 3,
             isPinned: true,
+            taskSlug: "save",
             body: "click file then save or use command s shortcut"
         )
         let overlappingSkill = TeachingSkill(
@@ -278,6 +428,7 @@ struct TeachingSkillTests {
             lastUsed: Date(),
             usageCount: 1,
             isPinned: false,
+            taskSlug: "save",
             body: "click file then save or use command s shortcut"
         )
 
@@ -299,6 +450,7 @@ struct TeachingSkillTests {
             lastUsed: Date(),
             usageCount: 3,
             isPinned: false,
+            taskSlug: "save",
             body: "click file then save or use command s shortcut"
         )
         let xcodeSkill = TeachingSkill(
@@ -310,6 +462,7 @@ struct TeachingSkillTests {
             lastUsed: Date(),
             usageCount: 1,
             isPinned: false,
+            taskSlug: "save",
             body: "click file then save or use command s shortcut"
         )
 

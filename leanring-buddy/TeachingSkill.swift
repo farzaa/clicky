@@ -22,12 +22,14 @@ struct TeachingSkill: Identifiable, Equatable {
     var lastUsed: Date?
     var usageCount: Int
     var isPinned: Bool
+    var taskSlug: String?
     var body: String
 
     struct Metadata: Equatable {
         let id: String
         let name: String
         let description: String
+        let taskSlug: String
     }
 
     private static let knownAppNames: [String: String] = [
@@ -76,6 +78,7 @@ struct TeachingSkill: Identifiable, Equatable {
         lastUsed: \(lastUsedValue)
         usageCount: \(usageCount)
         pinned: \(isPinned)
+        taskSlug: \(taskSlug ?? "")
         ---
 
         \(body.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -105,25 +108,67 @@ struct TeachingSkill: Identifiable, Equatable {
         return String(lastComponent)
     }
 
+    static func detectBundleId(in text: String) -> String? {
+        let loweredText = text.lowercased()
+
+        for (bundleId, displayName) in knownAppNames {
+            let loweredDisplayName = displayName.lowercased()
+            if loweredText.contains(loweredDisplayName) {
+                return bundleId
+            }
+
+            let compactDisplayName = loweredDisplayName.replacingOccurrences(of: " ", with: "")
+            if compactDisplayName.count >= 4, loweredText.contains(compactDisplayName) {
+                return bundleId
+            }
+        }
+
+        if loweredText.contains("text edit") || loweredText.contains("textedit") {
+            return "com.apple.TextEdit"
+        }
+
+        return nil
+    }
+
+    static func taskSlug(from primaryQuestion: String) -> String {
+        let actionTokens = SkillMatcher.meaningfulTokens(primaryQuestion)
+        let primaryActionToken = actionTokens.first ?? "task"
+        return slug(from: primaryActionToken)
+    }
+
+    static func stableSkillId(bundleId: String?, primaryQuestion: String) -> String {
+        let resolvedTaskSlug = taskSlug(from: primaryQuestion)
+        let appName = displayName(forBundleId: bundleId)
+
+        if let appName {
+            return "teach-\(slug(from: appName))-\(resolvedTaskSlug)"
+        }
+
+        let actionPhrase = SkillMatcher.meaningfulTokens(primaryQuestion).prefix(3).joined(separator: " ")
+        if actionPhrase.isEmpty {
+            return "teach-\(resolvedTaskSlug)"
+        }
+
+        return "teach-\(slug(from: actionPhrase))"
+    }
+
     static func buildMetadata(primaryQuestion: String, bundleId: String?) -> Metadata {
         let actionTokens = SkillMatcher.meaningfulTokens(primaryQuestion)
         let primaryActionToken = actionTokens.first ?? "task"
+        let resolvedTaskSlug = taskSlug(from: primaryQuestion)
         let appName = displayName(forBundleId: bundleId)
-        let appSlug = appName.map { slug(from: $0) }
+        let skillID = stableSkillId(bundleId: bundleId, primaryQuestion: primaryQuestion)
 
-        let skillID: String
         let skillName: String
-        if let appName, let appSlug {
-            skillID = "teach-\(appSlug)-\(slug(from: primaryActionToken))"
+        if let appName {
             skillName = "\(capitalizeWord(primaryActionToken)) in \(appName)"
         } else {
             let actionPhrase = actionTokens.prefix(3).joined(separator: " ")
-            skillID = "teach-\(slug(from: actionPhrase.isEmpty ? primaryActionToken : actionPhrase))"
             skillName = capitalizeWords(actionPhrase.isEmpty ? primaryActionToken : actionPhrase)
         }
 
         let skillDescription = descriptionFromQuestion(primaryQuestion)
-        return Metadata(id: skillID, name: skillName, description: skillDescription)
+        return Metadata(id: skillID, name: skillName, description: skillDescription, taskSlug: resolvedTaskSlug)
     }
 
     private static func descriptionFromQuestion(_ question: String) -> String {
@@ -198,6 +243,8 @@ struct TeachingSkill: Identifiable, Equatable {
         let lastUsed = metadata["lastUsed"].flatMap { dateFormatter.date(from: $0) }
         let usageCount = Int(metadata["usageCount"] ?? "0") ?? 0
         let isPinned = (metadata["pinned"] ?? "false").lowercased() == "true"
+        let taskSlug = metadata["taskSlug"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedTaskSlug = (taskSlug?.isEmpty == false) ? taskSlug : nil
 
         return TeachingSkill(
             id: id,
@@ -208,6 +255,7 @@ struct TeachingSkill: Identifiable, Equatable {
             lastUsed: lastUsed,
             usageCount: usageCount,
             isPinned: isPinned,
+            taskSlug: resolvedTaskSlug,
             body: body
         )
     }
@@ -275,7 +323,7 @@ struct TeachingSkill: Identifiable, Equatable {
     }()
 }
 
-struct SessionTraceEntry: Equatable {
+struct SessionTraceEntry: Equatable, Codable {
     let timestamp: Date
     let userTranscript: String
     let assistantResponse: String

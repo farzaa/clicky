@@ -12,7 +12,6 @@ import AppKit
 import Combine
 import Foundation
 import PostHog
-import ScreenCaptureKit
 import SwiftUI
 
 enum CompanionVoiceState {
@@ -28,6 +27,7 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var lastTranscript: String?
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
     @Published private(set) var hasAccessibilityPermission = false
+    @Published private(set) var hasInputMonitoringPermission = false
     @Published private(set) var hasScreenRecordingPermission = false
     @Published private(set) var hasMicrophonePermission = false
     @Published private(set) var hasScreenContentPermission = false
@@ -75,9 +75,21 @@ final class CompanionManager: ObservableObject {
         ClickyE2EConfiguration.workerBaseURL ?? AppBundleConfiguration.workerBaseURL
     }
 
+    /// True when the global CGEvent tap is active and can detect Control+Option.
+    var isPushToTalkHotkeyActive: Bool {
+        hasInputMonitoringPermission && globalPushToTalkShortcutMonitor.isEventTapInstalled
+    }
+
     private let teachingSkillStore = TeachingSkillStore()
     private let topicHistoryStore = TeachingTopicHistoryStore()
+    private let sessionStore = SessionStore()
     private var sessionTrace: [SessionTraceEntry] = []
+    private var sessionStartedAt: Date?
+    private var sessionIdleTimer: Timer?
+    /// True from push-to-talk press until the voice pipeline returns to idle.
+    /// Prevents panel-close finalization while the menu bar panel is auto-dismissed on PTT.
+    private var isPushToTalkInteractionActive = false
+    private var panelClosedObserver: NSObjectProtocol?
     private var skillWriteTask: Task<Void, Never>?
     private var curatorLLMTask: Task<Void, Never>?
 
@@ -95,9 +107,9 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var teachingSkills: [TeachingSkill] = []
 
     /// When disabled, Clicky still reads skills but will not create new ones.
-    @Published var isLearningFromSessionsEnabled: Bool = UserDefaults.standard.object(forKey: "isLearningFromSessionsEnabled") == nil
+    @Published var isLearningFromSessionsEnabled: Bool = ClickyDefaults.shared.object(forKey: "isLearningFromSessionsEnabled") == nil
         ? true
-        : UserDefaults.standard.bool(forKey: "isLearningFromSessionsEnabled")
+        : ClickyDefaults.shared.bool(forKey: "isLearningFromSessionsEnabled")
 
     /// Exposed for automated E2E assertions.
     @Published private(set) var lastSystemPrompt: String?
@@ -134,15 +146,26 @@ final class CompanionManager: ObservableObject {
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
+    private var workspaceActivationObserver: NSObjectProtocol?
+    private var permissionRefreshBurstTask: Task<Void, Never>?
+    private var hasLoggedPermissionDiagnostics = false
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
 
-    /// True when all three required permissions (accessibility, screen recording,
-    /// microphone) are granted. Used by the panel to show a single "all good" state.
+    /// Path to the Clicky.app bundle for this run. Shown when TCC must target this build.
+    var runningApplicationBundlePath: String {
+        Bundle.main.bundlePath
+    }
+
+    /// True when all required permissions are granted. Used by the panel to show a single "all good" state.
     var allPermissionsGranted: Bool {
-        hasAccessibilityPermission && hasScreenRecordingPermission && hasMicrophonePermission && hasScreenContentPermission
+        hasAccessibilityPermission
+            && hasInputMonitoringPermission
+            && hasScreenRecordingPermission
+            && hasMicrophonePermission
+            && hasScreenContentPermission
     }
 
     /// Whether the blue cursor overlay is currently visible on screen.
@@ -150,7 +173,346 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var isOverlayVisible: Bool = false
 
     /// The Claude model used for voice responses. Persisted to UserDefaults.
-    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+    @Published var selectedModel: String = ClickyDefaults.shared.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+
+    func setLearningFromSessionsEnabled(_ enabled: Bool) {
+        isLearningFromSessionsEnabled = enabled
+        ClickyDefaults.shared.set(enabled, forKey: "isLearningFromSessionsEnabled")
+    }
+
+    func refreshTeachingSkills() {
+        teachingSkillStore.loadSkills()
+        teachingSkills = teachingSkillStore.skills
+    }
+
+    func deleteTeachingSkill(id: String) {
+        do {
+            try teachingSkillStore.deleteSkill(id: id)
+            teachingSkills = teachingSkillStore.skills
+            ClickyAnalytics.trackTeachingSkillDeleted(skillID: id)
+        } catch {
+            print("⚠️ Failed to delete teaching skill \(id): \(error)")
+        }
+    }
+
+    func setTeachingSkillPinned(id: String, pinned: Bool) {
+        do {
+            try teachingSkillStore.setPinned(id: id, pinned: pinned)
+            teachingSkills = teachingSkillStore.skills
+        } catch {
+            print("⚠️ Failed to pin teaching skill \(id): \(error)")
+        }
+    }
+
+    func restoreTeachingSkill(id: String) {
+        do {
+            try teachingSkillStore.restoreSkill(id: id)
+            teachingSkills = teachingSkillStore.skills
+            writeE2EArtifactsIfNeeded()
+        } catch {
+            print("⚠️ Failed to restore teaching skill \(id): \(error)")
+        }
+    }
+
+    func teachingSkills(withStatus status: TeachingSkillStatus?) -> [TeachingSkill] {
+        teachingSkillStore.skills(withStatus: status)
+    }
+
+    /// Allows E2E tests to bypass microphone/STT and exercise the response + skill loop directly.
+    func injectTranscriptForE2E(_ transcript: String) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            sendTranscriptToClaudeWithScreenshot(transcript: transcript) {
+                continuation.resume()
+            }
+        }
+    }
+
+    func runE2EInjectSequenceIfNeeded() {
+        guard ClickyE2EConfiguration.isEnabled else { return }
+
+        Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+
+            if let firstTranscript = ClickyE2EConfiguration.injectTranscript {
+                print("🧪 E2E inject 1: \(firstTranscript)")
+                await injectTranscriptForE2E(firstTranscript)
+
+                if let secondTranscript = ClickyE2EConfiguration.injectTranscript2 {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    print("🧪 E2E inject 2: \(secondTranscript)")
+                    await injectTranscriptForE2E(secondTranscript)
+                }
+
+                if let thirdTranscript = ClickyE2EConfiguration.injectTranscript3 {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    print("🧪 E2E inject 3: \(thirdTranscript)")
+                    await injectTranscriptForE2E(thirdTranscript)
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                }
+            } else if let thirdTranscript = ClickyE2EConfiguration.injectTranscript3 {
+                print("🧪 E2E inject read-path: \(thirdTranscript)")
+                await injectTranscriptForE2E(thirdTranscript)
+            }
+        }
+    }
+
+    private func bootstrapTeachingSkills() {
+        teachingSkillStore.loadSkills()
+        topicHistoryStore.load()
+        sessionStore.deleteSessionsOlderThan(days: 7)
+        refreshConnectedVaultState()
+        SkillCurator.curate(store: teachingSkillStore)
+        teachingSkills = teachingSkillStore.skills
+        runCuratorLLMPassesIfNeeded()
+        writeE2EArtifactsIfNeeded()
+    }
+
+    private func runCuratorLLMPassesIfNeeded() {
+        curatorLLMTask?.cancel()
+        curatorLLMTask = Task {
+            await SkillCurator.curateWithLLMPasses(store: teachingSkillStore, claudeAPI: claudeAPI)
+            teachingSkills = teachingSkillStore.skills
+        }
+    }
+
+    private func matchedSkills(for transcript: String) -> [TeachingSkill] {
+        let bundleId = TeachingSkill.detectBundleId(in: transcript) ?? frontmostApplicationBundleId()
+        let matches = SkillMatcher.matchSkills(
+            from: teachingSkillStore.skills,
+            bundleId: bundleId,
+            transcript: transcript
+        )
+        return matches.map(\.skill)
+    }
+
+    private func recordSessionExchange(
+        transcript: String,
+        spokenResponse: String,
+        pointed: Bool
+    ) {
+        let wasEmptyBeforeAppend = sessionTrace.isEmpty
+
+        sessionTrace.append(
+            SessionTraceEntry(
+                timestamp: Date(),
+                userTranscript: transcript,
+                assistantResponse: spokenResponse,
+                bundleId: frontmostApplicationBundleId(),
+                pointed: pointed
+            )
+        )
+
+        if wasEmptyBeforeAppend {
+            sessionStartedAt = Date()
+        }
+
+        if sessionTrace.count > 20 {
+            sessionTrace.removeFirst(sessionTrace.count - 20)
+        }
+
+        // The 30s idle timer is intentionally NOT armed here. recordSessionExchange
+        // runs before the assistant's TTS playback, so arming now could let the timer
+        // fire mid-speech on a long reply and split one conversation into two sessions.
+        // It is armed when the response task returns to idle (after TTS) instead.
+
+        if !SkillTriggerEvaluator.isConfirmationTranscript(transcript) {
+            let topic = SkillTriggerEvaluator.deriveTopic(fromQuestion: transcript)
+            topicHistoryStore.recordTopic(
+                topic: topic,
+                bundleId: frontmostApplicationBundleId()
+            )
+        }
+    }
+
+    private func restartSessionIdleTimer() {
+        sessionIdleTimer?.invalidate()
+        let idleTimer = Timer(timeInterval: 30, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                // If the assistant is still speaking when the timer fires, defer the
+                // idle boundary by re-arming. This keeps a long TTS reply from ending
+                // the session mid-speech and splitting one conversation into two.
+                if self.elevenLabsTTSClient.isPlaying {
+                    self.restartSessionIdleTimer()
+                    return
+                }
+                self.finalizeAndPersistSession()
+            }
+        }
+        // Add in `.common` modes so the idle boundary still fires while a modal
+        // run-loop mode is active (e.g. the menu bar panel is open). Otherwise
+        // session finalize and MemoryGate distillation stall until the panel closes.
+        RunLoop.main.add(idleTimer, forMode: .common)
+        sessionIdleTimer = idleTimer
+    }
+
+    private func finalizeAndPersistSession(outcome explicitOutcome: SessionOutcome? = nil) {
+        sessionIdleTimer?.invalidate()
+        sessionIdleTimer = nil
+
+        guard sessionStartedAt != nil else { return }
+
+        let turnsSnapshot = sessionTrace
+        guard !turnsSnapshot.isEmpty else {
+            sessionStartedAt = nil
+            return
+        }
+
+        let resolvedOutcome = explicitOutcome ?? deriveSessionOutcome(from: turnsSnapshot)
+        let appsUsed = orderedUniqueBundleIds(from: turnsSnapshot)
+        let privacyOptOut = !isLearningFromSessionsEnabled
+
+        let session = PersistedSession(
+            sessionId: UUID(),
+            startedAt: sessionStartedAt ?? turnsSnapshot.first!.timestamp,
+            endedAt: Date(),
+            outcome: resolvedOutcome,
+            privacyOptOut: privacyOptOut,
+            appsUsed: appsUsed,
+            turns: turnsSnapshot
+        )
+
+        do {
+            let savedURL = try sessionStore.save(session)
+            print("💾 Persisted session to \(savedURL.path)")
+            // Only discard the in-memory session once it is safely on disk.
+            sessionStartedAt = nil
+            sessionTrace.removeAll()
+            runMemoryGate(on: session)
+        } catch {
+            // Keep the trace and re-arm the idle timer so a transient I/O error
+            // gets another chance to persist instead of silently losing the capture.
+            print("⚠️ Failed to persist session, will retry on next idle: \(error)")
+            restartSessionIdleTimer()
+        }
+    }
+
+    /// Coarse outcome heuristic for capture-time persistence. The future memory gate
+    /// can refine this; keep the rules simple and predictable here.
+    private func deriveSessionOutcome(from turns: [SessionTraceEntry]) -> SessionOutcome {
+        if let lastTurn = turns.last,
+           SkillTriggerEvaluator.isConfirmationTranscript(lastTurn.userTranscript) {
+            return .success
+        }
+
+        if turns.contains(where: \.pointed) ||
+            SkillTriggerEvaluator.isScreenTeachingSession(turns) {
+            return .unknown
+        }
+
+        return .abandoned
+    }
+
+    private func orderedUniqueBundleIds(from turns: [SessionTraceEntry]) -> [String] {
+        var seenBundleIds = Set<String>()
+        var orderedBundleIds: [String] = []
+
+        for bundleId in turns.compactMap(\.bundleId) {
+            if seenBundleIds.insert(bundleId).inserted {
+                orderedBundleIds.append(bundleId)
+            }
+        }
+
+        return orderedBundleIds
+    }
+
+    private func runMemoryGate(on session: PersistedSession) {
+        let decision = MemoryGate.evaluate(
+            session: session,
+            topicHistory: topicHistoryStore.entries,
+            isLearningEnabled: isLearningFromSessionsEnabled
+        )
+
+        let skillGateReasons = decision.passedCategories[.skill] ?? []
+        lastSkillWriteTrigger = skillGateReasons.first?.rawValue
+
+        ClickyAnalytics.trackMemoryGateDecision(
+            sessionId: session.sessionId.uuidString,
+            passedCategories: decision.passedCategories.keys.map(\.rawValue),
+            gateReasons: skillGateReasons.map(\.rawValue),
+            blockReasons: decision.blockReasons.map(\.rawValue)
+        )
+
+        guard decision.shouldDistillSkill else { return }
+
+        distillSkill(
+            from: session.turns,
+            gateReasons: skillGateReasons,
+            session: session
+        )
+    }
+
+    private func distillSkill(
+        from turns: [SessionTraceEntry],
+        gateReasons: [GateReason],
+        session: PersistedSession
+    ) {
+        let trigger = MemoryGate.makeSkillWriteTrigger(for: session, gateReasons: gateReasons)
+        ClickyAnalytics.trackTeachingSkillWriteTriggered(reason: trigger.reason.rawValue, topic: trigger.topic)
+
+        let targetBundleId = SkillTargetAppResolver.resolveTargetBundleId(
+            from: turns,
+            frontmostBundleId: session.turns.last?.bundleId ?? frontmostApplicationBundleId()
+        )
+        let primaryQuestion = SkillTriggerEvaluator.primaryTeachingQuestion(from: turns) ?? trigger.topic
+        skillWriteTask?.cancel()
+        skillWriteTask = Task {
+            do {
+                let existingSkill = SkillMatcher.findSkillForUpdate(
+                    in: teachingSkillStore.skills,
+                    targetBundleId: targetBundleId,
+                    primaryQuestion: primaryQuestion
+                )
+
+                let synthesized = try await SkillSynthesizer.synthesizeSkillContent(
+                    sessionTrace: turns,
+                    trigger: trigger,
+                    existingSkill: existingSkill,
+                    targetBundleId: targetBundleId,
+                    claudeAPI: claudeAPI
+                )
+
+                guard !Task.isCancelled else { return }
+
+                let metadata = SkillSynthesizer.buildSkillMetadata(
+                    sessionTrace: turns,
+                    trigger: trigger,
+                    targetBundleId: targetBundleId
+                )
+
+                let skill = SkillSynthesizer.buildSkill(
+                    id: existingSkill?.id ?? metadata.id,
+                    name: synthesized.name,
+                    description: synthesized.description,
+                    body: synthesized.body,
+                    targetBundleId: targetBundleId,
+                    taskSlug: metadata.taskSlug,
+                    primaryQuestion: primaryQuestion,
+                    existingSkill: existingSkill
+                )
+
+                _ = try teachingSkillStore.saveSkill(skill)
+                SkillCurator.curate(store: teachingSkillStore)
+                teachingSkills = teachingSkillStore.skills
+                runCuratorLLMPassesIfNeeded()
+                topicHistoryStore.recordTopic(
+                    topic: trigger.topic,
+                    bundleId: targetBundleId,
+                    skillId: skill.id
+                )
+
+                ClickyAnalytics.trackTeachingSkillSaved(
+                    skillID: skill.id,
+                    reason: trigger.reason.rawValue,
+                    updatedExisting: existingSkill != nil
+                )
+                writeE2EArtifactsIfNeeded()
+                print("📚 Saved teaching skill: \(skill.id)")
+            } catch {
+                print("⚠️ Failed to synthesize teaching skill: \(error)")
+            }
+        }
+    }
 
     func setUserNiche(_ niche: NicheDiscoveryManager.Niche) {
         nicheDiscoveryManager.setUserNiche(niche)
@@ -210,49 +572,6 @@ final class CompanionManager: ObservableObject {
             niche: effectiveNiche,
             bundleID: frontmostApplicationBundleId()
         )
-    }
-
-    func setLearningFromSessionsEnabled(_ enabled: Bool) {
-        isLearningFromSessionsEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "isLearningFromSessionsEnabled")
-    }
-
-    func refreshTeachingSkills() {
-        teachingSkillStore.loadSkills()
-        teachingSkills = teachingSkillStore.skills
-    }
-
-    func deleteTeachingSkill(id: String) {
-        do {
-            try teachingSkillStore.deleteSkill(id: id)
-            teachingSkills = teachingSkillStore.skills
-            ClickyAnalytics.trackTeachingSkillDeleted(skillID: id)
-        } catch {
-            print("⚠️ Failed to delete teaching skill \(id): \(error)")
-        }
-    }
-
-    func setTeachingSkillPinned(id: String, pinned: Bool) {
-        do {
-            try teachingSkillStore.setPinned(id: id, pinned: pinned)
-            teachingSkills = teachingSkillStore.skills
-        } catch {
-            print("⚠️ Failed to pin teaching skill \(id): \(error)")
-        }
-    }
-
-    func restoreTeachingSkill(id: String) {
-        do {
-            try teachingSkillStore.restoreSkill(id: id)
-            teachingSkills = teachingSkillStore.skills
-            writeE2EArtifactsIfNeeded()
-        } catch {
-            print("⚠️ Failed to restore teaching skill \(id): \(error)")
-        }
-    }
-
-    func teachingSkills(withStatus status: TeachingSkillStatus?) -> [TeachingSkill] {
-        teachingSkillStore.skills(withStatus: status)
     }
 
     func discoverObsidianVaults() -> [DiscoveredVault] {
@@ -449,14 +768,6 @@ final class CompanionManager: ObservableObject {
     }
 
     /// Allows E2E tests to bypass microphone/STT and exercise the response + skill loop directly.
-    func injectTranscriptForE2E(_ transcript: String) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            sendTranscriptToClaudeWithScreenshot(transcript: transcript) {
-                continuation.resume()
-            }
-        }
-    }
-
     func runE2ENicheDiscoveryChecksIfNeeded() {
         guard ClickyE2EConfiguration.isEnabled else { return }
 
@@ -465,25 +776,6 @@ final class CompanionManager: ObservableObject {
         }
 
         writeNicheDiscoveryDebugJSONIfNeeded()
-    }
-
-    func runE2EInjectSequenceIfNeeded() {
-        guard ClickyE2EConfiguration.isEnabled else { return }
-
-        Task {
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-
-            if let firstTranscript = ClickyE2EConfiguration.injectTranscript {
-                await injectTranscriptForE2E(firstTranscript)
-
-                if let secondTranscript = ClickyE2EConfiguration.injectTranscript2 {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    await injectTranscriptForE2E(secondTranscript)
-                }
-            } else if let thirdTranscript = ClickyE2EConfiguration.injectTranscript3 {
-                await injectTranscriptForE2E(thirdTranscript)
-            }
-        }
     }
 
     func runE2EBootstrapActionsIfNeeded() {
@@ -640,150 +932,22 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    private func bootstrapTeachingSkills() {
-        teachingSkillStore.loadSkills()
-        topicHistoryStore.load()
-        teachingSkills = teachingSkillStore.skills
-        refreshConnectedVaultState()
-        SkillCurator.curate(store: teachingSkillStore)
-        teachingSkills = teachingSkillStore.skills
-        runCuratorLLMPassesIfNeeded()
-    }
-
-    private func runCuratorLLMPassesIfNeeded() {
-        curatorLLMTask?.cancel()
-        curatorLLMTask = Task {
-            await SkillCurator.curateWithLLMPasses(store: teachingSkillStore, claudeAPI: claudeAPI)
-            teachingSkills = teachingSkillStore.skills
-        }
-    }
-
-    private func matchedSkills(for transcript: String) -> [TeachingSkill] {
-        let matches = SkillMatcher.matchSkills(
-            from: teachingSkillStore.skills,
-            bundleId: frontmostApplicationBundleId(),
-            transcript: transcript
-        )
-        return matches.map(\.skill)
-    }
-
-    private func recordSessionExchange(
-        transcript: String,
-        spokenResponse: String,
-        pointed: Bool
-    ) {
-        sessionTrace.append(
-            SessionTraceEntry(
-                timestamp: Date(),
-                userTranscript: transcript,
-                assistantResponse: spokenResponse,
-                bundleId: frontmostApplicationBundleId(),
-                pointed: pointed
-            )
-        )
-
-        if sessionTrace.count > 20 {
-            sessionTrace.removeFirst(sessionTrace.count - 20)
-        }
-
-        if !SkillTriggerEvaluator.isConfirmationTranscript(transcript) {
-            let topic = SkillTriggerEvaluator.deriveTopic(fromQuestion: transcript)
-            topicHistoryStore.recordTopic(
-                topic: topic,
-                bundleId: frontmostApplicationBundleId()
-            )
-        }
-    }
-
-    private func maybeWriteTeachingSkill(after transcript: String) {
-        guard isLearningFromSessionsEnabled else { return }
-        guard SkillTriggerEvaluator.isScreenTeachingSession(sessionTrace) else { return }
-        guard let trigger = SkillTriggerEvaluator.shouldWriteSkill(
-            sessionTrace: sessionTrace,
-            latestTranscript: transcript,
-            topicHistory: topicHistoryStore.entries
-        ) else {
-            return
-        }
-
-        lastSkillWriteTrigger = trigger.reason.rawValue
-        ClickyAnalytics.trackTeachingSkillWriteTriggered(reason: trigger.reason.rawValue, topic: trigger.topic)
-
-        let traceSnapshot = sessionTrace
-        let bundleId = frontmostApplicationBundleId()
-        skillWriteTask?.cancel()
-        skillWriteTask = Task {
-            do {
-                let existingSkill = SkillMatcher.findSimilarSkill(
-                    in: teachingSkillStore.skills,
-                    bundleId: bundleId,
-                    topic: trigger.topic
-                )
-
-                let synthesized = try await SkillSynthesizer.synthesizeSkillContent(
-                    sessionTrace: traceSnapshot,
-                    trigger: trigger,
-                    existingSkill: existingSkill,
-                    claudeAPI: claudeAPI
-                )
-
-                guard !Task.isCancelled else { return }
-
-                let metadata = SkillSynthesizer.buildSkillMetadata(
-                    sessionTrace: traceSnapshot,
-                    trigger: trigger,
-                    bundleId: bundleId
-                )
-
-                let skill = SkillSynthesizer.buildSkill(
-                    id: existingSkill?.id ?? metadata.id,
-                    name: synthesized.name,
-                    description: synthesized.description,
-                    body: synthesized.body,
-                    bundleId: bundleId,
-                    existingSkill: existingSkill
-                )
-
-                _ = try teachingSkillStore.saveSkill(skill)
-                SkillCurator.curate(store: teachingSkillStore)
-                teachingSkills = teachingSkillStore.skills
-                runCuratorLLMPassesIfNeeded()
-                topicHistoryStore.recordTopic(
-                    topic: trigger.topic,
-                    bundleId: bundleId,
-                    skillId: skill.id
-                )
-                sessionTrace.removeAll()
-
-                ClickyAnalytics.trackTeachingSkillSaved(
-                    skillID: skill.id,
-                    reason: trigger.reason.rawValue,
-                    updatedExisting: existingSkill != nil
-                )
-                writeE2EArtifactsIfNeeded()
-                print("📚 Saved teaching skill: \(skill.id)")
-            } catch {
-                print("⚠️ Failed to synthesize teaching skill: \(error)")
-            }
-        }
-    }
-
     func setSelectedModel(_ model: String) {
         selectedModel = model
-        UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
+        ClickyDefaults.shared.set(model, forKey: "selectedClaudeModel")
         claudeAPI.model = model
     }
 
     /// User preference for whether the Clicky cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
-    @Published var isClickyCursorEnabled: Bool = UserDefaults.standard.object(forKey: "isClickyCursorEnabled") == nil
+    @Published var isClickyCursorEnabled: Bool = ClickyDefaults.shared.object(forKey: "isClickyCursorEnabled") == nil
         ? true
-        : UserDefaults.standard.bool(forKey: "isClickyCursorEnabled")
+        : ClickyDefaults.shared.bool(forKey: "isClickyCursorEnabled")
 
     func setClickyCursorEnabled(_ enabled: Bool) {
         isClickyCursorEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "isClickyCursorEnabled")
+        ClickyDefaults.shared.set(enabled, forKey: "isClickyCursorEnabled")
         transientHideTask?.cancel()
         transientHideTask = nil
 
@@ -800,12 +964,12 @@ final class CompanionManager: ObservableObject {
     /// Whether the user has completed onboarding at least once. Persisted
     /// to UserDefaults so the Start button only appears on first launch.
     var hasCompletedOnboarding: Bool {
-        get { UserDefaults.standard.bool(forKey: "hasCompletedOnboarding") }
-        set { UserDefaults.standard.set(newValue, forKey: "hasCompletedOnboarding") }
+        get { ClickyDefaults.shared.bool(forKey: "hasCompletedOnboarding") }
+        set { ClickyDefaults.shared.set(newValue, forKey: "hasCompletedOnboarding") }
     }
 
     /// Whether the user has submitted their email during onboarding.
-    @Published var hasSubmittedEmail: Bool = UserDefaults.standard.bool(forKey: "hasSubmittedEmail")
+    @Published var hasSubmittedEmail: Bool = ClickyDefaults.shared.bool(forKey: "hasSubmittedEmail")
 
     /// Submits the user's email to FormSpark and identifies them in PostHog.
     func submitEmail(_ email: String) {
@@ -813,7 +977,7 @@ final class CompanionManager: ObservableObject {
         guard !trimmedEmail.isEmpty else { return }
 
         hasSubmittedEmail = true
-        UserDefaults.standard.set(true, forKey: "hasSubmittedEmail")
+        ClickyDefaults.shared.set(true, forKey: "hasSubmittedEmail")
 
         // Identify user in PostHog
         PostHogSDK.shared.identify(trimmedEmail, userProperties: [
@@ -832,11 +996,13 @@ final class CompanionManager: ObservableObject {
 
     func start() {
         bootstrapTeachingSkills()
+        bindPanelClosedObservation()
         bootstrapNicheDiscovery()
         startFrontmostAppObservation()
         refreshAllPermissions()
-        print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
+        print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), inputMonitoring: \(hasInputMonitoringPermission), pushToTalkActive: \(isPushToTalkHotkeyActive), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
+        startWorkspaceActivationObservation()
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
@@ -948,7 +1114,31 @@ final class CompanionManager: ObservableObject {
         detectedElementBubbleText = nil
     }
 
+    /// Called on app termination before `stop()` tears everything down. Persists
+    /// an in-flight session (so MemoryGate runs) and waits — bounded — for any
+    /// pending skill synthesis to finish, so quitting right after "got it" does
+    /// not drop the session JSON or the skill write.
+    func finishPendingWorkBeforeTermination() async {
+        finalizeAndPersistSession()
+
+        guard let pendingSkillWriteTask = skillWriteTask else { return }
+
+        // Bound the wait so a slow or hung synthesis network call can never
+        // block app termination indefinitely.
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await pendingSkillWriteTask.value }
+            group.addTask { try? await Task.sleep(nanoseconds: 8_000_000_000) }
+            _ = await group.next()
+            group.cancelAll()
+        }
+    }
+
     func stop() {
+        // Safety net: persist any session still open if termination reached here
+        // without going through finishPendingWorkBeforeTermination(). No-op when
+        // a session was already finalized (guarded on sessionStartedAt).
+        finalizeAndPersistSession()
+
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
@@ -958,43 +1148,86 @@ final class CompanionManager: ObservableObject {
         currentResponseTask = nil
         skillWriteTask?.cancel()
         skillWriteTask = nil
+        sessionIdleTimer?.invalidate()
+        sessionIdleTimer = nil
+        if let panelClosedObserver {
+            NotificationCenter.default.removeObserver(panelClosedObserver)
+            self.panelClosedObserver = nil
+        }
         shortcutTransitionCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
+        permissionRefreshBurstTask?.cancel()
+        permissionRefreshBurstTask = nil
+        if let workspaceActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(workspaceActivationObserver)
+            self.workspaceActivationObserver = nil
+        }
+    }
+
+    func requestAccessibilityPermissionFromPanel() {
+        _ = WindowPositionManager.requestAccessibilityPermission()
+        schedulePermissionRefreshBurst()
+    }
+
+    func requestInputMonitoringPermissionFromPanel() {
+        _ = WindowPositionManager.requestInputMonitoringPermission()
+        schedulePermissionRefreshBurst()
+    }
+
+    func requestScreenRecordingPermissionFromPanel() {
+        _ = WindowPositionManager.requestScreenRecordingPermission()
+        schedulePermissionRefreshBurst()
+    }
+
+    func schedulePermissionRefreshBurstAfterReturningFromSettings() {
+        schedulePermissionRefreshBurst()
     }
 
     func refreshAllPermissions() {
+        clearStalePermissionUserDefaultsIfLiveTCCDenied()
+
         let previouslyHadAccessibility = hasAccessibilityPermission
+        let previouslyHadInputMonitoring = hasInputMonitoringPermission
         let previouslyHadScreenRecording = hasScreenRecordingPermission
         let previouslyHadMicrophone = hasMicrophonePermission
         let previouslyHadAll = allPermissionsGranted
 
+        WindowPositionManager.refreshAccessibilityTrustCache()
         let currentlyHasAccessibility = WindowPositionManager.hasAccessibilityPermission()
         hasAccessibilityPermission = currentlyHasAccessibility
 
-        if currentlyHasAccessibility {
+        let currentlyHasInputMonitoring = WindowPositionManager.hasInputMonitoringPermission()
+        hasInputMonitoringPermission = currentlyHasInputMonitoring
+
+        if currentlyHasInputMonitoring {
             globalPushToTalkShortcutMonitor.start()
         } else {
             globalPushToTalkShortcutMonitor.stop()
         }
 
-        hasScreenRecordingPermission = WindowPositionManager.hasScreenRecordingPermission()
+        hasScreenRecordingPermission = WindowPositionManager
+            .shouldTreatScreenRecordingPermissionAsGrantedForSessionLaunch()
 
         let micAuthStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         hasMicrophonePermission = micAuthStatus == .authorized
 
         // Debug: log permission state on changes
         if previouslyHadAccessibility != hasAccessibilityPermission
+            || previouslyHadInputMonitoring != hasInputMonitoringPermission
             || previouslyHadScreenRecording != hasScreenRecordingPermission
             || previouslyHadMicrophone != hasMicrophonePermission {
-            print("🔑 Permissions — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
+            print("🔑 Permissions — accessibility: \(hasAccessibilityPermission), inputMonitoring: \(hasInputMonitoringPermission), pushToTalkActive: \(isPushToTalkHotkeyActive), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
         }
 
         // Track individual permission grants as they happen
         if !previouslyHadAccessibility && hasAccessibilityPermission {
             ClickyAnalytics.trackPermissionGranted(permission: "accessibility")
+        }
+        if !previouslyHadInputMonitoring && hasInputMonitoringPermission {
+            ClickyAnalytics.trackPermissionGranted(permission: "input_monitoring")
         }
         if !previouslyHadScreenRecording && hasScreenRecordingPermission {
             ClickyAnalytics.trackPermissionGranted(permission: "screen_recording")
@@ -1002,60 +1235,83 @@ final class CompanionManager: ObservableObject {
         if !previouslyHadMicrophone && hasMicrophonePermission {
             ClickyAnalytics.trackPermissionGranted(permission: "microphone")
         }
-        // Screen content permission is persisted — once the user has approved the
-        // SCShareableContent picker, we don't need to re-check it.
-        if !hasScreenContentPermission {
-            hasScreenContentPermission = UserDefaults.standard.bool(forKey: "hasScreenContentPermission")
-        }
+        refreshScreenContentPermissionFromCaptureTest()
 
         if !previouslyHadAll && allPermissionsGranted {
             ClickyAnalytics.trackAllPermissionsGranted()
         }
+
+        if !allPermissionsGranted && !hasLoggedPermissionDiagnostics {
+            hasLoggedPermissionDiagnostics = true
+            WindowPositionManager.logPermissionDiagnosticsSnapshot()
+        }
     }
 
-    /// Triggers the macOS screen content picker by performing a dummy
-    /// screenshot capture. Once the user approves, we persist the grant
-    /// so they're never asked again during onboarding.
+    /// Screen content uses the same macOS screen-recording permission as capture.
+    /// This avoids ScreenCaptureKit, which on Tahoe triggers screencaptureui popups.
     @Published private(set) var isRequestingScreenContent = false
 
     func requestScreenContentPermission() {
         guard !isRequestingScreenContent else { return }
         isRequestingScreenContent = true
-        Task {
-            do {
-                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-                guard let display = content.displays.first else {
-                    await MainActor.run { isRequestingScreenContent = false }
-                    return
-                }
-                let filter = SCContentFilter(display: display, excludingWindows: [])
-                let config = SCStreamConfiguration()
-                config.width = 320
-                config.height = 240
-                let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-                // Verify the capture actually returned real content — a 0x0 or
-                // fully-empty image means the user denied the prompt.
-                let didCapture = image.width > 0 && image.height > 0
-                print("🔑 Screen content capture result — width: \(image.width), height: \(image.height), didCapture: \(didCapture)")
-                await MainActor.run {
-                    isRequestingScreenContent = false
-                    guard didCapture else { return }
-                    hasScreenContentPermission = true
-                    UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
-                    ClickyAnalytics.trackPermissionGranted(permission: "screen_content")
 
-                    // If onboarding was already completed, show the cursor overlay now
-                    if hasCompletedOnboarding && allPermissionsGranted && !isOverlayVisible && isClickyCursorEnabled {
-                        overlayWindowManager.hasShownOverlayBefore = true
-                        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
-                        isOverlayVisible = true
-                    }
+        if !hasScreenRecordingPermission {
+            _ = WindowPositionManager.requestScreenRecordingPermission()
+        }
+
+        Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            await MainActor.run {
+                self.isRequestingScreenContent = false
+                self.refreshScreenContentPermissionFromCaptureTest()
+
+                if self.hasScreenContentPermission {
+                    ClickyAnalytics.trackPermissionGranted(permission: "screen_content")
                 }
-            } catch {
-                print("⚠️ Screen content permission request failed: \(error)")
-                await MainActor.run { isRequestingScreenContent = false }
+
+                if self.hasCompletedOnboarding
+                    && self.allPermissionsGranted
+                    && !self.isOverlayVisible
+                    && self.isClickyCursorEnabled {
+                    self.overlayWindowManager.hasShownOverlayBefore = true
+                    self.overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+                    self.isOverlayVisible = true
+                }
             }
         }
+    }
+
+    private func refreshScreenContentPermissionFromCaptureTest() {
+        guard WindowPositionManager.isScreenCapturePreflightGranted() else {
+            hasScreenContentPermission = false
+            return
+        }
+
+        if ClickyDefaults.shared.bool(forKey: "hasScreenContentPermission") {
+            hasScreenContentPermission = true
+            return
+        }
+
+        guard hasScreenRecordingPermission else {
+            hasScreenContentPermission = false
+            return
+        }
+        guard CompanionScreenCaptureUtility.verifyScreenCaptureAccess() else {
+            hasScreenContentPermission = false
+            return
+        }
+
+        hasScreenContentPermission = true
+        ClickyDefaults.shared.set(true, forKey: "hasScreenContentPermission")
+    }
+
+    /// Old builds can leave screen-permission prefs set while this binary has no TCC access.
+    private func clearStalePermissionUserDefaultsIfLiveTCCDenied() {
+        guard !WindowPositionManager.isScreenCapturePreflightGranted() else { return }
+
+        WindowPositionManager.clearPreviouslyConfirmedScreenRecordingPermission()
+        WindowPositionManager.clearCachedScreenContentPermission()
+        hasScreenContentPermission = false
     }
 
     // MARK: - Private
@@ -1075,9 +1331,40 @@ final class CompanionManager: ObservableObject {
     /// user grants them in System Settings. Screen Recording is the exception —
     /// macOS requires an app restart for that one to take effect.
     private func startPermissionPolling() {
-        accessibilityCheckTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+        let permissionPollingTimer = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.refreshAllPermissions()
+            }
+        }
+        // .common keeps polling alive while the user is in System Settings.
+        RunLoop.main.add(permissionPollingTimer, forMode: .common)
+        accessibilityCheckTimer = permissionPollingTimer
+    }
+
+    private func startWorkspaceActivationObservation() {
+        workspaceActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self else { return }
+            guard let activatedApplication = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  activatedApplication.bundleIdentifier == Bundle.main.bundleIdentifier else {
+                return
+            }
+            self.refreshAllPermissions()
+        }
+    }
+
+    /// Polls several times after a Grant tap or return from System Settings.
+    private func schedulePermissionRefreshBurst() {
+        permissionRefreshBurstTask?.cancel()
+        permissionRefreshBurstTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            for _ in 0..<12 {
+                if Task.isCancelled { return }
+                refreshAllPermissions()
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
     }
@@ -1118,10 +1405,26 @@ final class CompanionManager: ObservableObject {
                     // the brief idle gap between recording and processing
                     // would prematurely hide the overlay.
                     if self.currentResponseTask == nil {
+                        self.isPushToTalkInteractionActive = false
                         self.scheduleTransientHideIfNeeded()
                     }
                 }
             }
+    }
+
+    private func bindPanelClosedObservation() {
+        panelClosedObserver = NotificationCenter.default.addObserver(
+            forName: .clickyCompanionPanelDidClose,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                guard !self.isPushToTalkInteractionActive else { return }
+                guard !self.sessionTrace.isEmpty else { return }
+                self.finalizeAndPersistSession()
+            }
+        }
     }
 
     private func bindShortcutTransitions() {
@@ -1139,6 +1442,8 @@ final class CompanionManager: ObservableObject {
             guard !buddyDictationManager.isDictationInProgress else { return }
             // Don't register push-to-talk while the onboarding video is playing
             guard !showOnboardingVideo else { return }
+
+            isPushToTalkInteractionActive = true
 
             // Cancel any pending transient hide so the overlay stays visible
             transientHideTask?.cancel()
@@ -1446,21 +1751,26 @@ final class CompanionManager: ObservableObject {
                     spokenResponse: spokenText,
                     pointed: hasPointCoordinate
                 )
-                maybeWriteTeachingSkill(after: transcript)
+                if SkillTriggerEvaluator.isConfirmationTranscript(transcript) {
+                    finalizeAndPersistSession(outcome: .success)
+                }
 
                 ClickyAnalytics.trackAIResponseReceived(response: spokenText)
 
                 // Play the response via TTS. Keep the spinner (processing state)
                 // until the audio actually starts playing, then switch to responding.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    do {
-                        try await elevenLabsTTSClient.speakText(spokenText)
-                        // speakText returns after player.play() — audio is now playing
-                        voiceState = .responding
-                    } catch {
-                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ ElevenLabs TTS error: \(error)")
-                        speakCreditsErrorFallback()
+                    if ClickyE2EConfiguration.isEnabled {
+                        voiceState = .idle
+                    } else {
+                        do {
+                            try await elevenLabsTTSClient.speakText(spokenText)
+                            voiceState = .responding
+                        } catch {
+                            ClickyAnalytics.trackTTSError(error: error.localizedDescription)
+                            print("⚠️ ElevenLabs TTS error: \(error)")
+                            speakCreditsErrorFallback()
+                        }
                     }
                 }
             } catch is CancellationError {
@@ -1473,6 +1783,13 @@ final class CompanionManager: ObservableObject {
 
             if !Task.isCancelled {
                 voiceState = .idle
+                isPushToTalkInteractionActive = false
+                // Arm the idle boundary now that the assistant has finished speaking,
+                // so the 30s countdown measures genuine user inactivity rather than
+                // overlapping with TTS playback. Only relevant while a session is open.
+                if sessionStartedAt != nil {
+                    restartSessionIdleTimer()
+                }
                 scheduleTransientHideIfNeeded()
             }
         }

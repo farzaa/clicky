@@ -8,10 +8,9 @@
 import Foundation
 
 final class TeachingSkillStore {
-    static let skillsRootURL: URL = {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent(".clicky/skills", isDirectory: true)
-    }()
+    static var skillsRootURL: URL {
+        ClickyPaths.skills
+    }
 
     private(set) var skills: [TeachingSkill] = []
 

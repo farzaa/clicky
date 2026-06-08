@@ -17,6 +17,7 @@ import SwiftUI
 
 extension Notification.Name {
     static let clickyDismissPanel = Notification.Name("clickyDismissPanel")
+    static let clickyCompanionPanelDidClose = Notification.Name("clickyCompanionPanelDidClose")
     static let clickyPanelLayoutDidChange = Notification.Name("clickyPanelLayoutDidChange")
 }
 
@@ -148,6 +149,7 @@ final class MenuBarPanelManager: NSObject {
             createPanel()
         }
 
+        companionManager.refreshAllPermissions()
         companionManager.refreshNicheSuggestions()
         positionPanelBelowStatusItem(animated: false)
 
@@ -159,6 +161,7 @@ final class MenuBarPanelManager: NSObject {
     private func hidePanel() {
         panel?.orderOut(nil)
         removeClickOutsideMonitor()
+        NotificationCenter.default.post(name: .clickyCompanionPanelDidClose, object: nil)
     }
 
     private func createPanel() {

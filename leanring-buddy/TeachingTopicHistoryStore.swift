@@ -15,10 +15,9 @@ struct TeachingTopicHistoryEntry: Codable, Equatable {
 }
 
 final class TeachingTopicHistoryStore {
-    static let historyFileURL: URL = {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".clicky/topic-history.json")
-    }()
+    static var historyFileURL: URL {
+        ClickyPaths.topicHistory
+    }
 
     private(set) var entries: [TeachingTopicHistoryEntry] = []
     private let maxEntryCount = 200
@@ -70,20 +69,42 @@ final class TeachingTopicHistoryStore {
         withinDays: Int = 7,
         now: Date = Date()
     ) -> Bool {
+        Self.hasRepeatedTopic(
+            topic: topic,
+            bundleId: bundleId,
+            withinDays: withinDays,
+            in: entries,
+            now: now
+        )
+    }
+
+    static func hasRepeatedTopic(
+        topic: String,
+        bundleId: String?,
+        withinDays: Int = 7,
+        in entries: [TeachingTopicHistoryEntry],
+        now: Date = Date()
+    ) -> Bool {
         let topicTokens = Set(SkillMatcher.meaningfulTokens(topic))
         guard topicTokens.count >= 1 else { return false }
+
+        // Require two overlapping tokens for multi-word topics, but fall back to a
+        // single exact-token match for one-word topics (e.g. "export"). Otherwise
+        // a topic that collapses to one meaningful token could never be detected
+        // as repeated, since it can never reach an overlap of two.
+        let requiredOverlap = min(2, topicTokens.count)
 
         let cutoff = Calendar.current.date(byAdding: .day, value: -withinDays, to: now) ?? .distantPast
         let matchingEntries = entries.filter { entry in
             entry.timestamp >= cutoff &&
             bundleIdsMatch(entry.bundleId, bundleId) &&
-            tokenOverlapCount(Set(entry.topicTokens), topicTokens) >= 2
+            tokenOverlapCount(Set(entry.topicTokens), topicTokens) >= requiredOverlap
         }
 
         return matchingEntries.count >= 2
     }
 
-    private func bundleIdsMatch(_ lhs: String?, _ rhs: String?) -> Bool {
+    private static func bundleIdsMatch(_ lhs: String?, _ rhs: String?) -> Bool {
         switch (lhs, rhs) {
         case (nil, nil):
             return true
@@ -94,7 +115,7 @@ final class TeachingTopicHistoryStore {
         }
     }
 
-    private func tokenOverlapCount(_ lhs: Set<String>, _ rhs: Set<String>) -> Int {
+    private static func tokenOverlapCount(_ lhs: Set<String>, _ rhs: Set<String>) -> Int {
         lhs.intersection(rhs).count
     }
 }

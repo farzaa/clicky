@@ -1,4 +1,25 @@
-# Release Scripts
+# Scripts
+
+## `new-worktree.sh` — Isolated parallel development
+
+Creates a git worktree with its own Clicky data home, UserDefaults suite, and
+(usually) disabled global push-to-talk so multiple agents/branches can run side
+by side without clobbering `~/.clicky` or fighting over Control+Option.
+
+```bash
+# Secondary worktree (no global hotkey)
+./scripts/new-worktree.sh feature/memory-routines
+
+# Primary dev worktree (keeps push-to-talk)
+./scripts/new-worktree.sh feature/teaching-skills-upstream --primary
+```
+
+Each worktree patches **only its local** Xcode scheme with:
+- `CLICKY_HOME=/tmp/clicky-<branch>`
+- `-CLICKY_DEFAULTS_SUITE=clicky-<branch>`
+- `-CLICKY_DISABLE_GLOBAL_PTT=1` (unless `--primary`)
+
+---
 
 ## `release.sh` — Ship a new version of makesomething
 

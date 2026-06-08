@@ -12,6 +12,7 @@ struct SkillWriteTrigger: Equatable {
         case userConfirmed
         case multiStepPointing
         case repeatedTopic
+        case screenTeaching
     }
 
     let reason: Reason
@@ -30,53 +31,56 @@ enum SkillTriggerEvaluator {
         "that helps"
     ]
 
-    static func shouldWriteSkill(
-        sessionTrace: [SessionTraceEntry],
-        latestTranscript: String,
-        topicHistory: [TeachingTopicHistoryEntry] = []
-    ) -> SkillWriteTrigger? {
-        guard !sessionTrace.isEmpty else { return nil }
-
-        let normalizedTranscript = latestTranscript.lowercased()
-        let pointedExchanges = sessionTrace.filter(\.pointed)
-        let topic = deriveTopic(from: sessionTrace)
-        let bundleId = sessionTrace.compactMap(\.bundleId).last
-
-        if confirmationPhrases.contains(where: { normalizedTranscript.contains($0) }) {
-            return SkillWriteTrigger(reason: .userConfirmed, topic: topic)
-        }
-
-        if pointedExchanges.count >= 2 {
-            return SkillWriteTrigger(reason: .multiStepPointing, topic: topic)
-        }
-
-        if hasRepeatedTopic(in: sessionTrace) {
-            return SkillWriteTrigger(reason: .repeatedTopic, topic: topic)
-        }
-
-        if hasCrossSessionRepeatedTopic(
-            topic: topic,
-            bundleId: bundleId,
-            topicHistory: topicHistory
-        ) {
-            return SkillWriteTrigger(reason: .repeatedTopic, topic: topic)
-        }
-
-        return nil
-    }
-
     static func primaryTeachingQuestion(from sessionTrace: [SessionTraceEntry]) -> String? {
         sessionTrace
             .map(\.userTranscript)
             .first { !isConfirmationTranscript($0) }
     }
 
+    /// Negations that flip an otherwise positive phrase ("not helpful",
+    /// "didn't work"). Stored apostrophe-free because `words(from:)` strips
+    /// apostrophes before tokenizing.
+    private static let negationTokens: Set<String> = [
+        "not", "never", "dont", "doesnt", "didnt",
+        "isnt", "wasnt", "wont", "wouldnt", "couldnt", "cant"
+    ]
+
     static func isConfirmationTranscript(_ transcript: String) -> Bool {
         let normalized = transcript
             .lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return true }
-        return confirmationPhrases.contains { normalized.contains($0) }
+
+        let transcriptWords = words(from: normalized)
+        let transcriptWordSet = Set(transcriptWords)
+
+        // A negation anywhere in the transcript means the user did not confirm
+        // success ("not helpful", "that didn't work").
+        guard negationTokens.isDisjoint(with: transcriptWordSet) else { return false }
+
+        // Match each phrase on whole-word boundaries so "imperfect" does not
+        // match "perfect" and "unhelpful" does not match "helpful".
+        return confirmationPhrases.contains { phrase in
+            containsContiguousWords(words(from: phrase), in: transcriptWords)
+        }
+    }
+
+    private static func words(from text: String) -> [String] {
+        text
+            .replacingOccurrences(of: "'", with: "")
+            .replacingOccurrences(of: "\u{2019}", with: "")
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+    }
+
+    private static func containsContiguousWords(_ phraseWords: [String], in transcriptWords: [String]) -> Bool {
+        guard !phraseWords.isEmpty, phraseWords.count <= transcriptWords.count else { return false }
+        for startIndex in 0...(transcriptWords.count - phraseWords.count) {
+            if Array(transcriptWords[startIndex..<startIndex + phraseWords.count]) == phraseWords {
+                return true
+            }
+        }
+        return false
     }
 
     static func deriveTopic(from sessionTrace: [SessionTraceEntry]) -> String {
@@ -89,53 +93,16 @@ enum SkillTriggerEvaluator {
         return tokens.prefix(6).joined(separator: " ")
     }
 
-    private static func hasRepeatedTopic(in sessionTrace: [SessionTraceEntry]) -> Bool {
-        let teachingEntries = sessionTrace.filter { !isConfirmationTranscript($0.userTranscript) }
-        guard teachingEntries.count >= 2 else { return false }
-
-        let tokenSets = teachingEntries.map { Set(SkillMatcher.meaningfulTokens($0.userTranscript)) }
-        for index in tokenSets.indices {
-            for otherIndex in tokenSets.indices where otherIndex > index {
-                let overlap = tokenSets[index].intersection(tokenSets[otherIndex])
-                if overlap.count >= 2 {
-                    return true
-                }
-            }
-        }
-        return false
-    }
-
-    private static func hasCrossSessionRepeatedTopic(
-        topic: String,
-        bundleId: String?,
-        topicHistory: [TeachingTopicHistoryEntry]
-    ) -> Bool {
-        let topicTokens = Set(SkillMatcher.meaningfulTokens(topic))
-        guard topicTokens.count >= 1 else { return false }
-
-        let cutoff = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? .distantPast
-        let matchingEntries = topicHistory.filter { entry in
-            entry.timestamp >= cutoff &&
-            bundleIdsMatch(entry.bundleId, bundleId) &&
-            entry.topicTokens.filter { topicTokens.contains($0) }.count >= 2
-        }
-
-        return matchingEntries.count >= 2
-    }
-
-    private static func bundleIdsMatch(_ lhs: String?, _ rhs: String?) -> Bool {
-        switch (lhs, rhs) {
-        case (nil, nil):
-            return true
-        case (let left?, let right?):
-            return left == right
-        case (nil, _), (_, nil):
-            return true
-        }
-    }
-
+    /// A session counts as screen teaching only when the cursor pointed at the UI
+    /// or the user/assistant explicitly named an app. The mere presence of a
+    /// frontmost `bundleId` is NOT enough: `recordSessionExchange` stamps the
+    /// frontmost app on every turn, so a generic off-screen question asked while
+    /// any app happens to be focused would otherwise look like screen teaching.
     static func isScreenTeachingSession(_ sessionTrace: [SessionTraceEntry]) -> Bool {
         sessionTrace.contains(where: \.pointed) ||
-        sessionTrace.contains(where: { $0.bundleId != nil })
+        sessionTrace.contains { entry in
+            TeachingSkill.detectBundleId(in: entry.userTranscript) != nil ||
+            TeachingSkill.detectBundleId(in: entry.assistantResponse) != nil
+        }
     }
 }

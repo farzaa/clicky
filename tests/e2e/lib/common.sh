@@ -4,8 +4,9 @@
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 CLICKY_APP="${CLICKY_APP:-$ROOT_DIR/build/E2E/Clicky.app}"
 WORKER_URL="${CLICKY_WORKER_URL:-http://127.0.0.1:8787}"
-SKILLS_DIR="$HOME/.clicky/skills"
-CLICKY_DIR="$HOME/.clicky"
+CLICKY_DIR="${CLICKY_HOME:-$HOME/.clicky}"
+SKILLS_DIR="$CLICKY_DIR/skills"
+export CLICKY_HOME="$CLICKY_DIR"
 
 E2E_PROMPT_FILE="$CLICKY_DIR/e2e-last-system-prompt.txt"
 E2E_MATCHED_SKILL_FILE="$CLICKY_DIR/e2e-last-matched-skill-id.txt"
@@ -77,7 +78,7 @@ launch_clicky() {
   local log_file="${1:-/tmp/clicky-e2e-app.log}"
   shift || true
 
-  "$CLICKY_APP/Contents/MacOS/Clicky" "$@" >"$log_file" 2>&1 &
+  "$CLICKY_APP/Contents/MacOS/Clicky" -CLICKY_HOME="$CLICKY_DIR" "$@" >"$log_file" 2>&1 &
   CLICKY_PID=$!
 }
 

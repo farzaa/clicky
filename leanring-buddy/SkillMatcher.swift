@@ -78,12 +78,49 @@ enum SkillMatcher {
         bundleId: String?,
         topic: String
     ) -> TeachingSkill? {
-        let topicTokens = Set(tokenize(topic))
+        findSkillForUpdate(
+            in: skills,
+            targetBundleId: bundleId,
+            primaryQuestion: topic
+        )
+    }
+
+    static func findSkillForUpdate(
+        in skills: [TeachingSkill],
+        targetBundleId: String?,
+        primaryQuestion: String
+    ) -> TeachingSkill? {
+        let resolvedTargetBundleId = TeachingSkill.detectBundleId(in: primaryQuestion) ?? targetBundleId
+        let expectedSkillId = TeachingSkill.stableSkillId(
+            bundleId: resolvedTargetBundleId,
+            primaryQuestion: primaryQuestion
+        )
+        let expectedTaskSlug = TeachingSkill.taskSlug(from: primaryQuestion)
+
+        if let exactMatch = skills.first(where: { $0.id == expectedSkillId }) {
+            return exactMatch
+        }
+
+        if let resolvedTargetBundleId {
+            let bundleMatches = skills.filter { skill in
+                skill.bundleIds.contains(resolvedTargetBundleId) &&
+                (skill.taskSlug == expectedTaskSlug || skill.id.hasSuffix("-\(expectedTaskSlug)"))
+            }
+
+            if let bestBundleMatch = bundleMatches.max(by: { lhs, rhs in
+                if lhs.usageCount != rhs.usageCount { return lhs.usageCount < rhs.usageCount }
+                return (lhs.lastUsed ?? .distantPast) < (rhs.lastUsed ?? .distantPast)
+            }) {
+                return bestBundleMatch
+            }
+        }
+
+        let topicTokens = Set(meaningfulTokens(primaryQuestion))
         guard !topicTokens.isEmpty else { return nil }
 
         let candidates = skills.filter { skill in
-            guard let bundleId else { return true }
-            return skill.bundleIds.isEmpty || skill.bundleIds.contains(bundleId)
+            guard let resolvedTargetBundleId else { return true }
+            return skill.bundleIds.isEmpty || skill.bundleIds.contains(resolvedTargetBundleId)
         }
 
         return candidates.max { lhs, rhs in
