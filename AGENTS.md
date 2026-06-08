@@ -75,6 +75,8 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
 | `TeachingTopicHistoryStore.swift` | ~95 | Persists teaching topic tokens, bundle IDs, and timestamps to `~/.clicky/topic-history.json` for cross-session repeat detection. |
+| `PersistedSession.swift` | ~25 | Codable on-disk session model (`sessionId`, `startedAt`, `endedAt`, `outcome`, `privacyOptOut`, `appsUsed`, `turns`) for the memory pipeline capture step. |
+| `SessionStore.swift` | ~100 | Filesystem store for voice sessions at `~/.clicky/sessions/<yyyy-MM-dd>/<sessionId>.json` with ISO8601 JSON encoding and 7-day retention cleanup. |
 | `TeachingSkillStore.swift` | ~100 | Create/read/update/delete teaching skills at `~/.clicky/skills/<name>/SKILL.md`. |
 | `TeachingSkill.swift` | ~280 | Model and YAML frontmatter parsing for teaching skills. |
 | `SkillMatcher.swift` | ~170 | App/topic matching and duplicate skill pair detection. |

@@ -25,16 +25,23 @@ enum ClickyPaths {
     /// Test-only override. Production never sets this.
     static var overrideHomeForTesting: URL?
 
+    /// When true, `home` skips `-CLICKY_HOME=` and `CLICKY_HOME` so tests can
+    /// assert the production default (`~/.clicky`) even when Xcode inherits
+    /// worktree env vars from the scheme or parent process.
+    static var ignoreConfiguredHomeForTesting = false
+
     static var home: URL {
         if let overrideHomeForTesting {
             return overrideHomeForTesting
         }
-        if let argumentPath = ClickyLaunchArguments.value(forPrefix: "-CLICKY_HOME=") {
-            return URL(fileURLWithPath: argumentPath, isDirectory: true)
-        }
-        if let environmentPath = ProcessInfo.processInfo.environment["CLICKY_HOME"],
-           !environmentPath.isEmpty {
-            return URL(fileURLWithPath: environmentPath, isDirectory: true)
+        if !ignoreConfiguredHomeForTesting {
+            if let argumentPath = ClickyLaunchArguments.value(forPrefix: "-CLICKY_HOME=") {
+                return URL(fileURLWithPath: argumentPath, isDirectory: true)
+            }
+            if let environmentPath = ProcessInfo.processInfo.environment["CLICKY_HOME"],
+               !environmentPath.isEmpty {
+                return URL(fileURLWithPath: environmentPath, isDirectory: true)
+            }
         }
         return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".clicky", isDirectory: true)
@@ -46,6 +53,10 @@ enum ClickyPaths {
 
     static var topicHistory: URL {
         home.appendingPathComponent("topic-history.json")
+    }
+
+    static var sessions: URL {
+        home.appendingPathComponent("sessions", isDirectory: true)
     }
 }
 
