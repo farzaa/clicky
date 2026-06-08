@@ -465,7 +465,15 @@ final class CompanionManager: ObservableObject {
                     bundleId: targetBundleId,
                     skillId: skill.id
                 )
-                sessionTrace.removeAll()
+                // Only wipe the live trace if it still holds the same turns this
+                // task synthesized. Skill synthesis is async (a multi-second Claude
+                // call); by the time it finishes, finalizeAndPersistSession may have
+                // already cleared the trace and a NEW session may have started. An
+                // unconditional removeAll() here would wipe that new session's turns
+                // before they can be persisted.
+                if sessionTrace == traceSnapshot {
+                    sessionTrace.removeAll()
+                }
 
                 ClickyAnalytics.trackTeachingSkillSaved(
                     skillID: skill.id,
