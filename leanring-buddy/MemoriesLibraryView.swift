@@ -8,7 +8,6 @@
 import SwiftUI
 
 enum MemoriesCategoryFilter: String, CaseIterable, Identifiable {
-    case all
     case skill
     case preference
     case routine
@@ -17,19 +16,25 @@ enum MemoriesCategoryFilter: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .all: return "All"
         case .skill: return "Skills"
         case .preference: return "Preferences"
         case .routine: return "Routines"
         }
     }
 
-    var memoryCategory: MemoryCategory? {
+    var memoryCategory: MemoryCategory {
         switch self {
-        case .all: return nil
         case .skill: return .skill
         case .preference: return .preference
         case .routine: return .routine
+        }
+    }
+
+    init(memoryCategory: MemoryCategory) {
+        switch memoryCategory {
+        case .skill: self = .skill
+        case .preference: self = .preference
+        case .routine: self = .routine
         }
     }
 }
@@ -39,7 +44,7 @@ struct MemoriesLibraryView: View {
     let initialSelectedMemoryID: String?
     let onBack: () -> Void
 
-    @State private var selectedCategoryFilter: MemoriesCategoryFilter = .all
+    @State private var selectedCategoryFilter: MemoriesCategoryFilter = .skill
     @State private var selectedMemory: Memory?
     @State private var isEditingSelectedMemory = false
     @State private var memoryEdit = MemoryEdit(
@@ -58,9 +63,6 @@ struct MemoriesLibraryView: View {
         )
     }
 
-    private var hasAnyMemories: Bool {
-        !companionManager.memories.isEmpty
-    }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             libraryHeader
@@ -171,37 +173,8 @@ struct MemoriesLibraryView: View {
 
     private var memoriesList: some View {
         ScrollView {
-            if selectedCategoryFilter == .all {
-                groupedMemoriesList
-            } else {
-                singleCategoryMemoriesList
-            }
-        }
-        .frame(maxHeight: 300)
-    }
-
-    private var groupedMemoriesList: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            if !hasAnyMemories {
-                Text("No memories yet. Teach Clicky something on screen and confirm it worked.")
-                    .font(.system(size: 11))
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-            } else {
-                ForEach(MemoryCategory.allCases, id: \.self) { category in
-                    memoryCategorySection(category)
-                }
-                .padding(.top, 8)
-            }
-        }
-    }
-
-    private var singleCategoryMemoriesList: some View {
-        Group {
-            if filteredMemories.isEmpty, let category = selectedCategoryFilter.memoryCategory {
-                Text(category.emptyStateMessage)
+            if filteredMemories.isEmpty {
+                Text(selectedCategoryFilter.memoryCategory.emptyStateMessage)
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -219,52 +192,7 @@ struct MemoriesLibraryView: View {
                 .padding(.top, 8)
             }
         }
-    }
-
-    private func memoryCategorySection(_ category: MemoryCategory) -> some View {
-        let categoryMemories = companionManager.memories(category: category, status: nil)
-
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: category.systemImageName)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(DS.Colors.textTertiary)
-
-                Text(category.pluralDisplayLabel)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(DS.Colors.textSecondary)
-
-                Text("\(categoryMemories.count)")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(Color.white.opacity(0.08))
-                    )
-            }
-            .padding(.horizontal, 16)
-
-            if categoryMemories.isEmpty {
-                Text(category.emptyStateMessage)
-                    .font(.system(size: 10))
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(categoryMemories) { memory in
-                        memoryRow(memory)
-                        if memory.id != categoryMemories.last?.id {
-                            Divider()
-                                .background(DS.Colors.borderSubtle.opacity(0.5))
-                                .padding(.leading, 16)
-                        }
-                    }
-                }
-            }
-        }
+        .frame(maxHeight: 300)
     }
 
     private func memoryRow(_ memory: Memory) -> some View {
@@ -489,9 +417,7 @@ struct MemoriesLibraryView: View {
             return
         }
 
-        selectedCategoryFilter = memory.category == .skill ? .skill
-            : memory.category == .preference ? .preference
-            : .routine
+        selectedCategoryFilter = MemoriesCategoryFilter(memoryCategory: memory.category)
         selectedMemory = memory
         isEditingSelectedMemory = false
     }
