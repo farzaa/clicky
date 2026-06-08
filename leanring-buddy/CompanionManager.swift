@@ -82,7 +82,14 @@ final class CompanionManager: ObservableObject {
 
     private let teachingSkillStore = TeachingSkillStore()
     private let topicHistoryStore = TeachingTopicHistoryStore()
+    private let sessionStore = SessionStore()
     private var sessionTrace: [SessionTraceEntry] = []
+    private var sessionStartedAt: Date?
+    private var sessionIdleTimer: Timer?
+    /// True from push-to-talk press until the voice pipeline returns to idle.
+    /// Prevents panel-close finalization while the menu bar panel is auto-dismissed on PTT.
+    private var isPushToTalkInteractionActive = false
+    private var panelClosedObserver: NSObjectProtocol?
     private var skillWriteTask: Task<Void, Never>?
     private var curatorLLMTask: Task<Void, Never>?
 
@@ -257,6 +264,7 @@ final class CompanionManager: ObservableObject {
     private func bootstrapTeachingSkills() {
         teachingSkillStore.loadSkills()
         topicHistoryStore.load()
+        sessionStore.deleteSessionsOlderThan(days: 7)
         SkillCurator.curate(store: teachingSkillStore)
         teachingSkills = teachingSkillStore.skills
         runCuratorLLMPassesIfNeeded()
@@ -286,6 +294,8 @@ final class CompanionManager: ObservableObject {
         spokenResponse: String,
         pointed: Bool
     ) {
+        let wasEmptyBeforeAppend = sessionTrace.isEmpty
+
         sessionTrace.append(
             SessionTraceEntry(
                 timestamp: Date(),
@@ -296,9 +306,15 @@ final class CompanionManager: ObservableObject {
             )
         )
 
+        if wasEmptyBeforeAppend {
+            sessionStartedAt = Date()
+        }
+
         if sessionTrace.count > 20 {
             sessionTrace.removeFirst(sessionTrace.count - 20)
         }
+
+        restartSessionIdleTimer()
 
         if !SkillTriggerEvaluator.isConfirmationTranscript(transcript) {
             let topic = SkillTriggerEvaluator.deriveTopic(fromQuestion: transcript)
@@ -307,6 +323,81 @@ final class CompanionManager: ObservableObject {
                 bundleId: frontmostApplicationBundleId()
             )
         }
+    }
+
+    private func restartSessionIdleTimer() {
+        sessionIdleTimer?.invalidate()
+        sessionIdleTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.finalizeAndPersistSession()
+            }
+        }
+    }
+
+    private func finalizeAndPersistSession(outcome explicitOutcome: SessionOutcome? = nil) {
+        sessionIdleTimer?.invalidate()
+        sessionIdleTimer = nil
+
+        guard sessionStartedAt != nil else { return }
+
+        let turnsSnapshot = sessionTrace
+        guard !turnsSnapshot.isEmpty else {
+            sessionStartedAt = nil
+            return
+        }
+
+        let resolvedOutcome = explicitOutcome ?? deriveSessionOutcome(from: turnsSnapshot)
+        let appsUsed = orderedUniqueBundleIds(from: turnsSnapshot)
+        let privacyOptOut = !isLearningFromSessionsEnabled
+
+        let session = PersistedSession(
+            sessionId: UUID(),
+            startedAt: sessionStartedAt ?? turnsSnapshot.first!.timestamp,
+            endedAt: Date(),
+            outcome: resolvedOutcome,
+            privacyOptOut: privacyOptOut,
+            appsUsed: appsUsed,
+            turns: turnsSnapshot
+        )
+
+        do {
+            let savedURL = try sessionStore.save(session)
+            print("💾 Persisted session to \(savedURL.path)")
+        } catch {
+            print("⚠️ Failed to persist session: \(error)")
+        }
+
+        sessionStartedAt = nil
+        sessionTrace.removeAll()
+    }
+
+    /// Coarse outcome heuristic for capture-time persistence. The future memory gate
+    /// can refine this; keep the rules simple and predictable here.
+    private func deriveSessionOutcome(from turns: [SessionTraceEntry]) -> SessionOutcome {
+        if let lastTurn = turns.last,
+           SkillTriggerEvaluator.isConfirmationTranscript(lastTurn.userTranscript) {
+            return .success
+        }
+
+        if turns.contains(where: \.pointed) ||
+            SkillTriggerEvaluator.isScreenTeachingSession(turns) {
+            return .unknown
+        }
+
+        return .abandoned
+    }
+
+    private func orderedUniqueBundleIds(from turns: [SessionTraceEntry]) -> [String] {
+        var seenBundleIds = Set<String>()
+        var orderedBundleIds: [String] = []
+
+        for bundleId in turns.compactMap(\.bundleId) {
+            if seenBundleIds.insert(bundleId).inserted {
+                orderedBundleIds.append(bundleId)
+            }
+        }
+
+        return orderedBundleIds
     }
 
     private func maybeWriteTeachingSkill(after transcript: String) {
@@ -453,6 +544,7 @@ final class CompanionManager: ObservableObject {
 
     func start() {
         bootstrapTeachingSkills()
+        bindPanelClosedObservation()
         refreshAllPermissions()
         print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), inputMonitoring: \(hasInputMonitoringPermission), pushToTalkActive: \(isPushToTalkHotkeyActive), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
@@ -578,6 +670,12 @@ final class CompanionManager: ObservableObject {
         currentResponseTask = nil
         skillWriteTask?.cancel()
         skillWriteTask = nil
+        sessionIdleTimer?.invalidate()
+        sessionIdleTimer = nil
+        if let panelClosedObserver {
+            NotificationCenter.default.removeObserver(panelClosedObserver)
+            self.panelClosedObserver = nil
+        }
         shortcutTransitionCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
@@ -829,10 +927,26 @@ final class CompanionManager: ObservableObject {
                     // the brief idle gap between recording and processing
                     // would prematurely hide the overlay.
                     if self.currentResponseTask == nil {
+                        self.isPushToTalkInteractionActive = false
                         self.scheduleTransientHideIfNeeded()
                     }
                 }
             }
+    }
+
+    private func bindPanelClosedObservation() {
+        panelClosedObserver = NotificationCenter.default.addObserver(
+            forName: .clickyCompanionPanelDidClose,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                guard !self.isPushToTalkInteractionActive else { return }
+                guard !self.sessionTrace.isEmpty else { return }
+                self.finalizeAndPersistSession()
+            }
+        }
     }
 
     private func bindShortcutTransitions() {
@@ -850,6 +964,8 @@ final class CompanionManager: ObservableObject {
             guard !buddyDictationManager.isDictationInProgress else { return }
             // Don't register push-to-talk while the onboarding video is playing
             guard !showOnboardingVideo else { return }
+
+            isPushToTalkInteractionActive = true
 
             // Cancel any pending transient hide so the overlay stays visible
             transientHideTask?.cancel()
@@ -1103,6 +1219,9 @@ final class CompanionManager: ObservableObject {
                     pointed: hasPointCoordinate
                 )
                 maybeWriteTeachingSkill(after: transcript)
+                if SkillTriggerEvaluator.isConfirmationTranscript(transcript) {
+                    finalizeAndPersistSession(outcome: .success)
+                }
 
                 ClickyAnalytics.trackAIResponseReceived(response: spokenText)
 
@@ -1132,6 +1251,7 @@ final class CompanionManager: ObservableObject {
 
             if !Task.isCancelled {
                 voiceState = .idle
+                isPushToTalkInteractionActive = false
                 scheduleTransientHideIfNeeded()
             }
         }

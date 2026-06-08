@@ -323,7 +323,7 @@ struct TeachingSkill: Identifiable, Equatable {
     }()
 }
 
-struct SessionTraceEntry: Equatable {
+struct SessionTraceEntry: Equatable, Codable {
     let timestamp: Date
     let userTranscript: String
     let assistantResponse: String
