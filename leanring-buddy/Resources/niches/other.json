@@ -1,0 +1,24 @@
+{
+  "suggestions": [
+    {
+      "id": "find-button",
+      "prompt": "Where is the button I need on this screen? Point at it."
+    },
+    {
+      "id": "explain-panel",
+      "prompt": "Explain what this panel does and point at the important parts."
+    },
+    {
+      "id": "next-step",
+      "prompt": "What should I click next to finish this task? Point at it."
+    },
+    {
+      "id": "settings-location",
+      "prompt": "Show me where the setting I need is in this app."
+    },
+    {
+      "id": "shortcut-hint",
+      "prompt": "Is there a keyboard shortcut for what I'm trying to do here?"
+    }
+  ]
+}

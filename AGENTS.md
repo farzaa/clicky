@@ -86,15 +86,16 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `SkillTriggerEvaluator.swift` | ~120 | Decides when to create or update a teaching skill from session traces. |
 | `TeachingPromptBuilder.swift` | ~35 | Composes voice response system prompt with matched teaching skills. |
 | `TeachingSkillsLibraryView.swift` | ~260 | Full skills library UI with status filters, detail view, pin/delete/restore. |
-| `Memory.swift` | ~120 | Category-aware memory model and `MemoryEdit` for the unified memories UI. |
-| `AuxiliaryMemoryStore.swift` | ~75 | Persists preference and routine memories until dedicated generators land. |
-| `MemoriesLibraryView.swift` | ~430 | Unified memories library with category filters, grouped sections, detail view, inline edit, and delete. |
+| `Memory.swift` | ~135 | Category-aware memory model and `MemoryEdit` for the unified memories UI. |
+| `AuxiliaryMemoryStore.swift` | ~78 | Persists preference and routine memories until dedicated generators land. |
+| `MemoriesLibraryView.swift` | ~460 | Unified memories library with category tabs, detail view, edit, and delete. |
+| `DummyMemorySeeder.swift` | ~146 | DEBUG-only seeder for sample memories during local development. |
 | `ClickyE2EConfiguration.swift` | ~75 | Launch flags and E2E debug artifact paths for automated tests. |
 | `NicheDiscoveryManager.swift` | ~175 | Niche onboarding, static/app-aware suggestion cards, local override loading. |
 | `UserNiche.swift` | ~35 | User niche enum (general, content creator, developer, student, designer). |
 | `Resources/niche-examples.json` | ~80 | Bundled niche suggestion packs and app-specific prompt maps. |
 | `leanring-buddyTests/TeachingSkillTests.swift` | ~320 | Unit tests for skill parsing, matching, triggers, prompt injection, duplicate detection. |
-| `leanring-buddyTests/MemoryTests.swift` | ~150 | Unit tests for memory adapter, filtering, update round-trip, and delete. |
+| `leanring-buddyTests/MemoryTests.swift` | ~196 | Unit tests for memory adapter, filtering, update round-trip, and delete. |
 | `tests/e2e/full-stack/` | — | Scaffold for full user-perspective E2E (BlackHole, PTT simulation, Peekaboo). |
 | `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
 

@@ -1,0 +1,24 @@
+{
+  "suggestions": [
+    {
+      "id": "save-document",
+      "prompt": "How do I save this document? Point at save or the menu path."
+    },
+    {
+      "id": "export-pdf",
+      "prompt": "Walk me through exporting this as a PDF — show me where to click."
+    },
+    {
+      "id": "citation-tool",
+      "prompt": "Where do I add a citation or reference in this app?"
+    },
+    {
+      "id": "slide-layout",
+      "prompt": "Help me fix this slide layout — point at the control I should use."
+    },
+    {
+      "id": "highlight-notes",
+      "prompt": "Show me how to highlight or annotate this section on screen."
+    }
+  ]
+}

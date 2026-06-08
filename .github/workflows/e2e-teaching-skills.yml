@@ -5,12 +5,10 @@ on:
     branches:
       - main
       - feature/teaching-skills
-      - feature/teaching-skills-upstream
   pull_request:
     branches:
       - main
       - feature/teaching-skills
-      - feature/teaching-skills-upstream
 
 jobs:
   teaching-skills-e2e:
@@ -27,9 +25,19 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Run unit tests
+        run: |
+          xcodebuild test \
+            -project leanring-buddy.xcodeproj \
+            -scheme leanring-buddy \
+            -destination 'platform=macOS' \
+            -only-testing:leanring-buddyTests/TeachingSkillTests \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_ALLOWED=NO
+
       - name: Run teaching-skills E2E
         run: |
-          chmod +x tests/e2e/run-all.sh tests/e2e/teaching-skills.sh tests/e2e/skills-library.sh tests/e2e/lib/common.sh
+          chmod +x tests/e2e/run-all.sh tests/e2e/*.sh tests/e2e/lib/common.sh
           ./tests/e2e/run-all.sh
 
       - name: Upload E2E logs on failure
@@ -41,6 +49,11 @@ jobs:
           path: |
             /tmp/clicky-e2e-app.log
             /tmp/clicky-e2e-app-read.log
+            /tmp/clicky-e2e-niche-*.log
+            /tmp/clicky-e2e-library-*.log
+            /tmp/clicky-e2e-journey-*.log
             /tmp/clicky-e2e-worker.log
             /tmp/clicky-e2e-build.log
             ~/.clicky/e2e-last-system-prompt.txt
+            ~/.clicky/e2e-last-suggestions.txt
+            ~/.clicky/e2e-skill-library-state.txt

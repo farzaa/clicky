@@ -94,10 +94,20 @@ final class CompanionManager: ObservableObject {
     private var skillWriteTask: Task<Void, Never>?
     private var curatorLLMTask: Task<Void, Never>?
 
+    private let nicheDiscoveryManager = NicheDiscoveryManager()
+    private var frontmostAppObserver: NSObjectProtocol?
+
+    @Published private(set) var selectedUserNiche: NicheDiscoveryManager.Niche?
+    @Published private(set) var inferredUserNiche: NicheDiscoveryManager.Niche?
+    @Published private(set) var nicheProfileIsStable = false
+    @Published private(set) var nicheSuggestions: [NicheSuggestion] = []
+    @Published private(set) var nicheSuggestionContextLabel: String?
+    @Published private(set) var nicheSuggestionMode: NicheSuggestionSnapshot.Mode?
+
     /// Skills currently on disk, exposed for the panel UI.
     @Published private(set) var teachingSkills: [TeachingSkill] = []
 
-    /// Unified memories across all categories (skills today; preferences/routines later).
+    /// Unified memories across skills, preferences, and routines.
     @Published private(set) var memories: [Memory] = []
 
     /// When set, the menu bar panel opens the memories library to this memory ID.
@@ -112,6 +122,16 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var lastSystemPrompt: String?
     @Published private(set) var lastMatchedSkillNames: [String] = []
     @Published private(set) var lastSkillWriteTrigger: String?
+    @Published private(set) var lastVaultNotesUsed: [String] = []
+    @Published private(set) var lastUserPromptForE2E: String?
+    @Published private(set) var connectedVaultSummaries: [ConnectedVault] = []
+    @Published private(set) var connectedVaultMarkdownFileCount: Int = 0
+    @Published var vaultConnectionErrorMessage: String?
+    @Published var isVaultWriteEnabled: Bool = UserDefaults.standard.bool(forKey: "isVaultWriteEnabled")
+    @Published private(set) var pendingVaultWrite: PendingVaultWrite?
+    @Published private(set) var lastVaultWriteStatusMessage: String?
+
+    private let personalKnowledgeManager = PersonalKnowledgeManager()
 
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
@@ -317,31 +337,6 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    func runE2EBootstrapActionsIfNeeded() {
-        guard ClickyE2EConfiguration.isEnabled else { return }
-
-        Task {
-            try? await Task.sleep(nanoseconds: 500_000_000)
-
-            if let restoreSkillID = ClickyE2EConfiguration.restoreSkillID {
-                restoreTeachingSkill(id: restoreSkillID)
-            }
-
-            writeE2EArtifactsIfNeeded()
-        }
-    }
-
-    func writeE2EArtifactsIfNeeded() {
-        guard ClickyE2EConfiguration.isEnabled else { return }
-
-        ClickyE2EConfiguration.writeSkillsCountForE2E(teachingSkillStore.skills.count)
-        ClickyE2EConfiguration.writeSkillLibraryStateForE2E(teachingSkillStore.skills)
-    }
-
-    private func frontmostApplicationBundleId() -> String? {
-        NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-    }
-
     private func bootstrapTeachingSkills() {
         teachingSkillStore.loadSkills()
         auxiliaryMemoryStore.load()
@@ -351,6 +346,7 @@ final class CompanionManager: ObservableObject {
         )
         topicHistoryStore.load()
         sessionStore.deleteSessionsOlderThan(days: 7)
+        refreshConnectedVaultState()
         SkillCurator.curate(store: teachingSkillStore)
         syncTeachingSkillsFromStore()
         runCuratorLLMPassesIfNeeded()
@@ -477,8 +473,8 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Coarse outcome heuristic for capture-time persistence. MemoryGate applies
-    /// its own rules at distill time; keep this simple and predictable here.
+    /// Coarse outcome heuristic for capture-time persistence. The future memory gate
+    /// can refine this; keep the rules simple and predictable here.
     private func deriveSessionOutcome(from turns: [SessionTraceEntry]) -> SessionOutcome {
         if let lastTurn = turns.last,
            SkillTriggerEvaluator.isConfirmationTranscript(lastTurn.userTranscript) {
@@ -611,6 +607,424 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    func setUserNiche(_ niche: NicheDiscoveryManager.Niche) {
+        nicheDiscoveryManager.setUserNiche(niche)
+        selectedUserNiche = niche
+        refreshNicheSuggestions()
+        ClickyAnalytics.trackNicheSelected(niche: niche.rawValue)
+    }
+
+    func clearUserNicheOverride() {
+        nicheDiscoveryManager.clearUserNicheOverride()
+        selectedUserNiche = nil
+        refreshNicheSuggestions()
+    }
+
+    func refreshNicheSuggestions() {
+        nicheDiscoveryManager.refreshInferredProfile()
+        inferredUserNiche = nicheDiscoveryManager.inferredNiche
+        nicheProfileIsStable = nicheDiscoveryManager.profileIsStable
+        selectedUserNiche = nicheDiscoveryManager.userNicheOverride
+
+        let snapshot = nicheDiscoveryManager.suggestionSnapshot(
+            frontmostBundleId: frontmostApplicationBundleId()
+        )
+        nicheSuggestions = snapshot.suggestions
+        nicheSuggestionContextLabel = snapshot.contextLabel
+        nicheSuggestionMode = snapshot.mode
+    }
+
+    func askWithSuggestion(_ suggestion: NicheSuggestion) {
+        let effectiveNiche = nicheDiscoveryManager.effectiveNiche?.rawValue ?? "unknown"
+        ClickyAnalytics.trackNicheSuggestionTapped(
+            suggestion: suggestion.prompt,
+            niche: effectiveNiche,
+            bundleID: frontmostApplicationBundleId()
+        )
+        ClickyAnalytics.trackSuggestionSpoken(niche: effectiveNiche, promptID: suggestion.id)
+
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+
+        if !isOverlayVisible && isClickyCursorEnabled {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+
+        let suggestionTapContext = makeSuggestionTapContext(for: suggestion)
+        sendTranscriptToClaudeWithScreenshot(
+            transcript: suggestion.prompt,
+            suggestionTapContext: suggestionTapContext
+        )
+    }
+
+    func trackNicheSuggestionTapped(suggestion: NicheSuggestion) {
+        let effectiveNiche = nicheDiscoveryManager.effectiveNiche?.rawValue ?? "unknown"
+        ClickyAnalytics.trackNicheSuggestionTapped(
+            suggestion: suggestion.prompt,
+            niche: effectiveNiche,
+            bundleID: frontmostApplicationBundleId()
+        )
+    }
+
+    func discoverObsidianVaults() -> [DiscoveredVault] {
+        VaultDiscoveryService.discoverObsidianVaults()
+    }
+
+    func refreshConnectedVaultState() {
+        personalKnowledgeManager.loadConnectedVaults()
+        connectedVaultSummaries = personalKnowledgeManager.connectedVaults
+        connectedVaultMarkdownFileCount = personalKnowledgeManager.countSearchableMarkdownFiles()
+    }
+
+    @discardableResult
+    func connectVault(at folderURL: URL, label: String? = nil) -> Bool {
+        do {
+            _ = try personalKnowledgeManager.connectVault(at: folderURL, label: label)
+            vaultConnectionErrorMessage = nil
+            connectedVaultSummaries = personalKnowledgeManager.connectedVaults
+            connectedVaultMarkdownFileCount = personalKnowledgeManager.countSearchableMarkdownFiles()
+            return true
+        } catch {
+            vaultConnectionErrorMessage = error.localizedDescription
+            print("⚠️ Failed to connect vault: \(error)")
+            return false
+        }
+    }
+
+    @discardableResult
+    func connectDiscoveredVault(_ discoveredVault: DiscoveredVault) -> Bool {
+        // macOS only grants durable folder read access when the user confirms via NSOpenPanel.
+        confirmVaultFolderAccess(
+            suggestedFolderURL: discoveredVault.folderURL,
+            vaultLabel: discoveredVault.displayName
+        )
+    }
+
+    func chooseVaultFolderManually() {
+        _ = confirmVaultFolderAccess(suggestedFolderURL: nil, vaultLabel: nil)
+    }
+
+    @discardableResult
+    private func confirmVaultFolderAccess(suggestedFolderURL: URL?, vaultLabel: String?) -> Bool {
+        let openPanel = NSOpenPanel()
+        openPanel.title = "Allow vault access"
+        openPanel.message = isVaultWriteEnabled
+            ? "Select your notes folder so Clicky can read and save notes when you ask."
+            : "Select your notes folder so Clicky can read it when you ask about your vault. Writes stay off until you enable them in the panel."
+        openPanel.canChooseFiles = false
+        openPanel.canChooseDirectories = true
+        openPanel.allowsMultipleSelection = false
+        openPanel.prompt = "Connect"
+        openPanel.directoryURL = suggestedFolderURL
+
+        guard openPanel.runModal() == .OK, let selectedFolderURL = openPanel.url else {
+            return false
+        }
+
+        return connectVault(at: selectedFolderURL, label: vaultLabel ?? selectedFolderURL.lastPathComponent)
+    }
+
+    func disconnectVault(id: UUID) {
+        do {
+            try personalKnowledgeManager.disconnectVault(id: id)
+            vaultConnectionErrorMessage = nil
+            refreshConnectedVaultState()
+        } catch {
+            vaultConnectionErrorMessage = error.localizedDescription
+            print("⚠️ Failed to disconnect vault: \(error)")
+        }
+    }
+
+    func setVaultWriteEnabled(_ enabled: Bool) {
+        isVaultWriteEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isVaultWriteEnabled")
+
+        if !enabled {
+            pendingVaultWrite = nil
+            lastVaultWriteStatusMessage = nil
+        }
+    }
+
+    func confirmPendingVaultWrite() {
+        currentResponseTask?.cancel()
+        currentResponseTask = Task {
+            await executePendingVaultWrite()
+        }
+    }
+
+    func cancelPendingVaultWrite() {
+        pendingVaultWrite = nil
+        lastVaultWriteStatusMessage = "Cancelled"
+    }
+
+    private func writeRequestRequiresConnectedVault(_ writeRequest: VaultWriteRequest) -> Bool {
+        switch writeRequest.destination {
+        case .appendMemory:
+            return false
+        case .appendDailyNote, .newNote:
+            return true
+        }
+    }
+
+    /// Returns true when the transcript was handled as a vault write flow and the normal AI pipeline should be skipped.
+    private func handleVaultWriteFlow(transcript: String) async -> Bool {
+        if let pendingVaultWrite {
+            if VaultWriteIntentDetector.isVaultWriteCancellation(transcript: transcript) {
+                self.pendingVaultWrite = nil
+                lastVaultWriteStatusMessage = "Cancelled"
+                await speakVaultWriteResponse("okay, cancelled.")
+                return true
+            }
+
+            if VaultWriteIntentDetector.isVaultWriteConfirmation(transcript: transcript) {
+                await executePendingVaultWrite()
+                return true
+            }
+
+            if let replacementWriteRequest = VaultWriteIntentDetector.parseWriteRequest(transcript: transcript) {
+                return await stageVaultWrite(writeRequest: replacementWriteRequest)
+            }
+
+            return false
+        }
+
+        guard let writeRequest = VaultWriteIntentDetector.parseWriteRequest(transcript: transcript) else {
+            return false
+        }
+
+        return await stageVaultWrite(writeRequest: writeRequest)
+    }
+
+    private func stageVaultWrite(writeRequest: VaultWriteRequest) async -> Bool {
+        guard isVaultWriteEnabled else {
+            lastVaultWriteStatusMessage = "Vault writes are off"
+            await speakVaultWriteResponse(
+                "vault writes are turned off. enable allow vault writes in the personal vault panel first."
+            )
+            return true
+        }
+
+        if writeRequestRequiresConnectedVault(writeRequest),
+           !personalKnowledgeManager.hasConnectedVault {
+            lastVaultWriteStatusMessage = "Connect a vault first"
+            await speakVaultWriteResponse(
+                "connect a vault in the personal vault panel before saving notes there."
+            )
+            return true
+        }
+
+        let pendingWrite = PendingVaultWrite(writeRequest: writeRequest)
+        pendingVaultWrite = pendingWrite
+        lastVaultWriteStatusMessage = nil
+
+        let previewSnippet = String(pendingWrite.previewBody.prefix(120))
+        let confirmationPrompt: String
+        if previewSnippet.isEmpty {
+            confirmationPrompt = "i'll \(pendingWrite.targetDescription.lowercased()). say yes save it to confirm, or cancel."
+        } else {
+            confirmationPrompt = "i'll \(pendingWrite.targetDescription.lowercased()). the note says: \(previewSnippet). say yes save it to confirm, or cancel."
+        }
+
+        await speakVaultWriteResponse(confirmationPrompt)
+        return true
+    }
+
+    private func executePendingVaultWrite() async {
+        guard let pendingVaultWrite else { return }
+
+        let writeRequest = pendingVaultWrite.writeRequest
+        self.pendingVaultWrite = nil
+
+        do {
+            let writeResult = try await personalKnowledgeManager.executeWrite(writeRequest)
+            connectedVaultMarkdownFileCount = personalKnowledgeManager.countSearchableMarkdownFiles()
+            lastVaultWriteStatusMessage = "Saved to \(writeResult.summary)"
+            await speakVaultWriteResponse("saved to \(writeResult.summary).")
+        } catch {
+            lastVaultWriteStatusMessage = error.localizedDescription
+            await speakVaultWriteResponse("couldn't save that. \(error.localizedDescription)")
+        }
+    }
+
+    private func speakVaultWriteResponse(_ message: String) async {
+        voiceState = .processing
+
+        do {
+            try await elevenLabsTTSClient.speakText(message)
+            voiceState = .responding
+        } catch {
+            ClickyAnalytics.trackTTSError(error: error.localizedDescription)
+            print("⚠️ ElevenLabs TTS error during vault write: \(error)")
+            speakCreditsErrorFallback()
+        }
+    }
+
+    /// Allows E2E tests to bypass microphone/STT and exercise the response + skill loop directly.
+    func runE2ENicheDiscoveryChecksIfNeeded() {
+        guard ClickyE2EConfiguration.isEnabled else { return }
+
+        if let suggestionID = ClickyE2EConfiguration.e2eTapSuggestionID {
+            tapNicheSuggestionForE2E(promptID: suggestionID)
+        }
+
+        writeNicheDiscoveryDebugJSONIfNeeded()
+    }
+
+    func runE2EBootstrapActionsIfNeeded() {
+        guard ClickyE2EConfiguration.isEnabled else { return }
+
+        Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+
+            if let nicheRawValue = ClickyE2EConfiguration.e2eSetNicheRawValue,
+               let niche = NicheDiscoveryManager.Niche(rawValue: nicheRawValue) {
+                nicheDiscoveryManager.setUserNiche(niche)
+                refreshNicheSuggestions()
+            }
+
+            if let frontmostBundleId = ClickyE2EConfiguration.e2eFrontmostBundleId {
+                nicheDiscoveryManager.handleFrontmostApplicationChanged(to: frontmostBundleId)
+                refreshNicheSuggestions()
+            }
+
+            if let restoreSkillID = ClickyE2EConfiguration.restoreSkillID {
+                restoreTeachingSkill(id: restoreSkillID)
+            }
+
+            writeE2EArtifactsIfNeeded()
+            writeNicheDiscoveryDebugJSONIfNeeded()
+        }
+    }
+
+    func writeE2EArtifactsIfNeeded() {
+        guard ClickyE2EConfiguration.isEnabled else { return }
+
+        let effectiveNicheRawValue = nicheDiscoveryManager.effectiveNiche?.rawValue ?? "unknown"
+        ClickyE2EConfiguration.writeSelectedNicheForE2E(effectiveNicheRawValue)
+        ClickyE2EConfiguration.writeSuggestionsForE2E(nicheSuggestions.map(\.prompt))
+        ClickyE2EConfiguration.writeSkillsCountForE2E(teachingSkillStore.skills.count)
+        ClickyE2EConfiguration.writeSkillLibraryStateForE2E(teachingSkillStore.skills)
+    }
+
+    private func bootstrapNicheDiscovery() {
+        if let nicheRawValue = ClickyE2EConfiguration.e2eSetNicheRawValue,
+           let niche = NicheDiscoveryManager.Niche(rawValue: nicheRawValue) {
+            nicheDiscoveryManager.setUserNiche(niche)
+        }
+
+        nicheDiscoveryManager.startTracking()
+        refreshNicheSuggestions()
+    }
+
+    private func stopNicheDiscovery() {
+        nicheDiscoveryManager.stopTracking()
+    }
+
+    private func frontmostApplicationBundleId() -> String? {
+        if let overrideBundleId = ClickyE2EConfiguration.e2eFrontmostBundleId {
+            return overrideBundleId
+        }
+        return NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+    }
+
+    private func startFrontmostAppObservation() {
+        frontmostAppObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self else { return }
+            let bundleId = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
+                .bundleIdentifier
+            self.nicheDiscoveryManager.handleFrontmostApplicationChanged(to: bundleId)
+            self.refreshNicheSuggestions()
+        }
+    }
+
+    deinit {
+        if let frontmostAppObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(frontmostAppObserver)
+        }
+    }
+
+    private func nicheClauseForVoicePrompt() -> String? {
+        guard let effectiveNiche = nicheDiscoveryManager.effectiveNiche else { return nil }
+        return nicheDiscoveryManager.voiceSystemPromptClause(for: effectiveNiche)
+    }
+
+    private func makeSuggestionTapContext(for suggestion: NicheSuggestion) -> SuggestionTapContext {
+        let frontmostBundleId = frontmostApplicationBundleId()
+        let snapshot = nicheDiscoveryManager.suggestionSnapshot(frontmostBundleId: frontmostBundleId)
+
+        return SuggestionTapContext(
+            suggestion: suggestion,
+            suggestionMode: snapshot.mode,
+            frontmostBundleId: frontmostBundleId,
+            frontmostAppDisplayName: frontmostApplicationDisplayName(bundleId: frontmostBundleId),
+            effectiveNiche: nicheDiscoveryManager.effectiveNiche,
+            inferredNiche: nicheDiscoveryManager.inferredNiche,
+            profileIsStable: nicheDiscoveryManager.profileIsStable,
+            profileConfidence: nicheDiscoveryManager.profileConfidence,
+            isUserNicheOverride: nicheDiscoveryManager.userNicheOverride != nil
+        )
+    }
+
+    private func frontmostApplicationDisplayName(bundleId: String?) -> String? {
+        guard let bundleId else { return nil }
+
+        if let mappedDisplayName = NicheAppSuggestionMapping.appDisplayName(bundleId: bundleId) {
+            return mappedDisplayName
+        }
+
+        return NSWorkspace.shared.frontmostApplication?.localizedName
+    }
+
+    private func buildVoiceResponseSystemPrompt(suggestionTapContext: SuggestionTapContext? = nil) -> String {
+        var prompt = Self.companionVoiceResponseSystemPrompt
+        if let suggestionTapContext {
+            prompt += "\n\n\(SuggestionTapPromptBuilder.systemPromptClause(for: suggestionTapContext))"
+        } else if let clause = nicheClauseForVoicePrompt() {
+            prompt += "\n\n\(clause)"
+        }
+        return prompt
+    }
+
+    private func tapNicheSuggestionForE2E(promptID: String) {
+        guard let suggestion = nicheSuggestions.first(where: { $0.id == promptID }) else {
+            print("⚠️ E2E: no niche suggestion with id \(promptID)")
+            return
+        }
+        askWithSuggestion(suggestion)
+    }
+
+    private func writeNicheDiscoveryDebugJSONIfNeeded() {
+        guard ClickyE2EConfiguration.isEnabled else { return }
+
+        let suggestions = nicheSuggestions
+        let effectiveNiche = nicheDiscoveryManager.effectiveNiche ?? .other
+        let snapshot = ClickyE2EConfiguration.NicheDiscoveryE2ESnapshot(
+            selectedNiche: effectiveNiche.rawValue,
+            suggestionCount: suggestions.count,
+            firstSuggestionId: suggestions.first?.id ?? "",
+            voicePromptClauseContains: e2eNicheClauseAssertionToken(for: effectiveNiche),
+            suggestionContext: nicheSuggestionContextLabel,
+            isAppAware: nicheSuggestionMode == .appAware || nicheSuggestionMode == .usageBased
+        )
+        ClickyE2EConfiguration.writeNicheDiscoveryForE2E(snapshot)
+        ClickyE2EConfiguration.writeSuggestionsForE2E(suggestions.map(\.prompt))
+    }
+
+    private func e2eNicheClauseAssertionToken(for niche: NicheDiscoveryManager.Niche) -> String {
+        switch niche {
+        case .contentCreator: return "content creator"
+        case .developer: return "developer"
+        case .student: return "student"
+        case .designer: return "designer"
+        case .other: return "many apps"
+        }
+    }
+
     func setSelectedModel(_ model: String) {
         selectedModel = model
         ClickyDefaults.shared.set(model, forKey: "selectedClaudeModel")
@@ -676,6 +1090,8 @@ final class CompanionManager: ObservableObject {
     func start() {
         bootstrapTeachingSkills()
         bindPanelClosedObservation()
+        bootstrapNicheDiscovery()
+        startFrontmostAppObservation()
         refreshAllPermissions()
         print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), inputMonitoring: \(hasInputMonitoringPermission), pushToTalkActive: \(isPushToTalkHotkeyActive), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
@@ -1221,6 +1637,17 @@ final class CompanionManager: ObservableObject {
     - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
     """
 
+    private static let vaultKnowledgeResponseSystemPrompt = """
+    you're clicky. the user is asking about their personal vault notes. their message includes excerpts from those notes — use them to answer. your reply will be spoken aloud, so write the way you'd actually talk.
+
+    rules:
+    - default to one or two sentences unless they ask for more detail.
+    - all lowercase, casual, warm. no emojis, lists, bullet points, or markdown.
+    - write for the ear, not the eye.
+    - if the note excerpts don't contain the answer, say you couldn't find that in their vault.
+    - do not mention screenshots or screen pointing — this is a vault-only question.
+    """
+
     // MARK: - AI Response Pipeline
 
     /// Captures a screenshot, sends it along with the transcript to Claude,
@@ -1230,6 +1657,7 @@ final class CompanionManager: ObservableObject {
     /// the buddy to fly to that element on screen.
     private func sendTranscriptToClaudeWithScreenshot(
         transcript: String,
+        suggestionTapContext: SuggestionTapContext? = nil,
         onComplete: (@MainActor () -> Void)? = nil
     ) {
         currentResponseTask?.cancel()
@@ -1241,57 +1669,100 @@ final class CompanionManager: ObservableObject {
             voiceState = .processing
 
             do {
-                // Capture all connected screens so the AI has full context
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
-
-                guard !Task.isCancelled else { return }
-
-                // Build image labels with the actual screenshot pixel dimensions
-                // so Claude's coordinate space matches the image it sees. We
-                // scale from screenshot pixels to display points ourselves.
-                let labeledImages = screenCaptures.map { capture in
-                    let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
-                    return (data: capture.imageData, label: capture.label + dimensionInfo)
+                if await handleVaultWriteFlow(transcript: transcript) {
+                    guard !Task.isCancelled else { return }
+                    voiceState = .idle
+                    scheduleTransientHideIfNeeded()
+                    return
                 }
 
-                // Pass conversation history so Claude remembers prior exchanges
-                let historyForAPI = conversationHistory.map { entry in
-                    (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
-                }
+                let shouldRetrievePersonalKnowledge = VaultIntentDetector.shouldRetrievePersonalKnowledge(transcript: transcript)
+                    && personalKnowledgeManager.hasConnectedVault
 
-                let matchedTeachingSkills = matchedSkills(for: transcript)
-                lastMatchedSkillNames = matchedTeachingSkills.map(\.name)
-                let systemPrompt = TeachingPromptBuilder.buildVoiceResponsePrompt(
-                    basePrompt: Self.companionVoiceResponseSystemPrompt,
-                    matchedSkills: matchedTeachingSkills
-                )
-                lastSystemPrompt = systemPrompt
-                ClickyE2EConfiguration.writeLastSystemPromptForE2E(systemPrompt)
+                let fullResponseText: String
+                var screenCaptures: [CompanionScreenCapture] = []
 
-                for skill in matchedTeachingSkills {
-                    _ = try? teachingSkillStore.markUsed(skill)
-                }
-                syncTeachingSkillsFromStore()
+                if shouldRetrievePersonalKnowledge {
+                    // Vault questions are text-only — skip screen capture and vision API.
+                    // Sending multi-monitor JPEGs blocks the main thread during base64 encoding
+                    // and adds several seconds of latency for no benefit.
+                    print("📚 Vault query — using text-only path (no screenshots)")
 
-                if !matchedTeachingSkills.isEmpty {
-                    ClickyAnalytics.trackTeachingSkillsMatched(
-                        skillIDs: matchedTeachingSkills.map(\.id),
-                        bundleID: frontmostApplicationBundleId()
+                    let retrievedChunks = await personalKnowledgeManager.search(query: transcript)
+                    let userPrompt = PersonalContextAssembler.buildUserPrompt(
+                        originalTranscript: transcript,
+                        retrievedChunks: retrievedChunks
                     )
-                    ClickyE2EConfiguration.writeLastMatchedSkillIDForE2E(matchedTeachingSkills.first?.id)
-                } else {
-                    ClickyE2EConfiguration.writeLastMatchedSkillIDForE2E(nil)
-                }
+                    lastVaultNotesUsed = retrievedChunks.map(\.sourceLabel)
+                    lastUserPromptForE2E = userPrompt
+                    ClickyE2EConfiguration.writeLastUserPromptForE2E(userPrompt)
+                    lastSystemPrompt = Self.vaultKnowledgeResponseSystemPrompt
+                    ClickyE2EConfiguration.writeLastSystemPromptForE2E(Self.vaultKnowledgeResponseSystemPrompt)
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: systemPrompt,
-                    conversationHistory: historyForAPI,
-                    userPrompt: transcript,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
+                    let vaultResponse = try await claudeAPI.sendTextMessage(
+                        systemPrompt: Self.vaultKnowledgeResponseSystemPrompt,
+                        userPrompt: userPrompt
+                    )
+                    fullResponseText = vaultResponse.text
+                } else {
+                    // Capture all connected screens so the AI has full context
+                    screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+
+                    guard !Task.isCancelled else { return }
+
+                    // Build image labels with the actual screenshot pixel dimensions
+                    // so Claude's coordinate space matches the image it sees. We
+                    // scale from screenshot pixels to display points ourselves.
+                    let labeledImages = screenCaptures.map { capture in
+                        let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
+                        return (data: capture.imageData, label: capture.label + dimensionInfo)
                     }
-                )
+
+                    // Pass conversation history so Claude remembers prior exchanges
+                    let historyForAPI = conversationHistory.map { entry in
+                        (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
+                    }
+
+                    let matchedTeachingSkills = matchedSkills(for: transcript)
+                    lastMatchedSkillNames = matchedTeachingSkills.map(\.name)
+                    let basePrompt = buildVoiceResponseSystemPrompt(suggestionTapContext: suggestionTapContext)
+                    let systemPrompt = TeachingPromptBuilder.buildVoiceResponsePrompt(
+                        basePrompt: basePrompt,
+                        matchedSkills: matchedTeachingSkills
+                    )
+                    lastSystemPrompt = systemPrompt
+                    ClickyE2EConfiguration.writeLastSystemPromptForE2E(systemPrompt)
+
+                    for skill in matchedTeachingSkills {
+                        _ = try? teachingSkillStore.markUsed(skill)
+                    }
+                    syncTeachingSkillsFromStore()
+
+                    if !matchedTeachingSkills.isEmpty {
+                        ClickyAnalytics.trackTeachingSkillsMatched(
+                            skillIDs: matchedTeachingSkills.map(\.id),
+                            bundleID: frontmostApplicationBundleId()
+                        )
+                        ClickyE2EConfiguration.writeLastMatchedSkillIDForE2E(matchedTeachingSkills.first?.id)
+                    } else {
+                        ClickyE2EConfiguration.writeLastMatchedSkillIDForE2E(nil)
+                    }
+
+                    lastUserPromptForE2E = transcript
+                    ClickyE2EConfiguration.writeLastUserPromptForE2E(transcript)
+                    lastVaultNotesUsed = []
+
+                    let screenResponse = try await claudeAPI.analyzeImageStreaming(
+                        images: labeledImages,
+                        systemPrompt: systemPrompt,
+                        conversationHistory: historyForAPI,
+                        userPrompt: transcript,
+                        onTextChunk: { _ in
+                            // No streaming text display — spinner stays until TTS plays
+                        }
+                    )
+                    fullResponseText = screenResponse.text
+                }
 
                 guard !Task.isCancelled else { return }
 

@@ -193,4 +193,11 @@ enum ClickyAnalytics {
             "bundle_id": bundleID ?? "unknown"
         ])
     }
+
+    static func trackSuggestionSpoken(niche: String, promptID: String) {
+        PostHogSDK.shared.capture("suggestion_spoken", properties: [
+            "niche": niche,
+            "prompt_id": promptID
+        ])
+    }
 }
