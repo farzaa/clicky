@@ -332,7 +332,15 @@ final class CompanionManager: ObservableObject {
         sessionIdleTimer?.invalidate()
         sessionIdleTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
             Task { @MainActor in
-                self?.finalizeAndPersistSession()
+                guard let self else { return }
+                // If the assistant is still speaking when the timer fires, defer the
+                // idle boundary by re-arming. This keeps a long TTS reply from ending
+                // the session mid-speech and splitting one conversation into two.
+                if self.elevenLabsTTSClient.isPlaying {
+                    self.restartSessionIdleTimer()
+                    return
+                }
+                self.finalizeAndPersistSession()
             }
         }
     }
