@@ -1,0 +1,158 @@
+# XcodeGen spec for the Yapr iOS app + Control Center widget extension.
+#
+# This file is the single source of truth for project structure, build
+# settings, Info.plist contents, and entitlements. Regenerate the
+# .xcodeproj after changing anything here:
+#
+#   cd Yapr && xcodegen generate
+#
+# Two targets:
+#   • Yapr (iOS app, SwiftUI, iPhone-only, portrait, dark UI)
+#   • YaprControl (Control Center widget extension, iOS 18+)
+#
+# Shared sources live in `Yapr/Shared/` (the AppIntent that opens the
+# app from Control Center, plus the App Group keys both targets read).
+#
+# To use your own Apple Developer team:
+#   • Replace `com.tobi` with your bundle ID prefix below AND in
+#     `Yapr/Shared/AppGroupKeys.swift` (the App Group identifier must stay
+#     in sync with the entitlement value generated below).
+
+name: Yapr
+
+options:
+  bundleIdPrefix: com.tobi
+  developmentLanguage: en
+  deploymentTarget:
+    iOS: "18.0"
+  generateEmptyDirectories: true
+  groupSortPosition: top
+  createIntermediateGroups: true
+  defaultConfig: Debug
+  xcodeVersion: "15.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    SUPPORTS_MACCATALYST: NO
+    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "0.1.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+    GCC_TREAT_WARNINGS_AS_ERRORS: NO
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+
+packages:
+  ClickyShared:
+    path: ../ClickyShared
+
+targets:
+
+  # ------------------------------------------------------------------ #
+  # Yapr — iOS app target                                              #
+  # ------------------------------------------------------------------ #
+  Yapr:
+    type: application
+    platform: iOS
+
+    sources:
+      - path: App
+      - path: Shared
+      - path: Assets.xcassets
+        type: folder
+
+    dependencies:
+      - package: ClickyShared
+      - target: YaprControl
+        embed: true
+        codeSign: true
+
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Yapr
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        UILaunchScreen:
+          UIColorName: ""
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIRequiredDeviceCapabilities:
+          - arm64
+          - microphone
+        UIUserInterfaceStyle: Dark
+        ITSAppUsesNonExemptEncryption: false
+        NSMicrophoneUsageDescription: "Yapr listens when you press and hold the orb so you can ask questions about your most recent screenshot."
+        NSPhotoLibraryUsageDescription: "Yapr reads your most recent screenshot from your Photos library when you ask, so it can answer questions about what's on your screen. Yapr never writes, edits, or saves photos."
+        # Custom URL scheme reserved for future deep linking. AskYaprIntent
+        # uses openAppWhenRun, so this scheme isn't required to launch the
+        # app from Control Center, but it lets us add deep links later
+        # (e.g. yapr://ask) without bumping a build.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.tobi.yapr
+            CFBundleURLSchemes:
+              - yapr
+
+    entitlements:
+      path: App/Yapr.entitlements
+      properties:
+        # App Group shared with the Control Center widget extension. Must
+        # match `AppGroupKeys.identifier` in `Yapr/Shared/AppGroupKeys.swift`
+        # AND the matching entitlement on the YaprControl target below.
+        com.apple.security.application-groups:
+          - group.com.tobi.yapr
+
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tobi.yapr
+        PRODUCT_NAME: Yapr
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
+
+  # ------------------------------------------------------------------ #
+  # YaprControl — Control Center widget extension                      #
+  # ------------------------------------------------------------------ #
+  YaprControl:
+    type: app-extension
+    platform: iOS
+
+    sources:
+      - path: ControlWidget
+      - path: Shared
+
+    dependencies:
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+      - sdk: AppIntents.framework
+
+    info:
+      path: ControlWidget/Info.plist
+      properties:
+        CFBundleDisplayName: "Yapr Control"
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # Tells iOS this bundle is a WidgetKit-based extension. Control
+        # Center widgets and Home Screen widgets share the same extension
+        # point identifier — the `ControlWidget` API differentiates them.
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+
+    entitlements:
+      path: ControlWidget/YaprControl.entitlements
+      properties:
+        # Must match the App Group on the main Yapr target above.
+        com.apple.security.application-groups:
+          - group.com.tobi.yapr
+
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tobi.yapr.YaprControl
+        PRODUCT_NAME: YaprControl
+        GENERATE_INFOPLIST_FILE: NO

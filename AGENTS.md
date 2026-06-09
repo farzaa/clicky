@@ -3,7 +3,16 @@
 <!-- This is the single source of truth for all AI coding agents. CLAUDE.md is a symlink to this file. -->
 <!-- AGENTS.md spec: https://github.com/agentsmd/agents.md — supported by Claude Code, Cursor, Copilot, Gemini CLI, and others. -->
 
-## Overview
+## Repository contents
+
+This repository now contains two companion apps that share the same Cloudflare Worker proxy:
+
+1. **Clicky (macOS)** — the original menu bar app. Lives in `leanring-buddy/` and `leanring-buddy.xcodeproj/`. Documented below.
+2. **Yapr (iOS)** — a new iPhone companion app. Lives in `Yapr/` and depends on a shared Swift Package at `ClickyShared/`. **For iOS-specific architecture, file map, and setup instructions, see [`Yapr/README.md`](Yapr/README.md)** — that file is the source of truth for the iOS project. Do NOT duplicate iOS details here.
+
+Both apps share the Cloudflare Worker at `worker/`.
+
+## Overview (macOS Clicky)
 
 macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to Claude. Claude responds with text (streamed via SSE) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements Claude references on any connected monitor.
 

@@ -1,0 +1,589 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0F1CDBC4CE94C34280CBEDF0 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2666FA173CE2574AD059A1D9 /* AppIntents.framework */; };
+		1612CD8216C4F42825D29444 /* ScreenshotPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94CBAF9DBA01DFC23F339FB3 /* ScreenshotPreviewView.swift */; };
+		1D7A47B5E46D6CBCB26A6C1D /* AskYaprIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B7ED1E997117AC57A0683B /* AskYaprIntent.swift */; };
+		1DB1A07CA755E61B27401EEB /* VoiceOrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BBB3F6F56859A07CAD895BC /* VoiceOrbView.swift */; };
+		279253D59AEC72E28233E58A /* AppGroupKeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA672046E84C4FB8B6644FFB /* AppGroupKeys.swift */; };
+		3668CEE8FC3B83B967E104F5 /* AVAudioSessionConfigurator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B163A85177B59BC1BB12C56 /* AVAudioSessionConfigurator.swift */; };
+		38A9A26F5BBB7B18ABD76E4F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 83C3E9EC99E30B118123604A /* Assets.xcassets */; };
+		49A4980E65A0FF7A2E221E9E /* PermissionsGateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C72C0E6B98ABF41D799F32F /* PermissionsGateView.swift */; };
+		5430D7882C0861E63A5305D4 /* YaprControl.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 2260BCB4A0B4553D9DA11EF1 /* YaprControl.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		5C6DA7AAABD9C35964BA7723 /* MicrophoneCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C40864009386D218780FA186 /* MicrophoneCaptureService.swift */; };
+		65FC615418C5297EC6F83693 /* ResponseBubbleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D46B5DF27BA7065E2CFBD1E /* ResponseBubbleView.swift */; };
+		77C1CF1A0150C98E84573F12 /* ClickyShared in Frameworks */ = {isa = PBXBuildFile; productRef = 17D87262C015295698797342 /* ClickyShared */; };
+		8304997E9564064C960A7F6D /* AskYaprIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B7ED1E997117AC57A0683B /* AskYaprIntent.swift */; };
+		959B0ECB79E75D1F9DD37E82 /* YaprViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82DCE31435B875FAB83B15FB /* YaprViewModel.swift */; };
+		AB404077EBA389F74FFCF2CD /* YaprControlBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = E29EEB092BE1610126A4CDE7 /* YaprControlBundle.swift */; };
+		AF084A57BAE953DB128899E4 /* YaprApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D6751A878F2084C496F25CC /* YaprApp.swift */; };
+		B5CB61D3DBFACE69C17AEAA2 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 59418DD15CC5E79835FF910E /* SwiftUI.framework */; };
+		BE708798E29BE323DA45CF8B /* AppGroupKeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA672046E84C4FB8B6644FFB /* AppGroupKeys.swift */; };
+		C0DAB83750FE4D06834C0AE7 /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71219566A42FD3204DB931F8 /* DesignSystem.swift */; };
+		D6969BA6FA28F8F2AA03A673 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B36822D39DC637D4AC5268EB /* WidgetKit.framework */; };
+		E6053C20211F60FE008C1CAF /* YaprAskControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8407EAAE089EA85C3A9FF97D /* YaprAskControl.swift */; };
+		EDC4823F9645069C95B2DF42 /* RecentScreenshotProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4BD22E4FEF88AF8C11951E /* RecentScreenshotProvider.swift */; };
+		FEE677B14C5FBA6765BD52AA /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAD3AA42B9A7C13D02A9D48A /* RootView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B9BABEF14B34495A2691F57D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A297DB3BF114E466B0088018 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9687F548F4068206F7F4EBFA;
+			remoteInfo = YaprControl;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		C7CE3F3A1B480D4BAD9B8B6C /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				5430D7882C0861E63A5305D4 /* YaprControl.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		2260BCB4A0B4553D9DA11EF1 /* YaprControl.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = YaprControl.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		2666FA173CE2574AD059A1D9 /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
+		3BFE36D546C7F69372381AC7 /* Yapr.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Yapr.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3C72C0E6B98ABF41D799F32F /* PermissionsGateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsGateView.swift; sourceTree = "<group>"; };
+		542739CCFAF5A4596DB2339F /* Yapr.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Yapr.entitlements; sourceTree = "<group>"; };
+		59418DD15CC5E79835FF910E /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
+		60234C6EB3F88FCCA03B8D91 /* ClickyShared */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ClickyShared; path = ../ClickyShared; sourceTree = SOURCE_ROOT; };
+		6BBB3F6F56859A07CAD895BC /* VoiceOrbView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceOrbView.swift; sourceTree = "<group>"; };
+		6D46B5DF27BA7065E2CFBD1E /* ResponseBubbleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResponseBubbleView.swift; sourceTree = "<group>"; };
+		71219566A42FD3204DB931F8 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
+		82DCE31435B875FAB83B15FB /* YaprViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YaprViewModel.swift; sourceTree = "<group>"; };
+		83C3E9EC99E30B118123604A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Assets.xcassets; sourceTree = SOURCE_ROOT; };
+		8407EAAE089EA85C3A9FF97D /* YaprAskControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YaprAskControl.swift; sourceTree = "<group>"; };
+		94CBAF9DBA01DFC23F339FB3 /* ScreenshotPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotPreviewView.swift; sourceTree = "<group>"; };
+		9B163A85177B59BC1BB12C56 /* AVAudioSessionConfigurator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AVAudioSessionConfigurator.swift; sourceTree = "<group>"; };
+		9D6751A878F2084C496F25CC /* YaprApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YaprApp.swift; sourceTree = "<group>"; };
+		AA4BD22E4FEF88AF8C11951E /* RecentScreenshotProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentScreenshotProvider.swift; sourceTree = "<group>"; };
+		B36822D39DC637D4AC5268EB /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		C40864009386D218780FA186 /* MicrophoneCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicrophoneCaptureService.swift; sourceTree = "<group>"; };
+		CA0234F903EF5E6FDE9486B3 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		CA672046E84C4FB8B6644FFB /* AppGroupKeys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppGroupKeys.swift; sourceTree = "<group>"; };
+		D6B92A5A5FE1DC07CD03D036 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		E29EEB092BE1610126A4CDE7 /* YaprControlBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YaprControlBundle.swift; sourceTree = "<group>"; };
+		E5B7ED1E997117AC57A0683B /* AskYaprIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskYaprIntent.swift; sourceTree = "<group>"; };
+		EAD3AA42B9A7C13D02A9D48A /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		FA83A600D7F777F3ABCFEF14 /* YaprControl.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = YaprControl.entitlements; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		91F6CF917E742C022A93A3C1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D6969BA6FA28F8F2AA03A673 /* WidgetKit.framework in Frameworks */,
+				B5CB61D3DBFACE69C17AEAA2 /* SwiftUI.framework in Frameworks */,
+				0F1CDBC4CE94C34280CBEDF0 /* AppIntents.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C5F82E7D7C2C83A320BA255A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				77C1CF1A0150C98E84573F12 /* ClickyShared in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0069DD5C82312795CD4A6B6E /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				CA672046E84C4FB8B6644FFB /* AppGroupKeys.swift */,
+				E5B7ED1E997117AC57A0683B /* AskYaprIntent.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		115EB37834E22C5C214B4035 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				9B163A85177B59BC1BB12C56 /* AVAudioSessionConfigurator.swift */,
+				71219566A42FD3204DB931F8 /* DesignSystem.swift */,
+				D6B92A5A5FE1DC07CD03D036 /* Info.plist */,
+				C40864009386D218780FA186 /* MicrophoneCaptureService.swift */,
+				3C72C0E6B98ABF41D799F32F /* PermissionsGateView.swift */,
+				AA4BD22E4FEF88AF8C11951E /* RecentScreenshotProvider.swift */,
+				6D46B5DF27BA7065E2CFBD1E /* ResponseBubbleView.swift */,
+				EAD3AA42B9A7C13D02A9D48A /* RootView.swift */,
+				94CBAF9DBA01DFC23F339FB3 /* ScreenshotPreviewView.swift */,
+				6BBB3F6F56859A07CAD895BC /* VoiceOrbView.swift */,
+				542739CCFAF5A4596DB2339F /* Yapr.entitlements */,
+				9D6751A878F2084C496F25CC /* YaprApp.swift */,
+				82DCE31435B875FAB83B15FB /* YaprViewModel.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		193A1CC7F0A4DF21BEEE8732 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				60234C6EB3F88FCCA03B8D91 /* ClickyShared */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		35B1BEFDE687B129947E00FA /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				2666FA173CE2574AD059A1D9 /* AppIntents.framework */,
+				59418DD15CC5E79835FF910E /* SwiftUI.framework */,
+				B36822D39DC637D4AC5268EB /* WidgetKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		72824465C3EA9E0FE43C7CAB /* ControlWidget */ = {
+			isa = PBXGroup;
+			children = (
+				CA0234F903EF5E6FDE9486B3 /* Info.plist */,
+				8407EAAE089EA85C3A9FF97D /* YaprAskControl.swift */,
+				FA83A600D7F777F3ABCFEF14 /* YaprControl.entitlements */,
+				E29EEB092BE1610126A4CDE7 /* YaprControlBundle.swift */,
+			);
+			path = ControlWidget;
+			sourceTree = "<group>";
+		};
+		89CA33AF1338332D76648A61 = {
+			isa = PBXGroup;
+			children = (
+				115EB37834E22C5C214B4035 /* App */,
+				72824465C3EA9E0FE43C7CAB /* ControlWidget */,
+				193A1CC7F0A4DF21BEEE8732 /* Packages */,
+				0069DD5C82312795CD4A6B6E /* Shared */,
+				83C3E9EC99E30B118123604A /* Assets.xcassets */,
+				35B1BEFDE687B129947E00FA /* Frameworks */,
+				AC0143D6B8DD186B0D867BD6 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AC0143D6B8DD186B0D867BD6 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				3BFE36D546C7F69372381AC7 /* Yapr.app */,
+				2260BCB4A0B4553D9DA11EF1 /* YaprControl.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		9687F548F4068206F7F4EBFA /* YaprControl */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5B5D943A82B61131D5385FE1 /* Build configuration list for PBXNativeTarget "YaprControl" */;
+			buildPhases = (
+				6BD4FCFE275AE61765BDE9E4 /* Sources */,
+				91F6CF917E742C022A93A3C1 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = YaprControl;
+			packageProductDependencies = (
+			);
+			productName = YaprControl;
+			productReference = 2260BCB4A0B4553D9DA11EF1 /* YaprControl.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		D2A68A20366D3238E5042151 /* Yapr */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 8EE0358F1074DDF35231D4F2 /* Build configuration list for PBXNativeTarget "Yapr" */;
+			buildPhases = (
+				7BEB64FD000B37EF490B0FC2 /* Sources */,
+				7E7293D9F3D7927F1DCA7E5C /* Resources */,
+				C5F82E7D7C2C83A320BA255A /* Frameworks */,
+				C7CE3F3A1B480D4BAD9B8B6C /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				9376751EFD5C6F2FC57C6542 /* PBXTargetDependency */,
+			);
+			name = Yapr;
+			packageProductDependencies = (
+				17D87262C015295698797342 /* ClickyShared */,
+			);
+			productName = Yapr;
+			productReference = 3BFE36D546C7F69372381AC7 /* Yapr.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A297DB3BF114E466B0088018 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					9687F548F4068206F7F4EBFA = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					D2A68A20366D3238E5042151 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = B1697F331477FAED614D3812 /* Build configuration list for PBXProject "Yapr" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 89CA33AF1338332D76648A61;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				EAA60D54DEF8F211F53028ED /* XCLocalSwiftPackageReference "../ClickyShared" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = AC0143D6B8DD186B0D867BD6 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				D2A68A20366D3238E5042151 /* Yapr */,
+				9687F548F4068206F7F4EBFA /* YaprControl */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		7E7293D9F3D7927F1DCA7E5C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				38A9A26F5BBB7B18ABD76E4F /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		6BD4FCFE275AE61765BDE9E4 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				279253D59AEC72E28233E58A /* AppGroupKeys.swift in Sources */,
+				1D7A47B5E46D6CBCB26A6C1D /* AskYaprIntent.swift in Sources */,
+				E6053C20211F60FE008C1CAF /* YaprAskControl.swift in Sources */,
+				AB404077EBA389F74FFCF2CD /* YaprControlBundle.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7BEB64FD000B37EF490B0FC2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3668CEE8FC3B83B967E104F5 /* AVAudioSessionConfigurator.swift in Sources */,
+				BE708798E29BE323DA45CF8B /* AppGroupKeys.swift in Sources */,
+				8304997E9564064C960A7F6D /* AskYaprIntent.swift in Sources */,
+				C0DAB83750FE4D06834C0AE7 /* DesignSystem.swift in Sources */,
+				5C6DA7AAABD9C35964BA7723 /* MicrophoneCaptureService.swift in Sources */,
+				49A4980E65A0FF7A2E221E9E /* PermissionsGateView.swift in Sources */,
+				EDC4823F9645069C95B2DF42 /* RecentScreenshotProvider.swift in Sources */,
+				65FC615418C5297EC6F83693 /* ResponseBubbleView.swift in Sources */,
+				FEE677B14C5FBA6765BD52AA /* RootView.swift in Sources */,
+				1612CD8216C4F42825D29444 /* ScreenshotPreviewView.swift in Sources */,
+				1DB1A07CA755E61B27401EEB /* VoiceOrbView.swift in Sources */,
+				AF084A57BAE953DB128899E4 /* YaprApp.swift in Sources */,
+				959B0ECB79E75D1F9DD37E82 /* YaprViewModel.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		9376751EFD5C6F2FC57C6542 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9687F548F4068206F7F4EBFA /* YaprControl */;
+			targetProxy = B9BABEF14B34495A2691F57D /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		1A1D6DD77B37F24345ED087E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/Yapr.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.tobi.yapr;
+				PRODUCT_NAME = Yapr;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		6DE3ACA7B5C071CE068F343D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_TREAT_WARNINGS_AS_ERRORS = NO;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		768F31FEDBFAB505B4D39E63 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_TREAT_WARNINGS_AS_ERRORS = NO;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		8194374F90DE267681A34592 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ControlWidget/YaprControl.entitlements;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ControlWidget/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.tobi.yapr.YaprControl;
+				PRODUCT_NAME = YaprControl;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		B26DF1E57824F46BD7BD1D3A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/Yapr.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.tobi.yapr;
+				PRODUCT_NAME = Yapr;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		FA8D5E6FBB00EA2A8B80C92F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ControlWidget/YaprControl.entitlements;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ControlWidget/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.tobi.yapr.YaprControl;
+				PRODUCT_NAME = YaprControl;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		5B5D943A82B61131D5385FE1 /* Build configuration list for PBXNativeTarget "YaprControl" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FA8D5E6FBB00EA2A8B80C92F /* Debug */,
+				8194374F90DE267681A34592 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		8EE0358F1074DDF35231D4F2 /* Build configuration list for PBXNativeTarget "Yapr" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B26DF1E57824F46BD7BD1D3A /* Debug */,
+				1A1D6DD77B37F24345ED087E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B1697F331477FAED614D3812 /* Build configuration list for PBXProject "Yapr" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6DE3ACA7B5C071CE068F343D /* Debug */,
+				768F31FEDBFAB505B4D39E63 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		EAA60D54DEF8F211F53028ED /* XCLocalSwiftPackageReference "../ClickyShared" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../ClickyShared;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		17D87262C015295698797342 /* ClickyShared */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ClickyShared;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = A297DB3BF114E466B0088018 /* Project object */;
+}

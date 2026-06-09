@@ -6,3 +6,15 @@ build/
 releases/
 .claude/
 coding-plans/
+
+# Per-user Xcode state for both the macOS and iOS projects.
+**/xcuserdata/
+**/*.xcworkspace/xcuserdata/
+
+# SwiftPM build artifacts (ClickyShared and any local build runs).
+.build/
+**/.build/
+ClickyShared/Package.resolved
+
+# Generated launch logs / coredumps from running the iOS simulator.
+*.crashlog
