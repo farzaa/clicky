@@ -95,6 +95,34 @@ Each entry: the call, and why. Deviations from the original plan are marked **[d
   `ElementLocationDetector`, the camera entitlement, or any known warning — not our diff.
 - Streaming TTS, sentence-chunked TTS — escape hatch only if full-response TTS feels bad.
 
+## Decisions made during implementation
+
+- **[deviation] Offline fast-fail for cloud requests.** ClaudeAPI's URLSession sets
+  `waitsForConnectivity`, so with wifi off a cloud request spins for up to 120 seconds —
+  unusable and undemoable. CompanionManager now checks an `NWPathMonitor` before cloud
+  requests and speaks the "flip me to local" nudge immediately. This changes cloud behavior
+  only in the no-network case (120s hang → instant honest answer); `ClaudeAPI` itself is
+  untouched.
+- **[deviation] Benchmark harness committed at `bench/LocalModeBench`.** "Real measurements
+  only" needs a reproducible source: same model, cache directory, and generation parameters
+  as the app. The README table comes from its output on this machine.
+- **Model-not-ready voice line.** Push-to-talk in Local Mode before the download/load
+  finishes speaks "still warming up my local brain…" instead of holding the spinner hostage
+  to a 1.8 GB download.
+- **Latency badge lives in the cursor overlay**, above the triangle, only during
+  `.responding` — the menu-bar panel is auto-dismissed when push-to-talk starts, so it can't
+  host a badge the demo can see. Muted chip (surface fill, 9pt), not a second blue bubble.
+- **Offline relaunch path is load-from-directory, not hub-cache-hit.** After the first
+  download the resolved model directory is persisted; later launches call the
+  `loadContainer(from: directory)` overload with zero network involvement, rather than
+  trusting the hub client's cache lookup to behave offline.
+- **Stray `[POINT:...]` tags from the local model are stripped, not rendered.** The existing
+  end-anchored parse runs in both modes; in Local Mode the coordinate is unusable by
+  construction (no screen capture to map pixels with), so the tag is removed from the spoken
+  text and nothing flies.
+- **CLI builds use `-skipMacroValidation`** (mlx-swift-lm ships Swift macros); in the Xcode
+  GUI this is the one-time "Trust & Enable" prompt.
+
 ## Process
 
 - **Terminal `xcodebuild` is used for compile verification only while this machine has zero
