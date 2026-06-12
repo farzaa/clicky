@@ -20,6 +20,9 @@ struct BuddyChatResponse {
     let firstTokenLatencySeconds: TimeInterval?
     /// Seconds from sending the request to the end of the stream.
     let totalDurationSeconds: TimeInterval
+    /// Decode speed reported by the engine, if it reports one. Local
+    /// inference fills this in; the cloud path has no equivalent signal.
+    let tokensPerSecond: Double?
 }
 
 @MainActor
@@ -95,7 +98,8 @@ final class CloudChatProvider: BuddyChatProvider {
         return BuddyChatResponse(
             text: fullResponseText,
             firstTokenLatencySeconds: firstTokenLatencySeconds,
-            totalDurationSeconds: totalDurationSeconds
+            totalDurationSeconds: totalDurationSeconds,
+            tokensPerSecond: nil
         )
     }
 }

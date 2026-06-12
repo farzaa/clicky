@@ -121,6 +121,11 @@
 			packageProductDependencies = (
 				AA00BB022F6500020039DA55 /* Sparkle */,
 				AA00BB052F6500050039DA55 /* PostHog */,
+				CC00AA042F6600040039DA55 /* MLXLLM */,
+				CC00AA052F6600050039DA55 /* MLXLMCommon */,
+				CC00AA062F6600060039DA55 /* MLXHuggingFace */,
+				CC00AA072F6600070039DA55 /* HuggingFace */,
+				CC00AA082F6600080039DA55 /* Tokenizers */,
 			);
 			productName = "leanring-buddy";
 			productReference = 28F22CBF2F56440300A0FC59 /* Clicky.app */;
@@ -207,6 +212,9 @@
 			packageReferences = (
 				AA00BB012F6500010039DA55 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				AA00BB042F6500040039DA55 /* XCRemoteSwiftPackageReference "posthog-ios" */,
+				CC00AA012F6600010039DA55 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */,
+				CC00AA022F6600020039DA55 /* XCRemoteSwiftPackageReference "swift-huggingface" */,
+				CC00AA032F6600030039DA55 /* XCRemoteSwiftPackageReference "swift-transformers" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 28F22CC02F56440300A0FC59 /* Products */;
@@ -616,6 +624,30 @@
 				minimumVersion = 3.0.0;
 			};
 		};
+		CC00AA012F6600010039DA55 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift-lm";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.31.3;
+			};
+		};
+		CC00AA022F6600020039DA55 /* XCRemoteSwiftPackageReference "swift-huggingface" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/huggingface/swift-huggingface";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.9.0;
+			};
+		};
+		CC00AA032F6600030039DA55 /* XCRemoteSwiftPackageReference "swift-transformers" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/huggingface/swift-transformers";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.3.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -628,6 +660,31 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA00BB042F6500040039DA55 /* XCRemoteSwiftPackageReference "posthog-ios" */;
 			productName = PostHog;
+		};
+		CC00AA042F6600040039DA55 /* MLXLLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CC00AA012F6600010039DA55 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLLM;
+		};
+		CC00AA052F6600050039DA55 /* MLXLMCommon */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CC00AA012F6600010039DA55 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLMCommon;
+		};
+		CC00AA062F6600060039DA55 /* MLXHuggingFace */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CC00AA012F6600010039DA55 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXHuggingFace;
+		};
+		CC00AA072F6600070039DA55 /* HuggingFace */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CC00AA022F6600020039DA55 /* XCRemoteSwiftPackageReference "swift-huggingface" */;
+			productName = HuggingFace;
+		};
+		CC00AA082F6600080039DA55 /* Tokenizers */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CC00AA032F6600030039DA55 /* XCRemoteSwiftPackageReference "swift-transformers" */;
+			productName = Tokenizers;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
