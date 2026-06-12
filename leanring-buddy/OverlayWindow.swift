@@ -294,6 +294,30 @@ struct BlueCursorView: View {
                     }
             }
 
+            // Latency badge — provider + first-token time, shown while the
+            // answer is being spoken. The local-vs-cloud speed difference as
+            // something you can see, not just feel.
+            if isCursorOnThisScreen && companionManager.voiceState == .responding,
+               let latencyDescription = companionManager.lastResponseLatencyDescription {
+                Text(latencyDescription)
+                    .font(.system(size: 9, weight: .medium).monospacedDigit())
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(DS.Colors.surface1.opacity(0.92))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                    )
+                    .fixedSize()
+                    .position(x: cursorPosition.x + 16, y: cursorPosition.y - 20)
+                    .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
+                    .animation(.easeIn(duration: 0.25), value: companionManager.voiceState)
+            }
+
             // Blue triangle cursor — shown when idle or while TTS is playing (responding).
             // All three states (triangle, waveform, spinner) stay in the view tree
             // permanently and cross-fade via opacity so SwiftUI doesn't remove/re-insert

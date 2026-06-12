@@ -43,6 +43,11 @@ final class CompanionManager: ObservableObject {
     /// BlueCursorView uses this instead of a random pointer phrase.
     @Published var detectedElementBubbleText: String?
 
+    /// Provider + first-token latency for the most recent response, shown
+    /// as a small badge near the cursor while the answer plays ("local ·
+    /// 0.6s · 58 tok/s"). Cleared when the next push-to-talk begins.
+    @Published private(set) var lastResponseLatencyDescription: String?
+
     // MARK: - Onboarding Video State (shared across all screen overlays)
 
     @Published var onboardingVideoPlayer: AVPlayer?
@@ -601,6 +606,7 @@ final class CompanionManager: ObservableObject {
             currentResponseTask?.cancel()
             stopAllSpeechPlayback()
             clearDetectedElementLocation()
+            lastResponseLatencyDescription = nil
 
             // Dismiss the onboarding prompt if it's showing
             if showOnboardingPrompt {
@@ -784,6 +790,20 @@ final class CompanionManager: ObservableObject {
                     }
                 )
                 let fullResponseText = chatResponse.text
+
+                // Feed the latency badge: provider + first-token time, plus
+                // decode speed when the engine reports one (local only).
+                if let firstTokenLatencySeconds = chatResponse.firstTokenLatencySeconds {
+                    var latencyDescription = String(
+                        format: "%@ · %.1fs",
+                        isLocalModeRequest ? "local" : "cloud",
+                        firstTokenLatencySeconds
+                    )
+                    if let tokensPerSecond = chatResponse.tokensPerSecond {
+                        latencyDescription += String(format: " · %.0f tok/s", tokensPerSecond)
+                    }
+                    lastResponseLatencyDescription = latencyDescription
+                }
 
                 guard !Task.isCancelled else { return }
 
