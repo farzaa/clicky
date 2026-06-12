@@ -34,6 +34,9 @@ struct CompanionPanelView: View {
 
                 localModelStatusRow
                     .padding(.horizontal, 16)
+
+                takeoverSection
+                    .padding(.horizontal, 16)
             }
 
             if !companionManager.allPermissionsGranted {
@@ -675,6 +678,87 @@ struct CompanionPanelView: View {
                 .font(.system(size: 11))
                 .foregroundColor(DS.Colors.textTertiary)
                 .padding(.top, 8)
+        }
+    }
+
+    // MARK: - Takeover (offline autonomous)
+
+    /// Experimental offline takeover controls: arm/dry-run, the risky opt-in,
+    /// and live run status. Says plainly that it's offline-only and how to stop.
+    @ViewBuilder
+    private var takeoverSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider()
+                .background(DS.Colors.borderSubtle)
+                .padding(.vertical, 4)
+
+            HStack {
+                Text("Takeover")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                Text("offline · experimental")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                Spacer()
+                Text(takeoverStatusText)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+
+            Text("say \"take over\" then a task. dry-run moves the cursor only. press esc to stop.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Toggle(isOn: Binding(
+                get: { companionManager.takeoverController.isArmed },
+                set: { companionManager.takeoverController.isArmed = $0 }
+            )) {
+                Text("Arm (perform real clicks)")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+            .toggleStyle(.switch)
+            .tint(DS.Colors.accent)
+            .scaleEffect(0.8, anchor: .leading)
+
+            if companionManager.takeoverController.isArmed {
+                Toggle(isOn: Binding(
+                    get: { companionManager.takeoverController.allowRiskyActions },
+                    set: { companionManager.takeoverController.allowRiskyActions = $0 }
+                )) {
+                    Text("Allow typing + submits")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(Color(red: 0.9, green: 0.55, blue: 0.35))
+                }
+                .toggleStyle(.switch)
+                .tint(Color(red: 0.9, green: 0.55, blue: 0.35))
+                .scaleEffect(0.8, anchor: .leading)
+            }
+
+            if companionManager.takeoverController.isRunning {
+                Button(action: { companionManager.takeoverController.requestKill() }) {
+                    Text("Stop")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color(red: 0.85, green: 0.3, blue: 0.3)))
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+        }
+        .padding(.top, 8)
+    }
+
+    private var takeoverStatusText: String {
+        switch companionManager.takeoverController.runState {
+        case .idle: return companionManager.takeoverController.isArmed ? "armed" : "dry-run"
+        case .running(let step, _): return "step \(step)…"
+        case .finished: return "done"
+        case .stopped: return "stopped"
         }
     }
 
