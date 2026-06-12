@@ -6,3 +6,9 @@ build/
 releases/
 .claude/
 coding-plans/
+
+# local model weights must never land in the repo
+models/
+*.safetensors
+*.gguf
+DerivedData/
