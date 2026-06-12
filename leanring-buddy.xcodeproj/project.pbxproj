@@ -126,6 +126,7 @@
 				CC00AA062F6600060039DA55 /* MLXHuggingFace */,
 				CC00AA072F6600070039DA55 /* HuggingFace */,
 				CC00AA082F6600080039DA55 /* Tokenizers */,
+				CC00AA092F6600090039DA55 /* MLXVLM */,
 			);
 			productName = "leanring-buddy";
 			productReference = 28F22CBF2F56440300A0FC59 /* Clicky.app */;
@@ -685,6 +686,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = CC00AA032F6600030039DA55 /* XCRemoteSwiftPackageReference "swift-transformers" */;
 			productName = Tokenizers;
+		};
+		CC00AA092F6600090039DA55 /* MLXVLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CC00AA012F6600010039DA55 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXVLM;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

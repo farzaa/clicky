@@ -96,6 +96,58 @@ final class CompanionManager: ObservableObject {
     /// The panel reads its modelReadiness for the download progress UI.
     let localChatProvider = LocalChatProvider()
 
+    // MARK: - Takeover (offline autonomous mode)
+
+    /// The local vision model that drives takeover. Separate from the text
+    /// chat model — takeover needs to see the screen.
+    let takeoverVisionAgent = TakeoverVisionAgent()
+    private let takeoverActionExecutor = ComputerUseActionExecutor()
+
+    /// The offline autonomous loop. Dry-run by default; offline + Accessibility
+    /// enforced before it will run.
+    lazy var takeoverController: TakeoverController = {
+        TakeoverController(
+            visionAgent: takeoverVisionAgent,
+            executor: takeoverActionExecutor,
+            captureCursorScreen: {
+                let captures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                return captures.first(where: { $0.isCursorScreen }) ?? captures.first
+            },
+            narrate: { [weak self] line in
+                // Offline voice only — takeover never touches the cloud TTS.
+                try? await self?.appleSpeechSynthesisClient.speakText(line)
+            },
+            isNetworkAvailable: { [weak self] in self?.isNetworkAvailable ?? true }
+        )
+    }()
+
+    private var takeoverStateCancellable: AnyCancellable?
+    private var takeoverModelCancellable: AnyCancellable?
+
+    /// Phrases that hand control to takeover mode. The rest of the utterance
+    /// becomes the task.
+    private static let takeoverTriggerPhrases = ["take over", "takeover"]
+
+    /// If the transcript is a takeover command, routes it and returns true.
+    /// Offline + Accessibility are enforced inside TakeoverController.start.
+    private func routeTranscriptToTakeoverIfRequested(_ transcript: String) -> Bool {
+        let lowered = transcript.lowercased()
+        guard let phrase = Self.takeoverTriggerPhrases.first(where: { lowered.contains($0) }) else {
+            return false
+        }
+        // The task is whatever follows the trigger phrase.
+        var task = transcript
+        if let range = lowered.range(of: phrase) {
+            task = String(transcript[range.upperBound...])
+        }
+        task = task.trimmingCharacters(in: CharacterSet(charactersIn: " ,.—-:")).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !task.isEmpty else { return false }
+
+        takeoverVisionAgent.loadModelIfNeeded()
+        takeoverController.start(task: task)
+        return true
+    }
+
     /// True when the picker is set to Local — responses run on-device, the
     /// screenshot is never captured, and conversation content never leaves
     /// the Mac (including analytics).
@@ -279,6 +331,15 @@ final class CompanionManager: ObservableObject {
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
             }
+
+        // Re-publish takeover state (run progress, model download) so the panel
+        // re-renders — nested ObservableObjects don't bubble up automatically.
+        takeoverStateCancellable = takeoverController.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+        takeoverModelCancellable = takeoverVisionAgent.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
 
         networkPathMonitor.pathUpdateHandler = { [weak self] networkPath in
             Task { @MainActor [weak self] in
@@ -633,6 +694,12 @@ final class CompanionManager: ObservableObject {
                         guard let self else { return }
                         self.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
+                        // "take over — <task>" hands off to the offline autonomous
+                        // loop instead of a normal voice response.
+                        if self.routeTranscriptToTakeoverIfRequested(finalTranscript) {
+                            self.voiceState = .idle
+                            return
+                        }
                         // Local Mode privacy contract: the transcript never
                         // leaves the machine, analytics included.
                         if !self.isLocalModeActive {
