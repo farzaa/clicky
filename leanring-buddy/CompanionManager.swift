@@ -76,6 +76,15 @@ final class CompanionManager: ObservableObject {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
     }()
 
+    /// Cloud chat provider wrapping ClaudeAPI. Voice responses route through
+    /// the provider seam so cloud and local backends are interchangeable.
+    private lazy var cloudChatProvider = CloudChatProvider(claudeAPI: claudeAPI)
+
+    /// The chat provider matching the current model selection.
+    private var activeChatProvider: any BuddyChatProvider {
+        cloudChatProvider
+    }
+
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
         return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
     }()
@@ -605,20 +614,16 @@ final class CompanionManager: ObservableObject {
                     return (data: capture.imageData, label: capture.label + dimensionInfo)
                 }
 
-                // Pass conversation history so Claude remembers prior exchanges
-                let historyForAPI = conversationHistory.map { entry in
-                    (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
-                }
-
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                let chatResponse = try await activeChatProvider.generateStreamingResponse(
                     images: labeledImages,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt,
-                    conversationHistory: historyForAPI,
+                    conversationHistory: conversationHistory,
                     userPrompt: transcript,
                     onTextChunk: { _ in
                         // No streaming text display — spinner stays until TTS plays
                     }
                 )
+                let fullResponseText = chatResponse.text
 
                 guard !Task.isCancelled else { return }
 
@@ -982,12 +987,16 @@ final class CompanionManager: ObservableObject {
                 let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
                 let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                // Always the cloud provider — the demo needs vision + pointing,
+                // which the local model deliberately doesn't do.
+                let demoChatResponse = try await cloudChatProvider.generateStreamingResponse(
                     images: labeledImages,
                     systemPrompt: Self.onboardingDemoSystemPrompt,
+                    conversationHistory: [],
                     userPrompt: "look around my screen and find something interesting to point at",
                     onTextChunk: { _ in }
                 )
+                let fullResponseText = demoChatResponse.text
 
                 let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
 
