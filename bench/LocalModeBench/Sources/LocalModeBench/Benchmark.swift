@@ -36,11 +36,18 @@ struct LocalModeBench {
     - never output coordinate tags like [POINT:...] — you can't point at the screen in local mode.
     """
 
-    static let voiceStyleQuestions = [
+    static let defaultVoiceStyleQuestions = [
         "what does git rebase actually do?",
         "what's the difference between a thread and a process?",
         "give me a quick dinner idea with eggs and rice",
     ]
+
+    /// Pass a question as the first argument to run it instead of the
+    /// default set — handy for demos and one-off latency checks.
+    static var voiceStyleQuestions: [String] {
+        let customQuestion = CommandLine.arguments.dropFirst().joined(separator: " ")
+        return customQuestion.isEmpty ? defaultVoiceStyleQuestions : [customQuestion]
+    }
 
     static func main() async throws {
         // Same directory LocalChatProvider uses, so running the bench also
@@ -108,7 +115,13 @@ struct LocalModeBench {
                 totalDurationSeconds,
                 responseText.count
             ))
-            print("   \"\(responseText.prefix(120))\(responseText.count > 120 ? "…" : "")\"")
+            // Custom one-off questions get the full answer (demo use);
+            // the default sweep keeps a short preview so the table stays readable.
+            if voiceStyleQuestions.count == 1 {
+                print("   \"\(responseText)\"")
+            } else {
+                print("   \"\(responseText.prefix(120))\(responseText.count > 120 ? "…" : "")\"")
+            }
         }
     }
 }
