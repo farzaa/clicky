@@ -31,6 +31,9 @@ struct CompanionPanelView: View {
 
                 modelPickerRow
                     .padding(.horizontal, 16)
+
+                localModelStatusRow
+                    .padding(.horizontal, 16)
             }
 
             if !companionManager.allPermissionsGranted {
@@ -609,6 +612,7 @@ struct CompanionPanelView: View {
             HStack(spacing: 0) {
                 modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
                 modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
+                modelOptionButton(label: "Local", modelID: LocalChatProvider.modelPickerID)
             }
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -620,6 +624,58 @@ struct CompanionPanelView: View {
             )
         }
         .padding(.vertical, 4)
+    }
+
+    /// One-line status under the picker while Local is selected: download
+    /// progress, load state, the privacy line once ready, or an error with
+    /// a retry. The panel is the stable surface for this — the cursor
+    /// overlay fades in and out on its own schedule. When the network is
+    /// down and a cloud model is selected, nudges toward Local instead.
+    @ViewBuilder
+    private var localModelStatusRow: some View {
+        if companionManager.selectedModel == LocalChatProvider.modelPickerID {
+            VStack(alignment: .leading, spacing: 6) {
+                switch companionManager.localChatProvider.modelReadiness {
+                case .notDownloaded:
+                    EmptyView()
+                case .downloading(let progressFraction):
+                    ProgressView(value: progressFraction)
+                        .progressViewStyle(.linear)
+                        .tint(DS.Colors.accent)
+                    Text("downloading the local model — \(Int(progressFraction * 100))%")
+                        .font(.system(size: 11))
+                        .foregroundColor(DS.Colors.textTertiary)
+                case .loading:
+                    Text("waking up the local model…")
+                        .font(.system(size: 11))
+                        .foregroundColor(DS.Colors.textTertiary)
+                case .ready:
+                    Text("Local Mode — your screen stays on your Mac.")
+                        .font(.system(size: 11))
+                        .foregroundColor(DS.Colors.textTertiary)
+                case .failed(let errorDescription):
+                    Text("model download hiccuped: \(errorDescription)")
+                        .font(.system(size: 11))
+                        .foregroundColor(Color(red: 0.9, green: 0.4, blue: 0.4))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button(action: {
+                        companionManager.localChatProvider.loadModelIfNeeded()
+                    }) {
+                        Text("Try again")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(DS.Colors.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                }
+            }
+            .padding(.top, 8)
+        } else if !companionManager.isNetworkAvailable {
+            Text("no internet — flip to Local to keep talking")
+                .font(.system(size: 11))
+                .foregroundColor(DS.Colors.textTertiary)
+                .padding(.top, 8)
+        }
     }
 
     private func modelOptionButton(label: String, modelID: String) -> some View {
