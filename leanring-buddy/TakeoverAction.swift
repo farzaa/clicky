@@ -91,7 +91,11 @@ enum TakeoverActionParser {
         guard let jsonObjectString = firstJSONObject(in: rawModelOutput),
               let jsonData = jsonObjectString.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
-            throw ParseError.noJSONObject
+            // Small VLMs often emit *almost* valid JSON — e.g. a doubled
+            // coordinate `"x":768,309`. The grounding is usually right even when
+            // the syntax is shaky, so salvage the fields by regex before giving
+            // up and safe-failing.
+            return try parseByRegex(rawModelOutput)
         }
 
         guard let actionName = object["action"] as? String else {
@@ -128,6 +132,48 @@ enum TakeoverActionParser {
         default:
             throw ParseError.unknownAction(actionName)
         }
+    }
+
+    /// Field-by-field salvage for almost-valid JSON. Pulls the first integer
+    /// after each numeric key (so `"x":768,309` yields 768) and the first
+    /// quoted value after each string key.
+    private static func parseByRegex(_ text: String) throws -> TakeoverAction {
+        func quoted(_ key: String) -> String? {
+            firstCapture(in: text, pattern: "\"\(key)\"\\s*:\\s*\"([^\"]*)\"")
+        }
+        func integer(_ key: String) -> Int? {
+            firstCapture(in: text, pattern: "\"\(key)\"\\s*:\\s*(-?\\d+)").flatMap(Int.init)
+        }
+        guard let actionName = quoted("action") else { throw ParseError.noJSONObject }
+
+        switch actionName.lowercased() {
+        case "click":
+            guard let x = integer("x"), let y = integer("y") else { throw ParseError.missingField("x/y") }
+            return .click(x: x, y: y, targetLabel: quoted("target_label") ?? "", why: quoted("why") ?? "")
+        case "type":
+            return .type(text: quoted("text") ?? "", why: quoted("why") ?? "")
+        case "key":
+            guard let combo = quoted("combo"), !combo.isEmpty else { throw ParseError.missingField("combo") }
+            return .key(combo: combo, why: quoted("why") ?? "")
+        case "scroll":
+            guard let x = integer("x"), let y = integer("y") else { throw ParseError.missingField("x/y") }
+            let direction = TakeoverScrollDirection(rawValue: (quoted("dir") ?? "down").lowercased()) ?? .down
+            return .scroll(x: x, y: y, direction: direction, amount: max(1, min(integer("amount") ?? 3, 5)), why: quoted("why") ?? "")
+        case "done":
+            return .done(summary: quoted("summary") ?? "")
+        case "give_up", "giveup":
+            return .giveUp(reason: quoted("reason") ?? "")
+        default:
+            throw ParseError.unknownAction(actionName)
+        }
+    }
+
+    private static func firstCapture(in text: String, pattern: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              match.numberOfRanges >= 2,
+              let range = Range(match.range(at: 1), in: text) else { return nil }
+        return String(text[range])
     }
 
     /// Returns the first balanced `{...}` substring, ignoring code fences.
