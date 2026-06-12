@@ -138,11 +138,13 @@ enum TakeoverActionParser {
     /// after each numeric key (so `"x":768,309` yields 768) and the first
     /// quoted value after each string key.
     private static func parseByRegex(_ text: String) throws -> TakeoverAction {
+        // Small VLMs drop quotes off keys too ("y":308 vs y:308), so the key
+        // quotes are optional in these patterns.
         func quoted(_ key: String) -> String? {
-            firstCapture(in: text, pattern: "\"\(key)\"\\s*:\\s*\"([^\"]*)\"")
+            firstCapture(in: text, pattern: "\"?\(key)\"?\\s*:\\s*\"([^\"]*)\"")
         }
         func integer(_ key: String) -> Int? {
-            firstCapture(in: text, pattern: "\"\(key)\"\\s*:\\s*(-?\\d+)").flatMap(Int.init)
+            firstCapture(in: text, pattern: "\"?\(key)\"?\\s*:\\s*(-?\\d+)").flatMap(Int.init)
         }
         guard let actionName = quoted("action") else { throw ParseError.noJSONObject }
 

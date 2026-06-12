@@ -66,6 +66,29 @@ Listen-only observation of your clicks + keystrokes so clicky has context for ta
 - This is you watching your own machine for your own assistant — kept local and gated so it
   stays that and only that.
 
+## Measured grounding (synthetic UI, Qwen2.5-VL-3B-4bit, M1 Pro)
+
+Smoke test (`bench/TakeoverGroundingSmokeTest`) on a generated 1280x800 screen
+with a search box, a blue Search button, and a top-bar Settings label:
+
+| task | true target (top-left px) | model output | verdict |
+|---|---|---|---|
+| click the search button | (800, 308) | (768, 309) | hit (inside button) |
+| click the search box | (540, 308) | (600, 308) | hit (inside field) |
+| open settings | (1175, 42) | (1077, 453) | miss (y way off) |
+
+Two of three. The miss is the top-bar edge target — exactly the
+ScreenSpot-Pro failure mode the research flagged (generic Qwen2.5-VL-3B ~24% on
+dense/edge targets). First token ~6-9s per step. Verdict: central, well-labeled
+targets land; edge/small/dense targets miss. Scope demos accordingly; dry-run
+default is vindicated. The model also emits malformed JSON often (doubled
+coords, unquoted keys) — the parser's regex salvage recovers the coordinate
+when the grounding itself is right.
+
+Upgrade path: `mlx-community/Holo1-3B-4bit` (a UI-grounding finetune, ~3 GB,
+emits `Click(x,y)` natively) benchmarks far better on edge/dense targets — a
+one-line model swap plus a `Click(x,y)` parser.
+
 ## What this is and isn't
 
 - It's a constrained, rail-guarded, offline computer-use agent on a small local VLM. A real
