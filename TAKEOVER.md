@@ -1,7 +1,13 @@
 # TAKEOVER — offline autonomous mode (spike)
 
-Status: **spike, in progress.** This is the "Jarvis" feature — clicky takes over the cursor
-and keyboard and does a task for you. The hard constraint, from the user: **offline only.**
+Status: **spike — partially verified.** This is the "Jarvis" feature — clicky takes over the
+cursor and keyboard and does a task for you. The hard constraint, from the user: **offline only.**
+
+**Honest verification state:** the whole thing *compiles*; the VLM brain *grounds in isolation*
+(smoke test, see below). What has NOT executed even once: the CGEvent executor (no synthesized
+click/keystroke has actually been posted), the full capture→decide→execute→re-capture loop, and
+the kill switch — none are testable headlessly, all need a real GUI session with the Accessibility
+grant. Treat executor + loop + kill switch as **unproven** until run in the app.
 
 ## The contradiction, resolved
 
