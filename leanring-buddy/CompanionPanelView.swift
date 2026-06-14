@@ -37,6 +37,9 @@ struct CompanionPanelView: View {
 
                 takeoverSection
                     .padding(.horizontal, 16)
+
+                guidedTourSection
+                    .padding(.horizontal, 16)
             }
 
             if !companionManager.allPermissionsGranted {
@@ -760,6 +763,59 @@ struct CompanionPanelView: View {
         case .finished: return "done"
         case .stopped: return "stopped"
         }
+    }
+
+    // MARK: - Guided Tour (cloud pointing)
+
+    /// One-click start for the cloud guided tour (e.g. Logic Pro beats):
+    /// Clicky's cursor flies to each control and narrates. Hands-off after the
+    /// click — record with the OS recorder (Cmd-Shift-5) for the demo video.
+    @ViewBuilder
+    private var guidedTourSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider()
+                .background(DS.Colors.borderSubtle)
+                .padding(.vertical, 4)
+
+            HStack {
+                Text("Guided tour")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                Text("cloud · points only")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                Spacer()
+                if companionManager.isGuidedTourRunning {
+                    Button(action: { companionManager.stopGuidedTour() }) {
+                        Text("Stop")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12).padding(.vertical, 5)
+                            .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color(red: 0.85, green: 0.3, blue: 0.3)))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                } else {
+                    Button(action: { companionManager.startGuidedLogicTour() }) {
+                        Text("Make a Logic beat")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12).padding(.vertical, 5)
+                            .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(DS.Colors.accent))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                }
+            }
+
+            Text("open logic pro, then click — clicky points through the beat. or say \"teach me a beat\".")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.top, 8)
     }
 
     private func modelOptionButton(label: String, modelID: String) -> some View {

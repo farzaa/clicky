@@ -75,8 +75,13 @@ final class CompanionManager: ObservableObject {
     // streamingResponseText, so no separate response overlay manager is needed.
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
-    /// through this so keys never ship in the app binary.
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
+    /// through this so keys never ship in the app binary. Overridable via the
+    /// `workerBaseURLOverride` default so a local `wrangler dev` worker
+    /// (http://127.0.0.1:8787) can be used without editing source.
+    private static var workerBaseURL: String {
+        UserDefaults.standard.string(forKey: "workerBaseURLOverride")
+            ?? "https://your-worker-name.your-subdomain.workers.dev"
+    }
 
     private lazy var claudeAPI: ClaudeAPI = {
         // Never hand the local sentinel to the cloud client — if the app
@@ -188,6 +193,11 @@ final class CompanionManager: ObservableObject {
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
+
+    /// True while the cloud guided tour (e.g. Logic Pro beat-making) is running —
+    /// Clicky autonomously points its cursor at the next control each step.
+    @Published private(set) var isGuidedTourRunning = false
+    private var guidedTourTask: Task<Void, Never>?
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
@@ -694,6 +704,14 @@ final class CompanionManager: ObservableObject {
                         guard let self else { return }
                         self.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
+                        // "teach me a beat" / "guided tour" starts the cloud
+                        // guided tour (Clicky points through the steps).
+                        let lowered = finalTranscript.lowercased()
+                        if lowered.contains("guided tour") || lowered.contains("teach me") || lowered.contains("make a beat") {
+                            self.startGuidedLogicTour()
+                            self.voiceState = .idle
+                            return
+                        }
                         // "take over — <task>" hands off to the offline autonomous
                         // loop instead of a normal voice response.
                         if self.routeTranscriptToTakeoverIfRequested(finalTranscript) {
@@ -1033,6 +1051,145 @@ final class CompanionManager: ObservableObject {
         let synthesizer = NSSpeechSynthesizer()
         synthesizer.startSpeaking(utterance)
         voiceState = .responding
+    }
+
+    // MARK: - Guided Tour (cloud pointing, e.g. Logic Pro beats)
+
+    private static let guidedLogicTourSystemPrompt = """
+    you're clicky, guiding the user through making a basic boom bap beat in logic pro. you can see their screen. each turn, look at the screenshot, decide the SINGLE next thing they should do, say it in one or two spoken sentences (all lowercase, casual, written for the ear), and point at the exact control with a [POINT:x,y:label] tag.
+
+    the steps, in order — figure out which one they're on from what's on screen:
+    1. create a software instrument track (the plus button or the track menu)
+    2. open drum machine designer, or pick a drum kit from the library
+    3. open the step sequencer (or the piano roll)
+    4. program the kick on beats one and three
+    5. program the snare on beats two and four
+    6. program hi-hats on every eighth note
+    7. press play to hear the beat
+
+    point at exactly one control per turn. the screenshot is labeled with its pixel dimensions — use that coordinate space, origin top-left. if the beat is clearly already playing or finished, say so briefly and end with [POINT:none].
+    """
+
+    /// Starts the autonomous cloud guided tour. Clicky screenshots the screen,
+    /// asks Sonnet for the next control + narration, flies the overlay cursor to
+    /// it, speaks, and advances — hands-off. Cloud-only (needs the worker);
+    /// pure pointing, so no real clicks and no Accessibility needed.
+    func startGuidedLogicTour() {
+        guard !isGuidedTourRunning else { return }
+        guard isNetworkAvailable else {
+            Task { try? await appleSpeechSynthesisClient.speakText(
+                "the guided tour needs the internet for the precise pointing. turn wifi back on and try again.") }
+            return
+        }
+        // Force a known-good cloud model for the tour regardless of the picker.
+        cloudChatProvider.model = "claude-sonnet-4-6"
+        isGuidedTourRunning = true
+        // Make sure the overlay is visible so the flying cursor can be seen.
+        if !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+        guidedTourTask = Task { await runGuidedLogicTour() }
+    }
+
+    func stopGuidedTour() {
+        guidedTourTask?.cancel()
+        guidedTourTask = nil
+        isGuidedTourRunning = false
+        clearDetectedElementLocation()
+        voiceState = .idle
+    }
+
+    private func runGuidedLogicTour() async {
+        defer {
+            isGuidedTourRunning = false
+            voiceState = .idle
+        }
+        let maxSteps = 9
+        await narrateTour("okay, let's make a beat. follow my cursor.")
+
+        for _ in 0..<maxSteps {
+            if Task.isCancelled { return }
+            do {
+                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                guard !Task.isCancelled else { return }
+
+                let labeledImages = screenCaptures.map { capture in
+                    let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
+                    return (data: capture.imageData, label: capture.label + dimensionInfo)
+                }
+
+                let response = try await cloudChatProvider.generateStreamingResponse(
+                    images: labeledImages,
+                    systemPrompt: Self.guidedLogicTourSystemPrompt,
+                    conversationHistory: [],
+                    userPrompt: "what's the next step for the beat? point at the control.",
+                    onTextChunk: { _ in }
+                )
+                guard !Task.isCancelled else { return }
+
+                let parseResult = Self.parsePointingCoordinates(from: response.text)
+                // Show the triangle and fly it to the control.
+                voiceState = .idle
+                flyOverlayCursor(toParseResult: parseResult, screenCaptures: screenCaptures)
+
+                if !parseResult.spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    await narrateTour(parseResult.spokenText)
+                }
+
+                // Tour is done when the model stops pointing.
+                if parseResult.coordinate == nil { return }
+
+                // Let the cursor flight + narration land before the next step.
+                try? await Task.sleep(nanoseconds: 4_500_000_000)
+            } catch is CancellationError {
+                return
+            } catch {
+                await narrateTour("hmm, i lost the screen there. let's stop the tour.")
+                return
+            }
+        }
+        await narrateTour("that's the basic beat. hit play and tweak it from here.")
+    }
+
+    private func narrateTour(_ line: String) async {
+        voiceState = .responding
+        try? await appleSpeechSynthesisClient.speakText(line)
+    }
+
+    /// Flies the blue overlay cursor to a parsed [POINT] target. Same screenshot
+    /// pixel -> display point -> AppKit global transform the voice pipeline uses,
+    /// kept separate so the working voice path is untouched.
+    private func flyOverlayCursor(toParseResult parseResult: PointingParseResult, screenCaptures: [CompanionScreenCapture]) {
+        guard let pointCoordinate = parseResult.coordinate else { return }
+        let targetScreenCapture: CompanionScreenCapture? = {
+            if let screenNumber = parseResult.screenNumber,
+               screenNumber >= 1 && screenNumber <= screenCaptures.count {
+                return screenCaptures[screenNumber - 1]
+            }
+            return screenCaptures.first(where: { $0.isCursorScreen }) ?? screenCaptures.first
+        }()
+        guard let capture = targetScreenCapture else { return }
+
+        let screenshotWidth = CGFloat(capture.screenshotWidthInPixels)
+        let screenshotHeight = CGFloat(capture.screenshotHeightInPixels)
+        guard screenshotWidth > 0, screenshotHeight > 0 else { return }
+        let displayWidth = CGFloat(capture.displayWidthInPoints)
+        let displayHeight = CGFloat(capture.displayHeightInPoints)
+        let displayFrame = capture.displayFrame
+
+        let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
+        let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
+        let displayLocalX = clampedX * (displayWidth / screenshotWidth)
+        let displayLocalY = clampedY * (displayHeight / screenshotHeight)
+        let appKitY = displayHeight - displayLocalY
+
+        detectedElementScreenLocation = CGPoint(
+            x: displayLocalX + displayFrame.origin.x,
+            y: appKitY + displayFrame.origin.y)
+        detectedElementDisplayFrame = displayFrame
+        detectedElementBubbleText = parseResult.elementLabel
     }
 
     // MARK: - Point Tag Parsing
