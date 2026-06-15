@@ -31,6 +31,15 @@ struct CompanionPanelView: View {
 
                 modelPickerRow
                     .padding(.horizontal, 16)
+
+                localModelStatusRow
+                    .padding(.horizontal, 16)
+
+                takeoverSection
+                    .padding(.horizontal, 16)
+
+                guidedTourSection
+                    .padding(.horizontal, 16)
             }
 
             if !companionManager.allPermissionsGranted {
@@ -609,6 +618,7 @@ struct CompanionPanelView: View {
             HStack(spacing: 0) {
                 modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
                 modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
+                modelOptionButton(label: "Local", modelID: LocalChatProvider.modelPickerID)
             }
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -620,6 +630,192 @@ struct CompanionPanelView: View {
             )
         }
         .padding(.vertical, 4)
+    }
+
+    /// One-line status under the picker while Local is selected: download
+    /// progress, load state, the privacy line once ready, or an error with
+    /// a retry. The panel is the stable surface for this — the cursor
+    /// overlay fades in and out on its own schedule. When the network is
+    /// down and a cloud model is selected, nudges toward Local instead.
+    @ViewBuilder
+    private var localModelStatusRow: some View {
+        if companionManager.selectedModel == LocalChatProvider.modelPickerID {
+            VStack(alignment: .leading, spacing: 6) {
+                switch companionManager.localChatProvider.modelReadiness {
+                case .notDownloaded:
+                    EmptyView()
+                case .downloading(let progressFraction):
+                    ProgressView(value: progressFraction)
+                        .progressViewStyle(.linear)
+                        .tint(DS.Colors.accent)
+                    Text("downloading the local model — \(Int(progressFraction * 100))%")
+                        .font(.system(size: 11))
+                        .foregroundColor(DS.Colors.textTertiary)
+                case .loading:
+                    Text("waking up the local model…")
+                        .font(.system(size: 11))
+                        .foregroundColor(DS.Colors.textTertiary)
+                case .ready:
+                    Text("Local Mode — your screen stays on your Mac.")
+                        .font(.system(size: 11))
+                        .foregroundColor(DS.Colors.textTertiary)
+                case .failed(let errorDescription):
+                    Text("model download hiccuped: \(errorDescription)")
+                        .font(.system(size: 11))
+                        .foregroundColor(DS.Colors.destructiveText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button(action: {
+                        companionManager.localChatProvider.loadModelIfNeeded()
+                    }) {
+                        Text("Try again")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(DS.Colors.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                }
+            }
+            .padding(.top, 8)
+        } else if !companionManager.isNetworkAvailable {
+            Text("no internet — flip to Local to keep talking")
+                .font(.system(size: 11))
+                .foregroundColor(DS.Colors.textTertiary)
+                .padding(.top, 8)
+        }
+    }
+
+    // MARK: - Takeover (offline autonomous)
+
+    /// Experimental offline takeover controls: arm/dry-run, the risky opt-in,
+    /// and live run status. Says plainly that it's offline-only and how to stop.
+    @ViewBuilder
+    private var takeoverSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider()
+                .background(DS.Colors.borderSubtle)
+                .padding(.vertical, 4)
+
+            HStack {
+                Text("Takeover")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                Text("offline · experimental")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                Spacer()
+                Text(takeoverStatusText)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+
+            Text("say \"take over\" then a task. dry-run moves the cursor only. press esc to stop.")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Toggle(isOn: Binding(
+                get: { companionManager.takeoverController.isArmed },
+                set: { companionManager.takeoverController.isArmed = $0 }
+            )) {
+                Text("Arm (perform real clicks)")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+            .toggleStyle(.switch)
+            .tint(DS.Colors.accent)
+            .scaleEffect(0.8, anchor: .leading)
+
+            if companionManager.takeoverController.isArmed {
+                Toggle(isOn: Binding(
+                    get: { companionManager.takeoverController.allowRiskyActions },
+                    set: { companionManager.takeoverController.allowRiskyActions = $0 }
+                )) {
+                    Text("Allow typing + submits")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.warning)
+                }
+                .toggleStyle(.switch)
+                .tint(DS.Colors.warning)
+                .scaleEffect(0.8, anchor: .leading)
+            }
+
+            if companionManager.takeoverController.isRunning {
+                Button(action: { companionManager.takeoverController.requestKill() }) {
+                    Text("Stop")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color(red: 0.85, green: 0.3, blue: 0.3)))
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+        }
+        .padding(.top, 8)
+    }
+
+    private var takeoverStatusText: String {
+        switch companionManager.takeoverController.runState {
+        case .idle: return companionManager.takeoverController.isArmed ? "armed" : "dry-run"
+        case .running(let step, _): return "step \(step)…"
+        case .finished: return "done"
+        case .stopped: return "stopped"
+        }
+    }
+
+    // MARK: - Guided Tour (cloud pointing)
+
+    /// One-click start for the cloud guided tour (e.g. Logic Pro beats):
+    /// Clicky's cursor flies to each control and narrates. Hands-off after the
+    /// click — record with the OS recorder (Cmd-Shift-5) for the demo video.
+    @ViewBuilder
+    private var guidedTourSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider()
+                .background(DS.Colors.borderSubtle)
+                .padding(.vertical, 4)
+
+            HStack {
+                Text("Guided tour")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                Text("cloud · points only")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                Spacer()
+                if companionManager.isGuidedTourRunning {
+                    Button(action: { companionManager.stopGuidedTour() }) {
+                        Text("Stop")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12).padding(.vertical, 5)
+                            .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(DS.Colors.destructive))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                } else {
+                    Button(action: { companionManager.startGuidedLogicTour() }) {
+                        Text("Make a Logic beat")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12).padding(.vertical, 5)
+                            .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(DS.Colors.accent))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                }
+            }
+
+            Text("open logic pro, then click — clicky points through the beat. or say \"teach me a beat\".")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.top, 8)
     }
 
     private func modelOptionButton(label: String, modelID: String) -> some View {

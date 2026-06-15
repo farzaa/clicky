@@ -103,6 +103,15 @@ enum ClickyAnalytics {
         ])
     }
 
+    // MARK: - Local Mode
+
+    /// User switched the model picker to Local. Deliberately content-free —
+    /// in Local Mode the transcript and response events are not sent at all,
+    /// because a privacy mode that uploads conversations is a self-own.
+    static func trackLocalModeSelected() {
+        PostHogSDK.shared.capture("local_mode_selected")
+    }
+
     // MARK: - Errors
 
     /// An error occurred during the AI response pipeline.
