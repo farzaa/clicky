@@ -146,7 +146,7 @@ final class DemoLocalEngine: ObservableObject {
 
 final class SpeechDelegate: NSObject, AVSpeechSynthesizerDelegate {
     var onFinish: (() -> Void)?
-    func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish u: AVSpeechUtterance) {
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         Task { @MainActor in self.onFinish?() }
     }
 }

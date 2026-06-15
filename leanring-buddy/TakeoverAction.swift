@@ -62,8 +62,10 @@ enum TakeoverAction {
             return at == bt
         case let (.key(ac, _), .key(bc, _)):
             return ac.lowercased() == bc.lowercased()
-        case let (.scroll(_, _, ad, _, _), .scroll(_, _, bd, _, _)):
-            return ad == bd
+        case (.scroll, .scroll):
+            // Repeated scrolls in the same direction are legitimate progress
+            // (scrolling down a long page), not a stuck loop.
+            return false
         default:
             return false
         }

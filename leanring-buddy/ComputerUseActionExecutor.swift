@@ -148,8 +148,11 @@ final class ComputerUseActionExecutor {
 
     /// Starts a global listen-only tap that fires `onKill` when the user
     /// presses ESC. Ignores the app's own synthesized events via the
-    /// sentinel, so driving the cursor never trips it.
-    func startKillSwitchMonitor(onKill: @escaping () -> Void) {
+    /// sentinel, so driving the cursor never trips it. Returns false if the
+    /// tap can't be created — the caller must refuse to run without a kill
+    /// switch rather than drive input blind.
+    @discardableResult
+    func startKillSwitchMonitor(onKill: @escaping () -> Void) -> Bool {
         stopKillSwitchMonitor()
         self.onKillSwitch = onKill
 
@@ -170,13 +173,14 @@ final class ComputerUseActionExecutor {
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
             print("⚠️ Takeover: failed to create kill-switch tap")
-            return
+            return false
         }
         self.killSwitchTap = tap
         let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         self.killSwitchRunLoopSource = runLoopSource
         CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        return true
     }
 
     func stopKillSwitchMonitor() {

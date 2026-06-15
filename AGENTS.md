@@ -48,6 +48,10 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 
 **Transient Cursor Mode**: When "Show Clicky" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
 
+**Guided tour (experimental, cloud)**: A panel button ("Make a Logic beat") or the phrase "teach me a beat" starts an autonomous cloud loop — Clicky screenshots the screen, asks Sonnet for the next control + narration, flies the *overlay* cursor to it (no real clicks, no Accessibility), narrates via Apple Speech, and advances. `CompanionManager.startGuidedLogicTour` + `guidedTourSection` in the panel. Reliable because Sonnet grounding is accurate; pure pointing so it can't damage anything.
+
+**Takeover (experimental, offline)**: The phrase "take over — <task>" (offline only) hands the cursor + keyboard to a guarded local-VLM loop. See `TAKEOVER.md` — the brain grounds in isolation but small VLMs misclick on dense UIs; dry-run is the default and the executor/loop are unproven in a live GUI.
+
 **Local Mode**: A third model-picker option runs the whole answer loop on-device: Apple Speech for transcription, Llama-3.2-3B-Instruct-4bit via MLX for the response, `AVSpeechSynthesizer` for the voice. The behavioral contract is strict — the screenshot is *never captured* (not captured-and-dropped), `[POINT:...]` pointing is disabled via a trimmed local system prompt, and the transcript/response analytics events do not fire (a content-free `local_mode_selected` event is the only signal). The model downloads once (~1.8 GB) to `~/Library/Application Support/Clicky/models/huggingface` with progress in the panel, then loads from disk on later launches so Local Mode works fully offline. Cloud requests fail fast with a spoken nudge toward Local when the network is down (the URLSession otherwise waits 120s for connectivity).
 
 ## Key Files
@@ -73,6 +77,11 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `LocalChatProvider.swift` | ~253 | On-device chat provider for Local Mode. Runs Llama-3.2-3B-Instruct-4bit via MLX (`mlx-swift-lm`); downloads once to Application Support with progress, then loads from disk (offline) on later launches. Publishes `modelReadiness` for the panel UI. |
 | `BuddyTextToSpeechClient.swift` | ~28 | Protocol surface for TTS backends (`speakText` returns at playback start, `isPlaying`, synchronous `stopPlayback`). ElevenLabs and Apple Speech both conform. |
 | `AppleSpeechSynthesisClient.swift` | ~73 | On-device TTS for Local Mode via `AVSpeechSynthesizer`. Picks the best installed en-US voice (premium > enhanced > compact) and honors the ElevenLabs client's timing contract. |
+| `ClickyModelCache.swift` | ~30 | Single source of truth for the on-device model directory (Application Support, not Caches). Shared by the local chat provider and takeover vision agent. |
+| `TakeoverController.swift` | ~300 | **Experimental.** Offline autonomous "takeover" loop (e.g. drive an app). Screenshot → local VLM → one guarded action → execute → repeat. Rails: dry-run default, ESC kill switch, offline+Accessibility gate, danger-action opt-in, step/time caps. See `TAKEOVER.md` for the honest verification state. |
+| `TakeoverVisionAgent.swift` | ~165 | **Experimental.** The takeover brain — Qwen2.5-VL-3B (MLXVLM) emitting one JSON action per screenshot. |
+| `TakeoverAction.swift` | ~205 | **Experimental.** The 6-verb takeover action vocabulary + a tolerant JSON/regex parser for shaky small-VLM output. |
+| `ComputerUseActionExecutor.swift` | ~245 | **Experimental.** CoreGraphics input synthesis (move/click/type/scroll/key) + the ESC kill-switch tap. Needs only the existing Accessibility grant. |
 | `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
 | `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |

@@ -136,6 +136,9 @@ final class CompanionManager: ObservableObject {
     /// If the transcript is a takeover command, routes it and returns true.
     /// Offline + Accessibility are enforced inside TakeoverController.start.
     private func routeTranscriptToTakeoverIfRequested(_ transcript: String) -> Bool {
+        // Takeover is offline-only, so only intercept the trigger when offline.
+        // Online, "take over the narration" falls through to the normal cloud path.
+        guard !isNetworkAvailable else { return false }
         let lowered = transcript.lowercased()
         guard let phrase = Self.takeoverTriggerPhrases.first(where: { lowered.contains($0) }) else {
             return false
@@ -198,6 +201,9 @@ final class CompanionManager: ObservableObject {
     /// Clicky autonomously points its cursor at the next control each step.
     @Published private(set) var isGuidedTourRunning = false
     private var guidedTourTask: Task<Void, Never>?
+    /// The user's cloud model before a guided tour forced Sonnet, restored when
+    /// the tour ends so an Opus user isn't silently downgraded for the session.
+    private var cloudModelBeforeGuidedTour: String?
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
@@ -704,10 +710,12 @@ final class CompanionManager: ObservableObject {
                         guard let self else { return }
                         self.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
-                        // "teach me a beat" / "guided tour" starts the cloud
-                        // guided tour (Clicky points through the steps).
+                        // Specific guided-tour commands only — broad phrases like
+                        // "teach me" would hijack ordinary cloud questions
+                        // ("teach me about closures").
                         let lowered = finalTranscript.lowercased()
-                        if lowered.contains("guided tour") || lowered.contains("teach me") || lowered.contains("make a beat") {
+                        let guidedTourTriggers = ["guided tour", "teach me a beat", "make me a beat", "walk me through a beat"]
+                        if guidedTourTriggers.contains(where: { lowered.contains($0) }) {
                             self.startGuidedLogicTour()
                             self.voiceState = .idle
                             return
@@ -1038,19 +1046,20 @@ final class CompanionManager: ObservableObject {
         let utterance = isLocalModeRequest
             ? "hmm, my local brain hiccuped. give it another try."
             : "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
+        // Route through the owned Apple Speech client, which retains its
+        // synthesizer for the utterance's lifetime. A local NSSpeechSynthesizer
+        // would deallocate on return and cut the speech off — and this is the
+        // one moment that line is the only feedback the user gets.
         voiceState = .responding
+        Task { try? await appleSpeechSynthesisClient.speakText(utterance) }
     }
 
-    /// Spoken when a cloud request is attempted with no network. Uses the
-    /// system synthesizer for the same reason as the error fallback — it
-    /// can't depend on the thing that's missing.
+    /// Spoken when a cloud request is attempted with no network. On-device
+    /// voice so it can't depend on the thing that's missing.
     private func speakOfflineCloudNudge() {
         let utterance = "looks like the internet is out. flip me to local in the menu bar and i can keep helping."
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
         voiceState = .responding
+        Task { try? await appleSpeechSynthesisClient.speakText(utterance) }
     }
 
     // MARK: - Guided Tour (cloud pointing, e.g. Logic Pro beats)
@@ -1081,7 +1090,9 @@ final class CompanionManager: ObservableObject {
                 "the guided tour needs the internet for the precise pointing. turn wifi back on and try again.") }
             return
         }
-        // Force a known-good cloud model for the tour regardless of the picker.
+        // Force a known-good cloud model for the tour regardless of the picker,
+        // remembering the user's choice so it's restored when the tour ends.
+        cloudModelBeforeGuidedTour = cloudChatProvider.model
         cloudChatProvider.model = "claude-sonnet-4-6"
         isGuidedTourRunning = true
         // Make sure the overlay is visible so the flying cursor can be seen.
@@ -1105,6 +1116,11 @@ final class CompanionManager: ObservableObject {
         defer {
             isGuidedTourRunning = false
             voiceState = .idle
+            // Restore the user's cloud model on every exit path (done, cancel, error).
+            if let previousModel = cloudModelBeforeGuidedTour {
+                cloudChatProvider.model = previousModel
+                cloudModelBeforeGuidedTour = nil
+            }
         }
         let maxSteps = 9
         await narrateTour("okay, let's make a beat. follow my cursor.")

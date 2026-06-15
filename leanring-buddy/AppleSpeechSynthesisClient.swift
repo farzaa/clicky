@@ -32,6 +32,10 @@ final class AppleSpeechSynthesisClient: NSObject, BuddyTextToSpeechClient {
     func speakText(_ text: String) async throws {
         try Task.checkCancellation()
 
+        // Nothing to say — return without arming isPlaying, or the empty
+        // utterance never fires didFinish and the transient-hide loop hangs.
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = Self.bestAvailableEnglishVoice()
 

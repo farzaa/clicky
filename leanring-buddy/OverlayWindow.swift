@@ -295,7 +295,7 @@ struct BlueCursorView: View {
             }
 
             // Latency badge — provider + first-token time, shown while the
-            // answer is being spoken. The local-vs-cloud speed difference as
+            // answer is being spoken. Makes the local-vs-cloud speed difference
             // something you can see, not just feel.
             if isCursorOnThisScreen && companionManager.voiceState == .responding,
                let latencyDescription = companionManager.lastResponseLatencyDescription {

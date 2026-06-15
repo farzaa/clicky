@@ -662,7 +662,7 @@ struct CompanionPanelView: View {
                 case .failed(let errorDescription):
                     Text("model download hiccuped: \(errorDescription)")
                         .font(.system(size: 11))
-                        .foregroundColor(Color(red: 0.9, green: 0.4, blue: 0.4))
+                        .foregroundColor(DS.Colors.destructiveText)
                         .fixedSize(horizontal: false, vertical: true)
                     Button(action: {
                         companionManager.localChatProvider.loadModelIfNeeded()
@@ -732,10 +732,10 @@ struct CompanionPanelView: View {
                 )) {
                     Text("Allow typing + submits")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(Color(red: 0.9, green: 0.55, blue: 0.35))
+                        .foregroundColor(DS.Colors.warning)
                 }
                 .toggleStyle(.switch)
-                .tint(Color(red: 0.9, green: 0.55, blue: 0.35))
+                .tint(DS.Colors.warning)
                 .scaleEffect(0.8, anchor: .leading)
             }
 
@@ -792,7 +792,7 @@ struct CompanionPanelView: View {
                             .foregroundColor(.white)
                             .padding(.horizontal, 12).padding(.vertical, 5)
                             .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(Color(red: 0.85, green: 0.3, blue: 0.3)))
+                                .fill(DS.Colors.destructive))
                     }
                     .buttonStyle(.plain)
                     .pointerCursor()

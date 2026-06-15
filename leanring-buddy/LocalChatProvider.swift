@@ -57,22 +57,6 @@ final class LocalChatProvider: BuddyChatProvider, ObservableObject {
     /// which is what makes Local Mode work offline across relaunches.
     private static let downloadedModelDirectoryDefaultsKey = "localModelDownloadedDirectory"
 
-    /// Models download under Application Support, not Caches — macOS purges
-    /// Caches under disk pressure and silently re-downloading 1.8 GB is a
-    /// bad surprise.
-    private static func modelCacheDirectory() throws -> URL {
-        let applicationSupportDirectory = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        return applicationSupportDirectory
-            .appendingPathComponent("Clicky", isDirectory: true)
-            .appendingPathComponent("models", isDirectory: true)
-            .appendingPathComponent("huggingface", isDirectory: true)
-    }
-
     init() {
         // If the model was downloaded on an earlier launch, report it as
         // ready-to-load rather than not-downloaded so the picker doesn't
@@ -136,7 +120,7 @@ final class LocalChatProvider: BuddyChatProvider, ObservableObject {
 
         // First time: download from Hugging Face with visible progress.
         modelReadiness = .downloading(progressFraction: 0)
-        let hubCacheDirectory = try Self.modelCacheDirectory()
+        let hubCacheDirectory = try ClickyModelCache.huggingFaceCacheDirectory()
         let hubClient = HubClient(cache: HubCache(cacheDirectory: hubCacheDirectory))
         print("🏠 Local model: downloading \(Self.modelConfiguration.name) to \(hubCacheDirectory.path)")
 

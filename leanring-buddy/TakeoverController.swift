@@ -38,7 +38,7 @@ final class TakeoverController: ObservableObject {
     private static let stepCap = 25
     private static let wallClockCapSeconds: TimeInterval = 120
     private static let dangerWordPattern =
-        #"(?i)\b(send|delete|remove|buy|purchase|pay|confirm|submit|post|publish|discard|trash|erase|format|reset|sign\s?out|log\s?out)\b"#
+        #"(?i)\b(send|delete|backspace|remove|buy|purchase|pay|confirm|submit|post|publish|discard|trash|erase|format|reset|sign\s?out|log\s?out)\b"#
 
     private let visionAgent: TakeoverVisionAgent
     private let executor: ComputerUseActionExecutor
@@ -96,14 +96,21 @@ final class TakeoverController: ObservableObject {
             failToStart(.accessibilityMissing); return
         }
 
-        killRequested = false
-        runState = .running(step: 0, lastAction: "looking at your screen")
-
-        // Rail 2: kill switch live for the whole run.
-        executor.startKillSwitchMonitor { [weak self] in
+        // Rail 2: kill switch must be live before any input is driven. If the
+        // tap can't be installed, refuse to run rather than drive blind.
+        let killSwitchInstalled = executor.startKillSwitchMonitor { [weak self] in
             self?.requestKill()
         }
+        guard killSwitchInstalled else {
+            isArmed = false
+            allowRiskyActions = false
+            runState = .stopped(reason: "couldn't install the emergency stop")
+            Task { await narrate("i couldn't set up the emergency stop, so i won't take over. try again.") }
+            return
+        }
 
+        killRequested = false
+        runState = .running(step: 0, lastAction: "looking at your screen")
         runTask = Task { await runLoop(task: task) }
     }
 
@@ -235,13 +242,16 @@ final class TakeoverController: ObservableObject {
             }
             executor.typeText(text)
 
-        case .key(let combo, _):
+        case .key(let combo, let why):
             if dryRun { return }
-            // Rail 5: submission (return) and any combo need the risky opt-in.
+            // Rail 5: submission (return), any combo, AND destructive bare keys
+            // (delete/backspace and anything matching the danger words) need the
+            // risky opt-in — a bare "delete" must not evade the gate.
             let lowered = combo.lowercased()
             let isSubmitOrCombo = lowered == "return" || lowered == "enter" || lowered.contains("+")
-            if isSubmitOrCombo && !allowRiskyActions {
-                await narrate("pressing \(combo) could submit something — i'll leave that to you.")
+            let isDestructiveKey = isDangerous(combo + " " + why)
+            if (isSubmitOrCombo || isDestructiveKey) && !allowRiskyActions {
+                await narrate("pressing \(combo) could change something — i'll leave that to you.")
                 return
             }
             executor.pressKey(combo: combo)

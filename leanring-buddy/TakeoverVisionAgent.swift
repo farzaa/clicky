@@ -42,15 +42,6 @@ final class TakeoverVisionAgent: ObservableObject {
     private var loadedModelContainer: ModelContainer?
     private var modelLoadTask: Task<ModelContainer, Error>?
 
-    private static func modelCacheDirectory() throws -> URL {
-        let applicationSupportDirectory = try FileManager.default.url(
-            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        return applicationSupportDirectory
-            .appendingPathComponent("Clicky", isDirectory: true)
-            .appendingPathComponent("models", isDirectory: true)
-            .appendingPathComponent("huggingface", isDirectory: true)
-    }
-
     @discardableResult
     func loadModelIfNeeded() -> Task<ModelContainer, Error> {
         if let modelLoadTask { return modelLoadTask }
@@ -76,7 +67,7 @@ final class TakeoverVisionAgent: ObservableObject {
         MLX.Memory.cacheLimit = 32 * 1024 * 1024
 
         readiness = .downloading(progressFraction: 0)
-        let hubClient = HubClient(cache: HubCache(cacheDirectory: try Self.modelCacheDirectory()))
+        let hubClient = HubClient(cache: HubCache(cacheDirectory: try ClickyModelCache.huggingFaceCacheDirectory()))
         print("👁️ Takeover VLM: loading \(Self.modelConfiguration.name)")
 
         let container = try await VLMModelFactory.shared.loadContainer(
