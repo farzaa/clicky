@@ -14,6 +14,10 @@ interface Env {
   ELEVENLABS_API_KEY: string;
   ELEVENLABS_VOICE_ID: string;
   ASSEMBLYAI_API_KEY: string;
+  // Optional shared secret. When set, every request must present a matching
+  // `x-proxy-secret` header. Leaving it unset keeps the proxy open (the
+  // original behavior) so existing deployments don't break.
+  PROXY_SHARED_SECRET?: string;
 }
 
 export default {
@@ -22,6 +26,15 @@ export default {
 
     if (request.method !== "POST") {
       return new Response("Method not allowed", { status: 405 });
+    }
+
+    // If a shared secret is configured, reject any request that doesn't present
+    // the matching header. This stops anyone who merely discovers the worker URL
+    // from running up the owner's Anthropic / ElevenLabs / AssemblyAI bills.
+    if (env.PROXY_SHARED_SECRET) {
+      if (request.headers.get("x-proxy-secret") !== env.PROXY_SHARED_SECRET) {
+        return new Response("Unauthorized", { status: 401 });
+      }
     }
 
     try {

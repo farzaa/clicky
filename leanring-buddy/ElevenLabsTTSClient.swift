@@ -35,6 +35,10 @@ final class ElevenLabsTTSClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
+        // Authenticate to the Cloudflare Worker proxy when a shared secret is configured.
+        if let proxySecret = AppBundleConfiguration.stringValue(forKey: "WorkerProxySecret") {
+            request.setValue(proxySecret, forHTTPHeaderField: "x-proxy-secret")
+        }
 
         let body: [String: Any] = [
             "text": text,

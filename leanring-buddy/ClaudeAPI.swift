@@ -41,6 +41,12 @@ class ClaudeAPI {
         request.httpMethod = "POST"
         request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Authenticate to the Cloudflare Worker proxy when a shared secret is
+        // configured. The worker rejects requests without it, so a stranger who
+        // learns the worker URL can't bill the owner's API accounts.
+        if let proxySecret = AppBundleConfiguration.stringValue(forKey: "WorkerProxySecret") {
+            request.setValue(proxySecret, forHTTPHeaderField: "x-proxy-secret")
+        }
         return request
     }
 

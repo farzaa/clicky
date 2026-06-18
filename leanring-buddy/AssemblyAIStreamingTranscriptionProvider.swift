@@ -61,6 +61,10 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
     private func fetchTemporaryToken() async throws -> String {
         var request = URLRequest(url: URL(string: Self.tokenProxyURL)!)
         request.httpMethod = "POST"
+        // Authenticate to the Cloudflare Worker proxy when a shared secret is configured.
+        if let proxySecret = AppBundleConfiguration.stringValue(forKey: "WorkerProxySecret") {
+            request.setValue(proxySecret, forHTTPHeaderField: "x-proxy-secret")
+        }
 
         let (data, response) = try await URLSession.shared.data(for: request)
 
