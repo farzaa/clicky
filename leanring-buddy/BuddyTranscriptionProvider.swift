@@ -31,14 +31,13 @@ protocol BuddyTranscriptionProvider {
 
 enum BuddyTranscriptionProviderFactory {
     private enum PreferredProvider: String {
-        case assemblyAI = "assemblyai"
-        case openAI = "openai"
+        case realtime = "realtime"
         case appleSpeech = "apple"
     }
 
     static func makeDefaultProvider() -> any BuddyTranscriptionProvider {
         let provider = resolveProvider()
-        print("🎙️ Transcription: using \(provider.displayName)")
+        SpiderDiagnostics.event("transcription provider selected")
         return provider
     }
 
@@ -48,53 +47,48 @@ enum BuddyTranscriptionProviderFactory {
             .lowercased()
         let preferredProvider = preferredProviderRawValue.flatMap(PreferredProvider.init(rawValue:))
 
-        let assemblyAIProvider = AssemblyAIStreamingTranscriptionProvider()
-        let openAIProvider = OpenAIAudioTranscriptionProvider()
-
         if preferredProvider == .appleSpeech {
             return AppleSpeechTranscriptionProvider()
         }
 
-        if preferredProvider == .assemblyAI {
-            if assemblyAIProvider.isConfigured {
-                return assemblyAIProvider
-            }
-
-            print("⚠️ Transcription: AssemblyAI preferred but not configured, falling back")
-
-            if openAIProvider.isConfigured {
-                print("⚠️ Transcription: using OpenAI as fallback")
-                return openAIProvider
-            }
-
-            print("⚠️ Transcription: using Apple Speech as fallback")
-            return AppleSpeechTranscriptionProvider()
+        if preferredProvider == .realtime {
+            return SpiderRealtimeFallbackTranscriptionProvider()
         }
 
-        if preferredProvider == .openAI {
-            if openAIProvider.isConfigured {
-                return openAIProvider
-            }
+        return SpiderRealtimeFallbackTranscriptionProvider()
+    }
+}
 
-            print("⚠️ Transcription: OpenAI preferred but not configured, falling back")
+final class SpiderRealtimeFallbackTranscriptionProvider: BuddyTranscriptionProvider {
+    let displayName = "OpenAI Realtime"
+    let requiresSpeechRecognitionPermission = false
+    let isConfigured = true
+    let unavailableExplanation: String? = nil
 
-            if assemblyAIProvider.isConfigured {
-                print("⚠️ Transcription: using AssemblyAI as fallback")
-                return assemblyAIProvider
-            }
+    private let realtimeProvider = OpenAIRealtimeTranscriptionProvider()
+    private let appleSpeechProvider = AppleSpeechTranscriptionProvider()
 
-            print("⚠️ Transcription: using Apple Speech as fallback")
-            return AppleSpeechTranscriptionProvider()
+    func startStreamingSession(
+        keyterms: [String],
+        onTranscriptUpdate: @escaping (String) -> Void,
+        onFinalTranscriptReady: @escaping (String) -> Void,
+        onError: @escaping (Error) -> Void
+    ) async throws -> any BuddyStreamingTranscriptionSession {
+        do {
+            return try await realtimeProvider.startStreamingSession(
+                keyterms: keyterms,
+                onTranscriptUpdate: onTranscriptUpdate,
+                onFinalTranscriptReady: onFinalTranscriptReady,
+                onError: onError
+            )
+        } catch {
+            SpiderDiagnostics.event("realtime transcription unavailable, falling back to apple speech")
+            return try await appleSpeechProvider.startStreamingSession(
+                keyterms: keyterms,
+                onTranscriptUpdate: onTranscriptUpdate,
+                onFinalTranscriptReady: onFinalTranscriptReady,
+                onError: onError
+            )
         }
-
-        if assemblyAIProvider.isConfigured {
-            return assemblyAIProvider
-        }
-
-        if openAIProvider.isConfigured {
-            return openAIProvider
-        }
-
-        return AppleSpeechTranscriptionProvider()
     }
 }

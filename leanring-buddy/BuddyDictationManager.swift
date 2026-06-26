@@ -13,213 +13,9 @@ import Combine
 import Foundation
 import Speech
 
-enum BuddyPushToTalkShortcut {
-    enum ShortcutOption {
-        case shiftFunction
-        case controlOption
-        case shiftControl
-        case controlOptionSpace
-        case shiftControlSpace
-
-        var displayText: String {
-            switch self {
-            case .shiftFunction:
-                return "shift + fn"
-            case .controlOption:
-                return "ctrl + option"
-            case .shiftControl:
-                return "shift + control"
-            case .controlOptionSpace:
-                return "ctrl + option + space"
-            case .shiftControlSpace:
-                return "shift + control + space"
-            }
-        }
-
-        var keyCapsuleLabels: [String] {
-            switch self {
-            case .shiftFunction:
-                return ["shift", "fn"]
-            case .controlOption:
-                return ["ctrl", "option"]
-            case .shiftControl:
-                return ["shift", "control"]
-            case .controlOptionSpace:
-                return ["ctrl", "option", "space"]
-            case .shiftControlSpace:
-                return ["shift", "control", "space"]
-            }
-        }
-
-        fileprivate var modifierOnlyFlags: NSEvent.ModifierFlags? {
-            switch self {
-            case .shiftFunction:
-                return [.shift, .function]
-            case .controlOption:
-                return [.control, .option]
-            case .shiftControl:
-                return [.shift, .control]
-            case .controlOptionSpace, .shiftControlSpace:
-                return nil
-            }
-        }
-
-        fileprivate var spaceShortcutModifierFlags: NSEvent.ModifierFlags? {
-            switch self {
-            case .shiftFunction:
-                return nil
-            case .controlOption:
-                return nil
-            case .shiftControl:
-                return nil
-            case .controlOptionSpace:
-                return [.control, .option]
-            case .shiftControlSpace:
-                return [.shift, .control]
-            }
-        }
-    }
-
-    enum ShortcutTransition {
-        case none
-        case pressed
-        case released
-    }
-
-    private enum ShortcutEventType {
-        case flagsChanged
-        case keyDown
-        case keyUp
-    }
-
-    static let currentShortcutOption: ShortcutOption = .controlOption
-    static let pushToTalkKeyCode: UInt16 = 49 // Space
-    static let pushToTalkDisplayText = currentShortcutOption.displayText
-    static let pushToTalkTooltipText = "push to talk (\(pushToTalkDisplayText))"
-
-    static func shortcutTransition(
-        for event: NSEvent,
-        wasShortcutPreviouslyPressed: Bool
-    ) -> ShortcutTransition {
-        guard let shortcutEventType = shortcutEventType(for: event.type) else { return .none }
-
-        return shortcutTransition(
-            for: shortcutEventType,
-            keyCode: event.keyCode,
-            modifierFlags: event.modifierFlags.intersection(.deviceIndependentFlagsMask),
-            wasShortcutPreviouslyPressed: wasShortcutPreviouslyPressed
-        )
-    }
-
-    static func shortcutTransition(
-        for eventType: CGEventType,
-        keyCode: UInt16,
-        modifierFlagsRawValue: UInt64,
-        wasShortcutPreviouslyPressed: Bool
-    ) -> ShortcutTransition {
-        guard let shortcutEventType = shortcutEventType(for: eventType) else { return .none }
-
-        return shortcutTransition(
-            for: shortcutEventType,
-            keyCode: keyCode,
-            modifierFlags: NSEvent.ModifierFlags(rawValue: UInt(modifierFlagsRawValue))
-                .intersection(.deviceIndependentFlagsMask),
-            wasShortcutPreviouslyPressed: wasShortcutPreviouslyPressed
-        )
-    }
-
-    private static func shortcutEventType(for eventType: NSEvent.EventType) -> ShortcutEventType? {
-        switch eventType {
-        case .flagsChanged:
-            return .flagsChanged
-        case .keyDown:
-            return .keyDown
-        case .keyUp:
-            return .keyUp
-        default:
-            return nil
-        }
-    }
-
-    private static func shortcutEventType(for eventType: CGEventType) -> ShortcutEventType? {
-        switch eventType {
-        case .flagsChanged:
-            return .flagsChanged
-        case .keyDown:
-            return .keyDown
-        case .keyUp:
-            return .keyUp
-        default:
-            return nil
-        }
-    }
-
-    private static func shortcutTransition(
-        for shortcutEventType: ShortcutEventType,
-        keyCode: UInt16,
-        modifierFlags: NSEvent.ModifierFlags,
-        wasShortcutPreviouslyPressed: Bool
-    ) -> ShortcutTransition {
-        if let modifierOnlyFlags = currentShortcutOption.modifierOnlyFlags {
-            guard shortcutEventType == .flagsChanged else { return .none }
-
-            let isShortcutCurrentlyPressed = modifierFlags.contains(modifierOnlyFlags)
-
-            if isShortcutCurrentlyPressed && !wasShortcutPreviouslyPressed {
-                return .pressed
-            }
-
-            if !isShortcutCurrentlyPressed && wasShortcutPreviouslyPressed {
-                return .released
-            }
-
-            return .none
-        }
-
-        guard let pushToTalkModifierFlags = currentShortcutOption.spaceShortcutModifierFlags else {
-            return .none
-        }
-
-        let matchesModifierFlags = modifierFlags.isSuperset(of: pushToTalkModifierFlags)
-
-        if shortcutEventType == .keyDown
-            && keyCode == pushToTalkKeyCode
-            && matchesModifierFlags
-            && !wasShortcutPreviouslyPressed {
-            return .pressed
-        }
-
-        if shortcutEventType == .keyUp
-            && keyCode == pushToTalkKeyCode
-            && wasShortcutPreviouslyPressed {
-            return .released
-        }
-
-        return .none
-    }
-}
-
-enum BuddyDictationPermissionProblem {
-    case microphoneAccessDenied
-    case speechRecognitionDenied
-}
-
-private enum BuddyDictationStartSource {
-    case microphoneButton
-    case keyboardShortcut
-}
-
-private struct BuddyDictationDraftCallbacks {
-    let updateDraftText: (String) -> Void
-    let submitDraftText: (String) -> Void
-}
-
 @MainActor
 final class BuddyDictationManager: NSObject, ObservableObject {
     private static let defaultFinalTranscriptFallbackDelaySeconds: TimeInterval = 2.4
-    private static let recordedAudioPowerHistoryLength = 44
-    private static let recordedAudioPowerHistoryBaselineLevel: CGFloat = 0.02
-    private static let recordedAudioPowerHistorySampleIntervalSeconds: TimeInterval = 0.07
 
     @Published private(set) var isRecordingFromMicrophoneButton = false
     @Published private(set) var isRecordingFromKeyboardShortcut = false
@@ -227,10 +23,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     @Published private(set) var isFinalizingTranscript = false
     @Published private(set) var isPreparingToRecord = false
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
-    @Published private(set) var recordedAudioPowerHistory = Array(
-        repeating: BuddyDictationManager.recordedAudioPowerHistoryBaselineLevel,
-        count: BuddyDictationManager.recordedAudioPowerHistoryLength
-    )
+    @Published private(set) var recordedAudioPowerHistory = BuddyDictationAudioPowerMeter.baselineHistory()
     @Published private(set) var microphoneButtonRecordingStartedAt: Date?
     @Published private(set) var transcriptionProviderDisplayName = ""
     @Published var lastErrorMessage: String?
@@ -383,10 +176,10 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     ) async {
         guard !isDictationInProgress else { return }
 
-        print("🎙️ BuddyDictationManager: start requested (\(startSource))")
+        SpiderDiagnostics.event("dictation start requested")
 
         if needsInitialPermissionPrompt {
-            print("🎙️ BuddyDictationManager: requesting initial permissions")
+            SpiderDiagnostics.event("dictation requesting initial permissions")
             NSApplication.shared.activate(ignoringOtherApps: true)
 
             do {
@@ -405,17 +198,17 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         isPreparingToRecord = true
 
         guard await requestMicrophoneAndSpeechPermissionsWithoutDuplicatePrompts() else {
-            print("🎙️ BuddyDictationManager: permissions missing or denied")
+            SpiderDiagnostics.event("dictation permissions missing or denied")
             isPreparingToRecord = false
             return
         }
         guard !Task.isCancelled else {
-            print("🎙️ BuddyDictationManager: start cancelled (shortcut released during permission check)")
+            SpiderDiagnostics.event("dictation start cancelled during permission check")
             isPreparingToRecord = false
             return
         }
         guard pendingStartRequestIdentifier == startRequestIdentifier else {
-            print("🎙️ BuddyDictationManager: start request superseded")
+            SpiderDiagnostics.event("dictation start request superseded")
             isPreparingToRecord = false
             return
         }
@@ -434,15 +227,12 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         isRecordingFromKeyboardShortcut = startSource == .keyboardShortcut
         isKeyboardShortcutSessionActiveOrFinalizing = startSource == .keyboardShortcut
         currentAudioPowerLevel = 0
-        recordedAudioPowerHistory = Array(
-            repeating: Self.recordedAudioPowerHistoryBaselineLevel,
-            count: Self.recordedAudioPowerHistoryLength
-        )
+        recordedAudioPowerHistory = BuddyDictationAudioPowerMeter.baselineHistory()
         microphoneButtonRecordingStartedAt = nil
         lastRecordedAudioPowerSampleDate = .distantPast
 
         guard !Task.isCancelled else {
-            print("🎙️ BuddyDictationManager: start cancelled (shortcut released before recording began)")
+            SpiderDiagnostics.event("dictation start cancelled before recording began")
             resetSessionState()
             return
         }
@@ -450,7 +240,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         do {
             try await startRecognitionSession()
             guard !Task.isCancelled else {
-                print("🎙️ BuddyDictationManager: start cancelled (shortcut released during session start)")
+                SpiderDiagnostics.event("dictation start cancelled during session start")
                 audioEngine.stop()
                 audioEngine.inputNode.removeTap(onBus: 0)
                 activeTranscriptionSession?.cancel()
@@ -461,14 +251,14 @@ final class BuddyDictationManager: NSObject, ObservableObject {
                 microphoneButtonRecordingStartedAt = Date()
             }
             isPreparingToRecord = false
-            print("🎙️ BuddyDictationManager: recognition session started")
+            SpiderDiagnostics.event("dictation recognition session started")
         } catch {
             isPreparingToRecord = false
             lastErrorMessage = userFacingErrorMessage(
                 from: error,
                 fallback: "couldn't start voice input. try again."
             )
-            print("❌ BuddyDictationManager: failed to start recognition session (\(transcriptionProvider.displayName)): \(error)")
+            SpiderDiagnostics.event("dictation recognition session failed to start")
             resetSessionState()
         }
     }
@@ -482,7 +272,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         }
         guard !isFinalizingTranscript else { return }
 
-        print("🎙️ BuddyDictationManager: stop requested (\(expectedStartSource))")
+        SpiderDiagnostics.event("dictation stop requested")
 
         isRecordingFromMicrophoneButton = false
         isRecordingFromKeyboardShortcut = false
@@ -515,10 +305,10 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         activeTranscriptionSession?.cancel()
         activeTranscriptionSession = nil
 
-        print("🎙️ BuddyDictationManager: opening transcription provider \(transcriptionProvider.displayName)")
+        SpiderDiagnostics.event("dictation opening transcription provider")
 
         let activeTranscriptionSession = try await transcriptionProvider.startStreamingSession(
-            keyterms: buildTranscriptionKeyterms(),
+            keyterms: BuddyDictationKeytermBuilder.build(contextualKeyterms: contextualKeyterms),
             onTranscriptUpdate: { [weak self] transcriptText in
                 Task { @MainActor in
                     self?.latestRecognizedText = transcriptText
@@ -544,7 +334,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         )
 
         self.activeTranscriptionSession = activeTranscriptionSession
-        print("🎙️ BuddyDictationManager: provider ready, starting audio engine")
+        SpiderDiagnostics.event("dictation provider ready")
 
         let inputNode = audioEngine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
@@ -569,7 +359,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
                 shouldSubmitFinalDraft: shouldAutomaticallySubmitFinalDraft
             )
         } else {
-            print("❌ Buddy dictation error (\(transcriptionProvider.displayName)): \(error)")
+            SpiderDiagnostics.event("dictation recognition error")
             lastErrorMessage = userFacingErrorMessage(
                 from: error,
                 fallback: "couldn't transcribe that. try again."
@@ -606,24 +396,10 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     }
 
     private func composeDraftText(withTranscribedText transcribedText: String) -> String {
-        let trimmedTranscriptText = transcribedText.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard !trimmedTranscriptText.isEmpty else {
-            return draftTextBeforeCurrentDictation
-        }
-
-        let trimmedExistingDraftText = draftTextBeforeCurrentDictation
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard !trimmedExistingDraftText.isEmpty else {
-            return trimmedTranscriptText
-        }
-
-        if draftTextBeforeCurrentDictation.hasSuffix(" ") || draftTextBeforeCurrentDictation.hasSuffix("\n") {
-            return draftTextBeforeCurrentDictation + trimmedTranscriptText
-        }
-
-        return draftTextBeforeCurrentDictation + " " + trimmedTranscriptText
+        BuddyDictationDraftComposer.compose(
+            existingDraftText: draftTextBeforeCurrentDictation,
+            transcribedText: transcribedText
+        )
     }
 
     private func resetSessionState() {
@@ -641,96 +417,40 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         isKeyboardShortcutSessionActiveOrFinalizing = false
         isFinalizingTranscript = false
         currentAudioPowerLevel = 0
-        recordedAudioPowerHistory = Array(
-            repeating: Self.recordedAudioPowerHistoryBaselineLevel,
-            count: Self.recordedAudioPowerHistoryLength
-        )
+        recordedAudioPowerHistory = BuddyDictationAudioPowerMeter.baselineHistory()
         microphoneButtonRecordingStartedAt = nil
         lastRecordedAudioPowerSampleDate = .distantPast
     }
 
-    private func buildTranscriptionKeyterms() -> [String] {
-        let baseKeyterms = [
-            "makesomething",
-            "Learning Buddy",
-            "Codex",
-            "Claude",
-            "Anthropic",
-            "OpenAI",
-            "SwiftUI",
-            "Xcode",
-            "Vercel",
-            "Next.js",
-            "localhost"
-        ]
-
-        let combinedKeyterms = baseKeyterms + contextualKeyterms
-        var uniqueNormalizedKeyterms = Set<String>()
-        var orderedKeyterms: [String] = []
-
-        for keyterm in combinedKeyterms {
-            let trimmedKeyterm = keyterm.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmedKeyterm.isEmpty else { continue }
-
-            let normalizedKeyterm = trimmedKeyterm.lowercased()
-            if uniqueNormalizedKeyterms.contains(normalizedKeyterm) {
-                continue
-            }
-
-            uniqueNormalizedKeyterms.insert(normalizedKeyterm)
-            orderedKeyterms.append(trimmedKeyterm)
-        }
-
-        return orderedKeyterms
-    }
-
     private func updateAudioPowerLevel(from audioBuffer: AVAudioPCMBuffer) {
-        guard let channelData = audioBuffer.floatChannelData else { return }
-
-        let channelSamples = channelData[0]
-        let frameCount = Int(audioBuffer.frameLength)
-        guard frameCount > 0 else { return }
-
-        var summedSquares: Float = 0
-        for sampleIndex in 0..<frameCount {
-            let sample = channelSamples[sampleIndex]
-            summedSquares += sample * sample
-        }
-
-        let rootMeanSquare = sqrt(summedSquares / Float(frameCount))
-        let boostedLevel = min(max(rootMeanSquare * 10.2, 0), 1)
+        guard let boostedLevel = BuddyDictationAudioPowerMeter.boostedLevel(from: audioBuffer) else { return }
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
 
-            let smoothedAudioPowerLevel = max(
-                CGFloat(boostedLevel),
-                self.currentAudioPowerLevel * 0.72
+            self.currentAudioPowerLevel = BuddyDictationAudioPowerMeter.smoothedLevel(
+                currentLevel: self.currentAudioPowerLevel,
+                boostedLevel: boostedLevel
             )
-            self.currentAudioPowerLevel = smoothedAudioPowerLevel
 
             let now = Date()
-            if now.timeIntervalSince(self.lastRecordedAudioPowerSampleDate)
-                >= Self.recordedAudioPowerHistorySampleIntervalSeconds {
+            if BuddyDictationAudioPowerMeter.shouldRecordSample(
+                lastSampledAt: self.lastRecordedAudioPowerSampleDate,
+                now: now
+            ) {
                 self.lastRecordedAudioPowerSampleDate = now
                 self.appendRecordedAudioPowerSample(
-                    max(CGFloat(boostedLevel), Self.recordedAudioPowerHistoryBaselineLevel)
+                    max(boostedLevel, BuddyDictationAudioPowerMeter.baselineLevel)
                 )
             }
         }
     }
 
     private func appendRecordedAudioPowerSample(_ audioPowerSample: CGFloat) {
-        var updatedRecordedAudioPowerHistory = recordedAudioPowerHistory
-        updatedRecordedAudioPowerHistory.append(audioPowerSample)
-
-        if updatedRecordedAudioPowerHistory.count > Self.recordedAudioPowerHistoryLength {
-            updatedRecordedAudioPowerHistory.removeFirst(
-                updatedRecordedAudioPowerHistory.count - Self.recordedAudioPowerHistoryLength
-            )
-        }
-
-        recordedAudioPowerHistory = updatedRecordedAudioPowerHistory
+        recordedAudioPowerHistory = BuddyDictationAudioPowerMeter.history(
+            afterAppending: audioPowerSample,
+            to: recordedAudioPowerHistory
+        )
     }
 
     private func requestMicrophoneAndSpeechPermissionsIfNeeded() async -> Bool {
@@ -848,19 +568,32 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     }
 
     private func userFacingErrorMessage(from error: Error, fallback: String) -> String {
-        if let localizedError = error as? LocalizedError,
-           let errorDescription = localizedError.errorDescription?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !errorDescription.isEmpty {
-            return errorDescription
+        if let workerError = error as? SpiderWorkerClientError {
+            return BuddyDictationErrorPresentationPolicy.voiceInputFailureMessage(
+                for: workerError,
+                fallback: fallback
+            )
         }
 
-        let errorDescription = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !errorDescription.isEmpty,
-           errorDescription != "The operation couldn’t be completed." {
-            return errorDescription
+        if let realtimeError = error as? OpenAIRealtimeTranscriptionProviderError {
+            return BuddyDictationErrorPresentationPolicy.voiceInputFailureMessage(
+                for: realtimeError,
+                fallback: fallback
+            )
+        }
+
+        if let realtimeSpeechError = error as? OpenAIRealtimeVoiceClientError {
+            return BuddyDictationErrorPresentationPolicy.voiceInputFailureMessage(
+                for: realtimeSpeechError,
+                fallback: fallback
+            )
+        }
+
+        if error is AppleSpeechTranscriptionProviderError {
+            return "dictation is not available on this mac."
         }
 
         return fallback
     }
+
 }

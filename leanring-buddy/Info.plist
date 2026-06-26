@@ -4,17 +4,30 @@
 <dict>
 	<key>LSUIElement</key>
 	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>Spider Auth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>spider</string>
+			</array>
+		</dict>
+	</array>
 	<key>SUFeedURL</key>
-	<string>https://raw.githubusercontent.com/julianjear/makesomething-mac-app/main/appcast.xml</string>
+	<string>https://example.com/spider/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>/l3d2rw5ZZFRU3AadP/w2Zf8FHfhA6bKv16BQOV5OSk=</string>
 	<key>VoiceTranscriptionProvider</key>
-	<string>assemblyai</string>
+	<string>realtime</string>
+	<key>SpiderWorkerBaseURL</key>
+	<string>https://spider-api.uxspider-oficial.workers.dev</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Clicky uses your microphone so you can talk to it</string>
+	<string>Spider uses your microphone so you can ask for screen-based guidance.</string>
 	<key>NSScreenCaptureUsageDescription</key>
-	<string>Clicky needs screen recording access to see your screen and help you.</string>
+	<string>Spider needs screen recording access to inspect your screen and guide your next step.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Clicky uses speech recognition to transcribe your voice when you talk to it</string>
+	<string>Spider uses speech recognition to understand your spoken guidance requests.</string>
 </dict>
 </plist>

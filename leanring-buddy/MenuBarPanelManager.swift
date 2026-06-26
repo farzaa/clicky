@@ -4,8 +4,7 @@
 //
 //  Manages the NSStatusItem (menu bar icon) and a custom borderless NSPanel
 //  that drops down below it when clicked. The panel hosts a SwiftUI view
-//  (CompanionPanelView) via NSHostingView. Uses the same NSPanel pattern as
-//  FloatingSessionButton and GlobalPushToTalkOverlay for consistency.
+//  (CompanionPanelView) via NSHostingView.
 //
 //  The panel is non-activating so it does not steal focus from the user's
 //  current app, and auto-dismisses when the user clicks outside.
@@ -15,7 +14,8 @@ import AppKit
 import SwiftUI
 
 extension Notification.Name {
-    static let clickyDismissPanel = Notification.Name("clickyDismissPanel")
+    static let spiderDismissPanel = Notification.Name("spiderDismissPanel")
+    static let spiderShowPanel = Notification.Name("spiderShowPanel")
 }
 
 /// Custom NSPanel subclass that can become the key window even with
@@ -30,10 +30,13 @@ final class MenuBarPanelManager: NSObject {
     private var panel: NSPanel?
     private var clickOutsideMonitor: Any?
     private var dismissPanelObserver: NSObjectProtocol?
+    private var showPanelObserver: NSObjectProtocol?
+    private var hasUserPositionedPanel = false
+    private var isSettingPanelFrameProgrammatically = false
 
     private let companionManager: CompanionManager
-    private let panelWidth: CGFloat = 320
-    private let panelHeight: CGFloat = 380
+    private let panelWidth: CGFloat = 360
+    private let panelHeight: CGFloat = 540
 
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
@@ -41,11 +44,23 @@ final class MenuBarPanelManager: NSObject {
         createStatusItem()
 
         dismissPanelObserver = NotificationCenter.default.addObserver(
-            forName: .clickyDismissPanel,
+            forName: .spiderDismissPanel,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.hidePanel()
+            MainActor.assumeIsolated {
+                self?.hidePanel()
+            }
+        }
+
+        showPanelObserver = NotificationCenter.default.addObserver(
+            forName: .spiderShowPanel,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.showPanel()
+            }
         }
     }
 
@@ -56,52 +71,55 @@ final class MenuBarPanelManager: NSObject {
         if let observer = dismissPanelObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        if let observer = showPanelObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     // MARK: - Status Item
 
     private func createStatusItem() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: 30)
+        statusItem?.isVisible = true
 
         guard let button = statusItem?.button else { return }
 
-        button.image = makeClickyMenuBarIcon()
-        button.image?.isTemplate = true
+        button.image = makeSpiderStatusBallIcon()
+        button.image?.isTemplate = false
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleProportionallyDown
+        button.toolTip = "Open Spider"
+        button.setAccessibilityLabel("Open Spider")
         button.action = #selector(statusItemClicked)
         button.target = self
     }
 
-    /// Draws the clicky triangle as a menu bar icon. Uses the same shape
-    /// and rotation as the in-app cursor so the menu bar icon matches.
-    private func makeClickyMenuBarIcon() -> NSImage {
+    /// Draws Spider's status ball as a visible menu bar icon so the app can
+    /// always be called from the macOS menu bar while the process is running.
+    private func makeSpiderStatusBallIcon() -> NSImage {
         let iconSize: CGFloat = 18
         let image = NSImage(size: NSSize(width: iconSize, height: iconSize))
         image.lockFocus()
 
-        let triangleSize = iconSize * 0.7
-        let cx = iconSize * 0.50
-        let cy = iconSize * 0.50
-        let height = triangleSize * sqrt(3.0) / 2.0
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.26)
+        shadow.shadowBlurRadius = 2.0
+        shadow.shadowOffset = NSSize(width: 0, height: -0.5)
 
-        let top = CGPoint(x: cx, y: cy + height / 1.5)
-        let bottomLeft = CGPoint(x: cx - triangleSize / 2, y: cy - height / 3)
-        let bottomRight = CGPoint(x: cx + triangleSize / 2, y: cy - height / 3)
+        let ballRect = CGRect(x: 3.0, y: 3.0, width: 12.0, height: 12.0)
+        let ballPath = NSBezierPath(ovalIn: ballRect)
+        NSGraphicsContext.saveGraphicsState()
+        shadow.set()
+        NSColor(calibratedRed: 0.70, green: 1.00, blue: 0.76, alpha: 1.0).setFill()
+        ballPath.fill()
+        NSGraphicsContext.restoreGraphicsState()
 
-        let angle = 35.0 * .pi / 180.0
-        func rotate(_ point: CGPoint) -> CGPoint {
-            let dx = point.x - cx, dy = point.y - cy
-            let cosA = CGFloat(cos(angle)), sinA = CGFloat(sin(angle))
-            return CGPoint(x: cx + cosA * dx - sinA * dy, y: cy + sinA * dx + cosA * dy)
-        }
+        NSColor.black.withAlphaComponent(0.28).setStroke()
+        ballPath.lineWidth = 1.0
+        ballPath.stroke()
 
-        let path = NSBezierPath()
-        path.move(to: rotate(top))
-        path.line(to: rotate(bottomLeft))
-        path.line(to: rotate(bottomRight))
-        path.close()
-
-        NSColor.black.setFill()
-        path.fill()
+        NSColor.white.withAlphaComponent(0.62).setFill()
+        NSBezierPath(ovalIn: CGRect(x: 6.0, y: 10.2, width: 3.2, height: 3.2)).fill()
 
         image.unlockFocus()
         return image
@@ -126,12 +144,16 @@ final class MenuBarPanelManager: NSObject {
 
     // MARK: - Panel Lifecycle
 
-    private func showPanel() {
+    func showPanel() {
         if panel == nil {
             createPanel()
         }
 
-        positionPanelBelowStatusItem()
+        if hasUserPositionedPanel {
+            resizePanelToCurrentContent()
+        } else {
+            positionPanelBelowStatusItem()
+        }
 
         panel?.makeKeyAndOrderFront(nil)
         panel?.orderFrontRegardless()
@@ -167,12 +189,28 @@ final class MenuBarPanelManager: NSObject {
         menuBarPanel.hidesOnDeactivate = false
         menuBarPanel.isExcludedFromWindowsMenu = true
         menuBarPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        menuBarPanel.isMovable = true
         menuBarPanel.isMovableByWindowBackground = false
         menuBarPanel.titleVisibility = .hidden
         menuBarPanel.titlebarAppearsTransparent = true
+        menuBarPanel.delegate = self
 
         menuBarPanel.contentView = hostingView
         panel = menuBarPanel
+    }
+
+    private func resizePanelToCurrentContent() {
+        guard let panel else { return }
+
+        let fittingSize = panel.contentView?.fittingSize ?? CGSize(width: panelWidth, height: panelHeight)
+        setPanelFrame(
+            NSRect(
+                x: panel.frame.minX,
+                y: panel.frame.minY,
+                width: panelWidth,
+                height: fittingSize.height
+            )
+        )
     }
 
     private func positionPanelBelowStatusItem() {
@@ -191,10 +229,17 @@ final class MenuBarPanelManager: NSObject {
         let panelOriginX = statusItemFrame.midX - (panelWidth / 2)
         let panelOriginY = statusItemFrame.minY - actualPanelHeight - gapBelowMenuBar
 
-        panel.setFrame(
-            NSRect(x: panelOriginX, y: panelOriginY, width: panelWidth, height: actualPanelHeight),
-            display: true
+        setPanelFrame(
+            NSRect(x: panelOriginX, y: panelOriginY, width: panelWidth, height: actualPanelHeight)
         )
+    }
+
+    private func setPanelFrame(_ frame: NSRect) {
+        guard let panel else { return }
+
+        isSettingPanelFrameProgrammatically = true
+        panel.setFrame(frame, display: true)
+        isSettingPanelFrameProgrammatically = false
     }
 
     // MARK: - Click Outside Dismissal
@@ -239,5 +284,14 @@ final class MenuBarPanelManager: NSObject {
             NSEvent.removeMonitor(monitor)
             clickOutsideMonitor = nil
         }
+    }
+}
+
+extension MenuBarPanelManager: NSWindowDelegate {
+    func windowDidMove(_ notification: Notification) {
+        guard notification.object as? NSPanel === panel else { return }
+        guard !isSettingPanelFrameProgrammatically else { return }
+
+        hasUserPositionedPanel = true
     }
 }

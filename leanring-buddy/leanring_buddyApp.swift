@@ -7,6 +7,7 @@
 //  opens a floating panel with companion voice controls.
 //
 
+import AppKit
 import ServiceManagement
 import SwiftUI
 import Sparkle
@@ -34,13 +35,12 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var sparkleUpdaterController: SPUStandardUpdaterController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        print("🎯 Clicky: Starting...")
-        print("🎯 Clicky: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
+        SpiderDiagnostics.event("app starting")
 
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
 
-        ClickyAnalytics.configure()
-        ClickyAnalytics.trackAppOpened()
+        SpiderAnalytics.configure()
+        SpiderAnalytics.trackAppOpened()
 
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
         companionManager.start()
@@ -57,6 +57,13 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         companionManager.stop()
     }
 
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            companionManager.handleDeepLink(url)
+        }
+        menuBarPanelManager?.showPanel()
+    }
+
     /// Registers the app as a login item so it launches automatically on
     /// startup. Uses SMAppService which shows the app in System Settings >
     /// General > Login Items, letting the user toggle it off if they want.
@@ -65,9 +72,9 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         if loginItemService.status != .enabled {
             do {
                 try loginItemService.register()
-                print("🎯 Clicky: Registered as login item")
+                SpiderDiagnostics.event("login item registered")
             } catch {
-                print("⚠️ Clicky: Failed to register as login item: \(error)")
+                SpiderDiagnostics.event("login item registration failed")
             }
         }
     }
@@ -83,7 +90,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         do {
             try updaterController.updater.start()
         } catch {
-            print("⚠️ Clicky: Sparkle updater failed to start: \(error)")
+            SpiderDiagnostics.event("sparkle updater failed to start")
         }
     }
 }

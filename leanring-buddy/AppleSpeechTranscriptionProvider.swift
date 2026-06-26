@@ -9,11 +9,14 @@ import AVFoundation
 import Foundation
 import Speech
 
-struct AppleSpeechTranscriptionProviderError: LocalizedError {
-    let message: String
+enum AppleSpeechTranscriptionProviderError: LocalizedError {
+    case unavailable
 
     var errorDescription: String? {
-        message
+        switch self {
+        case .unavailable:
+            return "dictation is not available on this mac."
+        }
     }
 }
 
@@ -30,7 +33,7 @@ final class AppleSpeechTranscriptionProvider: BuddyTranscriptionProvider {
         onError: @escaping (Error) -> Void
     ) async throws -> any BuddyStreamingTranscriptionSession {
         guard let speechRecognizer = Self.makeBestAvailableSpeechRecognizer() else {
-            throw AppleSpeechTranscriptionProviderError(message: "dictation is not available on this mac.")
+            throw AppleSpeechTranscriptionProviderError.unavailable
         }
 
         return try AppleSpeechTranscriptionSession(
