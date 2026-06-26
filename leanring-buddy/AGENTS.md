@@ -1,28 +1,13 @@
-# AGENTS.md - leanring-buddy (Main App Target)
+# AGENTS.md - Spider App Target
 
-## Source Files
+Use the repository-level `AGENTS.md` as the source of truth. This target keeps
+the legacy folder and scheme name, but the product is Spider.
 
-### FloatingSessionButton.swift
-- `FloatingSessionButtonManager` — `@MainActor` class managing the `NSPanel` lifecycle
-  - `showFloatingButton()` — Creates/shows the panel in top-right of primary screen
-  - `hideFloatingButton()` — Hides panel (keeps it alive for quick re-show)
-  - `destroyFloatingButton()` — Removes panel permanently (session ended)
-  - `onFloatingButtonClicked` — Callback closure, set by ContentView to bring main window to front
-  - `floatingButtonPanel` — Exposed `NSPanel` reference for screenshot exclusion
-- `FloatingButtonView` — Private SwiftUI view with gradient circle, scale+glow hover animation, pointer cursor
+Target-specific reminders:
 
-### ContentView.swift
-- Receives `FloatingSessionButtonManager` via `@EnvironmentObject`
-- `isMainWindowCurrentlyFocused` — Tracks main window focus state
-- `configureFloatingButtonManager()` — Wires up the click callback
-- `startObservingMainWindowFocusChanges()` — Sets up `NSWindow` notification observers
-- `updateFloatingButtonVisibility()` — Core logic: show if running + not focused, hide otherwise
-- `bringMainWindowToFront()` — Activates app and orders main window front
-
-### ScreenshotManager.swift
-- `floatingButtonWindowToExcludeFromCaptures` — `NSWindow?` reference set by ContentView
-- `captureScreen()` — Matches the floating window to an `SCWindow` and excludes it from capture filter
-
-### leanring_buddyApp.swift
-- Owns `FloatingSessionButtonManager` as `@StateObject`
-- Injects it into ContentView via `.environmentObject()`
+- Do not persist screenshots, transcripts, prompts, model responses, emails, magic links, or session tokens outside their approved stores.
+- Session tokens and the stable device identifier belong in Keychain.
+- Ad Mission state, artifacts, and decision memory belong in `Application Support/Spider/AdMission.json`.
+- Screen guidance must go through the authenticated Worker.
+- OpenAI Realtime client secrets must come from the Worker.
+- Do not re-enable Anthropic, AssemblyAI, ElevenLabs, PostHog, or direct client-side OpenAI audio uploads.
