@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "kind": "CampaignObjectiveSet",
+  "platform": "meta_ads",
+  "topic": "campaign_objectives",
+  "retrieved_at": "2026-06-18",
+  "last_verified_at": "2026-06-18",
+  "status": "active",
+  "objectives": [
+    {
+      "id": "sales",
+      "platform": "meta_ads",
+      "topic": "campaign_objectives",
+      "sourceType": "spider_playbook",
+      "source_id": "spider_ads_playbook_v1",
+      "retrieved_at": "2026-06-18",
+      "last_verified_at": "2026-06-18",
+      "riskLevel": "low",
+      "status": "active",
+      "description": "Use Sales when the Ad Mission is buyers, checkout, or a paid offer.",
+      "recommendation": "Prefer Sales for direct-response purchase missions when tracking and the landing page are ready.",
+      "appliesTo": ["guided_setup", "preflight_audit", "campaign_plan"]
+    },
+    {
+      "id": "leads",
+      "platform": "meta_ads",
+      "topic": "campaign_objectives",
+      "sourceType": "spider_playbook",
+      "source_id": "spider_ads_playbook_v1",
+      "retrieved_at": "2026-06-18",
+      "last_verified_at": "2026-06-18",
+      "riskLevel": "low",
+      "status": "active",
+      "description": "Use Leads when the Ad Mission is qualified contacts before a sale, consultation, form submission, or follow-up.",
+      "recommendation": "Prefer Leads for service businesses or sales-assisted offers where the first conversion is a contact.",
+      "appliesTo": ["guided_setup", "preflight_audit", "campaign_plan"]
+    },
+    {
+      "id": "traffic",
+      "platform": "meta_ads",
+      "topic": "campaign_objectives",
+      "sourceType": "spider_playbook",
+      "source_id": "spider_ads_playbook_v1",
+      "retrieved_at": "2026-06-18",
+      "last_verified_at": "2026-06-18",
+      "riskLevel": "high",
+      "status": "active",
+      "description": "Traffic can be useful for visits or content distribution, but it can misalign with sales missions.",
+      "recommendation": "Warn when the Ad Mission is direct sales. Traffic can optimize toward cheap visits instead of buyer intent.",
+      "appliesTo": ["guided_setup", "preflight_audit", "campaign_plan"]
+    },
+    {
+      "id": "awareness",
+      "platform": "meta_ads",
+      "topic": "campaign_objectives",
+      "sourceType": "spider_playbook",
+      "source_id": "spider_ads_playbook_v1",
+      "retrieved_at": "2026-06-18",
+      "last_verified_at": "2026-06-18",
+      "riskLevel": "medium",
+      "status": "active",
+      "description": "Awareness can support reach or visibility, but it is usually weak evidence for small-budget direct-response missions.",
+      "recommendation": "Avoid Awareness for small-budget conversion missions unless the user explicitly accepts weak conversion signal.",
+      "appliesTo": ["guided_setup", "campaign_plan"]
+    }
+  ]
+}

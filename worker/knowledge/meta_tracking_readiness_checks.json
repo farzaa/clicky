@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "kind": "TrackingReadinessCheckSet",
+  "platform": "meta_ads",
+  "topic": "tracking_readiness",
+  "retrieved_at": "2026-06-18",
+  "last_verified_at": "2026-06-18",
+  "status": "active",
+  "checks": [
+    {
+      "id": "conversion_event_available",
+      "platform": "spider",
+      "topic": "tracking_readiness",
+      "sourceType": "spider_playbook",
+      "source_id": "spider_ads_playbook_v1",
+      "retrieved_at": "2026-06-18",
+      "last_verified_at": "2026-06-18",
+      "riskLevel": "high",
+      "status": "active",
+      "description": "Confirm that the relevant conversion event is visible before publishing a conversion-focused campaign.",
+      "condition": "mission_goal in ['sales', 'leads']",
+      "failureDecision": "fix_before_publish",
+      "recommendation": "Fix event readiness before judging conversion performance.",
+      "appliesTo": ["tracking_readiness", "preflight_audit"]
+    },
+    {
+      "id": "landing_cta_matches_event",
+      "platform": "spider",
+      "topic": "tracking_readiness",
+      "sourceType": "spider_playbook",
+      "source_id": "spider_ads_playbook_v1",
+      "retrieved_at": "2026-06-18",
+      "last_verified_at": "2026-06-18",
+      "riskLevel": "medium",
+      "status": "active",
+      "description": "Confirm the landing CTA aligns with the event the campaign will optimize toward.",
+      "condition": "landing_page_visible",
+      "failureDecision": "continue_with_warning",
+      "recommendation": "Continue only if the user understands the mismatch risk.",
+      "appliesTo": ["tracking_readiness", "landing_page_review"]
+    },
+    {
+      "id": "utm_present",
+      "platform": "spider",
+      "topic": "tracking_readiness",
+      "sourceType": "spider_playbook",
+      "source_id": "spider_ads_playbook_v1",
+      "retrieved_at": "2026-06-18",
+      "last_verified_at": "2026-06-18",
+      "riskLevel": "medium",
+      "status": "active",
+      "description": "Recommend UTM parameters before launch so review can compare Meta results with downstream analytics.",
+      "condition": "destination_url_visible",
+      "failureDecision": "continue_with_warning",
+      "recommendation": "Add UTM parameters before launch when the destination URL is editable.",
+      "appliesTo": ["tracking_readiness", "72h_review"]
+    }
+  ]
+}

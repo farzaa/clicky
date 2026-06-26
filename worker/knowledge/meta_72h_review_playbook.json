@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "kind": "OptimizationDecisionSet",
+  "platform": "meta_ads",
+  "topic": "72h_review",
+  "retrieved_at": "2026-06-18",
+  "last_verified_at": "2026-06-18",
+  "status": "active",
+  "decisions": [
+    {
+      "id": "low_spend_no_conversions",
+      "platform": "spider",
+      "topic": "72h_review",
+      "sourceType": "spider_playbook",
+      "source_id": "spider_ads_playbook_v1",
+      "retrieved_at": "2026-06-18",
+      "last_verified_at": "2026-06-18",
+      "riskLevel": "medium",
+      "status": "active",
+      "description": "Spend is below the planned review threshold and conversions are absent.",
+      "decision": "needs_more_signal",
+      "recommendation": "Do not pause yet.",
+      "reason": "There is not enough signal to judge conversion performance.",
+      "reviewTrigger": "Review after the planned spend threshold, 72 hours, or 3 conversion events.",
+      "appliesTo": ["72h_review", "performance_review"]
+    },
+    {
+      "id": "traffic_goal_sales_mismatch",
+      "platform": "spider",
+      "topic": "72h_review",
+      "sourceType": "spider_playbook",
+      "source_id": "spider_ads_playbook_v1",
+      "retrieved_at": "2026-06-18",
+      "last_verified_at": "2026-06-18",
+      "riskLevel": "high",
+      "status": "active",
+      "description": "Campaign objective is Traffic while the Ad Mission goal is sales.",
+      "decision": "fix_before_publish",
+      "recommendation": "Fix objective alignment before judging sales performance.",
+      "reason": "Traffic can produce cheap visits that do not represent purchase intent.",
+      "reviewTrigger": "Run preflight again after rebuilding or correcting the campaign.",
+      "appliesTo": ["72h_review", "preflight_audit", "campaign_plan"]
+    },
+    {
+      "id": "cheap_clicks_no_sales",
+      "platform": "spider",
+      "topic": "72h_review",
+      "sourceType": "spider_playbook",
+      "source_id": "spider_ads_playbook_v1",
+      "retrieved_at": "2026-06-18",
+      "last_verified_at": "2026-06-18",
+      "riskLevel": "medium",
+      "status": "active",
+      "description": "Clicks are cheap but conversions are absent.",
+      "decision": "continue_with_warning",
+      "recommendation": "Audit offer, landing, tracking, and creative before adding ad sets.",
+      "reason": "The bottleneck is more likely post-click alignment than audience complexity.",
+      "reviewTrigger": "Review after landing or creative changes have enough new spend.",
+      "appliesTo": ["72h_review", "performance_review", "landing_page_review"]
+    }
+  ]
+}

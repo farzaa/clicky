@@ -1,6 +1,36 @@
-name = "clicky-proxy"
+name = "spider-api"
 main = "src/index.ts"
-compatibility_date = "2024-01-01"
+compatibility_date = "2026-06-18"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+head_sampling_rate = 0.1
+
+[triggers]
+crons = ["17 3 * * *"]
 
 [vars]
-ELEVENLABS_VOICE_ID = "kPzsL2i3teMYv0FxEYQ6"
+OPENAI_VISION_MODEL = "gpt-5.5"
+OPENAI_REALTIME_MODEL = "gpt-realtime-2"
+ALLOWED_WEB_ORIGINS = ""
+DAILY_VISION_LIMIT = "40"
+DAILY_REALTIME_LIMIT = "60"
+DAILY_IP_AUTH_START_LIMIT = "12"
+DAILY_DEVICE_AUTH_START_LIMIT = "12"
+DAILY_IP_AUTH_CONFIRM_LIMIT = "30"
+DAILY_DEVICE_AUTH_CONFIRM_LIMIT = "30"
+DAILY_IP_VISION_LIMIT = "160"
+DAILY_DEVICE_VISION_LIMIT = "80"
+DAILY_IP_REALTIME_LIMIT = "180"
+DAILY_DEVICE_REALTIME_LIMIT = "90"
+MAX_SCREENSHOT_PAYLOAD_BYTES = "8000000"
+APP_LOGIN_CONFIRM_URL = "https://spider-api.uxspider-oficial.workers.dev/auth/login/confirm"
+APP_LOGIN_DEEP_LINK_URL = "spider://auth/confirm"
+STRIPE_SUCCESS_URL = "https://spider-api.uxspider-oficial.workers.dev/account"
+STRIPE_CANCEL_URL = "https://spider-api.uxspider-oficial.workers.dev/account"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "spider"
+database_id = "6ca9a91c-28d8-44cb-9a7d-7efd6f022b60"

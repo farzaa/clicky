@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "kind": "RiskWarningSet",
+  "platform": "meta_ads",
+  "topic": "creative_policy_risks",
+  "retrieved_at": "2026-06-18",
+  "last_verified_at": "2026-06-18",
+  "status": "active",
+  "warnings": [
+    {
+      "id": "misleading_or_deceptive_claims",
+      "platform": "meta_ads",
+      "topic": "creative_policy_risks",
+      "policyArea": "fraud_scams_deceptive_practices",
+      "sourceType": "official_rule",
+      "source_id": "meta_advertising_standards_main",
+      "retrieved_at": "2026-06-18",
+      "last_verified_at": "2026-06-18",
+      "riskLevel": "critical",
+      "status": "active",
+      "description": "Meta policies prohibit deceptive or misleading ads, including practices meant to scam people out of money or personal information.",
+      "appliesTo": ["creative_review", "landing_page_review", "preflight_audit"]
+    },
+    {
+      "id": "personal_attributes",
+      "platform": "meta_ads",
+      "topic": "creative_policy_risks",
+      "policyArea": "privacy_violations_personal_attributes",
+      "sourceType": "official_rule",
+      "source_id": "meta_advertising_standards_main",
+      "retrieved_at": "2026-06-18",
+      "last_verified_at": "2026-06-18",
+      "riskLevel": "high",
+      "status": "active",
+      "description": "Ads must not contain content that asserts or implies personal attributes about the viewer, including protected or sensitive traits.",
+      "appliesTo": ["creative_review", "copy_review", "preflight_audit"]
+    },
+    {
+      "id": "weak_proof_warning",
+      "platform": "spider",
+      "topic": "offer_readiness",
+      "policyArea": "offer_readiness",
+      "sourceType": "spider_playbook",
+      "source_id": "spider_ads_playbook_v1",
+      "retrieved_at": "2026-06-18",
+      "last_verified_at": "2026-06-18",
+      "riskLevel": "medium",
+      "status": "active",
+      "description": "A creative can be acceptable to test and still be strategically weak if it lacks proof, specificity, or a clear offer.",
+      "recommendation": "Flag weak proof as Spider judgment, not as Meta policy.",
+      "appliesTo": ["creative_review", "preflight_audit"]
+    }
+  ]
+}

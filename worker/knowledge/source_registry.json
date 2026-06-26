@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "kind": "SourceRegistry",
+  "platform": "mixed",
+  "topic": "source_integrity",
+  "retrieved_at": "2026-06-18",
+  "last_verified_at": "2026-06-18",
+  "status": "active",
+  "sources": [
+    {
+      "id": "meta_advertising_standards_main",
+      "platform": "meta_ads",
+      "title": "Meta Advertising Standards",
+      "source_url": "https://transparency.meta.com/policies/ad-standards/",
+      "retrieved_at": "2026-06-18",
+      "last_verified_at": "2026-06-18",
+      "source_type": "official_rule",
+      "status": "active",
+      "topics": ["ad_review", "policy", "creative", "targeting", "destination", "re_review"]
+    },
+    {
+      "id": "spider_ads_playbook_v1",
+      "platform": "spider",
+      "title": "Spider Ads MVP Independent Playbook",
+      "source_url": "internal://spider/ads/playbook/v1",
+      "retrieved_at": "2026-06-18",
+      "last_verified_at": "2026-06-18",
+      "source_type": "spider_playbook",
+      "status": "active",
+      "topics": ["guided_setup", "preflight_audit", "72h_review", "decision_memory", "safety_boundaries"]
+    },
+    {
+      "id": "spider_user_context_runtime",
+      "platform": "spider",
+      "title": "Spider Ad Mission User Context",
+      "source_url": "internal://spider/ad-mission/user-context",
+      "retrieved_at": "2026-06-18",
+      "last_verified_at": "2026-06-18",
+      "source_type": "user_context",
+      "status": "active",
+      "topics": ["ad_mission", "offer", "audience", "budget", "business_objective", "decision_memory"]
+    }
+  ]
+}

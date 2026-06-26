@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "kind": "DecisionTypeSet",
+  "platform": "meta_ads",
+  "topic": "decision_contract",
+  "retrieved_at": "2026-06-18",
+  "last_verified_at": "2026-06-18",
+  "status": "active",
+  "sourceType": "spider_playbook",
+  "source_id": "spider_ads_playbook_v1",
+  "decisionTypes": [
+    {
+      "id": "safe_to_continue",
+      "platform": "spider",
+      "topic": "decision_contract",
+      "sourceType": "spider_playbook",
+      "source_id": "spider_ads_playbook_v1",
+      "status": "active",
+      "description": "The next guided setup action is low risk and aligned with the Ad Mission.",
+      "requiresManualConfirmation": false
+    },
+    {
+      "id": "continue_with_warning",
+      "platform": "spider",
+      "topic": "decision_contract",
+      "sourceType": "spider_playbook",
+      "source_id": "spider_ads_playbook_v1",
+      "status": "active",
+      "description": "The user can proceed, but Spider found a risk or weakness that should be understood first.",
+      "requiresManualConfirmation": false
+    },
+    {
+      "id": "fix_before_publish",
+      "platform": "spider",
+      "topic": "decision_contract",
+      "sourceType": "spider_playbook",
+      "source_id": "spider_ads_playbook_v1",
+      "status": "active",
+      "description": "The user should correct the setup before publishing or spending more.",
+      "requiresManualConfirmation": false
+    },
+    {
+      "id": "needs_more_signal",
+      "platform": "spider",
+      "topic": "decision_contract",
+      "sourceType": "spider_playbook",
+      "source_id": "spider_ads_playbook_v1",
+      "status": "active",
+      "description": "There is not enough data or screen context to make a confident performance decision yet.",
+      "requiresManualConfirmation": false
+    },
+    {
+      "id": "do_not_publish",
+      "platform": "spider",
+      "topic": "decision_contract",
+      "sourceType": "spider_playbook",
+      "source_id": "spider_ads_playbook_v1",
+      "status": "active",
+      "description": "The current setup has a critical issue that should block launch.",
+      "requiresManualConfirmation": true
+    },
+    {
+      "id": "manual_confirmation_required",
+      "platform": "spider",
+      "topic": "decision_contract",
+      "sourceType": "spider_playbook",
+      "source_id": "spider_ads_playbook_v1",
+      "status": "active",
+      "description": "The next step involves spend, publishing, billing, budget, pause, deletion, or another irreversible account change. Spider must stop and the user must act manually.",
+      "requiresManualConfirmation": true
+    }
+  ],
+  "riskLevels": ["low", "medium", "high", "critical"],
+  "sourceTypes": ["official_rule", "official_definition", "official_guidance", "spider_playbook", "user_context", "mixed"],
+  "statuses": ["active", "needs_review", "outdated", "deprecated"]
+}

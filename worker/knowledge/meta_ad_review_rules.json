@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "kind": "PolicyRuleSet",
+  "platform": "meta_ads",
+  "topic": "ad_review",
+  "retrieved_at": "2026-06-18",
+  "last_verified_at": "2026-06-18",
+  "status": "active",
+  "rules": [
+    {
+      "id": "meta_ad_review_surface",
+      "platform": "meta_ads",
+      "topic": "ad_review",
+      "policyArea": "ad_review",
+      "sourceType": "official_rule",
+      "source_id": "meta_advertising_standards_main",
+      "retrieved_at": "2026-06-18",
+      "last_verified_at": "2026-06-18",
+      "riskLevel": "high",
+      "status": "active",
+      "description": "Meta ad review may evaluate ad creative, text, targeting information, and the ad destination such as a landing page.",
+      "appliesTo": ["preflight_audit", "creative_pack", "guided_setup"]
+    },
+    {
+      "id": "meta_review_can_repeat_after_live",
+      "platform": "meta_ads",
+      "topic": "ad_review",
+      "policyArea": "ad_review",
+      "sourceType": "official_rule",
+      "source_id": "meta_advertising_standards_main",
+      "retrieved_at": "2026-06-18",
+      "last_verified_at": "2026-06-18",
+      "riskLevel": "high",
+      "status": "active",
+      "description": "Ads remain subject to review and re-review, including after they are live, and may be rejected or restricted later if a violation is found.",
+      "appliesTo": ["preflight_audit", "post_launch_review"]
+    },
+    {
+      "id": "spider_no_policy_approval_guarantee",
+      "platform": "spider",
+      "topic": "decision_safety",
+      "policyArea": "ad_review",
+      "sourceType": "spider_playbook",
+      "source_id": "spider_ads_playbook_v1",
+      "retrieved_at": "2026-06-18",
+      "last_verified_at": "2026-06-18",
+      "riskLevel": "critical",
+      "status": "active",
+      "description": "Spider must never claim that an ad is guaranteed to pass Meta review.",
+      "recommendation": "Use cautious language: identify visible risks, cite official review surfaces when applicable, and tell the user that final review belongs to Meta.",
+      "appliesTo": ["preflight_audit", "creative_pack"]
+    }
+  ]
+}

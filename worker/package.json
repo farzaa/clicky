@@ -1,11 +1,18 @@
 {
-  "name": "clicky-proxy",
+  "name": "spider-api",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "dry-run": "wrangler deploy --dry-run --outdir /tmp/spider-worker-dry-run",
+    "typegen": "WRANGLER_LOG_PATH=${TMPDIR:-/tmp}/spider-wrangler-logs wrangler types",
+    "typegen:check": "WRANGLER_LOG_PATH=${TMPDIR:-/tmp}/spider-wrangler-logs wrangler types --check",
+    "smoke": "node tests/smoke-worker.mjs",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typegen:check && npm run typecheck && npm run smoke"
   },
   "devDependencies": {
-    "wrangler": "^3.0.0"
+    "typescript": "^5.9.3",
+    "wrangler": "^4.101.0"
   }
 }
