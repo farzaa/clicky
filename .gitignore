@@ -1,7 +1,11 @@
 worker/node_modules/
+worker/.wrangler/
 worker/.dev.vars
+scripts/release.env
 .DS_Store
 *.xcuserstate
+*.xcuserdatad/
+**/xcuserdata/
 build/
 releases/
 .claude/
