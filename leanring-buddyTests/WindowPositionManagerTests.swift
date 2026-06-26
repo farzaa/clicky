@@ -1,15 +1,16 @@
 //
-//  leanring_buddyTests.swift
+//  WindowPositionManagerTests.swift
 //  leanring-buddyTests
 //
-//  Created by thorfinn on 3/2/26.
+//  Tests for permission presentation policy around screen recording access.
 //
 
+import Foundation
 import Testing
-@testable import leanring_buddy
+@testable import Spider
 
-struct leanring_buddyTests {
-
+@MainActor
+struct WindowPositionManagerTests {
     @Test func firstPermissionRequestUsesSystemPromptOnly() async throws {
         let presentationDestination = WindowPositionManager.permissionRequestPresentationDestination(
             hasPermissionNow: false,
@@ -36,5 +37,4 @@ struct leanring_buddyTests {
 
         #expect(shouldTreatPermissionAsGranted)
     }
-
 }
