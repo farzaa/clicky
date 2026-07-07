@@ -104,11 +104,10 @@ final class CompanionResponseOverlayManager {
     }
 
     private func startCursorTracking() {
-        // 60fps cursor tracking so the panel stays glued to the mouse
+        // 60fps cursor tracking so the panel stays glued to the mouse.
+        // Timer already fires on the main runloop; no need for a Task hop.
         cursorTrackingTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.repositionPanelNearCursor()
-            }
+            self?.repositionPanelNearCursor()
         }
     }
 
