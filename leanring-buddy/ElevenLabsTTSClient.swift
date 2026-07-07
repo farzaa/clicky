@@ -19,13 +19,18 @@ final class ElevenLabsTTSClient {
     /// audio finishes playing even if the caller doesn't hold a reference.
     private var audioPlayer: AVAudioPlayer?
 
-    init(proxyURL: String) {
-        self.proxyURL = URL(string: proxyURL)!
+    init?(proxyURL: String) {
+        guard let url = URL(string: proxyURL) else { return nil }
+        self.proxyURL = url
 
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 60
         self.session = URLSession(configuration: configuration)
+    }
+
+    deinit {
+        session.invalidateAndCancel()
     }
 
     /// Sends `text` to ElevenLabs TTS and plays the resulting audio.

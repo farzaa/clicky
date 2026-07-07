@@ -14,8 +14,9 @@ class ClaudeAPI {
     var model: String
     private let session: URLSession
 
-    init(proxyURL: String, model: String = "claude-sonnet-4-6") {
-        self.apiURL = URL(string: proxyURL)!
+    init?(proxyURL: String, model: String = "claude-sonnet-4-6") {
+        guard let url = URL(string: proxyURL) else { return nil }
+        self.apiURL = url
         self.model = model
 
         // Use .default instead of .ephemeral so TLS session tickets are cached.
@@ -34,6 +35,10 @@ class ClaudeAPI {
         // connection. This caches the TLS session ticket so the first real API call
         // (which carries a large image payload) doesn't need a cold TLS handshake.
         warmUpTLSConnectionIfNeeded()
+    }
+
+    deinit {
+        session.invalidateAndCancel()
     }
 
     private func makeAPIRequest() -> URLRequest {
@@ -65,11 +70,11 @@ class ClaudeAPI {
     /// Failures are silently ignored — this is purely an optimization.
     private func warmUpTLSConnectionIfNeeded() {
         Self.tlsWarmupLock.lock()
+        defer { Self.tlsWarmupLock.unlock() }
         let shouldStartTLSWarmup = !Self.hasStartedTLSWarmup
         if shouldStartTLSWarmup {
             Self.hasStartedTLSWarmup = true
         }
-        Self.tlsWarmupLock.unlock()
 
         guard shouldStartTLSWarmup else { return }
 
@@ -188,9 +193,13 @@ class ClaudeAPI {
             // End of stream marker
             guard jsonString != "[DONE]" else { break }
 
-            guard let jsonData = jsonString.data(using: .utf8),
-                  let eventPayload = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            guard let jsonData = jsonString.data(using: .utf8) else {
+                print("⚠️ Claude SSE: non-UTF8 data: \(jsonString.prefix(80))")
+                continue
+            }
+            guard let eventPayload = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
                   let eventType = eventPayload["type"] as? String else {
+                print("⚠️ Claude SSE: malformed event payload: \(jsonString.prefix(80))")
                 continue
             }
 
@@ -201,9 +210,7 @@ class ClaudeAPI {
                deltaType == "text_delta",
                let textChunk = delta["text"] as? String {
                 accumulatedResponseText += textChunk
-                // Send the accumulated text so far to the UI for progressive rendering
-                let currentAccumulatedText = accumulatedResponseText
-                await onTextChunk(currentAccumulatedText)
+                await onTextChunk(textChunk)
             }
         }
 

@@ -42,6 +42,26 @@ final class CompanionManager: ObservableObject {
     /// BlueCursorView uses this instead of a random pointer phrase.
     @Published var detectedElementBubbleText: String?
 
+    // MARK: - Step-by-Step Guidance State
+
+    /// True when the AI is walking the user through a multi-step visual guide.
+    @Published var isStepByStepActive = false
+
+    /// The full set of steps for the current guide.
+    @Published var guideSteps: [GuidanceStep] = []
+
+    /// Index of the currently visible step (0-based).
+    @Published var currentStepIndex: Int = 0
+
+    /// Total number of steps in the current guide.
+    @Published var totalSteps: Int = 0
+
+    /// The instruction text for the current step.
+    @Published var currentStepInstruction: String = ""
+
+    /// Progress through the guide from 0.0 to 1.0.
+    @Published var stepProgress: Double = 0.0
+
     // MARK: - Onboarding Video State (shared across all screen overlays)
 
     @Published var onboardingVideoPlayer: AVPlayer?
@@ -73,11 +93,11 @@ final class CompanionManager: ObservableObject {
     private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
 
     private lazy var claudeAPI: ClaudeAPI = {
-        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+        ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)!
     }()
 
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
-        return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
+        ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")!
     }()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
@@ -96,6 +116,12 @@ final class CompanionManager: ObservableObject {
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
+    /// Tracks the current step's coordinate mapping task so it can be cancelled
+    /// when the user advances to the next step before mapping completes.
+    private var stepCoordinateTask: Task<Void, Never>?
+    /// Incremented each time a new step executes. Stale TTS completion handlers
+    /// check this to avoid updating state for a superseded step.
+    private var stepGeneration: UInt = 0
 
     /// True when all three required permissions (accessibility, screen recording,
     /// microphone) are granted. Used by the panel to show a single "all good" state.
@@ -473,6 +499,12 @@ final class CompanionManager: ObservableObject {
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
         case .pressed:
+            // If a step-by-step guide is active, cancel it — the user is
+            // starting a fresh interaction
+            if isStepByStepActive {
+                cancelStepByStepGuide()
+            }
+
             guard !buddyDictationManager.isDictationInProgress else { return }
             // Don't register push-to-talk while the onboarding video is playing
             guard !showOnboardingVideo else { return }
@@ -574,6 +606,23 @@ final class CompanionManager: ObservableObject {
     - user asks what html is: "html stands for hypertext markup language, it's basically the skeleton of every web page. curious how it connects to the css you're looking at? [POINT:none]"
     - user asks how to commit in xcode: "see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control]"
     - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
+
+    step by step guidance:
+    when the user asks "how do i..." or "show me how to..." or any question about walking through a multi-step task on their computer, respond with a step by step visual guide instead of a regular answer. here's how to format it:
+
+    start with a short acknowledgment: "let me walk you through it."
+    then output a [GUIDE:N] tag where N is the number of steps, then each step on its own line separated by " ### ", then end with [END_GUIDE]. each step should have a [POINT:x,y:label] tag pointing at the relevant ui element. keep each step instruction to 8 words or fewer. speak in natural language, not bullet points.
+
+    here is the exact format:
+    [GUIDE:3]
+    go to the file menu [POINT:50,10:file menu]
+    ###
+    click new project [POINT:200,150:new project]
+    ###
+    choose ios app [POINT:400,300:ios template]
+    [END_GUIDE]
+
+    the text before [GUIDE will be spoken. the steps inside [GUIDE will be shown one at a time as the user advances through them. the text after [END_GUIDE will be ignored. keep each step instruction short and concrete. always include a [POINT] tag per step pointing at the relevant element. if a step doesn't have a specific on-screen element to point at, leave the tag out.
     """
 
     // MARK: - AI Response Pipeline
@@ -582,8 +631,21 @@ final class CompanionManager: ObservableObject {
     /// and plays the response aloud via ElevenLabs TTS. The cursor stays in
     /// the spinner/processing state until TTS audio begins playing.
     /// Claude's response may include a [POINT:x,y:label] tag which triggers
-    /// the buddy to fly to that element on screen.
+    /// the buddy to fly to that element on screen. When the response contains
+    /// a [GUIDE:N] block, the app enters step-by-step guidance mode instead.
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
+        // If step-by-step mode is active, check if the user said an advance
+        // command ("next", "ok", "done", etc.) instead of a full question.
+        if isStepByStepActive {
+            if StepAdvanceCommand.matches(transcript) {
+                advanceToNextStep()
+                return
+            }
+            // The user asked something else — cancel the guide and
+            // send the query to Claude normally
+            cancelStepByStepGuide()
+        }
+
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
 
@@ -621,6 +683,42 @@ final class CompanionManager: ObservableObject {
                 )
 
                 guard !Task.isCancelled else { return }
+
+                // Check if Claude returned a multi-step guide
+                if let (guide, preamble) = StepByStepGuideParser.parse(from: fullResponseText) {
+                    // Cancel any existing guide and start the new one
+                    if isStepByStepActive { cancelStepByStepGuide() }
+
+                    // Speak the preamble acknowledgment
+                    if !preamble.isEmpty {
+                        do {
+                            try await elevenLabsTTSClient.speakText(preamble)
+                            voiceState = .responding
+                            // Wait for preamble TTS to finish before starting
+                            // the first step with a 30-second safety timeout.
+                            var preambleWaitSeconds = 0
+                            while elevenLabsTTSClient.isPlaying && preambleWaitSeconds < 30 {
+                                try await Task.sleep(nanoseconds: 100_000_000)
+                                preambleWaitSeconds += 1
+                            }
+                        } catch {
+                            print("⚠️ Guide preamble TTS error: \(error)")
+                        }
+                    }
+
+                    // Save a brief reference to conversation history so Claude
+                    // has context if the user asks a follow-up
+                    conversationHistory.append((
+                        userTranscript: transcript,
+                        assistantResponse: "[provided a step-by-step guide with \(guide.totalSteps) steps]"
+                    ))
+                    if conversationHistory.count > 10 {
+                        conversationHistory.removeFirst(conversationHistory.count - 10)
+                    }
+
+                    startStepByStepGuide(guide)
+                    return
+                }
 
                 // Parse the [POINT:...] tag from Claude's response
                 let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
@@ -719,7 +817,11 @@ final class CompanionManager: ObservableObject {
             }
 
             if !Task.isCancelled {
-                voiceState = .idle
+                // Don't reset to idle if step-by-step mode is active —
+                // the step sequencer manages voice state directly
+                if !isStepByStepActive {
+                    voiceState = .idle
+                }
                 scheduleTransientHideIfNeeded()
             }
         }
@@ -753,6 +855,154 @@ final class CompanionManager: ObservableObject {
             overlayWindowManager.fadeOutAndHideOverlay()
             isOverlayVisible = false
         }
+    }
+
+    // MARK: - Step-by-Step Guidance Sequencing
+
+    /// Activates step-by-step mode and executes the first step.
+    private func startStepByStepGuide(_ guide: StepByStepGuide) {
+        isStepByStepActive = true
+        guideSteps = guide.steps
+        totalSteps = guide.totalSteps
+        currentStepIndex = 0
+        stepProgress = 0.0
+
+        executeStep(guide.steps[0])
+    }
+
+    /// Advances the guide to the next step, or completes if all steps are done.
+    func advanceToNextStep() {
+        guard isStepByStepActive else { return }
+        guard currentStepIndex < totalSteps - 1 else {
+            finishStepByStepGuide()
+            return
+        }
+
+        currentStepIndex += 1
+        stepProgress = Double(currentStepIndex) / Double(totalSteps)
+        let step = guideSteps[currentStepIndex]
+        executeStep(step)
+    }
+
+    /// Executes a single guidance step: plays the instruction via TTS and
+    /// points the cursor at the relevant element.
+    private func executeStep(_ step: GuidanceStep) {
+        currentStepInstruction = step.instruction
+        // Don't override the navigation bubble text — the existing random
+        // pointer phrases ("right here!", "this one!") work better than
+        // element labels like "insert tab"
+        detectedElementBubbleText = nil
+
+        let hasPointCoordinate = step.rawPointCoordinate != nil
+        if hasPointCoordinate {
+            voiceState = .idle
+        }
+
+        // Cancel any in-flight coordinate mapping from a previous step
+        stepCoordinateTask?.cancel()
+
+        // Map coordinates from step to screen coordinates (same logic as
+        // the point tag parsing in sendTranscriptToClaudeWithScreenshot)
+        if let pointCoordinate = step.rawPointCoordinate {
+            stepCoordinateTask = Task {
+                do {
+                    let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+
+                    let targetScreenCapture: CompanionScreenCapture? = {
+                        if let screenNumber = step.screenNumber,
+                           screenNumber >= 1 && screenNumber <= screenCaptures.count {
+                            return screenCaptures[screenNumber - 1]
+                        }
+                        return screenCaptures.first(where: { $0.isCursorScreen })
+                    }()
+
+                    guard let targetScreenCapture else { return }
+
+                    let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
+                    let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
+                    let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
+                    let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
+                    let displayFrame = targetScreenCapture.displayFrame
+
+                    let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
+                    let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
+
+                    let displayLocalX = clampedX * (displayWidth / screenshotWidth)
+                    let displayLocalY = clampedY * (displayHeight / screenshotHeight)
+
+                    let appKitY = displayHeight - displayLocalY
+
+                    let globalLocation = CGPoint(
+                        x: displayLocalX + displayFrame.origin.x,
+                        y: appKitY + displayFrame.origin.y
+                    )
+
+                    detectedElementScreenLocation = globalLocation
+                    detectedElementDisplayFrame = displayFrame
+                } catch {
+                    print("🎯 Step-by-step: coordinate mapping failed: \(error)")
+                }
+            }
+            stepCoordinateTask = nil
+        } else {
+            clearDetectedElementLocation()
+        }
+
+        // Speak the step instruction (stops any previous TTS first)
+        if !step.instruction.isEmpty {
+            elevenLabsTTSClient.stopPlayback()
+            voiceState = .processing
+            stepGeneration += 1
+            let capturedGeneration = stepGeneration
+            Task {
+                do {
+                    try await elevenLabsTTSClient.speakText(step.instruction)
+                    guard capturedGeneration == stepGeneration else { return }
+                    voiceState = .responding
+                } catch {
+                    guard capturedGeneration == stepGeneration else { return }
+                    print("⚠️ Step-by-step TTS error: \(error)")
+                }
+
+                if !Task.isCancelled && isStepByStepActive {
+                    voiceState = .idle
+                }
+            }
+        }
+    }
+
+    /// Ends the step-by-step guide and returns to normal mode.
+    func finishStepByStepGuide() {
+        cancelStepByStepGuide()
+        voiceState = .idle
+        let doneText = "that's it, you're all set. anything else?"
+        Task {
+            do {
+                try await elevenLabsTTSClient.speakText(doneText)
+                voiceState = .responding
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                voiceState = .idle
+            } catch {
+                print("⚠️ Step-by-step finish TTS error: \(error)")
+            }
+        }
+    }
+
+    /// Immediately cancels the current guide and clears all step state.
+    /// Stops any in-progress TTS from the guide's current step instruction.
+    func cancelStepByStepGuide() {
+        isStepByStepActive = false
+        guideSteps = []
+        currentStepIndex = 0
+        voiceState = .idle
+        totalSteps = 0
+        currentStepInstruction = ""
+        stepProgress = 0.0
+        stepCoordinateTask?.cancel()
+        stepCoordinateTask = nil
+        stepGeneration += 1  // invalidates any stale TTS completion handlers
+        elevenLabsTTSClient.stopPlayback()
+        clearDetectedElementLocation()
     }
 
     /// Speaks a hardcoded error message using macOS system TTS when API
