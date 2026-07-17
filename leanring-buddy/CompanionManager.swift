@@ -139,6 +139,38 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    /// Whether Pip is rendered beside Clicky's existing blue pointer.
+    /// This is opt-in and does not change target selection or cursor movement.
+    @Published var isLearningPetEnabled: Bool = UserDefaults.standard.bool(
+        forKey: "isLearningPetEnabled"
+    )
+
+    func setLearningPetEnabled(_ enabled: Bool) {
+        isLearningPetEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isLearningPetEnabled")
+    }
+
+    /// Whether Clicky should answer with simpler, age-appropriate language.
+    /// Pip visibility remains an independent setting.
+    @Published var isKidsModeEnabled: Bool = UserDefaults.standard.bool(
+        forKey: "isKidsModeEnabled"
+    )
+
+    func setKidsModeEnabled(_ enabled: Bool) {
+        guard isKidsModeEnabled != enabled else { return }
+
+        isKidsModeEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isKidsModeEnabled")
+
+        // Do not let an answer or its context cross between reply modes.
+        currentResponseTask?.cancel()
+        currentResponseTask = nil
+        elevenLabsTTSClient.stopPlayback()
+        clearDetectedElementLocation()
+        conversationHistory.removeAll()
+        voiceState = .idle
+    }
+
     /// Whether the user has completed onboarding at least once. Persisted
     /// to UserDefaults so the Start button only appears on first launch.
     var hasCompletedOnboarding: Bool {
@@ -495,6 +527,7 @@ final class CompanionManager: ObservableObject {
             currentResponseTask?.cancel()
             elevenLabsTTSClient.stopPlayback()
             clearDetectedElementLocation()
+            voiceState = .idle
 
             // Dismiss the onboarding prompt if it's showing
             if showOnboardingPrompt {
@@ -520,7 +553,9 @@ final class CompanionManager: ObservableObject {
                     submitDraftText: { [weak self] finalTranscript in
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
-                        ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
+                        if self?.isKidsModeEnabled != true {
+                            ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
+                        }
                         self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
                     }
                 )
@@ -541,7 +576,7 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Companion Prompt
 
-    private static let companionVoiceResponseSystemPrompt = """
+    private static let standardCompanionVoiceResponseSystemPrompt = """
     you're clicky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
 
     rules:
@@ -575,6 +610,22 @@ final class CompanionManager: ObservableObject {
     - user asks how to commit in xcode: "see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control]"
     - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
     """
+
+    private static let kidFriendlyReplyGuidance = """
+
+    kid-friendly reply mode:
+    - explain things for a curious young learner using short, concrete sentences and familiar words.
+    - introduce one step at a time. define an unfamiliar term the first time you use it.
+    - be encouraging without talking down to the learner, pretending to be a parent, or using baby talk.
+    - never ask for personal information.
+    - for account changes, purchases, sharing, deleting, privacy settings, or anything risky, tell the learner to ask a trusted grown-up before taking the action.
+    - keep the existing element-pointing format exactly the same so Clicky can still guide them through software.
+    """
+
+    static func companionVoiceResponseSystemPrompt(kidsModeEnabled: Bool) -> String {
+        guard kidsModeEnabled else { return standardCompanionVoiceResponseSystemPrompt }
+        return standardCompanionVoiceResponseSystemPrompt + kidFriendlyReplyGuidance
+    }
 
     // MARK: - AI Response Pipeline
 
@@ -612,7 +663,9 @@ final class CompanionManager: ObservableObject {
 
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                    systemPrompt: Self.companionVoiceResponseSystemPrompt(
+                        kidsModeEnabled: isKidsModeEnabled
+                    ),
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
                     onTextChunk: { _ in
@@ -675,7 +728,9 @@ final class CompanionManager: ObservableObject {
 
                     detectedElementScreenLocation = globalLocation
                     detectedElementDisplayFrame = displayFrame
-                    ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
+                    if !isKidsModeEnabled {
+                        ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
+                    }
                     print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
                 } else {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
@@ -695,16 +750,26 @@ final class CompanionManager: ObservableObject {
 
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")
 
-                ClickyAnalytics.trackAIResponseReceived(response: spokenText)
+                if !isKidsModeEnabled {
+                    ClickyAnalytics.trackAIResponseReceived(response: spokenText)
+                }
 
                 // Play the response via TTS. Keep the spinner (processing state)
                 // until the audio actually starts playing, then switch to responding.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     do {
                         try await elevenLabsTTSClient.speakText(spokenText)
+                        try Task.checkCancellation()
                         // speakText returns after player.play() — audio is now playing
                         voiceState = .responding
+                        while elevenLabsTTSClient.isPlaying {
+                            try await Task.sleep(nanoseconds: 200_000_000)
+                            try Task.checkCancellation()
+                        }
+                    } catch is CancellationError {
+                        return
                     } catch {
+                        guard !Task.isCancelled else { return }
                         ClickyAnalytics.trackTTSError(error: error.localizedDescription)
                         print("⚠️ ElevenLabs TTS error: \(error)")
                         speakCreditsErrorFallback()
@@ -713,6 +778,7 @@ final class CompanionManager: ObservableObject {
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
+                guard !Task.isCancelled else { return }
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
                 speakCreditsErrorFallback()
@@ -759,7 +825,9 @@ final class CompanionManager: ObservableObject {
     /// credits run out. Uses NSSpeechSynthesizer so it works even when
     /// ElevenLabs is down.
     private func speakCreditsErrorFallback() {
-        let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
+        let utterance = isKidsModeEnabled
+            ? "I ran into a problem. Ask a trusted grown-up to check Clicky's setup, then try again."
+            : "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
         let synthesizer = NSSpeechSynthesizer()
         synthesizer.startSpeaking(utterance)
         voiceState = .responding

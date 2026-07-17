@@ -165,6 +165,13 @@ struct BlueCursorView: View {
     /// Only during the return flight can cursor movement cancel the animation.
     @State private var isReturningToCursor: Bool = false
 
+    /// Pip is a visual companion to Clicky's existing pointer. These values
+    /// choose an animation from the same pointer movement; Pip never owns a
+    /// second target, timer, response, or navigation state machine.
+    @State private var petHorizontalTravelDirectionIsRight = true
+    @State private var petIsFollowingCursorMovement = false
+    @State private var lastPetMovementDate: Date?
+
     // MARK: - Onboarding Video Layout
 
     private let onboardingVideoPlayerWidth: CGFloat = 330
@@ -336,6 +343,24 @@ struct BlueCursorView: View {
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
 
+            // Pip is intentionally rendered from Clicky's existing position
+            // and state. The original blue pointer remains the only navigator.
+            if companionManager.isLearningPetEnabled && buddyIsVisibleOnThisScreen {
+                LearningPetSpriteView(
+                    animation: learningPetAnimation,
+                    height: 58
+                )
+                .position(learningPetPosition)
+                .opacity(cursorOpacity)
+                .animation(
+                    buddyNavigationMode == .followingCursor
+                        ? .spring(response: 0.24, dampingFraction: 0.68, blendDuration: 0)
+                        : nil,
+                    value: cursorPosition
+                )
+                .animation(.easeIn(duration: 0.2), value: companionManager.isLearningPetEnabled)
+            }
+
         }
         .frame(width: screenFrame.width, height: screenFrame.height)
         .ignoresSafeArea()
@@ -371,10 +396,16 @@ struct BlueCursorView: View {
         .onChange(of: companionManager.detectedElementScreenLocation) { newLocation in
             // When a UI element location is detected, navigate the buddy to
             // that position so it points at the element.
-            guard let screenLocation = newLocation,
-                  let displayFrame = companionManager.detectedElementDisplayFrame else {
+            guard let screenLocation = newLocation else {
+                // A new question or cancellation clears the shared target.
+                // Stop any old flight/bubble immediately so it cannot overlap
+                // the replacement interaction.
+                if buddyNavigationMode != .followingCursor {
+                    cancelNavigationAndResumeFollowing(clearDetectedElement: false)
+                }
                 return
             }
+            guard let displayFrame = companionManager.detectedElementDisplayFrame else { return }
 
             // Only navigate if the target is on THIS screen
             guard screenFrame.contains(CGPoint(x: displayFrame.midX, y: displayFrame.midY))
@@ -404,6 +435,28 @@ struct BlueCursorView: View {
         case .navigatingToTarget, .pointingAtTarget:
             return true
         }
+    }
+
+    private var learningPetPosition: CGPoint {
+        let preferredHorizontalOffset: CGFloat = cursorPosition.x < screenFrame.width - 82 ? 52 : -52
+        let preferredVerticalOffset: CGFloat = cursorPosition.y < screenFrame.height - 78 ? 43 : -43
+        return CGPoint(
+            x: min(max(cursorPosition.x + preferredHorizontalOffset, 34), screenFrame.width - 34),
+            y: min(max(cursorPosition.y + preferredVerticalOffset, 38), screenFrame.height - 38)
+        )
+    }
+
+    private var learningPetAnimation: LearningPetAnimation {
+        LearningPetPresentationResolver.animation(
+            voiceState: companionManager.voiceState,
+            navigationMode: buddyNavigationMode,
+            isMovingHorizontally: petIsFollowingCursorMovement,
+            isMovingRight: petHorizontalTravelDirectionIsRight,
+            pointingDirection: CGVector(
+                dx: cursorPosition.x - learningPetPosition.x,
+                dy: cursorPosition.y - learningPetPosition.y
+            )
+        )
     }
 
     // MARK: - Cursor Tracking
@@ -438,6 +491,21 @@ struct BlueCursorView: View {
             let swiftUIPosition = self.convertScreenPointToSwiftUICoordinates(mouseLocation)
             let buddyX = swiftUIPosition.x + 35
             let buddyY = swiftUIPosition.y + 25
+            if companionManager.isLearningPetEnabled {
+                let horizontalMovement = buddyX - self.cursorPosition.x
+                if abs(horizontalMovement) > 0.75 {
+                    self.petHorizontalTravelDirectionIsRight = horizontalMovement >= 0
+                    self.petIsFollowingCursorMovement = true
+                    self.lastPetMovementDate = Date()
+                } else if let lastPetMovementDate,
+                          Date().timeIntervalSince(lastPetMovementDate) >= 0.14 {
+                    self.petIsFollowingCursorMovement = false
+                    self.lastPetMovementDate = nil
+                }
+            } else if petIsFollowingCursorMovement || lastPetMovementDate != nil {
+                self.petIsFollowingCursorMovement = false
+                self.lastPetMovementDate = nil
+            }
             self.cursorPosition = CGPoint(x: buddyX, y: buddyY)
         }
     }
@@ -472,6 +540,10 @@ struct BlueCursorView: View {
             x: max(20, min(offsetTarget.x, screenFrame.width - 20)),
             y: max(20, min(offsetTarget.y, screenFrame.height - 20))
         )
+
+        petIsFollowingCursorMovement = false
+        lastPetMovementDate = nil
+        petHorizontalTravelDirectionIsRight = clampedTarget.x >= cursorPosition.x
 
         // Record the current cursor position so we can detect if the user
         // moves the mouse enough to cancel the return flight
@@ -637,6 +709,8 @@ struct BlueCursorView: View {
         let cursorInSwiftUI = convertScreenPointToSwiftUICoordinates(mouseLocation)
         let cursorWithTrackingOffset = CGPoint(x: cursorInSwiftUI.x + 35, y: cursorInSwiftUI.y + 25)
 
+        petHorizontalTravelDirectionIsRight = cursorWithTrackingOffset.x >= cursorPosition.x
+
         cursorPositionWhenNavigationStarted = cursorInSwiftUI
 
         buddyNavigationMode = .navigatingToTarget
@@ -648,18 +722,18 @@ struct BlueCursorView: View {
     }
 
     /// Cancels an in-progress navigation because the user moved the cursor.
-    private func cancelNavigationAndResumeFollowing() {
+    private func cancelNavigationAndResumeFollowing(clearDetectedElement: Bool = true) {
         navigationAnimationTimer?.invalidate()
         navigationAnimationTimer = nil
         navigationBubbleText = ""
         navigationBubbleOpacity = 0.0
         navigationBubbleScale = 1.0
         buddyFlightScale = 1.0
-        finishNavigationAndResumeFollowing()
+        finishNavigationAndResumeFollowing(clearDetectedElement: clearDetectedElement)
     }
 
     /// Returns the buddy to normal cursor-following mode after navigation completes.
-    private func finishNavigationAndResumeFollowing() {
+    private func finishNavigationAndResumeFollowing(clearDetectedElement: Bool = true) {
         navigationAnimationTimer?.invalidate()
         navigationAnimationTimer = nil
         buddyNavigationMode = .followingCursor
@@ -669,7 +743,9 @@ struct BlueCursorView: View {
         navigationBubbleText = ""
         navigationBubbleOpacity = 0.0
         navigationBubbleScale = 1.0
-        companionManager.clearDetectedElementLocation()
+        if clearDetectedElement {
+            companionManager.clearDetectedElementLocation()
+        }
     }
 
     // MARK: - Welcome Animation

@@ -19,6 +19,12 @@ Here's the [original tweet](https://x.com/FarzaTV/status/2041314633978659092) th
 
 This is the open-source version of Clicky for those that want to hack on it, build their own features, or just see how it works under the hood.
 
+## Optional Pip learning companion
+
+This version adds Pip as an opt-in visual companion beside Clicky's existing blue pointer. Pip reacts to Clicky's listening, thinking, speaking, and pointing states, but Clicky remains the only navigator and the real macOS pointer is never moved.
+
+The menu bar panel also includes an independent **Kid-friendly answers** setting. It asks Clicky for shorter, encouraging explanations, avoids collecting an email during first-run setup, and asks learners to involve a trusted grown-up before account, purchase, privacy, sharing, or destructive actions. Changing reply modes clears the current answer and conversation context.
+
 ## Get started with Claude Code
 
 The fastest way to get this running is with [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
@@ -133,6 +139,16 @@ The app will appear in your menu bar (not the dock). Click the icon to open the 
 - **Screen Recording** — for taking screenshots when you use the hotkey
 - **Screen Content** — for ScreenCaptureKit access
 
+## Try the local sandbox
+
+The deterministic browser fixture demonstrates Clicky's point-and-return interaction, Pip animations, and both reply styles without microphone access, screen capture, provider credentials, or network requests.
+
+```bash
+python3 -m http.server 8765 --bind 127.0.0.1
+```
+
+Then open `http://127.0.0.1:8765/sandbox/`. This fixture is a demo and QA surface; a native end-to-end run still requires Xcode, the macOS permissions above, and a configured Worker.
+
 ## Architecture
 
 If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
@@ -148,8 +164,11 @@ leanring-buddy/          # Swift source (yes, the typo stays)
   ClaudeAPI.swift           # Claude streaming client
   ElevenLabsTTSClient.swift # Text-to-speech playback
   OverlayWindow.swift       # Blue cursor overlay
+  LearningPetSpriteView.swift # Pip atlas renderer and state mapping
+  Assets.xcassets/PipSpritesheet.imageset/ # Pip sprite atlas
   AssemblyAI*.swift         # Real-time transcription
   BuddyDictation*.swift     # Push-to-talk pipeline
+sandbox/                 # Deterministic, network-free browser demo
 worker/                  # Cloudflare Worker proxy
   src/index.ts              # Three routes: /chat, /tts, /transcribe-token
 CLAUDE.md                # Full architecture doc (agents read this)
