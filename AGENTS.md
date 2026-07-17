@@ -20,6 +20,8 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
+- **Learning Pet**: Pip is an opt-in presentation layer rendered from Clicky's existing pointer, navigation mode, and voice state. Pip does not own a target or a second navigation lifecycle.
+- **Reply Style**: Kid-friendly answers are independent from Pip visibility. Changing this setting cancels the current response and clears conversation context.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
 - **Analytics**: PostHog via `ClickyAnalytics.swift`
 
@@ -42,6 +44,10 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 
 **Cursor Overlay**: A full-screen transparent `NSPanel` hosts the blue cursor companion. It's non-activating, joins all Spaces, and never steals focus. The cursor position, response text, waveform, and pointing animations all render in this overlay via SwiftUI through `NSHostingView`.
 
+**Pip Presentation Boundary**: `BlueCursorView` remains the single owner of pointer tracking, target travel, pointing, and return. `LearningPetSpriteView` only maps that existing state to Pip animations. Keep the pet optional and do not add separate screen capture, model requests, speech, targets, or overlay windows for it.
+
+**Kid-Friendly Reply Boundary**: Kid-friendly mode appends age-appropriate guidance to Clicky's existing prompt while preserving the point-tag contract and native voice/screen pipeline. It is not a local privacy sandbox. The static `sandbox/` fixture is the only network-free demo surface.
+
 **Global Push-To-Talk Shortcut**: Background push-to-talk uses a listen-only `CGEvent` tap instead of an AppKit global monitor so modifier-based shortcuts like `ctrl + option` are detected more reliably while the app is running in the background.
 
 **Shared URLSession for AssemblyAI**: A single long-lived `URLSession` is shared across all AssemblyAI streaming sessions (owned by the provider, not the session). Creating and invalidating a URLSession per session corrupts the OS connection pool and causes "Socket is not connected" errors after a few rapid reconnections.
@@ -53,10 +59,12 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1026 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
+| `CompanionManager.swift` | ~1095 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, overlay management, Pip visibility, and reply style. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
-| `CompanionPanelView.swift` | ~761 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, model picker (Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
-| `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
+| `CompanionPanelView.swift` | ~850 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, model picker, Pip and reply-style settings, permissions UI, feedback, and quit controls. |
+| `OverlayWindow.swift` | ~960 | Full-screen transparent overlay hosting the blue cursor, optional Pip sprite, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
+| `LearningPetSpriteView.swift` | ~300 | Pip sprite-atlas renderer plus pure direction, timing, and Clicky-state-to-animation mapping. |
+| `Assets.xcassets/PipSpritesheet.imageset/` | — | Runtime Pip sprite atlas and asset metadata. |
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
 | `BuddyDictationManager.swift` | ~866 | Push-to-talk voice pipeline. Handles microphone capture via `AVAudioEngine`, provider-aware permission checks, keyboard/button dictation sessions, transcript finalization, shortcut parsing, contextual keyterms, and live audio-level reporting for waveform feedback. |
@@ -75,6 +83,7 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
 | `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
+| `sandbox/index.html` | ~700 | Deterministic, dependency-free browser fixture for Clicky, Pip, and reply-style QA. |
 
 ## Build & Run
 
@@ -89,6 +98,15 @@ open leanring-buddy.xcodeproj
 ```
 
 **Do NOT run `xcodebuild` from the terminal** — it invalidates TCC (Transparency, Consent, and Control) permissions and the app will need to re-request screen recording, accessibility, etc.
+
+## Browser Sandbox
+
+```bash
+python3 -m http.server 8765 --bind 127.0.0.1
+# Open http://127.0.0.1:8765/sandbox/
+```
+
+Keep the browser fixture deterministic and network-free. Do not add provider credentials, microphone access, or screen capture to it.
 
 ## Cloudflare Worker
 
