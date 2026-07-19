@@ -31,6 +31,14 @@ struct CompanionPanelView: View {
 
                 modelPickerRow
                     .padding(.horizontal, 16)
+
+                if companionManager.selectedModel == "ollama-local" {
+                    localOllamaModelInputRow
+                        .padding(.horizontal, 16)
+                }
+
+                smritiMemorySection
+                    .padding(.horizontal, 16)
             }
 
             if !companionManager.allPermissionsGranted {
@@ -608,7 +616,9 @@ struct CompanionPanelView: View {
 
             HStack(spacing: 0) {
                 modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
-                modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
+                modelOptionButton(label: "Gemini", modelID: "gemini-3.5-flash")
+                modelOptionButton(label: "Grok", modelID: "grok-2-vision")
+                modelOptionButton(label: "Ollama", modelID: "ollama-local")
             }
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -618,6 +628,36 @@ struct CompanionPanelView: View {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
             )
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var localOllamaModelInputRow: some View {
+        HStack {
+            Text("Ollama Model")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Spacer()
+
+            TextField("llama3.2-vision", text: Binding(
+                get: { companionManager.localOllamaModelName },
+                set: { companionManager.setLocalOllamaModelName($0) }
+            ))
+            .textFieldStyle(.plain)
+            .font(.system(size: 11))
+            .foregroundColor(DS.Colors.textPrimary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+            .frame(width: 140)
         }
         .padding(.vertical, 4)
     }
@@ -639,6 +679,83 @@ struct CompanionPanelView: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
+    }
+
+    private var smritiMemorySection: some View {
+        VStack(spacing: 8) {
+            Divider()
+                .background(DS.Colors.borderSubtle)
+                .padding(.vertical, 4)
+
+            HStack {
+                HStack(spacing: 8) {
+                    Image(systemName: "brain.head.profile")
+                        .font(.system(size: 13))
+                        .foregroundColor(companionManager.isSmritiConnected ? DS.Colors.accent : DS.Colors.textTertiary)
+                    
+                    Text("Smriti Memory")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+                }
+
+                Spacer()
+
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(companionManager.isSmritiConnected ? DS.Colors.success : DS.Colors.warning)
+                        .frame(width: 6, height: 6)
+                    
+                    Text(companionManager.smritiStatusMessage)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(companionManager.isSmritiConnected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                }
+            }
+
+            if companionManager.isSmritiConnected {
+                Button(action: {
+                    let mcpConfig = """
+                    {
+                      "mcpServers": {
+                        "smriti-memory": {
+                          "command": "python3",
+                          "args": [
+                            "-m",
+                            "smriti_memcore.integrations.mcp_server"
+                          ]
+                        }
+                      }
+                    }
+                    """
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(mcpConfig, forType: .string)
+                    print("📋 MCP Config copied to clipboard")
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 10))
+                        Text("Copy MCP Config for Claude/Cursor")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .foregroundColor(DS.Colors.accent)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        Capsule()
+                            .fill(DS.Colors.accent.opacity(0.1))
+                    )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 2)
+                
+                Text("Paste this config into ~/.config/claude/config.json or Cursor's MCP Settings to link your other agents.")
+                    .font(.system(size: 9))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 1)
+            }
+        }
     }
 
     // MARK: - DM Farza Button
