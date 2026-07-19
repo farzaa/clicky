@@ -14,6 +14,8 @@ interface Env {
   ELEVENLABS_API_KEY: string;
   ELEVENLABS_VOICE_ID: string;
   ASSEMBLYAI_API_KEY: string;
+  GEMINI_API_KEY?: string;
+  XAI_API_KEY?: string;
 }
 
 export default {
@@ -35,6 +37,10 @@ export default {
 
       if (url.pathname === "/transcribe-token") {
         return await handleTranscribeToken(env);
+      }
+
+      if (url.pathname === "/openai-proxy") {
+        return await handleOpenAIProxy(request, env);
       }
     } catch (error) {
       console.error(`[${url.pathname}] Unhandled error:`, error);
@@ -108,10 +114,9 @@ async function handleTranscribeToken(env: Env): Promise<Response> {
 
 async function handleTTS(request: Request, env: Env): Promise<Response> {
   const body = await request.text();
-  const voiceId = env.ELEVENLABS_VOICE_ID;
 
   const response = await fetch(
-    `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
+    `https://api.elevenlabs.io/v1/text-to-speech/${env.ELEVENLABS_VOICE_ID}`,
     {
       method: "POST",
       headers: {
@@ -136,6 +141,54 @@ async function handleTTS(request: Request, env: Env): Promise<Response> {
     status: response.status,
     headers: {
       "content-type": response.headers.get("content-type") || "audio/mpeg",
+    },
+  });
+}
+
+async function handleOpenAIProxy(request: Request, env: Env): Promise<Response> {
+  const provider = request.headers.get("X-Provider");
+  const body = await request.text();
+
+  let upstreamURL = "";
+  let apiKey = "";
+
+  if (provider === "gemini") {
+    upstreamURL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+    apiKey = env.GEMINI_API_KEY || "";
+  } else if (provider === "grok") {
+    upstreamURL = "https://api.xai.com/v1/chat/completions";
+    apiKey = env.XAI_API_KEY || "";
+  } else {
+    return new Response("Unsupported provider", { status: 400 });
+  }
+
+  if (!apiKey) {
+    return new Response(`API key for ${provider} is not configured on the proxy`, { status: 500 });
+  }
+
+  const response = await fetch(upstreamURL, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body,
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    console.error(`[/openai-proxy] Upstream error from ${provider} (${response.status}): ${errorBody}`);
+    return new Response(errorBody, {
+      status: response.status,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  return new Response(response.body, {
+    status: response.status,
+    headers: {
+      "content-type": response.headers.get("content-type") || "text/event-stream",
+      "cache-control": "no-cache",
     },
   });
 }

@@ -22,6 +22,15 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
 - **Analytics**: PostHog via `ClickyAnalytics.swift`
+- **LTM Memory**: Shared local-first memory via SMRITI core HTTP REST API (`localhost:7798`) and shared database at `~/.smriti/global`.
+
+### SMRITI Memory Architecture
+
+Clicky packages SMRITI to enable a shared long-term memory layer between Clicky, Claude Code, Gemini CLI, and Cursor on the user's laptop.
+* **Global Database**: All tools read and write to `~/.smriti/global`, meaning memories captured by Clicky are instantly visible to terminal agents.
+* **REST API Server**: Clicky boots a Python HTTP server on port `7798` (running `~/.smriti/smriti_local_api.py`) for low-latency memory recall and encoding.
+* **Auto-Setup**: Clicky checks if the python environment is configured with `smriti-memcore` and automatically runs `pip install smriti-memcore` if missing.
+* **Turn Flow**: Clicky recalls memories based on user transcription to append to Claude's system prompt, and encodes completed turns back to SMRITI.
 
 ### API Proxy (Cloudflare Worker)
 
@@ -53,9 +62,9 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1026 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
+| `CompanionManager.swift` | ~1500 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, overlay management, and SMRITI local process lifecycle/API calls. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
-| `CompanionPanelView.swift` | ~761 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, model picker (Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
+| `CompanionPanelView.swift` | ~840 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, model picker, SMRITI status/memory count with configuration copy helpers, permissions UI, and quit button. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
@@ -74,6 +83,7 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
+| `scripts/smriti_local_api.py` | ~220 | Lightweight SMRITI HTTP REST API server daemon. Boots on port 7798, auto-setup dependencies, pre-loads model. |
 | `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
 
 ## Build & Run
