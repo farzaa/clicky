@@ -159,7 +159,9 @@ final class CompanionManager: ObservableObject {
 
         // After a short delay, restore the user's previous clipboard contents so
         // the insert action doesn't permanently overwrite what they had copied.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        // 1.5s gives the target app time to receive and process the Cmd+V event
+        // before we clear the clipboard, even on slower systems.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             if let previousContents = previousClipboardContents {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(previousContents, forType: .string)

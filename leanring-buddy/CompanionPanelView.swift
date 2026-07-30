@@ -729,8 +729,11 @@ struct CompanionPanelView: View {
                     .stroke(isEditingUserContext ? DS.Colors.accent.opacity(0.5) : DS.Colors.borderSubtle, lineWidth: 0.5)
             )
             .onAppear {
-                // Populate the draft from the persisted value each time the panel opens
+                // Populate the draft from the persisted value each time the panel opens,
+                // and reset the editing state so Save button doesn't linger from a
+                // previous unsaved edit after the panel was dismissed and reopened.
                 userContextDraft = companionManager.customUserContext
+                isEditingUserContext = false
             }
         }
     }
