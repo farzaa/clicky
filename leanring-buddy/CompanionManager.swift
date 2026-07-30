@@ -116,6 +116,59 @@ final class CompanionManager: ObservableObject {
         claudeAPI.model = model
     }
 
+    /// Free-text context the user has written about themselves — their stack, goals,
+    /// learning focus, preferred tone, etc. Injected into every Claude system prompt
+    /// so responses are personalized from the first word. Persisted to UserDefaults.
+    @Published var customUserContext: String = UserDefaults.standard.string(forKey: "customUserContext") ?? ""
+
+    func setCustomUserContext(_ context: String) {
+        customUserContext = context
+        UserDefaults.standard.set(context, forKey: "customUserContext")
+    }
+
+    /// The clean text of Clicky's most recent spoken response (POINT tags stripped),
+    /// or nil if no response has been given yet this session. Exposed so the panel
+    /// can offer an "Insert into app" action after each response.
+    @Published private(set) var lastSpokenResponseText: String?
+
+    /// Copies the last spoken response to the macOS clipboard and pastes it into
+    /// whatever app currently has keyboard focus. Because the Clicky panel is
+    /// non-activating, the user's previously focused app retains key focus, so
+    /// the simulated Cmd+V lands there correctly.
+    func insertLastResponseIntoFocusedApp() {
+        guard let textToInsert = lastSpokenResponseText, !textToInsert.isEmpty else { return }
+
+        // Save whatever was on the clipboard so we can restore it afterward,
+        // avoiding the surprise of overwriting the user's clipboard permanently.
+        let pasteboardBeforeInsert = NSPasteboard.general
+        let previousClipboardContents = pasteboardBeforeInsert.string(forType: .string)
+
+        // Write Clicky's response to the clipboard so Cmd+V can paste it
+        pasteboardBeforeInsert.clearContents()
+        pasteboardBeforeInsert.setString(textToInsert, forType: .string)
+
+        // Simulate Cmd+V (paste) into the focused app using a CGEvent key press.
+        // The Clicky panel is non-activating (NSPanel without .activationPolicy),
+        // so the user's app keeps keyboard focus and receives this event.
+        let keyVDown = CGEvent(keyboardEventSource: nil, virtualKey: 0x09, keyDown: true)
+        let keyVUp   = CGEvent(keyboardEventSource: nil, virtualKey: 0x09, keyDown: false)
+        keyVDown?.flags = .maskCommand
+        keyVUp?.flags   = .maskCommand
+        keyVDown?.post(tap: .cghidEventTap)
+        keyVUp?.post(tap: .cghidEventTap)
+
+        // After a short delay, restore the user's previous clipboard contents so
+        // the insert action doesn't permanently overwrite what they had copied.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            if let previousContents = previousClipboardContents {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(previousContents, forType: .string)
+            } else {
+                NSPasteboard.general.clearContents()
+            }
+        }
+    }
+
     /// User preference for whether the Clicky cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
@@ -541,9 +594,26 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Companion Prompt
 
-    private static let companionVoiceResponseSystemPrompt = """
-    you're clicky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
+    /// Builds the system prompt for every voice response. When the user has written
+    /// context about themselves in the "About You" panel section, it's injected here
+    /// so Claude is immediately aware of their background on every single request —
+    /// no need for the user to re-introduce themselves each session.
+    private var companionVoiceResponseSystemPrompt: String {
+        let userContextBlock: String
+        let trimmedContext = customUserContext.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedContext.isEmpty {
+            userContextBlock = ""
+        } else {
+            userContextBlock = """
 
+    about the user (they wrote this themselves — use it to personalize every response):
+    \(trimmedContext)
+    """
+        }
+
+        return """
+    you're clicky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
+    \(userContextBlock)
     rules:
     - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
     - all lowercase, casual, warm. no emojis.
@@ -575,6 +645,7 @@ final class CompanionManager: ObservableObject {
     - user asks how to commit in xcode: "see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control]"
     - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
     """
+    }
 
     // MARK: - AI Response Pipeline
 
@@ -612,7 +683,7 @@ final class CompanionManager: ObservableObject {
 
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                    systemPrompt: self.companionVoiceResponseSystemPrompt,
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
                     onTextChunk: { _ in
@@ -680,6 +751,10 @@ final class CompanionManager: ObservableObject {
                 } else {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
                 }
+
+                // Store the clean spoken text so the panel can offer an "Insert into app" action.
+                // This is set before TTS plays so the button appears as soon as the response arrives.
+                lastSpokenResponseText = spokenText
 
                 // Save this exchange to conversation history (with the point tag
                 // stripped so it doesn't confuse future context)

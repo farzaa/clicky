@@ -13,6 +13,10 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    /// Tracks whether the user is editing their "About You" context so we can
+    /// show a Save button while they type and hide it once they save.
+    @State private var isEditingUserContext: Bool = false
+    @State private var userContextDraft: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -30,6 +34,21 @@ struct CompanionPanelView: View {
                     .frame(height: 12)
 
                 modelPickerRow
+                    .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 12)
+
+                aboutYouSection
+                    .padding(.horizontal, 16)
+            }
+
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted
+                && companionManager.lastSpokenResponseText != nil {
+                Spacer()
+                    .frame(height: 12)
+
+                insertLastResponseRow
                     .padding(.horizontal, 16)
             }
 
@@ -636,6 +655,120 @@ struct CompanionPanelView: View {
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
                         .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
                 )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    // MARK: - About You Section
+
+    /// A text editor where users describe themselves — their stack, learning goals,
+    /// preferred response style, etc. Whatever they write gets injected into Claude's
+    /// system prompt on every request so responses feel personalized without the user
+    /// having to re-introduce themselves each time.
+    private var aboutYouSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("ABOUT YOU")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundColor(DS.Colors.textTertiary)
+
+                Spacer()
+
+                if isEditingUserContext {
+                    Button(action: {
+                        companionManager.setCustomUserContext(userContextDraft)
+                        isEditingUserContext = false
+                    }) {
+                        Text("Save")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(DS.Colors.textOnAccent)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 3)
+                            .background(
+                                Capsule()
+                                    .fill(DS.Colors.accent)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                }
+            }
+
+            ZStack(alignment: .topLeading) {
+                // Placeholder text shown when the field is empty and not being edited
+                if userContextDraft.isEmpty && !isEditingUserContext {
+                    Text("Your stack, goals, preferred style… Clicky will use this every time.")
+                        .font(.system(size: 11))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 7)
+                        .allowsHitTesting(false)
+                }
+
+                TextEditor(text: $userContextDraft)
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textPrimary)
+                    .scrollContentBackground(.hidden)
+                    .background(Color.clear)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 3)
+                    .frame(minHeight: 52, maxHeight: 100)
+                    .onChange(of: userContextDraft) { _ in
+                        // Mark as editing as soon as the user types anything,
+                        // so the Save button appears without requiring a tap first.
+                        isEditingUserContext = true
+                    }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .stroke(isEditingUserContext ? DS.Colors.accent.opacity(0.5) : DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+            .onAppear {
+                // Populate the draft from the persisted value each time the panel opens
+                userContextDraft = companionManager.customUserContext
+            }
+        }
+    }
+
+    // MARK: - Insert Last Response
+
+    /// Appears after Clicky gives a response. One click pastes the response text
+    /// into whatever app the user was using — their editor, terminal, Slack, etc.
+    /// Works because the Clicky panel is non-activating, so the user's app keeps
+    /// keyboard focus and receives the simulated Cmd+V.
+    private var insertLastResponseRow: some View {
+        Button(action: {
+            companionManager.insertLastResponseIntoFocusedApp()
+        }) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.down.doc")
+                    .font(.system(size: 12, weight: .medium))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Insert last response")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("Pastes Clicky's answer into your focused app.")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+            }
+            .foregroundColor(DS.Colors.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
         }
         .buttonStyle(.plain)
         .pointerCursor()
