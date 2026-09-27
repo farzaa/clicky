@@ -12,6 +12,10 @@ import SwiftUI
 
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
+    // @StateObject is correct here: this view initialises the object itself.
+    // @ObservedObject on an inline-assigned singleton can miss updates when
+    // SwiftUI recreates the struct; @StateObject keeps the subscription alive.
+    @StateObject private var languageSettings = LanguageSettings.shared
     @State private var emailInput: String = ""
 
     var body: some View {
@@ -30,6 +34,12 @@ struct CompanionPanelView: View {
                     .frame(height: 12)
 
                 modelPickerRow
+                    .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 4)
+
+                languagePickerRow
                     .padding(.horizontal, 16)
             }
 
@@ -635,6 +645,83 @@ struct CompanionPanelView: View {
                 .background(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
                         .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    // MARK: - Language Picker
+
+    private var languagePickerRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Header row: label + auto-detect toggle
+            HStack {
+                Text("Language")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                HStack(spacing: 6) {
+                    Text("Auto")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(languageSettings.autoDetect
+                                         ? DS.Colors.textSecondary
+                                         : DS.Colors.textTertiary)
+
+                    Toggle("", isOn: $languageSettings.autoDetect)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                        .tint(DS.Colors.accent)
+                        .scaleEffect(0.75)
+                }
+            }
+
+            // Manual-selection chips — only shown when auto-detect is off
+            if !languageSettings.autoDetect {
+                // Wrapping chip grid
+                let columns = [GridItem(.adaptive(minimum: 70), spacing: 4)]
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 4) {
+                    ForEach(DictationLanguage.catalogue) { lang in
+                        languageChip(lang)
+                    }
+                }
+                .padding(.top, 2)
+
+                if languageSettings.selectedLanguageIDs.count > 1 {
+                    Text("Whisper will auto-detect among your selected languages.")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func languageChip(_ lang: DictationLanguage) -> some View {
+        let isSelected = languageSettings.selectedLanguageIDs.contains(lang.id)
+        return Button(action: {
+            languageSettings.toggleLanguage(lang)
+        }) {
+            Text(lang.displayName)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(isSelected
+                              ? DS.Colors.accent.opacity(0.25)
+                              : Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .stroke(
+                            isSelected ? DS.Colors.accent.opacity(0.6) : DS.Colors.borderSubtle,
+                            lineWidth: 0.5
+                        )
                 )
         }
         .buttonStyle(.plain)

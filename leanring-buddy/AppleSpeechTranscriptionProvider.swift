@@ -42,10 +42,18 @@ final class AppleSpeechTranscriptionProvider: BuddyTranscriptionProvider {
     }
 
     private static func makeBestAvailableSpeechRecognizer() -> SFSpeechRecognizer? {
-        let preferredLocales = [
-            Locale.autoupdatingCurrent,
-            Locale(identifier: "en-US")
-        ]
+        // Build the locale priority list from the user's language preference.
+        // When auto-detect is on we use the system locale (original behaviour).
+        // When manual languages are chosen we try each in the order the user
+        // selected them, then fall back to en-US for safety.
+        let settings = LanguageSettings.shared
+        let preferredLocales: [Locale]
+
+        if let manualLocales = settings.preferredLocales, !manualLocales.isEmpty {
+            preferredLocales = manualLocales + [Locale(identifier: "en-US")]
+        } else {
+            preferredLocales = [Locale.autoupdatingCurrent, Locale(identifier: "en-US")]
+        }
 
         for preferredLocale in preferredLocales {
             if let speechRecognizer = SFSpeechRecognizer(locale: preferredLocale) {
