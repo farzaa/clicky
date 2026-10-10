@@ -1,0 +1,1030 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clicky Companion & SMRITI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #090a0f;
+      --card-bg: #12151f;
+      --card-border: #1e2433;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --accent-glow: rgba(59, 130, 246, 0.25);
+      --red: #ef4444;
+      --red-hover: #dc2626;
+      --green: #10b981;
+      --text-main: #f3f4f6;
+      --text-muted: #9ca3af;
+      --text-dim: #6b7280;
+      --font: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text-main);
+      font-family: var(--font);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Top Navigation / Status Header */
+    header {
+      background: rgba(18, 21, 31, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--card-border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      z-index: 10;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-icon {
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      box-shadow: 0 0 16px var(--accent-glow);
+    }
+
+    .brand-title {
+      font-weight: 700;
+      font-size: 16px;
+      letter-spacing: -0.01em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .brand-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(59, 130, 246, 0.15);
+      color: #60a5fa;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+
+    .header-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-muted);
+      background: #181d2a;
+      padding: 6px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--card-border);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-dim);
+    }
+
+    .status-dot.active {
+      background: var(--green);
+      box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+    }
+
+    .model-selector {
+      background: #181d2a;
+      border: 1px solid var(--card-border);
+      color: var(--text-main);
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-family: var(--font);
+      outline: none;
+      cursor: pointer;
+      transition: border 0.15s;
+    }
+
+    .model-selector:focus {
+      border-color: var(--accent);
+    }
+
+    /* Prominent Emergency Stop Button */
+    .stop-speaking-btn {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      background: var(--red);
+      color: #fff;
+      border: none;
+      padding: 6px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 0 16px rgba(239, 68, 68, 0.4);
+      animation: pulse-red 1.5s infinite;
+      transition: transform 0.1s, background 0.15s;
+    }
+
+    .stop-speaking-btn:hover {
+      background: var(--red-hover);
+      transform: scale(1.02);
+    }
+
+    .stop-speaking-btn:active {
+      transform: scale(0.98);
+    }
+
+    @keyframes pulse-red {
+      0%, 100% { opacity: 1; box-shadow: 0 0 16px rgba(239, 68, 68, 0.4); }
+      50% { opacity: 0.85; box-shadow: 0 0 24px rgba(239, 68, 68, 0.7); }
+    }
+
+    .tts-toggle-btn {
+      background: #181d2a;
+      border: 1px solid var(--card-border);
+      color: var(--text-muted);
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s;
+    }
+
+    .tts-toggle-btn.enabled {
+      color: #60a5fa;
+      border-color: rgba(59, 130, 246, 0.4);
+      background: rgba(59, 130, 246, 0.1);
+    }
+
+    /* Main Container */
+    main {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Chat Area */
+    .chat-section {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      max-width: 900px;
+      margin: 0 auto;
+      width: 100%;
+      padding: 16px 24px 20px;
+    }
+
+    .messages-container {
+      flex: 1;
+      overflow-y: auto;
+      padding-right: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .messages-container::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .messages-container::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .messages-container::-webkit-scrollbar-thumb {
+      background: #232938;
+      border-radius: 3px;
+    }
+
+    /* Message Bubbles */
+    .message-row {
+      display: flex;
+      gap: 14px;
+      max-width: 85%;
+    }
+
+    .message-row.user {
+      align-self: flex-end;
+      flex-direction: row-reverse;
+    }
+
+    .message-avatar {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      flex-shrink: 0;
+    }
+
+    .message-row.assistant .message-avatar {
+      background: linear-gradient(135deg, #2563eb, #7c3aed);
+      color: white;
+    }
+
+    .message-row.user .message-avatar {
+      background: #374151;
+      color: white;
+    }
+
+    .message-bubble {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      padding: 14px 18px;
+      font-size: 14.5px;
+      line-height: 1.6;
+      color: var(--text-main);
+      position: relative;
+      word-break: break-word;
+    }
+
+    .message-row.user .message-bubble {
+      background: #1e3a8a;
+      border-color: #2563eb;
+      color: #eff6ff;
+    }
+
+    .message-meta {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 6px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .message-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .action-btn {
+      background: transparent;
+      border: 1px solid var(--card-border);
+      color: var(--text-muted);
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s;
+    }
+
+    .action-btn:hover {
+      background: #1e2433;
+      color: var(--text-main);
+    }
+
+    /* Memory Citation Badges */
+    .memory-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(139, 92, 246, 0.12);
+      border: 1px solid rgba(139, 92, 246, 0.3);
+      color: #c4b5fd;
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-size: 11px;
+      margin-bottom: 8px;
+      cursor: pointer;
+    }
+
+    /* Code Blocks in Responses */
+    pre {
+      background: #0d1117;
+      border: 1px solid #21262d;
+      border-radius: 8px;
+      padding: 12px;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      margin: 10px 0;
+    }
+
+    code {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      background: rgba(255, 255, 255, 0.08);
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+
+    pre code {
+      background: transparent;
+      padding: 0;
+    }
+
+    /* Screen Preview Drawer / Widget */
+    .screen-widget {
+      position: absolute;
+      top: 16px;
+      right: 24px;
+      width: 220px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 10px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: all 0.2s;
+      z-index: 5;
+    }
+
+    .screen-widget-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    .screen-thumb {
+      width: 100%;
+      height: 120px;
+      background: #000;
+      border-radius: 6px;
+      object-fit: cover;
+      border: 1px solid var(--card-border);
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+
+    .screen-thumb:hover {
+      opacity: 0.9;
+    }
+
+    .screen-toggle {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-muted);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .snap-btn {
+      background: #1e2433;
+      border: 1px solid var(--card-border);
+      color: var(--text-main);
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .snap-btn:hover {
+      background: #2b3347;
+    }
+
+    /* Bottom Input Bar */
+    .input-section {
+      margin-top: 14px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 10px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    }
+
+    .live-transcript {
+      font-size: 13px;
+      color: #60a5fa;
+      font-style: italic;
+      padding: 4px 8px;
+      display: none;
+      animation: fadeIn 0.2s;
+    }
+
+    .input-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .chat-textarea {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--text-main);
+      font-family: var(--font);
+      font-size: 15px;
+      resize: none;
+      height: 44px;
+      line-height: 22px;
+      padding: 10px 4px;
+    }
+
+    .chat-textarea::placeholder {
+      color: var(--text-dim);
+    }
+
+    /* Voice / Push-to-Talk Button */
+    .voice-btn {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      border: 1px solid var(--card-border);
+      background: #181d2a;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      cursor: pointer;
+      transition: all 0.15s;
+      flex-shrink: 0;
+    }
+
+    .voice-btn:hover {
+      color: var(--text-main);
+      border-color: var(--accent);
+      background: #1e2438;
+    }
+
+    .voice-btn.recording {
+      background: var(--red);
+      color: white;
+      border-color: var(--red);
+      box-shadow: 0 0 16px rgba(239, 68, 68, 0.5);
+      animation: pulse-mic 1.2s infinite;
+    }
+
+    @keyframes pulse-mic {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.08); }
+    }
+
+    .send-btn {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      border: none;
+      background: var(--accent);
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      cursor: pointer;
+      transition: all 0.15s;
+      flex-shrink: 0;
+    }
+
+    .send-btn:hover {
+      background: var(--accent-hover);
+      box-shadow: 0 0 12px var(--accent-glow);
+    }
+
+    .send-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    /* Modals / Lightbox */
+    .lightbox {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(0, 0, 0, 0.85);
+      backdrop-filter: blur(8px);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+
+    .lightbox img {
+      max-width: 90vw;
+      max-height: 90vh;
+      border-radius: 8px;
+      border: 1px solid var(--card-border);
+      box-shadow: 0 12px 48px rgba(0,0,0,0.8);
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Bar -->
+  <header>
+    <div class="brand">
+      <div class="brand-icon">⚡</div>
+      <div class="brand-title">
+        Clicky Companion
+        <span class="brand-badge">SMRITI Memory Linked</span>
+      </div>
+    </div>
+
+    <div class="header-controls">
+      <!-- Emergency Stop Button -->
+      <button id="stopSpeakingBtn" class="stop-speaking-btn" onclick="stopSpeaking()" title="Press Esc or click to stop AI from speaking">
+        ⏹️ Stop Speaking [Esc]
+      </button>
+
+      <!-- Auto-TTS Toggle -->
+      <button id="ttsToggleBtn" class="tts-toggle-btn enabled" onclick="toggleAutoTTS()">
+        🔊 Voice: On
+      </button>
+
+      <!-- Model Picker -->
+      <select id="modelSelect" class="model-selector" onchange="onModelChange()">
+        <option value="mistral:latest">mistral:latest (Fast Text)</option>
+        <option value="qwen3.5:latest">qwen3.5:latest (Vision)</option>
+      </select>
+
+      <!-- Smriti Status -->
+      <div class="status-pill" id="smritiPill" title="Smriti Local Memory Core">
+        <div class="status-dot" id="smritiDot"></div>
+        <span id="smritiText">SMRITI: Checking...</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main View -->
+  <main>
+    <!-- Screen Preview Floating Widget -->
+    <div class="screen-widget" id="screenWidget">
+      <div class="screen-widget-header">
+        <label class="screen-toggle">
+          <input type="checkbox" id="includeScreenCheck" checked>
+          <span>See Screen</span>
+        </label>
+        <button class="snap-btn" onclick="captureNewScreen()" title="Snap updated screen image">📷 Snap</button>
+      </div>
+      <img id="screenThumb" class="screen-thumb" src="/api/screenshot" alt="Screen preview" onclick="openLightbox()" title="Click to view full screen capture" onerror="this.style.display='none'">
+    </div>
+
+    <!-- Chat Stream -->
+    <section class="chat-section">
+      <div class="messages-container" id="messagesContainer">
+        <!-- Initial Welcome Message -->
+        <div class="message-row assistant">
+          <div class="message-avatar">⚡</div>
+          <div class="message-bubble">
+            <strong>Hey! I'm Clicky.</strong> I'm running locally on your Mac with <strong>SMRITI long-term memory</strong> and screen awareness.<br><br>
+            • Click the <strong>🎙️ Mic</strong> button or hold space to speak.<br>
+            • Whenever I speak, click the big red <strong>⏹️ Stop Speaking</strong> button or press <strong>Esc</strong> to silence me immediately.<br>
+            • I can see your screen whenever "See Screen" is checked.
+            <div class="message-meta">Ready • Local Ollama + SMRITI</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Input Area -->
+      <div class="input-section">
+        <div id="liveTranscript" class="live-transcript">Listening...</div>
+        <div class="input-row">
+          <button id="voiceBtn" class="voice-btn" onclick="toggleVoiceRecording()" title="Click to speak (Web Speech API)">
+            🎙️
+          </button>
+          <textarea id="chatInput" class="chat-textarea" placeholder="Ask Clicky anything or speak... (Shift+Enter for newline, Enter to send)" rows="1" onkeydown="handleInputKey(event)"></textarea>
+          <button id="sendBtn" class="send-btn" onclick="sendMessage()" title="Send Message">
+            ➔
+          </button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Lightbox for Fullscreen Screenshot Preview -->
+  <div id="lightbox" class="lightbox" onclick="closeLightbox()">
+    <img id="lightboxImg" src="/api/screenshot" alt="Expanded Screen View">
+  </div>
+
+  <script>
+    // State
+    let isSpeaking = false;
+    let autoTTS = true;
+    let isRecording = false;
+    let recognition = null;
+    let currentModel = "mistral:latest";
+
+    // Setup speech synthesis
+    const synth = window.speechSynthesis;
+
+    // Check & Load Status
+    async function loadStatus() {
+      try {
+        const res = await fetch("/api/status");
+        if (!res.ok) return;
+        const data = await res.json();
+
+        // Update SMRITI pill
+        const dot = document.getElementById("smritiDot");
+        const text = document.getElementById("smritiText");
+        if (data.smriti_connected) {
+          dot.classList.add("active");
+          text.textContent = `SMRITI: ${data.smriti_memories} memories`;
+        } else {
+          dot.classList.remove("active");
+          text.textContent = "SMRITI: Offline";
+        }
+
+        // Populate models
+        if (data.models && data.models.length > 0) {
+          const select = document.getElementById("modelSelect");
+          const existing = Array.from(select.options).map(o => o.value);
+          data.models.forEach(m => {
+            if (!existing.includes(m)) {
+              const opt = document.createElement("option");
+              opt.value = m;
+              opt.textContent = m + (m.includes("qwen3.5") || m.includes("vision") ? " (Vision)" : "");
+              select.appendChild(opt);
+            }
+          });
+        }
+
+        // Show screen thumbnail if available
+        if (data.has_screenshot) {
+          refreshScreenThumb();
+        }
+      } catch (e) {
+        console.error("Status check failed:", e);
+      }
+    }
+
+    function onModelChange() {
+      currentModel = document.getElementById("modelSelect").value;
+    }
+
+    // Toggle Voice Output
+    function toggleAutoTTS() {
+      autoTTS = !autoTTS;
+      const btn = document.getElementById("ttsToggleBtn");
+      if (autoTTS) {
+        btn.classList.add("enabled");
+        btn.textContent = "🔊 Voice: On";
+      } else {
+        btn.classList.remove("enabled");
+        btn.textContent = "🔇 Voice: Off";
+        stopSpeaking();
+      }
+    }
+
+    // Emergency Stop Speaking
+    function stopSpeaking() {
+      if (synth) {
+        synth.cancel();
+      }
+      isSpeaking = false;
+      document.getElementById("stopSpeakingBtn").style.display = "none";
+    }
+
+    // Speak Text via Web Speech Synthesis
+    function speakText(text) {
+      if (!autoTTS || !synth) return;
+      stopSpeaking();
+
+      // Clean text of markdown characters for cleaner speech
+      const cleanText = text
+        .replace(/```[\s\S]*?```/g, "Code block omitted.")
+        .replace(/`([^`]+)`/g, "$1")
+        .replace(/[*_#\[\]()]/g, "")
+        .trim();
+
+      if (!cleanText) return;
+
+      const utterance = new SpeechSynthesisUtterance(cleanText);
+      utterance.rate = 1.05;
+      utterance.pitch = 1.0;
+
+      // Select natural English voice if present
+      const voices = synth.getVoices();
+      const preferred = voices.find(v => v.lang.startsWith("en") && (v.name.includes("Samantha") || v.name.includes("Natural") || v.name.includes("Siri")));
+      if (preferred) {
+        utterance.voice = preferred;
+      }
+
+      utterance.onstart = () => {
+        isSpeaking = true;
+        document.getElementById("stopSpeakingBtn").style.display = "flex";
+      };
+
+      utterance.onend = () => {
+        isSpeaking = false;
+        document.getElementById("stopSpeakingBtn").style.display = "none";
+      };
+
+      utterance.onerror = () => {
+        isSpeaking = false;
+        document.getElementById("stopSpeakingBtn").style.display = "none";
+      };
+
+      synth.speak(utterance);
+    }
+
+    // Keydown listener for Esc key to halt speech instantly
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        stopSpeaking();
+      }
+    });
+
+    // Screen Capture
+    async function captureNewScreen() {
+      const snapBtn = document.querySelector(".snap-btn");
+      snapBtn.textContent = "Capturing...";
+      try {
+        const res = await fetch("/api/capture", { method: "POST" });
+        if (res.ok) {
+          refreshScreenThumb();
+        }
+      } catch (e) {
+        console.error("Capture error:", e);
+      } finally {
+        snapBtn.textContent = "📷 Snap";
+      }
+    }
+
+    function refreshScreenThumb() {
+      const thumb = document.getElementById("screenThumb");
+      thumb.src = "/api/screenshot?t=" + Date.now();
+      thumb.style.display = "block";
+      document.getElementById("lightboxImg").src = "/api/screenshot?t=" + Date.now();
+    }
+
+    function openLightbox() {
+      document.getElementById("lightbox").style.display = "flex";
+    }
+
+    function closeLightbox() {
+      document.getElementById("lightbox").style.display = "none";
+    }
+
+    // Web Speech Recognition (Voice Input)
+    function setupSpeechRecognition() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        console.warn("Web Speech API not supported in this browser.");
+        return;
+      }
+
+      recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.lang = "en-US";
+
+      const live = document.getElementById("liveTranscript");
+      const input = document.getElementById("chatInput");
+
+      recognition.onstart = () => {
+        isRecording = true;
+        document.getElementById("voiceBtn").classList.add("recording");
+        live.style.display = "block";
+        live.textContent = "Listening...";
+      };
+
+      recognition.onresult = (event) => {
+        let transcript = "";
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          transcript += event.results[i][0].transcript;
+        }
+        live.textContent = `"${transcript}"`;
+        input.value = transcript;
+      };
+
+      recognition.onerror = (event) => {
+        console.error("Speech recognition error:", event.error);
+        stopVoiceRecording();
+      };
+
+      recognition.onend = () => {
+        stopVoiceRecording();
+        if (input.value.trim().length > 0) {
+          sendMessage();
+        }
+      };
+    }
+
+    function toggleVoiceRecording() {
+      if (isRecording) {
+        if (recognition) recognition.stop();
+        stopVoiceRecording();
+      } else {
+        if (!recognition) setupSpeechRecognition();
+        if (recognition) {
+          stopSpeaking(); // Stop AI voice if talking when user wants to speak
+          recognition.start();
+        } else {
+          alert("Speech recognition is not supported in this browser. Please use Chrome, Arc, or Safari.");
+        }
+      }
+    }
+
+    function stopVoiceRecording() {
+      isRecording = false;
+      document.getElementById("voiceBtn").classList.remove("recording");
+      document.getElementById("liveTranscript").style.display = "none";
+    }
+
+    // Chat Message Handling
+    function handleInputKey(e) {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    }
+
+    function appendMessage(role, text, memories = []) {
+      const container = document.getElementById("messagesContainer");
+      const row = document.createElement("div");
+      row.className = `message-row ${role}`;
+
+      const avatar = document.createElement("div");
+      avatar.className = "message-avatar";
+      avatar.textContent = role === "user" ? "👤" : "⚡";
+
+      const bubble = document.createElement("div");
+      bubble.className = "message-bubble";
+
+      // Render memories if any
+      if (memories && memories.length > 0) {
+        const memBadge = document.createElement("div");
+        memBadge.className = "memory-badge";
+        memBadge.innerHTML = `🧠 <strong>Recalled ${memories.length} SMRITI memories</strong>`;
+        memBadge.title = memories.map(m => m.content).join("\n\n");
+        bubble.appendChild(memBadge);
+      }
+
+      // Format markdown-like code blocks and newlines
+      const formatted = escapeHtml(text)
+        .replace(/```([\s\S]*?)```/g, "<pre><code>$1</code></pre>")
+        .replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/\n/g, "<br>");
+
+      const contentDiv = document.createElement("div");
+      contentDiv.innerHTML = formatted;
+      bubble.appendChild(contentDiv);
+
+      // Actions row
+      const actions = document.createElement("div");
+      actions.className = "message-actions";
+
+      const copyBtn = document.createElement("button");
+      copyBtn.className = "action-btn";
+      copyBtn.innerHTML = "📋 Copy";
+      copyBtn.onclick = () => {
+        navigator.clipboard.writeText(text);
+        copyBtn.textContent = "Copied!";
+        setTimeout(() => copyBtn.textContent = "📋 Copy", 1500);
+      };
+      actions.appendChild(copyBtn);
+
+      if (role === "assistant") {
+        const speakBtn = document.createElement("button");
+        speakBtn.className = "action-btn";
+        speakBtn.innerHTML = "🔊 Speak";
+        speakBtn.onclick = () => speakText(text);
+        actions.appendChild(speakBtn);
+      }
+
+      bubble.appendChild(actions);
+
+      row.appendChild(avatar);
+      row.appendChild(bubble);
+      container.appendChild(row);
+
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function escapeHtml(string) {
+      const entityMap = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      };
+      return String(string).replace(/[&<>"']/g, s => entityMap[s]);
+    }
+
+    async function sendMessage() {
+      const input = document.getElementById("chatInput");
+      const text = input.value.trim();
+      if (!text) return;
+
+      input.value = "";
+      appendMessage("user", text);
+
+      const sendBtn = document.getElementById("sendBtn");
+      const includeScreen = document.getElementById("includeScreenCheck").checked;
+
+      // Add loading row
+      const container = document.getElementById("messagesContainer");
+      const loadingRow = document.createElement("div");
+      loadingRow.className = "message-row assistant";
+      loadingRow.id = "loadingRow";
+      loadingRow.innerHTML = `
+        <div class="message-avatar">⚡</div>
+        <div class="message-bubble" style="color: var(--text-dim); font-style: italic;">
+          Thinking & consulting SMRITI${includeScreen ? " (analyzing screen)" : ""}...
+        </div>
+      `;
+      container.appendChild(loadingRow);
+      container.scrollTop = container.scrollHeight;
+
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: json_payload = JSON.stringify({
+            prompt: text,
+            model: currentModel,
+            include_screen: includeScreen
+          })
+        });
+
+        // Remove loading row
+        const row = document.getElementById("loadingRow");
+        if (row) row.remove();
+
+        if (res.ok) {
+          const data = await res.json();
+          appendMessage("assistant", data.reply, data.recalled_memories);
+          speakText(data.reply);
+          if (data.has_screenshot) {
+            refreshScreenThumb();
+          }
+          // Refresh SMRITI count
+          loadStatus();
+        } else {
+          const err = await res.json();
+          appendMessage("assistant", `⚠️ Error: ${err.error || "Failed to get response"}`);
+        }
+      } catch (e) {
+        const row = document.getElementById("loadingRow");
+        if (row) row.remove();
+        appendMessage("assistant", `⚠️ Connection error: ${e.message}. Is Clicky web server running?`);
+      } finally {
+        sendBtn.disabled = false;
+        input.focus();
+      }
+    }
+
+    // Init
+    setupSpeechRecognition();
+    loadStatus();
+    setInterval(loadStatus, 10000);
+  </script>
+</body>
+</html>

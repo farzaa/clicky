@@ -1,162 +1,82 @@
-Update: April 27, 2026.
+# Clicky Companion with SMRITI (`clicky-smriti`)
 
-Hi there! I'm Farza, the guy that made Clicky.
+An intelligent local AI companion that lives in your browser, sees your screen, talks with you, provides instant voice controls with guaranteed speech stop (`Esc`), and remembers everything across sessions using **SMRITI local-first long-term memory**.
 
-The existing codebase remains open source. Tinker with it, make it yours, start a company out of it, do whatever you want I don't mind. But, for all the new stuff I'm hacking on, gonna keep it private. To get the latest Clicky, you can go [here](https://www.heyclicky.com/).
+Works **out-of-the-box with zero API keys** using local models via Ollama.
 
-I also tweeted about this [here](https://x.com/FarzaTV/status/2043402737828962489).
+---
 
-Go crazy with this repo!! It's an MIT license.
-
-# Hi, this is Clicky.
-It's an AI teacher that lives as a buddy next to your cursor. It can see your screen, talk to you, and even point at stuff. Kinda like having a real teacher next to you.
-
-Download it [here](https://www.clicky.so/) for free.
-
-Here's the [original tweet](https://x.com/FarzaTV/status/2041314633978659092) that kinda blew up for a demo for more context.
-
-![Clicky — an ai buddy that lives on your mac](clicky-demo.gif)
-
-This is the open-source version of Clicky for those that want to hack on it, build their own features, or just see how it works under the hood.
-
-## Get started with Claude Code
-
-The fastest way to get this running is with [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
-
-Once you get Claude running, paste this:
-
-```
-Hi Claude.
-
-Clone https://github.com/farzaa/clicky.git into my current directory.
-
-Then read the CLAUDE.md. I want to get Clicky running locally on my Mac.
-
-Help me set up everything — the Cloudflare Worker with my own API keys, the proxy URLs, and getting it building in Xcode. Walk me through it.
-```
-
-That's it. It'll clone the repo, read the docs, and walk you through the whole setup. Once you're running you can just keep talking to it — build features, fix bugs, whatever. Go crazy.
-
-## Manual setup
-
-If you want to do it yourself, here's the deal.
-
-### Prerequisites
-
-- macOS 14.2+ (for ScreenCaptureKit)
-- Xcode 15+
-- Node.js 18+ (for the Cloudflare Worker)
-- A [Cloudflare](https://cloudflare.com) account (free tier works)
-- API keys for: [Anthropic](https://console.anthropic.com), [AssemblyAI](https://www.assemblyai.com), [ElevenLabs](https://elevenlabs.io)
-
-### 1. Set up the Cloudflare Worker
-
-The Worker is a tiny proxy that holds your API keys. The app talks to the Worker, the Worker talks to the APIs. This way your keys never ship in the app binary.
+## ⚡ Quick Start
 
 ```bash
-cd worker
-npm install
+# 1. Clone the repository
+git clone https://github.com/smriti-memcore/clicky-smriti.git
+cd clicky-smriti
+
+# 2. Launch Clicky
+./run_web.sh
 ```
 
-Now add your secrets. Wrangler will prompt you to paste each one:
+This single command:
+1. Boots the local **SMRITI memory daemon** on port `7798` (`~/.smriti/global`).
+2. Starts the **Clicky Web Companion server** on port `7800`.
+3. Opens **`http://localhost:7800`** in your default browser.
 
-```bash
-npx wrangler secret put ANTHROPIC_API_KEY
-npx wrangler secret put ASSEMBLYAI_API_KEY
-npx wrangler secret put ELEVENLABS_API_KEY
-```
+---
 
-For the ElevenLabs voice ID, open `wrangler.toml` and set it there (it's not sensitive):
+## 🌟 Key Features
 
-```toml
-[vars]
-ELEVENLABS_VOICE_ID = "your-voice-id-here"
-```
+- **⏹️ Instant Speech Stop Control**: Never worry about AI talking non-stop. Hit **`Esc`** at any moment or click the prominent red **`⏹️ Stop Speaking`** button to immediately silence speech via `window.speechSynthesis.cancel()`.
+- **🔊 Voice Toggle**: Switch voice output on or off with a single click.
+- **📷 Native Screen Awareness**: Automatically captures your active desktop silently via macOS's native `screencapture` CLI, downscaled via `sips` to optimize vision token compute. No TCC permission loops or modal crashes.
+- **🧠 SMRITI Long-Term Memory**: Shared local memory layer (`~/.smriti/global`) connecting Clicky, Smriti Desktop App, Claude Code, Gemini CLI, and terminal agents. Every conversation turn is encoded into your memory palace and recalled in future conversations.
+- **🎙️ Web Speech Dictation**: Click the **`🎙️`** microphone button to speak with real-time live transcription.
+- **🦙 Zero API Keys via Ollama**: Runs entirely on your Mac using local models:
+  - **`mistral:latest`** (Default — ultra-fast text chat)
+  - **`qwen3.5:latest`** (Multimodal vision chat for inspecting screen contents)
+  - Any custom model in your local Ollama library.
 
-Deploy it:
+---
 
-```bash
-npx wrangler deploy
-```
-
-It'll give you a URL like `https://your-worker-name.your-subdomain.workers.dev`. Copy that.
-
-### 2. Run the Worker locally (for development)
-
-If you want to test changes to the Worker without deploying:
-
-```bash
-cd worker
-npx wrangler dev
-```
-
-This starts a local server (usually `http://localhost:8787`) that behaves exactly like the deployed Worker. You'll need to create a `.dev.vars` file in the `worker/` directory with your keys:
+## 📁 Repository Structure
 
 ```
-ANTHROPIC_API_KEY=sk-ant-...
-ASSEMBLYAI_API_KEY=...
-ELEVENLABS_API_KEY=...
-ELEVENLABS_VOICE_ID=...
+├── run_web.sh              # One-click launcher for SMRITI + Web Companion
+├── web/
+│   ├── server.py           # Local HTTP companion server (port 7800)
+│   └── index.html          # Modern dark Web UI with voice & screen controls
+├── scripts/
+│   └── smriti_local_api.py # SMRITI REST API daemon (port 7798)
+├── worker/
+│   └── src/index.ts        # Optional Cloudflare Worker proxy for cloud models
+├── AGENTS.md               # Architecture spec and agent instructions
+└── README.md               # Project documentation
 ```
 
-Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing. Grep for `clicky-proxy` to find them all.
+---
 
-### 3. Update the proxy URLs in the app
+## 🧠 SMRITI Memory Architecture
 
-The app has the Worker URL hardcoded in a few places. Search for `your-worker-name.your-subdomain.workers.dev` and replace it with your Worker URL:
+Clicky integrates the **SMRITI Neuro-Inspired Memory Architecture** to maintain a persistent episodic and semantic memory palace across your workflow:
 
-```bash
-grep -r "clicky-proxy" leanring-buddy/
-```
+- **Local Storage**: All memories are stored locally on your machine at `~/.smriti/global/palace/palace.json`.
+- **Cross-Tool Sharing**: Memories created in Clicky are instantly accessible by terminal agents and the [**Smriti Desktop App**](https://github.com/smriti-memcore/Smriti-Desktop-App).
+- **Local HTTP Daemon**: Clicky manages a high-performance HTTP server on `http://127.0.0.1:7798` that automatically handles memory recall before each AI turn and encodes new conversational knowledge.
 
-You'll find it in:
-- `CompanionManager.swift` — Claude chat + ElevenLabs TTS
-- `AssemblyAIStreamingTranscriptionProvider.swift` — AssemblyAI token endpoint
+---
 
-### 4. Open in Xcode and run
+## 🛠️ Prerequisites
 
-```bash
-open leanring-buddy.xcodeproj
-```
+- **macOS** (Apple Silicon recommended)
+- **Python 3.10+** (with `pip3`)
+- **Ollama** for local AI models:
+  ```bash
+  brew install ollama
+  ollama run mistral
+  ```
 
-In Xcode:
-1. Select the `leanring-buddy` scheme (yes, the typo is intentional, long story)
-2. Set your signing team under Signing & Capabilities
-3. Hit **Cmd + R** to build and run
+---
 
-The app will appear in your menu bar (not the dock). Click the icon to open the panel, grant the permissions it asks for, and you're good.
+## License
 
-### Permissions the app needs
-
-- **Microphone** — for push-to-talk voice capture
-- **Accessibility** — for the global keyboard shortcut (Control + Option)
-- **Screen Recording** — for taking screenshots when you use the hotkey
-- **Screen Content** — for ScreenCaptureKit access
-
-## Architecture
-
-If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
-
-**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied through a Cloudflare Worker.
-
-## Project structure
-
-```
-leanring-buddy/          # Swift source (yes, the typo stays)
-  CompanionManager.swift    # Central state machine
-  CompanionPanelView.swift  # Menu bar panel UI
-  ClaudeAPI.swift           # Claude streaming client
-  ElevenLabsTTSClient.swift # Text-to-speech playback
-  OverlayWindow.swift       # Blue cursor overlay
-  AssemblyAI*.swift         # Real-time transcription
-  BuddyDictation*.swift     # Push-to-talk pipeline
-worker/                  # Cloudflare Worker proxy
-  src/index.ts              # Three routes: /chat, /tts, /transcribe-token
-CLAUDE.md                # Full architecture doc (agents read this)
-```
-
-## Contributing
-
-PRs welcome. If you're using Claude Code, it already knows the codebase — just tell it what you want to build and point it at `CLAUDE.md`.
-
-Got feedback? DM me on X [@farzatv](https://x.com/farzatv).
+MIT License. See [LICENSE](LICENSE) for details.

@@ -6,3 +6,6 @@ build/
 releases/
 .claude/
 coding-plans/
+xcuserdata/
+*.xcuserdatad
+worker/.wrangler/
