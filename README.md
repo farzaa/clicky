@@ -99,14 +99,16 @@ ELEVENLABS_API_KEY=...
 ELEVENLABS_VOICE_ID=...
 ```
 
-Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing. Grep for `clicky-proxy` to find them all.
+Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing. Grep for `your-worker-name.your-subdomain.workers.dev` to find them all.
+
+There's no in-app screen for API keys — if you want to use your own keys, the Worker is where they go. The Worker only forwards the Claude and ElevenLabs models the app uses (see `ALLOWED_CLAUDE_MODELS` in `worker/src/index.ts`), so add a model there if you add one to the app.
 
 ### 3. Update the proxy URLs in the app
 
 The app has the Worker URL hardcoded in a few places. Search for `your-worker-name.your-subdomain.workers.dev` and replace it with your Worker URL:
 
 ```bash
-grep -r "clicky-proxy" leanring-buddy/
+grep -r "your-worker-name.your-subdomain.workers.dev" leanring-buddy/
 ```
 
 You'll find it in:

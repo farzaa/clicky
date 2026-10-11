@@ -80,17 +80,18 @@ enum ClickyAnalytics {
     }
 
     /// Transcription completed and the user's message is being sent to the AI.
+    /// Only the length is sent — the transcript is the user's own speech and
+    /// often describes what is on their screen, so analytics shouldn't store it.
     static func trackUserMessageSent(transcript: String) {
         PostHogSDK.shared.capture("user_message_sent", properties: [
-            "transcript": transcript,
             "character_count": transcript.count
         ])
     }
 
     /// Claude responded and the response is being spoken via TTS.
+    /// Only the length is sent — the reply describes the user's screen.
     static func trackAIResponseReceived(response: String) {
         PostHogSDK.shared.capture("ai_response_received", properties: [
-            "response": response,
             "character_count": response.count
         ])
     }

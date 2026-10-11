@@ -187,13 +187,44 @@ final class MenuBarPanelManager: NSObject {
         let fittingSize = panel.contentView?.fittingSize ?? CGSize(width: panelWidth, height: panelHeight)
         let actualPanelHeight = fittingSize.height
 
-        // Horizontally center the panel beneath the status item icon
-        let panelOriginX = statusItemFrame.midX - (panelWidth / 2)
+        // Horizontally center the panel beneath the status item icon, but keep it
+        // on the screen that holds the icon when the icon sits near a display edge
+        let panelOriginX = Self.clampedPanelOriginX(
+            statusItemFrame: statusItemFrame,
+            panelWidth: panelWidth,
+            visibleScreenFrame: buttonWindow.screen?.visibleFrame
+        )
         let panelOriginY = statusItemFrame.minY - actualPanelHeight - gapBelowMenuBar
 
         panel.setFrame(
             NSRect(x: panelOriginX, y: panelOriginY, width: panelWidth, height: actualPanelHeight),
             display: true
+        )
+    }
+
+    /// Returns the panel's X origin: centered under the status item when it fits,
+    /// otherwise shifted just enough to stay inside the visible screen frame.
+    /// Centering alone pushed up to half the panel off-screen when the icon was
+    /// near the left or right edge of a display.
+    static func clampedPanelOriginX(
+        statusItemFrame: NSRect,
+        panelWidth: CGFloat,
+        visibleScreenFrame: NSRect?
+    ) -> CGFloat {
+        let centeredPanelOriginX = statusItemFrame.midX - (panelWidth / 2)
+
+        guard let visibleScreenFrame else {
+            return centeredPanelOriginX
+        }
+
+        let rightmostAllowedPanelOriginX = max(
+            visibleScreenFrame.minX,
+            visibleScreenFrame.maxX - panelWidth
+        )
+
+        return min(
+            max(centeredPanelOriginX, visibleScreenFrame.minX),
+            rightmostAllowedPanelOriginX
         )
     }
 

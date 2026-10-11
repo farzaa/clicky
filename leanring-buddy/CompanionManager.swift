@@ -96,6 +96,13 @@ final class CompanionManager: ObservableObject {
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
+    /// macOS system voice used when ElevenLabs can't speak a response, or to
+    /// announce an error. Kept as a property (not a local) so pressing the
+    /// hotkey again can interrupt it the same way it interrupts ElevenLabs audio.
+    private let systemVoiceSpeechSynthesizer = NSSpeechSynthesizer()
+    /// Observes display connect/disconnect/rearrange events so the per-screen
+    /// cursor overlays can be rebuilt for the new display layout.
+    private var screenParametersObserver: NSObjectProtocol?
 
     /// True when all three required permissions (accessibility, screen recording,
     /// microphone) are granted. Used by the panel to show a single "all good" state.
@@ -179,6 +186,7 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
+        observeScreenParameterChanges()
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
@@ -295,11 +303,16 @@ final class CompanionManager: ObservableObject {
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
+        systemVoiceSpeechSynthesizer.stopSpeaking()
         shortcutTransitionCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
+        if let screenParametersObserver {
+            NotificationCenter.default.removeObserver(screenParametersObserver)
+            self.screenParametersObserver = nil
+        }
     }
 
     func refreshAllPermissions() {
@@ -470,6 +483,36 @@ final class CompanionManager: ObservableObject {
             }
     }
 
+    private func observeScreenParameterChanges() {
+        screenParametersObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.rebuildOverlayForCurrentScreensIfNeeded()
+            }
+        }
+    }
+
+    /// Each overlay window is sized to one display when it is created. Clicky
+    /// launches at login, often before an external monitor is attached, so
+    /// without a rebuild the buddy can't reach a display connected later and
+    /// stale windows end up covering the wrong display after a rearrange.
+    private func rebuildOverlayForCurrentScreensIfNeeded() {
+        guard isOverlayVisible, overlayWindowManager.isShowingOverlay() else { return }
+
+        let currentScreenFrames = NSScreen.screens.map(\.frame)
+        guard currentScreenFrames != overlayWindowManager.screenFramesForCurrentOverlays else { return }
+
+        // An in-flight pointing animation belongs to a window that is about to
+        // be destroyed. Leaving the target set would keep the buddy hidden on
+        // every new overlay, since they hide while another screen is pointing.
+        clearDetectedElementLocation()
+        overlayWindowManager.hasShownOverlayBefore = true
+        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+    }
+
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
         case .pressed:
@@ -491,9 +534,15 @@ final class CompanionManager: ObservableObject {
             // Dismiss the menu bar panel so it doesn't cover the screen
             NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
 
-            // Cancel any in-progress response and TTS from a previous utterance
+            // Cancel any in-progress response and TTS from a previous utterance.
+            // Clear the reference too: a finished task stays non-nil after
+            // cancel(), and the voice-state observer only schedules the
+            // transient hide when no response task is stored. Without this, an
+            // empty push-to-talk after any completed response left the overlay stuck.
             currentResponseTask?.cancel()
+            currentResponseTask = nil
             elevenLabsTTSClient.stopPlayback()
+            systemVoiceSpeechSynthesizer.stopSpeaking()
             clearDetectedElementLocation()
 
             // Dismiss the onboarding prompt if it's showing
@@ -519,7 +568,8 @@ final class CompanionManager: ObservableObject {
                     },
                     submitDraftText: { [weak self] finalTranscript in
                         self?.lastTranscript = finalTranscript
-                        print("🗣️ Companion received transcript: \(finalTranscript)")
+                        // Log only the length — the transcript is the user's own speech.
+                        print("🗣️ Companion received transcript (\(finalTranscript.count) chars)")
                         ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
                         self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
                     }
@@ -551,6 +601,7 @@ final class CompanionManager: ObservableObject {
     - don't use abbreviations or symbols that sound weird read aloud. write "for example" not "e.g.", spell out small numbers.
     - if the user's question relates to what's on their screen, reference specific things you see.
     - if the screenshot doesn't seem relevant to their question, just answer the question directly.
+    - always reply in the same language the user spoke in their latest message, even if the text on their screen is in a different language. only switch languages if they explicitly ask you to.
     - you can help with anything — coding, writing, general knowledge, brainstorming.
     - never say "simply" or "just".
     - don't read out code verbatim. describe what the code does or what needs to change conversationally.
@@ -676,17 +727,23 @@ final class CompanionManager: ObservableObject {
                     detectedElementScreenLocation = globalLocation
                     detectedElementDisplayFrame = displayFrame
                     ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
-                    print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
+                    // Coordinates and labels describe what is on the user's screen, so don't log them.
+                    print("🎯 Element pointing: coordinate resolved")
                 } else {
-                    print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
+                    print("🎯 Element pointing: no coordinate")
                 }
 
                 // Save this exchange to conversation history (with the point tag
-                // stripped so it doesn't confuse future context)
-                conversationHistory.append((
-                    userTranscript: transcript,
-                    assistantResponse: spokenText
-                ))
+                // stripped so it doesn't confuse future context). Skip replies that
+                // were only a [POINT] tag: the Messages API rejects an empty
+                // assistant turn, so storing one would make every later request
+                // in this session fail.
+                if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    conversationHistory.append((
+                        userTranscript: transcript,
+                        assistantResponse: spokenText
+                    ))
+                }
 
                 // Keep only the last 10 exchanges to avoid unbounded context growth
                 if conversationHistory.count > 10 {
@@ -705,17 +762,27 @@ final class CompanionManager: ObservableObject {
                         // speakText returns after player.play() — audio is now playing
                         voiceState = .responding
                     } catch {
-                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ ElevenLabs TTS error: \(error)")
-                        speakCreditsErrorFallback()
+                        // URLSession reports task cancellation as URLError(.cancelled),
+                        // not CancellationError, so check the task itself — otherwise
+                        // pressing the hotkey mid-download would speak over the new turn.
+                        if !Task.isCancelled {
+                            ClickyAnalytics.trackTTSError(error: error.localizedDescription)
+                            print("⚠️ ElevenLabs TTS error: \(error)")
+                            // Claude already answered — read the answer with the
+                            // system voice instead of dropping it.
+                            speakWithSystemVoice(spokenText)
+                        }
                     }
                 }
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
-                ClickyAnalytics.trackResponseError(error: error.localizedDescription)
-                print("⚠️ Companion response error: \(error)")
-                speakCreditsErrorFallback()
+                // Same as above: an interrupted request surfaces as URLError(.cancelled).
+                if !Task.isCancelled {
+                    ClickyAnalytics.trackResponseError(error: error.localizedDescription)
+                    print("⚠️ Companion response error: \(error)")
+                    speakWithSystemVoice(Self.responseFailedSpokenMessage)
+                }
             }
 
             if !Task.isCancelled {
@@ -734,8 +801,8 @@ final class CompanionManager: ObservableObject {
 
         transientHideTask?.cancel()
         transientHideTask = Task {
-            // Wait for TTS audio to finish playing
-            while elevenLabsTTSClient.isPlaying {
+            // Wait for TTS audio (ElevenLabs or the system voice fallback) to finish playing
+            while elevenLabsTTSClient.isPlaying || systemVoiceSpeechSynthesizer.isSpeaking {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }
@@ -755,13 +822,17 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Speaks a hardcoded error message using macOS system TTS when API
-    /// credits run out. Uses NSSpeechSynthesizer so it works even when
-    /// ElevenLabs is down.
-    private func speakCreditsErrorFallback() {
-        let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
+    /// Spoken when the response pipeline fails. This used to claim the app was
+    /// "out of credits" for every failure — including network errors, a Worker
+    /// URL that was never configured, and screen capture errors — which sent
+    /// people chasing a billing problem they didn't have.
+    private static let responseFailedSpokenMessage = "Sorry, I couldn't get a response. Check your connection and API keys, then try again."
+
+    /// Speaks text with the macOS system voice. Uses NSSpeechSynthesizer so it
+    /// works even when ElevenLabs or the Worker is unreachable.
+    private func speakWithSystemVoice(_ textToSpeak: String) {
+        systemVoiceSpeechSynthesizer.stopSpeaking()
+        systemVoiceSpeechSynthesizer.startSpeaking(textToSpeak)
         voiceState = .responding
     }
 
@@ -782,13 +853,20 @@ final class CompanionManager: ObservableObject {
     /// Parses a [POINT:x,y:label:screenN] or [POINT:none] tag from the end of Claude's response.
     /// Returns the spoken text (tag removed) and the optional coordinate + label + screen number.
     static func parsePointingCoordinates(from responseText: String) -> PointingParseResult {
-        // Match [POINT:none] or [POINT:123,456:label] or [POINT:123,456:label:screen2]
-        let pattern = #"\[POINT:(?:none|(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?)\]\s*$"#
+        // Match [POINT:none] or [POINT:123,456:label] or [POINT:123,456:label:screen2].
+        // Coordinates may be slightly negative: Claude sometimes lands just outside
+        // the image, and the caller clamps into range. Rejecting the minus sign here
+        // used to skip pointing and leave the raw tag in the spoken text.
+        let pattern = #"\[POINT:(?:none|(-?\d+)\s*,\s*(-?\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?)\]\s*$"#
 
         guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
               let match = regex.firstMatch(in: responseText, range: NSRange(responseText.startIndex..., in: responseText)) else {
-            // No tag found at all
-            return PointingParseResult(spokenText: responseText, coordinate: nil, elementLabel: nil, screenNumber: nil)
+            // No well-formed tag at the end. Still strip any stray or malformed
+            // [POINT...] tag so the TTS never reads control syntax out loud.
+            let spokenTextWithoutStrayPointTags = responseText
+                .replacingOccurrences(of: #"\[POINT:[^\]]*\]"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return PointingParseResult(spokenText: spokenTextWithoutStrayPointTags, coordinate: nil, elementLabel: nil, screenNumber: nil)
         }
 
         // Remove the tag from the spoken text
@@ -1017,7 +1095,8 @@ final class CompanionManager: ObservableObject {
                 detectedElementBubbleText = parseResult.spokenText
                 detectedElementScreenLocation = globalLocation
                 detectedElementDisplayFrame = displayFrame
-                print("🎯 Onboarding demo: pointing at \"\(parseResult.elementLabel ?? "element")\" — \"\(parseResult.spokenText)\"")
+                // The label and comment describe what is on the user's screen, so don't log them.
+                print("🎯 Onboarding demo: pointing at element")
             } catch {
                 print("⚠️ Onboarding demo error: \(error)")
             }

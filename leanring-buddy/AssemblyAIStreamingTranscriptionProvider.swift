@@ -41,7 +41,8 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
     ) async throws -> any BuddyStreamingTranscriptionSession {
         // Fetch a fresh temporary token from the proxy before each session
         let temporaryToken = try await fetchTemporaryToken()
-        print("🎙️ AssemblyAI: fetched temporary token (\(temporaryToken.prefix(20))...)")
+        // Never log any part of the token — it grants streaming access until it expires.
+        print("🎙️ AssemblyAI: fetched temporary token")
 
         let session = AssemblyAIStreamingTranscriptionSession(
             apiKey: nil,
@@ -279,9 +280,17 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
                 ?? self.activeTurnOrder
                 ?? ((self.storedTurnTranscriptsByOrder.keys.max() ?? -1) + 1)
 
-            if turnMessage.end_of_turn == true || turnMessage.turn_is_formatted == true {
-                self.activeTurnOrder = nil
-                self.activeTurnTranscriptText = ""
+            let isCompletedTurnMessage = turnMessage.end_of_turn == true || turnMessage.turn_is_formatted == true
+
+            if isCompletedTurnMessage {
+                // With format_turns on, the formatted copy of an earlier turn can
+                // arrive after the user has started speaking the next one. Only
+                // clear the in-progress turn when this message completes that same
+                // turn — otherwise the words still being spoken were thrown away.
+                if self.activeTurnOrder == nil || self.activeTurnOrder == turnOrder {
+                    self.activeTurnOrder = nil
+                    self.activeTurnTranscriptText = ""
+                }
                 self.storeTurnTranscript(
                     transcriptText,
                     forTurnOrder: turnOrder,
@@ -301,7 +310,10 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
 
             guard self.isAwaitingExplicitFinalTranscript else { return }
 
-            if turnMessage.end_of_turn == true || turnMessage.turn_is_formatted == true {
+            // Deliver only once no turn is still in progress. If a later turn is
+            // still active, wait for its own end_of_turn (which ForceEndpoint
+            // triggers) or the grace-period deadline, which also includes it.
+            if isCompletedTurnMessage && self.activeTurnOrder == nil {
                 self.explicitFinalTranscriptDeadlineWorkItem?.cancel()
                 self.explicitFinalTranscriptDeadlineWorkItem = nil
                 self.deliverFinalTranscriptIfNeeded(self.bestAvailableTranscriptText())
