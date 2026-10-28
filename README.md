@@ -2,8 +2,8 @@
 
 The official app is **[HeyClicky](https://www.heyclicky.com/)**, an AI buddy for Mac and Windows, made by me and the team.
 
-- **Mac:** [download HeyClicky for Mac](https://www.heyclicky.com/mac) (macOS 14.2 or later)
-- **Windows:** [download HeyClicky for Windows](https://www.heyclicky.com/heyclicky-for-windows) (Windows 10 and 11)
+- **Mac:** [download HeyClicky for Mac](https://www.heyclicky.com/for-mac) (macOS 14.2 or later)
+- **Windows:** [download HeyClicky for Windows](https://www.heyclicky.com/for-windows) (Windows 10 and 11)
 
 Those are the only official downloads. Other Windows apps built from this repo are community ports, not made by us.
 
@@ -22,7 +22,7 @@ Go crazy with this repo!! It's an MIT license.
 # Hi, this is Clicky.
 It's an AI teacher that lives as a buddy next to your cursor. It can see your screen, talk to you, and even point at stuff. Kinda like having a real teacher next to you.
 
-Download HeyClicky for free for [Mac](https://www.heyclicky.com/mac) or [Windows](https://www.heyclicky.com/heyclicky-for-windows).
+Download HeyClicky for free for [Mac](https://www.heyclicky.com/for-mac) or [Windows](https://www.heyclicky.com/for-windows).
 
 Here's the [original tweet](https://x.com/FarzaTV/status/2041314633978659092) that kinda blew up for a demo for more context.
 
