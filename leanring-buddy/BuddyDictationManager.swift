@@ -262,7 +262,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         return AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined
     }
 
-    private let transcriptionProvider: any BuddyTranscriptionProvider
+    private var transcriptionProvider: any BuddyTranscriptionProvider
     private let audioEngine = AVAudioEngine()
     private var activeTranscriptionSession: (any BuddyStreamingTranscriptionSession)?
     private var activeStartSource: BuddyDictationStartSource?
@@ -289,6 +289,19 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
     func updateContextualKeyterms(_ contextualKeyterms: [String]) {
         self.contextualKeyterms = contextualKeyterms
+    }
+
+    /// Local Mode prefers Apple's on-device speech recognition so the whole
+    /// push-to-talk loop works offline. The provider is only consumed when a
+    /// session starts, so swapping here affects the next dictation session —
+    /// an in-flight session keeps the provider it started with.
+    func setPrefersOnDeviceTranscription(_ prefersOnDeviceTranscription: Bool) {
+        let newTranscriptionProvider: any BuddyTranscriptionProvider = prefersOnDeviceTranscription
+            ? AppleSpeechTranscriptionProvider()
+            : BuddyTranscriptionProviderFactory.makeDefaultProvider()
+        transcriptionProvider = newTranscriptionProvider
+        transcriptionProviderDisplayName = newTranscriptionProvider.displayName
+        print("🎙️ Transcription: switched to \(newTranscriptionProvider.displayName)")
     }
 
     func startPersistentDictationFromMicrophoneButton(

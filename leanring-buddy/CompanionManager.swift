@@ -10,6 +10,7 @@
 import AVFoundation
 import Combine
 import Foundation
+import Network
 import PostHog
 import ScreenCaptureKit
 import SwiftUI
@@ -42,6 +43,11 @@ final class CompanionManager: ObservableObject {
     /// BlueCursorView uses this instead of a random pointer phrase.
     @Published var detectedElementBubbleText: String?
 
+    /// Provider + first-token latency for the most recent response, shown
+    /// as a small badge near the cursor while the answer plays ("local ·
+    /// 0.6s · 58 tok/s"). Cleared when the next push-to-talk begins.
+    @Published private(set) var lastResponseLatencyDescription: String?
+
     // MARK: - Onboarding Video State (shared across all screen overlays)
 
     @Published var onboardingVideoPlayer: AVPlayer?
@@ -69,16 +75,119 @@ final class CompanionManager: ObservableObject {
     // streamingResponseText, so no separate response overlay manager is needed.
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
-    /// through this so keys never ship in the app binary.
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
+    /// through this so keys never ship in the app binary. Overridable via the
+    /// `workerBaseURLOverride` default so a local `wrangler dev` worker
+    /// (http://127.0.0.1:8787) can be used without editing source.
+    private static var workerBaseURL: String {
+        UserDefaults.standard.string(forKey: "workerBaseURLOverride")
+            ?? "https://your-worker-name.your-subdomain.workers.dev"
+    }
 
     private lazy var claudeAPI: ClaudeAPI = {
-        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+        // Never hand the local sentinel to the cloud client — if the app
+        // launches with Local already selected, the cloud client still needs
+        // a real Claude model for the onboarding demo path.
+        let cloudModel = selectedModel == LocalChatProvider.modelPickerID
+            ? "claude-sonnet-4-6"
+            : selectedModel
+        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: cloudModel)
     }()
+
+    /// Cloud chat provider wrapping ClaudeAPI. Voice responses route through
+    /// the provider seam so cloud and local backends are interchangeable.
+    private lazy var cloudChatProvider = CloudChatProvider(claudeAPI: claudeAPI)
+
+    /// On-device chat provider for Local Mode (MLX, Llama-3.2-3B-Instruct).
+    /// The panel reads its modelReadiness for the download progress UI.
+    let localChatProvider = LocalChatProvider()
+
+    // MARK: - Takeover (offline autonomous mode)
+
+    /// The local vision model that drives takeover. Separate from the text
+    /// chat model — takeover needs to see the screen.
+    let takeoverVisionAgent = TakeoverVisionAgent()
+    private let takeoverActionExecutor = ComputerUseActionExecutor()
+
+    /// The offline autonomous loop. Dry-run by default; offline + Accessibility
+    /// enforced before it will run.
+    lazy var takeoverController: TakeoverController = {
+        TakeoverController(
+            visionAgent: takeoverVisionAgent,
+            executor: takeoverActionExecutor,
+            captureCursorScreen: {
+                let captures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                return captures.first(where: { $0.isCursorScreen }) ?? captures.first
+            },
+            narrate: { [weak self] line in
+                // Offline voice only — takeover never touches the cloud TTS.
+                try? await self?.appleSpeechSynthesisClient.speakText(line)
+            },
+            isNetworkAvailable: { [weak self] in self?.isNetworkAvailable ?? true }
+        )
+    }()
+
+    private var takeoverStateCancellable: AnyCancellable?
+    private var takeoverModelCancellable: AnyCancellable?
+
+    /// Phrases that hand control to takeover mode. The rest of the utterance
+    /// becomes the task.
+    private static let takeoverTriggerPhrases = ["take over", "takeover"]
+
+    /// If the transcript is a takeover command, routes it and returns true.
+    /// Offline + Accessibility are enforced inside TakeoverController.start.
+    private func routeTranscriptToTakeoverIfRequested(_ transcript: String) -> Bool {
+        // Takeover is offline-only, so only intercept the trigger when offline.
+        // Online, "take over the narration" falls through to the normal cloud path.
+        guard !isNetworkAvailable else { return false }
+        let lowered = transcript.lowercased()
+        guard let phrase = Self.takeoverTriggerPhrases.first(where: { lowered.contains($0) }) else {
+            return false
+        }
+        // The task is whatever follows the trigger phrase.
+        var task = transcript
+        if let range = lowered.range(of: phrase) {
+            task = String(transcript[range.upperBound...])
+        }
+        task = task.trimmingCharacters(in: CharacterSet(charactersIn: " ,.—-:")).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !task.isEmpty else { return false }
+
+        takeoverVisionAgent.loadModelIfNeeded()
+        takeoverController.start(task: task)
+        return true
+    }
+
+    /// True when the picker is set to Local — responses run on-device, the
+    /// screenshot is never captured, and conversation content never leaves
+    /// the Mac (including analytics).
+    var isLocalModeActive: Bool {
+        selectedModel == LocalChatProvider.modelPickerID
+    }
+
+    /// The chat provider matching the current model selection.
+    private var activeChatProvider: any BuddyChatProvider {
+        isLocalModeActive ? localChatProvider : cloudChatProvider
+    }
 
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
         return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
     }()
+
+    /// On-device voice for Local Mode. More robotic than ElevenLabs — it's
+    /// the offline voice, and that tradeoff is the point.
+    private lazy var appleSpeechSynthesisClient = AppleSpeechSynthesisClient()
+
+    /// The voice matching the current model selection. ElevenLabs needs the
+    /// network; Apple's synthesizer keeps the whole loop on the machine.
+    private var activeTextToSpeechClient: any BuddyTextToSpeechClient {
+        isLocalModeActive ? appleSpeechSynthesisClient : elevenLabsTTSClient
+    }
+
+    /// Stops whichever voice is talking. Stopping both is cheap and safe,
+    /// and means a mode switch mid-playback can't leave audio running.
+    private func stopAllSpeechPlayback() {
+        elevenLabsTTSClient.stopPlayback()
+        appleSpeechSynthesisClient.stopPlayback()
+    }
 
     /// Conversation history so Claude remembers prior exchanges within a session.
     /// Each entry is the user's transcript and Claude's response.
@@ -88,9 +197,25 @@ final class CompanionManager: ObservableObject {
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
 
+    /// True while the cloud guided tour (e.g. Logic Pro beat-making) is running —
+    /// Clicky autonomously points its cursor at the next control each step.
+    @Published private(set) var isGuidedTourRunning = false
+    private var guidedTourTask: Task<Void, Never>?
+    /// The user's cloud model before a guided tour forced Sonnet, restored when
+    /// the tour ends so an Opus user isn't silently downgraded for the session.
+    private var cloudModelBeforeGuidedTour: String?
+
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
+    private var localModelStateCancellable: AnyCancellable?
+
+    /// Live network reachability, used to fail cloud requests fast when the
+    /// machine is offline (the URLSession is configured to wait for
+    /// connectivity, which would otherwise spin for two minutes) and to
+    /// suggest Local Mode in the panel.
+    private let networkPathMonitor = NWPathMonitor()
+    @Published private(set) var isNetworkAvailable = true
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
     /// Scheduled hide for transient cursor mode — cancelled if the user
@@ -107,13 +232,44 @@ final class CompanionManager: ObservableObject {
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
 
-    /// The Claude model used for voice responses. Persisted to UserDefaults.
-    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+    /// The model used for voice responses — a Claude model ID or the Local
+    /// sentinel. Persisted to UserDefaults.
+    @Published var selectedModel: String = CompanionManager.validatedStoredModelSelection()
+
+    /// Model IDs the picker can produce. Anything else found in UserDefaults
+    /// (older builds, manual edits) falls back to the default, so an unknown
+    /// string can never reach the Anthropic API and 404.
+    private static let knownModelSelectionIDs = [
+        "claude-sonnet-4-6",
+        "claude-opus-4-6",
+        LocalChatProvider.modelPickerID,
+    ]
+
+    private static func validatedStoredModelSelection() -> String {
+        guard let storedModelID = UserDefaults.standard.string(forKey: "selectedClaudeModel"),
+              knownModelSelectionIDs.contains(storedModelID) else {
+            return "claude-sonnet-4-6"
+        }
+        return storedModelID
+    }
 
     func setSelectedModel(_ model: String) {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
-        claudeAPI.model = model
+
+        if model == LocalChatProvider.modelPickerID {
+            // Content-free event — in Local Mode the transcript/response
+            // analytics events don't fire at all.
+            ClickyAnalytics.trackLocalModeSelected()
+            // Start the download/load now so the first push-to-talk isn't
+            // stuck behind 1.8 GB of weights.
+            localChatProvider.loadModelIfNeeded()
+            // Prefer on-device transcription so the whole loop works offline.
+            buddyDictationManager.setPrefersOnDeviceTranscription(true)
+        } else {
+            claudeAPI.model = model
+            buddyDictationManager.setPrefersOnDeviceTranscription(false)
+        }
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -182,6 +338,38 @@ final class CompanionManager: ObservableObject {
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
+
+        // Re-publish local model state changes (download progress, readiness)
+        // so the panel re-renders — nested ObservableObjects don't bubble
+        // their changes up automatically.
+        localModelStateCancellable = localChatProvider.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+
+        // Re-publish takeover state (run progress, model download) so the panel
+        // re-renders — nested ObservableObjects don't bubble up automatically.
+        takeoverStateCancellable = takeoverController.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+        takeoverModelCancellable = takeoverVisionAgent.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+
+        networkPathMonitor.pathUpdateHandler = { [weak self] networkPath in
+            Task { @MainActor [weak self] in
+                self?.isNetworkAvailable = networkPath.status == .satisfied
+            }
+        }
+        networkPathMonitor.start(queue: DispatchQueue.global(qos: .utility))
+
+        // If the app launched with Local already selected, warm the model
+        // and the on-device transcription preference right away.
+        if isLocalModeActive {
+            localChatProvider.loadModelIfNeeded()
+            buddyDictationManager.setPrefersOnDeviceTranscription(true)
+        }
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -493,8 +681,9 @@ final class CompanionManager: ObservableObject {
 
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
-            elevenLabsTTSClient.stopPlayback()
+            stopAllSpeechPlayback()
             clearDetectedElementLocation()
+            lastResponseLatencyDescription = nil
 
             // Dismiss the onboarding prompt if it's showing
             if showOnboardingPrompt {
@@ -518,10 +707,31 @@ final class CompanionManager: ObservableObject {
                         // Partial transcripts are hidden (waveform-only UI)
                     },
                     submitDraftText: { [weak self] finalTranscript in
-                        self?.lastTranscript = finalTranscript
+                        guard let self else { return }
+                        self.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
-                        ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
-                        self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                        // Specific guided-tour commands only — broad phrases like
+                        // "teach me" would hijack ordinary cloud questions
+                        // ("teach me about closures").
+                        let lowered = finalTranscript.lowercased()
+                        let guidedTourTriggers = ["guided tour", "teach me a beat", "make me a beat", "walk me through a beat"]
+                        if guidedTourTriggers.contains(where: { lowered.contains($0) }) {
+                            self.startGuidedLogicTour()
+                            self.voiceState = .idle
+                            return
+                        }
+                        // "take over — <task>" hands off to the offline autonomous
+                        // loop instead of a normal voice response.
+                        if self.routeTranscriptToTakeoverIfRequested(finalTranscript) {
+                            self.voiceState = .idle
+                            return
+                        }
+                        // Local Mode privacy contract: the transcript never
+                        // leaves the machine, analytics included.
+                        if !self.isLocalModeActive {
+                            ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
+                        }
+                        self.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
                     }
                 )
             }
@@ -576,6 +786,23 @@ final class CompanionManager: ObservableObject {
     - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
     """
 
+    /// Trimmed system prompt for Local Mode. The local model never sees the
+    /// screen and can't point, so the 4.3k chars of vision and coordinate
+    /// instructions above would only waste a small model's attention (and
+    /// prefill time — prompt length is most of first-token latency).
+    private static let localModeVoiceResponseSystemPrompt = """
+    you're clicky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk. you're running fully on their mac right now — no cloud, no screen access — so answer from what they said and what you remember of this conversation. your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk.
+
+    rules:
+    - default to one or two sentences. be direct and dense. if the user asks you to go deeper, give a longer explanation.
+    - all lowercase, casual, warm. no emojis.
+    - write for the ear, not the eye. short sentences. no lists, bullet points, markdown, or formatting — just natural speech.
+    - don't use abbreviations or symbols that sound weird read aloud. write "for example" not "e.g.", spell out small numbers.
+    - you can't see the screen in local mode. if the user asks about something on their screen, say so plainly and ask them to read or describe it — or suggest flipping to a cloud model for screen questions.
+    - never say "simply" or "just".
+    - never output coordinate tags like [POINT:...] — you can't point at the screen in local mode.
+    """
+
     // MARK: - AI Response Pipeline
 
     /// Captures a screenshot, sends it along with the transcript to Claude,
@@ -585,40 +812,91 @@ final class CompanionManager: ObservableObject {
     /// the buddy to fly to that element on screen.
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
-        elevenLabsTTSClient.stopPlayback()
+        stopAllSpeechPlayback()
 
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
             voiceState = .processing
 
+            // Snapshot the mode once so a picker change mid-response can't
+            // mix cloud and local behavior within one exchange.
+            let isLocalModeRequest = isLocalModeActive
+
             do {
-                // Capture all connected screens so the AI has full context
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
-
-                guard !Task.isCancelled else { return }
-
-                // Build image labels with the actual screenshot pixel dimensions
-                // so Claude's coordinate space matches the image it sees. We
-                // scale from screenshot pixels to display points ourselves.
-                let labeledImages = screenCaptures.map { capture in
-                    let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
-                    return (data: capture.imageData, label: capture.label + dimensionInfo)
+                // Local Mode isn't usable until the model is on disk and in
+                // memory — say so instead of leaving the user staring at a
+                // spinner while 1.8 GB downloads.
+                if isLocalModeRequest && localChatProvider.modelReadiness != .ready {
+                    localChatProvider.loadModelIfNeeded()
+                    try await appleSpeechSynthesisClient.speakText(
+                        "still warming up my local brain. check the menu bar for progress and try again in a moment."
+                    )
+                    voiceState = .responding
+                    if !Task.isCancelled {
+                        voiceState = .idle
+                        scheduleTransientHideIfNeeded()
+                    }
+                    return
                 }
 
-                // Pass conversation history so Claude remembers prior exchanges
-                let historyForAPI = conversationHistory.map { entry in
-                    (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
+                // Cloud requests hang for two minutes when offline because the
+                // session waits for connectivity — fail fast and point at the
+                // mode that still works.
+                if !isLocalModeRequest && !isNetworkAvailable {
+                    speakOfflineCloudNudge()
+                    if !Task.isCancelled {
+                        voiceState = .idle
+                        scheduleTransientHideIfNeeded()
+                    }
+                    return
                 }
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                // Local Mode contract: the screenshot is never captured — not
+                // captured-and-dropped. Cloud mode captures all screens like
+                // it always has.
+                var screenCaptures: [CompanionScreenCapture] = []
+                var labeledImages: [(data: Data, label: String)] = []
+                if !isLocalModeRequest {
+                    // Capture all connected screens so the AI has full context
+                    screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+
+                    guard !Task.isCancelled else { return }
+
+                    // Build image labels with the actual screenshot pixel dimensions
+                    // so Claude's coordinate space matches the image it sees. We
+                    // scale from screenshot pixels to display points ourselves.
+                    labeledImages = screenCaptures.map { capture in
+                        let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
+                        return (data: capture.imageData, label: capture.label + dimensionInfo)
+                    }
+                }
+
+                let chatResponse = try await activeChatProvider.generateStreamingResponse(
                     images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
-                    conversationHistory: historyForAPI,
+                    systemPrompt: isLocalModeRequest
+                        ? Self.localModeVoiceResponseSystemPrompt
+                        : Self.companionVoiceResponseSystemPrompt,
+                    conversationHistory: conversationHistory,
                     userPrompt: transcript,
                     onTextChunk: { _ in
                         // No streaming text display — spinner stays until TTS plays
                     }
                 )
+                let fullResponseText = chatResponse.text
+
+                // Feed the latency badge: provider + first-token time, plus
+                // decode speed when the engine reports one (local only).
+                if let firstTokenLatencySeconds = chatResponse.firstTokenLatencySeconds {
+                    var latencyDescription = String(
+                        format: "%@ · %.1fs",
+                        isLocalModeRequest ? "local" : "cloud",
+                        firstTokenLatencySeconds
+                    )
+                    if let tokensPerSecond = chatResponse.tokensPerSecond {
+                        latencyDescription += String(format: " · %.0f tok/s", tokensPerSecond)
+                    }
+                    lastResponseLatencyDescription = latencyDescription
+                }
 
                 guard !Task.isCancelled else { return }
 
@@ -695,19 +973,23 @@ final class CompanionManager: ObservableObject {
 
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")
 
-                ClickyAnalytics.trackAIResponseReceived(response: spokenText)
+                // Local Mode privacy contract: the response text never leaves
+                // the machine, analytics included.
+                if !isLocalModeRequest {
+                    ClickyAnalytics.trackAIResponseReceived(response: spokenText)
+                }
 
                 // Play the response via TTS. Keep the spinner (processing state)
                 // until the audio actually starts playing, then switch to responding.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     do {
-                        try await elevenLabsTTSClient.speakText(spokenText)
-                        // speakText returns after player.play() — audio is now playing
+                        try await activeTextToSpeechClient.speakText(spokenText)
+                        // speakText returns once audio playback has started
                         voiceState = .responding
                     } catch {
                         ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ ElevenLabs TTS error: \(error)")
-                        speakCreditsErrorFallback()
+                        print("⚠️ TTS error: \(error)")
+                        speakErrorFallback(isLocalModeRequest: isLocalModeRequest)
                     }
                 }
             } catch is CancellationError {
@@ -715,7 +997,7 @@ final class CompanionManager: ObservableObject {
             } catch {
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
-                speakCreditsErrorFallback()
+                speakErrorFallback(isLocalModeRequest: isLocalModeRequest)
             }
 
             if !Task.isCancelled {
@@ -734,8 +1016,9 @@ final class CompanionManager: ObservableObject {
 
         transientHideTask?.cancel()
         transientHideTask = Task {
-            // Wait for TTS audio to finish playing
-            while elevenLabsTTSClient.isPlaying {
+            // Wait for TTS audio to finish playing. Both voices are checked
+            // so a mode switch mid-wait can't fade the overlay mid-sentence.
+            while elevenLabsTTSClient.isPlaying || appleSpeechSynthesisClient.isPlaying {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }
@@ -755,14 +1038,174 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Speaks a hardcoded error message using macOS system TTS when API
-    /// credits run out. Uses NSSpeechSynthesizer so it works even when
-    /// ElevenLabs is down.
-    private func speakCreditsErrorFallback() {
-        let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
+    /// Speaks a hardcoded error message using macOS system TTS (works even
+    /// when every network service is down). The cloud line blames credits —
+    /// the usual cloud failure. Local Mode gets an honest local line,
+    /// because credits have nothing to do with on-device inference failing.
+    private func speakErrorFallback(isLocalModeRequest: Bool) {
+        let utterance = isLocalModeRequest
+            ? "hmm, my local brain hiccuped. give it another try."
+            : "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
+        // Route through the owned Apple Speech client, which retains its
+        // synthesizer for the utterance's lifetime. A local NSSpeechSynthesizer
+        // would deallocate on return and cut the speech off — and this is the
+        // one moment that line is the only feedback the user gets.
         voiceState = .responding
+        Task { try? await appleSpeechSynthesisClient.speakText(utterance) }
+    }
+
+    /// Spoken when a cloud request is attempted with no network. On-device
+    /// voice so it can't depend on the thing that's missing.
+    private func speakOfflineCloudNudge() {
+        let utterance = "looks like the internet is out. flip me to local in the menu bar and i can keep helping."
+        voiceState = .responding
+        Task { try? await appleSpeechSynthesisClient.speakText(utterance) }
+    }
+
+    // MARK: - Guided Tour (cloud pointing, e.g. Logic Pro beats)
+
+    private static let guidedLogicTourSystemPrompt = """
+    you're clicky, guiding the user through making a basic boom bap beat in logic pro. you can see their screen. each turn, look at the screenshot, decide the SINGLE next thing they should do, say it in one or two spoken sentences (all lowercase, casual, written for the ear), and point at the exact control with a [POINT:x,y:label] tag.
+
+    the steps, in order — figure out which one they're on from what's on screen:
+    1. create a software instrument track (the plus button or the track menu)
+    2. open drum machine designer, or pick a drum kit from the library
+    3. open the step sequencer (or the piano roll)
+    4. program the kick on beats one and three
+    5. program the snare on beats two and four
+    6. program hi-hats on every eighth note
+    7. press play to hear the beat
+
+    point at exactly one control per turn. the screenshot is labeled with its pixel dimensions — use that coordinate space, origin top-left. if the beat is clearly already playing or finished, say so briefly and end with [POINT:none].
+    """
+
+    /// Starts the autonomous cloud guided tour. Clicky screenshots the screen,
+    /// asks Sonnet for the next control + narration, flies the overlay cursor to
+    /// it, speaks, and advances — hands-off. Cloud-only (needs the worker);
+    /// pure pointing, so no real clicks and no Accessibility needed.
+    func startGuidedLogicTour() {
+        guard !isGuidedTourRunning else { return }
+        guard isNetworkAvailable else {
+            Task { try? await appleSpeechSynthesisClient.speakText(
+                "the guided tour needs the internet for the precise pointing. turn wifi back on and try again.") }
+            return
+        }
+        // Force a known-good cloud model for the tour regardless of the picker,
+        // remembering the user's choice so it's restored when the tour ends.
+        cloudModelBeforeGuidedTour = cloudChatProvider.model
+        cloudChatProvider.model = "claude-sonnet-4-6"
+        isGuidedTourRunning = true
+        // Make sure the overlay is visible so the flying cursor can be seen.
+        if !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+        guidedTourTask = Task { await runGuidedLogicTour() }
+    }
+
+    func stopGuidedTour() {
+        guidedTourTask?.cancel()
+        guidedTourTask = nil
+        isGuidedTourRunning = false
+        clearDetectedElementLocation()
+        voiceState = .idle
+    }
+
+    private func runGuidedLogicTour() async {
+        defer {
+            isGuidedTourRunning = false
+            voiceState = .idle
+            // Restore the user's cloud model on every exit path (done, cancel, error).
+            if let previousModel = cloudModelBeforeGuidedTour {
+                cloudChatProvider.model = previousModel
+                cloudModelBeforeGuidedTour = nil
+            }
+        }
+        let maxSteps = 9
+        await narrateTour("okay, let's make a beat. follow my cursor.")
+
+        for _ in 0..<maxSteps {
+            if Task.isCancelled { return }
+            do {
+                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                guard !Task.isCancelled else { return }
+
+                let labeledImages = screenCaptures.map { capture in
+                    let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
+                    return (data: capture.imageData, label: capture.label + dimensionInfo)
+                }
+
+                let response = try await cloudChatProvider.generateStreamingResponse(
+                    images: labeledImages,
+                    systemPrompt: Self.guidedLogicTourSystemPrompt,
+                    conversationHistory: [],
+                    userPrompt: "what's the next step for the beat? point at the control.",
+                    onTextChunk: { _ in }
+                )
+                guard !Task.isCancelled else { return }
+
+                let parseResult = Self.parsePointingCoordinates(from: response.text)
+                // Show the triangle and fly it to the control.
+                voiceState = .idle
+                flyOverlayCursor(toParseResult: parseResult, screenCaptures: screenCaptures)
+
+                if !parseResult.spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    await narrateTour(parseResult.spokenText)
+                }
+
+                // Tour is done when the model stops pointing.
+                if parseResult.coordinate == nil { return }
+
+                // Let the cursor flight + narration land before the next step.
+                try? await Task.sleep(nanoseconds: 4_500_000_000)
+            } catch is CancellationError {
+                return
+            } catch {
+                await narrateTour("hmm, i lost the screen there. let's stop the tour.")
+                return
+            }
+        }
+        await narrateTour("that's the basic beat. hit play and tweak it from here.")
+    }
+
+    private func narrateTour(_ line: String) async {
+        voiceState = .responding
+        try? await appleSpeechSynthesisClient.speakText(line)
+    }
+
+    /// Flies the blue overlay cursor to a parsed [POINT] target. Same screenshot
+    /// pixel -> display point -> AppKit global transform the voice pipeline uses,
+    /// kept separate so the working voice path is untouched.
+    private func flyOverlayCursor(toParseResult parseResult: PointingParseResult, screenCaptures: [CompanionScreenCapture]) {
+        guard let pointCoordinate = parseResult.coordinate else { return }
+        let targetScreenCapture: CompanionScreenCapture? = {
+            if let screenNumber = parseResult.screenNumber,
+               screenNumber >= 1 && screenNumber <= screenCaptures.count {
+                return screenCaptures[screenNumber - 1]
+            }
+            return screenCaptures.first(where: { $0.isCursorScreen }) ?? screenCaptures.first
+        }()
+        guard let capture = targetScreenCapture else { return }
+
+        let screenshotWidth = CGFloat(capture.screenshotWidthInPixels)
+        let screenshotHeight = CGFloat(capture.screenshotHeightInPixels)
+        guard screenshotWidth > 0, screenshotHeight > 0 else { return }
+        let displayWidth = CGFloat(capture.displayWidthInPoints)
+        let displayHeight = CGFloat(capture.displayHeightInPoints)
+        let displayFrame = capture.displayFrame
+
+        let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
+        let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
+        let displayLocalX = clampedX * (displayWidth / screenshotWidth)
+        let displayLocalY = clampedY * (displayHeight / screenshotHeight)
+        let appKitY = displayHeight - displayLocalY
+
+        detectedElementScreenLocation = CGPoint(
+            x: displayLocalX + displayFrame.origin.x,
+            y: appKitY + displayFrame.origin.y)
+        detectedElementDisplayFrame = displayFrame
+        detectedElementBubbleText = parseResult.elementLabel
     }
 
     // MARK: - Point Tag Parsing
@@ -982,12 +1425,16 @@ final class CompanionManager: ObservableObject {
                 let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
                 let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                // Always the cloud provider — the demo needs vision + pointing,
+                // which the local model deliberately doesn't do.
+                let demoChatResponse = try await cloudChatProvider.generateStreamingResponse(
                     images: labeledImages,
                     systemPrompt: Self.onboardingDemoSystemPrompt,
+                    conversationHistory: [],
                     userPrompt: "look around my screen and find something interesting to point at",
                     onTextChunk: { _ in }
                 )
+                let fullResponseText = demoChatResponse.text
 
                 let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
 
