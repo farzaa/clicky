@@ -1,8 +1,19 @@
+## Get the official Clicky for Mac and Windows
+
+Clicky is now **[HeyClicky](https://www.heyclicky.com/)**, the official app, made by me and the team. It runs on Mac and Windows.
+
+- **Mac:** [download Clicky for Mac](https://www.heyclicky.com/mac) (macOS 14.2 or later)
+- **Windows:** [download Clicky for Windows](https://www.heyclicky.com/clicky-for-windows) (Windows 10 and 11)
+
+Those are the only official downloads. Other "Clicky for Windows" apps you may find are community ports of this repo, not made by us.
+
+---
+
 Update: April 27, 2026.
 
 Hi there! I'm Farza, the guy that made Clicky.
 
-The existing codebase remains open source. Tinker with it, make it yours, start a company out of it, do whatever you want I don't mind. But, for all the new stuff I'm hacking on, gonna keep it private. To get the latest Clicky, you can go [here](https://www.heyclicky.com/).
+The existing codebase remains open source. Tinker with it, make it yours, start a company out of it, do whatever you want I don't mind. But, for all the new stuff I'm hacking on, gonna keep it private. To get the latest Clicky, for Mac or Windows, go to [heyclicky.com](https://www.heyclicky.com/).
 
 I also tweeted about this [here](https://x.com/FarzaTV/status/2043402737828962489).
 
@@ -11,7 +22,7 @@ Go crazy with this repo!! It's an MIT license.
 # Hi, this is Clicky.
 It's an AI teacher that lives as a buddy next to your cursor. It can see your screen, talk to you, and even point at stuff. Kinda like having a real teacher next to you.
 
-Download it [here](https://www.clicky.so/) for free.
+Download it for free for [Mac](https://www.heyclicky.com/mac) or [Windows](https://www.heyclicky.com/clicky-for-windows).
 
 Here's the [original tweet](https://x.com/FarzaTV/status/2041314633978659092) that kinda blew up for a demo for more context.
 
