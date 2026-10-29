@@ -779,6 +779,10 @@ private struct BlueCursorSpinnerView: View {
 class OverlayWindowManager {
     private var overlayWindows: [OverlayWindow] = []
     var hasShownOverlayBefore = false
+    /// The display frames the current overlay windows were built for. Compared
+    /// against NSScreen.screens when the display layout changes so the overlays
+    /// are only rebuilt when a display was actually added, removed, or moved.
+    private(set) var screenFramesForCurrentOverlays: [CGRect] = []
 
     func showOverlay(onScreens screens: [NSScreen], companionManager: CompanionManager) {
         // Hide any existing overlays
@@ -799,12 +803,19 @@ class OverlayWindowManager {
             )
 
             let hostingView = NSHostingView(rootView: contentView)
-            hostingView.frame = screen.frame
+            // A content view's frame is in its window's coordinate space, which
+            // always starts at (0,0). screen.frame is in global coordinates, so on
+            // any display not at the global origin (secondary monitors) it
+            // described a rect outside the window's own bounds.
+            hostingView.frame = NSRect(origin: .zero, size: screen.frame.size)
+            hostingView.autoresizingMask = [.width, .height]
             window.contentView = hostingView
 
             overlayWindows.append(window)
             window.orderFrontRegardless()
         }
+
+        screenFramesForCurrentOverlays = screens.map(\.frame)
     }
 
     func hideOverlay() {
@@ -813,12 +824,14 @@ class OverlayWindowManager {
             window.contentView = nil
         }
         overlayWindows.removeAll()
+        screenFramesForCurrentOverlays = []
     }
 
     /// Fades out overlay windows over `duration` seconds, then removes them.
     func fadeOutAndHideOverlay(duration: TimeInterval = 0.4) {
         let windowsToFade = overlayWindows
         overlayWindows.removeAll()
+        screenFramesForCurrentOverlays = []
 
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = duration

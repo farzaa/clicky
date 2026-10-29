@@ -16,6 +16,21 @@ interface Env {
   ASSEMBLYAI_API_KEY: string;
 }
 
+/**
+ * The Worker URL is public and every request spends the owner's API credits,
+ * so only forward requests shaped like the ones the app sends. Anyone who
+ * finds the URL can't use it as a general-purpose Anthropic/ElevenLabs proxy
+ * with other models, bigger token budgets, tools, or arbitrary TTS payloads.
+ *
+ * If you add a model to the app's model picker, add it here too.
+ */
+const ALLOWED_CLAUDE_MODELS = new Set(["claude-sonnet-4-6", "claude-opus-4-6"]);
+const MAX_CLAUDE_OUTPUT_TOKENS = 1024;
+const ALLOWED_ELEVENLABS_MODELS = new Set(["eleven_flash_v2_5"]);
+// A 1024-token Claude reply is roughly 4-5k characters; leave headroom for
+// languages that use more characters per token.
+const MAX_TTS_TEXT_CHARACTERS = 10_000;
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -49,7 +64,34 @@ export default {
 };
 
 async function handleChat(request: Request, env: Env): Promise<Response> {
-  const body = await request.text();
+  const requestedChatBody = await readJSONObjectBody(request);
+  if (!requestedChatBody) {
+    return jsonErrorResponse(400, "Request body must be a JSON object.");
+  }
+
+  const requestedModel = requestedChatBody.model;
+  if (typeof requestedModel !== "string" || !ALLOWED_CLAUDE_MODELS.has(requestedModel)) {
+    return jsonErrorResponse(400, `Model is not allowed by this proxy: ${String(requestedModel)}`);
+  }
+
+  if (!Array.isArray(requestedChatBody.messages) || requestedChatBody.messages.length === 0) {
+    return jsonErrorResponse(400, "messages must be a non-empty array.");
+  }
+
+  const requestedMaxTokens =
+    typeof requestedChatBody.max_tokens === "number" && Number.isFinite(requestedChatBody.max_tokens)
+      ? Math.floor(requestedChatBody.max_tokens)
+      : MAX_CLAUDE_OUTPUT_TOKENS;
+
+  // Rebuild the body from only the fields the app sends, so anything else
+  // (tools, extended thinking, a larger budget) can't ride along on our key.
+  const forwardedChatBody = {
+    model: requestedModel,
+    max_tokens: Math.min(Math.max(requestedMaxTokens, 1), MAX_CLAUDE_OUTPUT_TOKENS),
+    stream: requestedChatBody.stream === true,
+    system: typeof requestedChatBody.system === "string" ? requestedChatBody.system : undefined,
+    messages: requestedChatBody.messages,
+  };
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -58,7 +100,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       "anthropic-version": "2023-06-01",
       "content-type": "application/json",
     },
-    body,
+    body: JSON.stringify(forwardedChatBody),
   });
 
   if (!response.ok) {
@@ -107,7 +149,30 @@ async function handleTranscribeToken(env: Env): Promise<Response> {
 }
 
 async function handleTTS(request: Request, env: Env): Promise<Response> {
-  const body = await request.text();
+  const requestedTTSBody = await readJSONObjectBody(request);
+  if (!requestedTTSBody) {
+    return jsonErrorResponse(400, "Request body must be a JSON object.");
+  }
+
+  const requestedText = requestedTTSBody.text;
+  if (typeof requestedText !== "string" || requestedText.trim().length === 0) {
+    return jsonErrorResponse(400, "text must be a non-empty string.");
+  }
+  if (requestedText.length > MAX_TTS_TEXT_CHARACTERS) {
+    return jsonErrorResponse(400, `text is longer than ${MAX_TTS_TEXT_CHARACTERS} characters.`);
+  }
+
+  const requestedTTSModel = requestedTTSBody.model_id;
+  if (typeof requestedTTSModel !== "string" || !ALLOWED_ELEVENLABS_MODELS.has(requestedTTSModel)) {
+    return jsonErrorResponse(400, `TTS model is not allowed by this proxy: ${String(requestedTTSModel)}`);
+  }
+
+  const forwardedTTSBody = {
+    text: requestedText,
+    model_id: requestedTTSModel,
+    voice_settings: isJSONObject(requestedTTSBody.voice_settings) ? requestedTTSBody.voice_settings : undefined,
+  };
+
   const voiceId = env.ELEVENLABS_VOICE_ID;
 
   const response = await fetch(
@@ -119,7 +184,7 @@ async function handleTTS(request: Request, env: Env): Promise<Response> {
         "content-type": "application/json",
         accept: "audio/mpeg",
       },
-      body,
+      body: JSON.stringify(forwardedTTSBody),
     }
   );
 
@@ -137,5 +202,27 @@ async function handleTTS(request: Request, env: Env): Promise<Response> {
     headers: {
       "content-type": response.headers.get("content-type") || "audio/mpeg",
     },
+  });
+}
+
+function isJSONObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Parses the request body as a JSON object, or returns null if it isn't one. */
+async function readJSONObjectBody(request: Request): Promise<Record<string, unknown> | null> {
+  try {
+    const parsedBody: unknown = await request.json();
+    return isJSONObject(parsedBody) ? parsedBody : null;
+  } catch {
+    // Malformed JSON is rejected the same way as a non-object body.
+    return null;
+  }
+}
+
+function jsonErrorResponse(status: number, message: string): Response {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: { "content-type": "application/json" },
   });
 }

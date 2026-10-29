@@ -179,6 +179,10 @@ class ClaudeAPI {
 
         // Parse SSE stream — each event is "data: {json}\n\n"
         var accumulatedResponseText = ""
+        // Every completed Anthropic stream ends with a message_stop event. If the
+        // connection closes without one, the response was cut off mid-generation
+        // and must not be returned as if it were a complete answer.
+        var didReceiveStreamCompletionEvent = false
 
         for try await line in byteStream.lines {
             // SSE lines look like: "data: {...}"
@@ -186,12 +190,34 @@ class ClaudeAPI {
             let jsonString = String(line.dropFirst(6)) // Drop "data: " prefix
 
             // End of stream marker
-            guard jsonString != "[DONE]" else { break }
+            guard jsonString != "[DONE]" else {
+                didReceiveStreamCompletionEvent = true
+                break
+            }
 
             guard let jsonData = jsonString.data(using: .utf8),
                   let eventPayload = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
                   let eventType = eventPayload["type"] as? String else {
                 continue
+            }
+
+            if eventType == "message_stop" {
+                didReceiveStreamCompletionEvent = true
+                break
+            }
+
+            // Anthropic can report a failure (e.g. overloaded_error) inside an
+            // HTTP 200 stream after it has already started. Throw so the caller
+            // takes its error path instead of using an empty or partial answer.
+            if eventType == "error" {
+                let streamErrorDetails = eventPayload["error"] as? [String: Any]
+                let streamErrorType = streamErrorDetails?["type"] as? String ?? "unknown_error"
+                let streamErrorMessage = streamErrorDetails?["message"] as? String ?? "Unknown streaming error"
+                throw NSError(
+                    domain: "ClaudeAPI",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "API stream error (\(streamErrorType)): \(streamErrorMessage)"]
+                )
             }
 
             // We care about content_block_delta events that contain text chunks
@@ -205,6 +231,14 @@ class ClaudeAPI {
                 let currentAccumulatedText = accumulatedResponseText
                 await onTextChunk(currentAccumulatedText)
             }
+        }
+
+        guard didReceiveStreamCompletionEvent else {
+            throw NSError(
+                domain: "ClaudeAPI",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "API stream ended before message_stop — the response was cut off"]
+            )
         }
 
         let duration = Date().timeIntervalSince(startTime)

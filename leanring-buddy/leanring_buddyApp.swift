@@ -17,11 +17,34 @@ struct leanring_buddyApp: App {
 
     var body: some Scene {
         // The app lives entirely in the menu bar panel managed by the AppDelegate.
-        // This empty Settings scene satisfies SwiftUI's requirement for at least
-        // one scene but is never shown (LSUIElement=true removes the app menu).
+        // SwiftUI requires at least one scene, and despite LSUIElement people
+        // still end up in this Settings window. An EmptyView showed up as a
+        // blank window, so point them to the real controls instead.
         Settings {
-            EmptyView()
+            SettingsRedirectView()
         }
+    }
+}
+
+private struct SettingsRedirectView: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "menubar.arrow.up.rectangle")
+                .font(.system(size: 32))
+                .foregroundColor(.secondary)
+                .accessibilityHidden(true)
+
+            Text("Clicky lives in your menu bar")
+                .font(.system(size: 14, weight: .medium))
+
+            Text("Click the Clicky icon in the menu bar for controls and permissions. API keys are set in the Cloudflare Worker, not in the app.")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(24)
+        .frame(width: 340)
     }
 }
 
