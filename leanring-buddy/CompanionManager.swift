@@ -81,8 +81,8 @@ final class CompanionManager: ObservableObject {
     }()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
-    /// Each entry is the user's transcript and Claude's response.
-    private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
+    /// Published so the panel UI can display the transcript. Not persisted to disk.
+    @Published private(set) var conversationHistory: [ConversationEntry] = []
 
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
@@ -683,9 +683,10 @@ final class CompanionManager: ObservableObject {
 
                 // Save this exchange to conversation history (with the point tag
                 // stripped so it doesn't confuse future context)
-                conversationHistory.append((
+                conversationHistory.append(ConversationEntry(
                     userTranscript: transcript,
-                    assistantResponse: spokenText
+                    assistantResponse: spokenText,
+                    timestamp: Date()
                 ))
 
                 // Keep only the last 10 exchanges to avoid unbounded context growth
