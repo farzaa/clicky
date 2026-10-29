@@ -179,6 +179,7 @@ class ClaudeAPI {
 
         // Parse SSE stream — each event is "data: {json}\n\n"
         var accumulatedResponseText = ""
+        var didReceiveMessageStop = false
 
         for try await line in byteStream.lines {
             // SSE lines look like: "data: {...}"
@@ -194,6 +195,22 @@ class ClaudeAPI {
                 continue
             }
 
+            if eventType == "message_stop" {
+                didReceiveMessageStop = true
+                break
+            }
+
+            if eventType == "error" {
+                let errorDetails = eventPayload["error"] as? [String: Any]
+                let errorType = errorDetails?["type"] as? String ?? "unknown_error"
+                let errorMessage = errorDetails?["message"] as? String ?? "Unknown streaming error"
+                throw NSError(
+                    domain: "ClaudeAPI",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "API stream error (\(errorType)): \(errorMessage)"]
+                )
+            }
+
             // We care about content_block_delta events that contain text chunks
             if eventType == "content_block_delta",
                let delta = eventPayload["delta"] as? [String: Any],
@@ -205,6 +222,14 @@ class ClaudeAPI {
                 let currentAccumulatedText = accumulatedResponseText
                 await onTextChunk(currentAccumulatedText)
             }
+        }
+
+        guard didReceiveMessageStop else {
+            throw NSError(
+                domain: "ClaudeAPI",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "API stream ended before message_stop"]
+            )
         }
 
         let duration = Date().timeIntervalSince(startTime)
