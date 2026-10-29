@@ -37,4 +37,44 @@ struct leanring_buddyTests {
         #expect(shouldTreatPermissionAsGranted)
     }
 
+    @Test func recentAppleSpeechDenialRemainsDeniedDuringPermissionCooldown() {
+        let shouldTreatPermissionAsGranted = BuddyDictationManager.shouldTreatRecentPermissionRequestAsGranted(
+            microphonePermissionIsUsable: true,
+            speechRecognitionPermissionIsUsable: false,
+            requiresSpeechRecognitionPermission: true
+        )
+
+        #expect(!shouldTreatPermissionAsGranted)
+    }
+
+    @Test func providersWithoutSpeechPermissionIgnoreSpeechDenialDuringPermissionCooldown() {
+        let shouldTreatPermissionAsGranted = BuddyDictationManager.shouldTreatRecentPermissionRequestAsGranted(
+            microphonePermissionIsUsable: true,
+            speechRecognitionPermissionIsUsable: false,
+            requiresSpeechRecognitionPermission: false
+        )
+
+        #expect(shouldTreatPermissionAsGranted)
+    }
+
+    @Test func recentMicrophoneDenialRemainsDeniedForEveryProvider() {
+        let shouldTreatPermissionAsGranted = BuddyDictationManager.shouldTreatRecentPermissionRequestAsGranted(
+            microphonePermissionIsUsable: false,
+            speechRecognitionPermissionIsUsable: true,
+            requiresSpeechRecognitionPermission: false
+        )
+
+        #expect(!shouldTreatPermissionAsGranted)
+    }
+
+    @Test func recentAppleSpeechPermissionsRemainGrantedWhenBothAreUsable() {
+        let shouldTreatPermissionAsGranted = BuddyDictationManager.shouldTreatRecentPermissionRequestAsGranted(
+            microphonePermissionIsUsable: true,
+            speechRecognitionPermissionIsUsable: true,
+            requiresSpeechRecognitionPermission: true
+        )
+
+        #expect(shouldTreatPermissionAsGranted)
+    }
+
 }

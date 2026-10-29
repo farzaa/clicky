@@ -262,6 +262,15 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         return AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined
     }
 
+    static func shouldTreatRecentPermissionRequestAsGranted(
+        microphonePermissionIsUsable: Bool,
+        speechRecognitionPermissionIsUsable: Bool,
+        requiresSpeechRecognitionPermission: Bool
+    ) -> Bool {
+        guard microphonePermissionIsUsable else { return false }
+        return !requiresSpeechRecognitionPermission || speechRecognitionPermissionIsUsable
+    }
+
     private let transcriptionProvider: any BuddyTranscriptionProvider
     private let audioEngine = AVAudioEngine()
     private var activeTranscriptionSession: (any BuddyStreamingTranscriptionSession)?
@@ -771,8 +780,19 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         // so we trust the cached result for a short window.
         if let lastPermissionRequestCompletedAt,
            Date().timeIntervalSince(lastPermissionRequestCompletedAt) < 1.0 {
-            return AVCaptureDevice.authorizationStatus(for: .audio) != .denied
-                && AVCaptureDevice.authorizationStatus(for: .audio) != .restricted
+            let microphonePermissionStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+            let microphonePermissionIsUsable = microphonePermissionStatus != .denied
+                && microphonePermissionStatus != .restricted
+
+            let speechRecognitionPermissionStatus = SFSpeechRecognizer.authorizationStatus()
+            let speechRecognitionPermissionIsUsable = speechRecognitionPermissionStatus != .denied
+                && speechRecognitionPermissionStatus != .restricted
+
+            return Self.shouldTreatRecentPermissionRequestAsGranted(
+                microphonePermissionIsUsable: microphonePermissionIsUsable,
+                speechRecognitionPermissionIsUsable: speechRecognitionPermissionIsUsable,
+                requiresSpeechRecognitionPermission: transcriptionProvider.requiresSpeechRecognitionPermission
+            )
         }
 
         let permissionRequestTask = Task { @MainActor in
