@@ -10,7 +10,6 @@
 import AVFoundation
 import Combine
 import Foundation
-import PostHog
 import ScreenCaptureKit
 import SwiftUI
 
@@ -68,12 +67,13 @@ final class CompanionManager: ObservableObject {
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
-    /// Base URL for the Cloudflare Worker proxy. All API requests route
-    /// through this so keys never ship in the app binary.
+    /// Base URL for the Cloudflare Worker proxy. Only AssemblyAI and
+    /// ElevenLabs go through it now — Claude runs locally via the Claude
+    /// Code CLI against the user's Max subscription, see ClaudeAgentRunner.
     private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
 
-    private lazy var claudeAPI: ClaudeAPI = {
-        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+    private lazy var claudeAgentRunner: ClaudeAgentRunner = {
+        return ClaudeAgentRunner(model: selectedModel)
     }()
 
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
@@ -113,7 +113,7 @@ final class CompanionManager: ObservableObject {
     func setSelectedModel(_ model: String) {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
-        claudeAPI.model = model
+        claudeAgentRunner.model = model
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -146,32 +146,6 @@ final class CompanionManager: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: "hasCompletedOnboarding") }
     }
 
-    /// Whether the user has submitted their email during onboarding.
-    @Published var hasSubmittedEmail: Bool = UserDefaults.standard.bool(forKey: "hasSubmittedEmail")
-
-    /// Submits the user's email to FormSpark and identifies them in PostHog.
-    func submitEmail(_ email: String) {
-        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedEmail.isEmpty else { return }
-
-        hasSubmittedEmail = true
-        UserDefaults.standard.set(true, forKey: "hasSubmittedEmail")
-
-        // Identify user in PostHog
-        PostHogSDK.shared.identify(trimmedEmail, userProperties: [
-            "email": trimmedEmail
-        ])
-
-        // Submit to FormSpark
-        Task {
-            var request = URLRequest(url: URL(string: "https://submit-form.com/RWbGJxmIs")!)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try? JSONSerialization.data(withJSONObject: ["email": trimmedEmail])
-            _ = try? await URLSession.shared.data(for: request)
-        }
-    }
-
     func start() {
         refreshAllPermissions()
         print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
@@ -179,9 +153,9 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
-        // Eagerly touch the Claude API so its TLS warmup handshake completes
-        // well before the onboarding demo fires at ~40s into the video.
-        _ = claudeAPI
+        // Eagerly instantiate the Claude runner so its binary-discovery
+        // pass completes before the first push-to-talk request.
+        _ = claudeAgentRunner
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -610,7 +584,7 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                let (fullResponseText, _) = try await claudeAgentRunner.analyzeImageStreaming(
                     images: labeledImages,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt,
                     conversationHistory: historyForAPI,
@@ -982,7 +956,7 @@ final class CompanionManager: ObservableObject {
                 let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
                 let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                let (fullResponseText, _) = try await claudeAgentRunner.analyzeImageStreaming(
                     images: labeledImages,
                     systemPrompt: Self.onboardingDemoSystemPrompt,
                     userPrompt: "look around my screen and find something interesting to point at",
