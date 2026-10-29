@@ -130,6 +130,11 @@ struct BlueCursorView: View {
     @State private var bubbleOpacity: Double = 1.0
     @State private var cursorOpacity: Double = 0.0
 
+    /// Tracks whether the view is still on screen. All async callbacks check this
+    /// before touching @State to prevent use-after-free when the overlay disappears
+    /// while animations (DispatchQueue.asyncAfter, Timer) are still pending.
+    @State private var isViewActive = true
+
     // MARK: - Buddy Navigation State
 
     /// The buddy's current behavioral mode (following cursor, navigating, or pointing).
@@ -151,6 +156,10 @@ struct BlueCursorView: View {
     /// Timer driving the frame-by-frame bezier arc flight animation.
     /// Invalidated when the flight completes, is canceled, or the view disappears.
     @State private var navigationAnimationTimer: Timer?
+
+    /// Timer for the welcome character-streaming animation. Invalidated in
+    /// onDisappear to prevent writing to deallocated @State storage.
+    @State private var welcomeAnimationTimer: Timer?
 
     /// Scale factor applied to the buddy triangle during flight. Grows to ~1.3x
     /// at the midpoint of the arc and shrinks back to 1.0x on landing, creating
@@ -294,6 +303,63 @@ struct BlueCursorView: View {
                     }
             }
 
+            // Step-by-step guidance panel — shown when a multi-step guide is active.
+            if isCursorOnThisScreen && companionManager.isStepByStepActive && !companionManager.currentStepInstruction.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    // Step header with count
+                    Text("Step \(companionManager.currentStepIndex + 1) of \(companionManager.totalSteps)")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundColor(DS.Colors.overlayCursorBlue.opacity(0.8))
+
+                    // Instruction text
+                    Text(companionManager.currentStepInstruction)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.white)
+
+                    // Progress bar
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                .fill(Color.white.opacity(0.15))
+                                .frame(height: 3)
+
+                            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                .fill(DS.Colors.overlayCursorBlue)
+                                .frame(
+                                    width: geo.size.width * CGFloat(companionManager.totalSteps > 0
+                                        ? Double(companionManager.currentStepIndex + 1) / Double(companionManager.totalSteps)
+                                        : 0),
+                                    height: 3
+                                )
+                                .animation(.easeOut(duration: 0.3), value: companionManager.currentStepIndex)
+                        }
+                    }
+                    .frame(height: 3)
+
+                    // Advance hint
+                    Text("press hotkey for next step")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundColor(DS.Colors.overlayCursorBlue.opacity(0.6))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.black.opacity(0.75))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(DS.Colors.overlayCursorBlue.opacity(0.3), lineWidth: 0.8)
+                        )
+                )
+                .fixedSize()
+                .position(
+                    x: cursorPosition.x + 50,
+                    y: cursorPosition.y - 28
+                )
+                .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
+                .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            }
+
             // Blue triangle cursor — shown when idle or while TTS is playing (responding).
             // All three states (triangle, waveform, spinner) stay in the view tree
             // permanently and cross-fade via opacity so SwiftUI doesn't remove/re-insert
@@ -355,7 +421,8 @@ struct BlueCursorView: View {
                 withAnimation(.easeIn(duration: 2.0)) {
                     self.cursorOpacity = 1.0
                 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                    guard let self, self.isViewActive else { return }
                     self.bubbleOpacity = 0.0
                     startWelcomeAnimation()
                 }
@@ -364,7 +431,9 @@ struct BlueCursorView: View {
             }
         }
         .onDisappear {
+            isViewActive = false
             timer?.invalidate()
+            welcomeAnimationTimer?.invalidate()
             navigationAnimationTimer?.invalidate()
             companionManager.tearDownOnboardingVideo()
         }
@@ -409,7 +478,8 @@ struct BlueCursorView: View {
     // MARK: - Cursor Tracking
 
     private func startTrackingCursor() {
-        timer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] _ in
+            guard let self, self.isViewActive else { return }
             let mouseLocation = NSEvent.mouseLocation
             self.isCursorOnThisScreen = self.screenFrame.contains(mouseLocation)
 
@@ -521,7 +591,8 @@ struct BlueCursorView: View {
         let arcHeight = min(distance * 0.2, 80.0)
         let controlPoint = CGPoint(x: midPoint.x, y: midPoint.y - arcHeight)
 
-        navigationAnimationTimer = Timer.scheduledTimer(withTimeInterval: frameInterval, repeats: true) { _ in
+        navigationAnimationTimer = Timer.scheduledTimer(withTimeInterval: frameInterval, repeats: true) { [weak self] _ in
+            guard let self, self.isViewActive else { return }
             currentFrame += 1
 
             if currentFrame > totalFrames {
@@ -588,12 +659,13 @@ struct BlueCursorView: View {
             ?? "right here!"
 
         streamNavigationBubbleCharacter(phrase: pointerPhrase, characterIndex: 0) {
+            guard self.isViewActive else { return }
             // All characters streamed — hold for 3 seconds, then fly back
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                guard self.buddyNavigationMode == .pointingAtTarget else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                guard let self, self.isViewActive, self.buddyNavigationMode == .pointingAtTarget else { return }
                 self.navigationBubbleOpacity = 0.0
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    guard self.buddyNavigationMode == .pointingAtTarget else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    guard let self, self.isViewActive, self.buddyNavigationMode == .pointingAtTarget else { return }
                     self.startFlyingBackToCursor()
                 }
             }
@@ -622,7 +694,8 @@ struct BlueCursorView: View {
         }
 
         let characterDelay = Double.random(in: 0.03...0.06)
-        DispatchQueue.main.asyncAfter(deadline: .now() + characterDelay) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + characterDelay) { [weak self] in
+            guard let self, self.isViewActive else { return }
             self.streamNavigationBubbleCharacter(
                 phrase: phrase,
                 characterIndex: characterIndex + 1,
@@ -680,16 +753,20 @@ struct BlueCursorView: View {
         }
 
         var currentIndex = 0
-        Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { timer in
+        welcomeAnimationTimer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { [weak self] timer in
+            guard let self, self.isViewActive else {
+                timer.invalidate()
+                return
+            }
             guard currentIndex < self.fullWelcomeMessage.count else {
                 timer.invalidate()
-                // Hold the text for 2 seconds, then fade it out
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                    guard let self, self.isViewActive else { return }
                     self.bubbleOpacity = 0.0
                 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                    guard let self, self.isViewActive else { return }
                     self.showWelcome = false
-                    // Start the onboarding video right after the welcome text disappears
                     self.companionManager.setupOnboardingVideo()
                 }
                 return
@@ -816,7 +893,9 @@ class OverlayWindowManager {
     }
 
     /// Fades out overlay windows over `duration` seconds, then removes them.
+    /// Re-entrant: subsequent calls while a fade is in progress are no-ops.
     func fadeOutAndHideOverlay(duration: TimeInterval = 0.4) {
+        guard !overlayWindows.isEmpty else { return }
         let windowsToFade = overlayWindows
         overlayWindows.removeAll()
 

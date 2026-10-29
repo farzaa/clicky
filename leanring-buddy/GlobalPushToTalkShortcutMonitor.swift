@@ -17,6 +17,9 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
+    /// Set to false in stop() and checked in the CGEvent tap callback.
+    /// Prevents use-after-free when deinit races with a tap callback.
+    private var isRunning = false
     /// Mutated exclusively from the CGEvent tap callback, which runs on
     /// `CFRunLoopGetMain()` and therefore always executes on the main thread.
     /// Published so the overlay can hide immediately on key release without
@@ -48,6 +51,12 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
                 .fromOpaque(userInfo)
                 .takeUnretainedValue()
 
+            // Skip processing if the monitor has been stopped; this prevents
+            // use-after-free when deinit races with a tap callback.
+            guard globalPushToTalkShortcutMonitor.isRunning else {
+                return Unmanaged.passUnretained(event)
+            }
+
             return globalPushToTalkShortcutMonitor.handleGlobalEventTap(
                 eventType: eventType,
                 event: event
@@ -78,12 +87,14 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
         self.globalEventTap = globalEventTap
         self.globalEventTapRunLoopSource = globalEventTapRunLoopSource
+        isRunning = true
 
         CFRunLoopAddSource(CFRunLoopGetMain(), globalEventTapRunLoopSource, .commonModes)
         CGEvent.tapEnable(tap: globalEventTap, enable: true)
     }
 
     func stop() {
+        isRunning = false
         isShortcutCurrentlyPressed = false
 
         if let globalEventTapRunLoopSource {

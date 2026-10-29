@@ -276,6 +276,10 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     private var contextualKeyterms: [String] = []
     private var lastRecordedAudioPowerSampleDate = Date.distantPast
     private var activePermissionRequestTask: Task<Bool, Never>?
+    /// Incremented each time a new recognition session starts. Callbacks from
+    /// a cancelled/preempted session can detect staleness by comparing against
+    /// this value and ignoring their result.
+    private var sessionGeneration = 0
     /// Timestamp of the last completed permission request, used to debounce
     /// rapid follow-up requests that arrive before macOS updates its cache.
     private var lastPermissionRequestCompletedAt: Date?
@@ -515,18 +519,22 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         activeTranscriptionSession?.cancel()
         activeTranscriptionSession = nil
 
+        sessionGeneration += 1
+        let currentGeneration = sessionGeneration
+
         print("🎙️ BuddyDictationManager: opening transcription provider \(transcriptionProvider.displayName)")
 
         let activeTranscriptionSession = try await transcriptionProvider.startStreamingSession(
             keyterms: buildTranscriptionKeyterms(),
             onTranscriptUpdate: { [weak self] transcriptText in
                 Task { @MainActor in
-                    self?.latestRecognizedText = transcriptText
+                    guard let self, self.sessionGeneration == currentGeneration else { return }
+                    self.latestRecognizedText = transcriptText
                 }
             },
             onFinalTranscriptReady: { [weak self] transcriptText in
                 Task { @MainActor in
-                    guard let self else { return }
+                    guard let self, self.sessionGeneration == currentGeneration else { return }
                     self.latestRecognizedText = transcriptText
 
                     if self.isFinalizingTranscript {
@@ -538,7 +546,8 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             },
             onError: { [weak self] error in
                 Task { @MainActor in
-                    self?.handleRecognitionError(error)
+                    guard let self, self.sessionGeneration == currentGeneration else { return }
+                    self.handleRecognitionError(error)
                 }
             }
         )
@@ -551,8 +560,13 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-            self?.activeTranscriptionSession?.appendAudioBuffer(buffer)
-            self?.updateAudioPowerLevel(from: buffer)
+            // Dispatch from the background audio thread to @MainActor properties
+            // to avoid data races on activeTranscriptionSession and audio power level.
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.activeTranscriptionSession?.appendAudioBuffer(buffer)
+                self.updateAudioPowerLevel(from: buffer)
+            }
         }
 
         audioEngine.prepare()
@@ -647,6 +661,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         )
         microphoneButtonRecordingStartedAt = nil
         lastRecordedAudioPowerSampleDate = .distantPast
+        sessionGeneration += 1
     }
 
     private func buildTranscriptionKeyterms() -> [String] {

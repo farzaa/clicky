@@ -30,6 +30,10 @@ final class MenuBarPanelManager: NSObject {
     private var panel: NSPanel?
     private var clickOutsideMonitor: Any?
     private var dismissPanelObserver: NSObjectProtocol?
+    /// Incremented each time the panel is shown. The asyncAfter dismissal block
+    /// captures this value and skips hiding if the panel has been re-shown since
+    /// the click that triggered the dismissal, preventing stale dismissals.
+    private var panelShowGeneration = 0
 
     private let companionManager: CompanionManager
     private let panelWidth: CGFloat = 320
@@ -133,6 +137,7 @@ final class MenuBarPanelManager: NSObject {
 
         positionPanelBelowStatusItem()
 
+        panelShowGeneration += 1
         panel?.makeKeyAndOrderFront(nil)
         panel?.orderFrontRegardless()
         installClickOutsideMonitor()
@@ -220,8 +225,11 @@ final class MenuBarPanelManager: NSObject {
 
             // Delay dismissal slightly to avoid closing the panel when
             // a system permission dialog appears (e.g. microphone access).
+            let generationWhenClicked = self.panelShowGeneration
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 guard panel.isVisible else { return }
+                // If the panel was re-shown since this click, don't dismiss it.
+                guard self.panelShowGeneration == generationWhenClicked else { return }
 
                 // If permissions aren't all granted yet, a system dialog
                 // may have focus — don't dismiss during onboarding.
