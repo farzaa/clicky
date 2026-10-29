@@ -68,17 +68,76 @@ final class CompanionManager: ObservableObject {
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
-    /// Base URL for the Cloudflare Worker proxy. All API requests route
-    /// through this so keys never ship in the app binary.
+    /// Base URL for the Cloudflare Worker proxy. Used when no direct API key is set.
     private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
 
+    /// User-provided Anthropic API key for direct mode (no Worker needed).
+    /// When set, Claude requests go straight to api.anthropic.com.
+    /// Persisted to UserDefaults so it survives app restarts.
+    @Published var anthropicAPIKey: String = UserDefaults.standard.string(forKey: "anthropicAPIKey") ?? ""
+
+    func setAnthropicAPIKey(_ key: String) {
+        let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        anthropicAPIKey = trimmedKey
+        UserDefaults.standard.set(trimmedKey, forKey: "anthropicAPIKey")
+        // Recreate the Claude client to use direct mode (or fall back to proxy)
+        claudeAPI = makeClaudeAPI()
+    }
+
+    /// Whether the app is using a direct Anthropic API key instead of the Worker proxy.
+    var isUsingDirectAPIKey: Bool {
+        !anthropicAPIKey.isEmpty
+    }
+
+    private func makeClaudeAPI() -> ClaudeAPI {
+        if !anthropicAPIKey.isEmpty {
+            return ClaudeAPI(apiKey: anthropicAPIKey, model: selectedModel)
+        } else {
+            return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+        }
+    }
+
     private lazy var claudeAPI: ClaudeAPI = {
-        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+        return makeClaudeAPI()
     }()
 
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
         return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
     }()
+
+    private lazy var supertonicTTSClient: SupertonicTTSClient = {
+        return SupertonicTTSClient()
+    }()
+
+    /// Which TTS backend to use for voice responses. "elevenlabs" or "supertonic".
+    /// Persisted to UserDefaults so the choice survives app restarts.
+    @Published var selectedTTSProvider: String = UserDefaults.standard.string(forKey: "selectedTTSProvider") ?? "elevenlabs"
+
+    func setSelectedTTSProvider(_ provider: String) {
+        stopActiveTTSPlayback()
+        selectedTTSProvider = provider
+        UserDefaults.standard.set(provider, forKey: "selectedTTSProvider")
+    }
+
+    /// Which STT backend to use for voice transcription. "assemblyai" or "parakeet".
+    /// Persisted to UserDefaults so the choice survives app restarts.
+    @Published var selectedSTTProvider: String = UserDefaults.standard.string(forKey: "selectedSTTProvider") ?? "assemblyai"
+
+    func setSelectedSTTProvider(_ provider: String) {
+        selectedSTTProvider = provider
+        UserDefaults.standard.set(provider, forKey: "selectedSTTProvider")
+
+        let providerInstance: any BuddyTranscriptionProvider
+        switch provider {
+        case "parakeet":
+            providerInstance = BuddyTranscriptionProviderFactory.makeProvider(
+                for: .parakeet)
+        default:
+            providerInstance = BuddyTranscriptionProviderFactory.makeProvider(
+                for: .assemblyAI)
+        }
+        buddyDictationManager.switchTranscriptionProvider(to: providerInstance)
+    }
 
     /// Conversation history so Claude remembers prior exchanges within a session.
     /// Each entry is the user's transcript and Claude's response.
@@ -179,6 +238,14 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
+
+        // Restore the user's saved STT provider from UserDefaults so it
+        // survives app restarts (BuddyDictationManager defaults to Info.plist).
+        if selectedSTTProvider == "parakeet" {
+            let parakeetProvider = BuddyTranscriptionProviderFactory.makeProvider(for: .parakeet)
+            buddyDictationManager.switchTranscriptionProvider(to: parakeetProvider)
+        }
+
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
@@ -295,6 +362,8 @@ final class CompanionManager: ObservableObject {
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
+        elevenLabsTTSClient.stopPlayback()
+        supertonicTTSClient.stopPlayback()
         shortcutTransitionCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
@@ -493,7 +562,7 @@ final class CompanionManager: ObservableObject {
 
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
-            elevenLabsTTSClient.stopPlayback()
+            stopActiveTTSPlayback()
             clearDetectedElementLocation()
 
             // Dismiss the onboarding prompt if it's showing
@@ -701,12 +770,12 @@ final class CompanionManager: ObservableObject {
                 // until the audio actually starts playing, then switch to responding.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     do {
-                        try await elevenLabsTTSClient.speakText(spokenText)
+                        try await speakTextWithActiveTTSProvider(spokenText)
                         // speakText returns after player.play() — audio is now playing
                         voiceState = .responding
                     } catch {
                         ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ ElevenLabs TTS error: \(error)")
+                        print("⚠️ TTS error (\(selectedTTSProvider)): \(error)")
                         speakCreditsErrorFallback()
                     }
                 }
@@ -735,7 +804,7 @@ final class CompanionManager: ObservableObject {
         transientHideTask?.cancel()
         transientHideTask = Task {
             // Wait for TTS audio to finish playing
-            while elevenLabsTTSClient.isPlaying {
+            while isActiveTTSPlaying {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }
@@ -753,6 +822,130 @@ final class CompanionManager: ObservableObject {
             overlayWindowManager.fadeOutAndHideOverlay()
             isOverlayVisible = false
         }
+    }
+
+    // MARK: - TTS Provider Helpers
+
+    /// Routes a speak call to whichever TTS backend is currently selected.
+    private func speakTextWithActiveTTSProvider(_ text: String) async throws {
+        if selectedTTSProvider == "supertonic" {
+            try await supertonicTTSClient.speakText(text)
+        } else {
+            try await elevenLabsTTSClient.speakText(text)
+        }
+    }
+
+    /// Stops playback on whichever TTS backend is currently active.
+    private func stopActiveTTSPlayback() {
+        if selectedTTSProvider == "supertonic" {
+            supertonicTTSClient.stopPlayback()
+        } else {
+            elevenLabsTTSClient.stopPlayback()
+        }
+    }
+
+    /// True if the currently selected TTS backend has audio playing.
+    private var isActiveTTSPlaying: Bool {
+        if selectedTTSProvider == "supertonic" {
+            return supertonicTTSClient.isPlaying
+        } else {
+            return elevenLabsTTSClient.isPlaying
+        }
+    }
+
+    // MARK: - Test Helpers
+
+    /// Speaks a sample phrase using the currently selected TTS provider.
+    /// Used by the panel's test button to verify TTS without push-to-talk.
+    @Published private(set) var ttsTestStatus: String = ""
+
+    func testCurrentTTSProvider() {
+        ttsTestStatus = "Testing \(selectedTTSProvider)..."
+        Task {
+            do {
+                try await speakTextWithActiveTTSProvider("Hello! This is a test of the \(selectedTTSProvider) text to speech engine.")
+                ttsTestStatus = "✅ \(selectedTTSProvider) working"
+            } catch {
+                ttsTestStatus = "❌ \(error.localizedDescription)"
+                print("🔊 TTS test error: \(error)")
+            }
+        }
+    }
+
+    /// Records 3 seconds of mic audio and transcribes with the current STT provider.
+    @Published private(set) var sttTestStatus: String = ""
+
+    func testCurrentSTTProvider() {
+        sttTestStatus = "🎙️ Recording 3s..."
+        Task {
+            do {
+                let transcribedText = try await runShortSTTTest()
+                if transcribedText.isEmpty {
+                    sttTestStatus = "⚠️ No speech detected"
+                } else {
+                    sttTestStatus = "✅ \"\(transcribedText)\""
+                }
+            } catch {
+                sttTestStatus = "❌ \(error.localizedDescription)"
+                print("🎙️ STT test error: \(error)")
+            }
+        }
+    }
+
+    /// Records ~3 seconds of mic audio and runs it through the active STT provider.
+    private func runShortSTTTest() async throws -> String {
+        let audioEngine = AVAudioEngine()
+        let inputNode = audioEngine.inputNode
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+
+        var capturedBuffers: [AVAudioPCMBuffer] = []
+
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { buffer, _ in
+            capturedBuffers.append(buffer)
+        }
+
+        audioEngine.prepare()
+        try audioEngine.start()
+
+        sttTestStatus = "🎙️ Speak now (3s)..."
+        try await Task.sleep(nanoseconds: 3_000_000_000)
+
+        audioEngine.stop()
+        inputNode.removeTap(onBus: 0)
+
+        sttTestStatus = "⏳ Transcribing..."
+
+        var finalText = ""
+        let providerPreference: BuddyTranscriptionProviderFactory.PreferredProvider =
+            selectedSTTProvider == "parakeet" ? .parakeet : .assemblyAI
+        let testProvider = BuddyTranscriptionProviderFactory.makeProvider(for: providerPreference)
+
+        let session = try await testProvider.startStreamingSession(
+            keyterms: [],
+            onTranscriptUpdate: { text in
+                finalText = text
+            },
+            onFinalTranscriptReady: { text in
+                finalText = text
+            },
+            onError: { error in
+                print("🎙️ STT test session error: \(error)")
+            }
+        )
+
+        for buffer in capturedBuffers {
+            session.appendAudioBuffer(buffer)
+        }
+
+        session.requestFinalTranscript()
+
+        // Wait for finalization (up to 10s for model download on first use)
+        for _ in 0..<100 {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            if !finalText.isEmpty { break }
+        }
+
+        return finalText
     }
 
     /// Speaks a hardcoded error message using macOS system TTS when API

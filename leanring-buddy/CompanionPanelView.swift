@@ -13,6 +13,7 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    @State private var apiKeyInput: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -25,11 +26,29 @@ struct CompanionPanelView: View {
                 .padding(.top, 16)
                 .padding(.horizontal, 16)
 
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+            if companionManager.hasCompletedOnboarding {
                 Spacer()
                     .frame(height: 12)
 
                 modelPickerRow
+                    .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 8)
+
+                apiKeyRow
+                    .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 8)
+
+                ttsProviderPickerRow
+                    .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 8)
+
+                sttProviderPickerRow
                     .padding(.horizontal, 16)
             }
 
@@ -626,6 +645,228 @@ struct CompanionPanelView: View {
         let isSelected = companionManager.selectedModel == modelID
         return Button(action: {
             companionManager.setSelectedModel(modelID)
+        }) {
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    // MARK: - API Key
+
+    private var apiKeyRow: some View {
+        VStack(spacing: 6) {
+            HStack {
+                Text("API Key")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                if companionManager.isUsingDirectAPIKey {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(DS.Colors.success)
+                            .frame(width: 6, height: 6)
+                        Text("Direct")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(DS.Colors.success)
+                    }
+                } else {
+                    Text("Using proxy")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+            }
+
+            HStack(spacing: 6) {
+                SecureField("sk-ant-...", text: $apiKeyInput)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(DS.Colors.textPrimary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color.white.opacity(0.06))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                    )
+                    .onSubmit {
+                        companionManager.setAnthropicAPIKey(apiKeyInput)
+                    }
+
+                if companionManager.isUsingDirectAPIKey {
+                    Button(action: {
+                        apiKeyInput = ""
+                        companionManager.setAnthropicAPIKey("")
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundColor(DS.Colors.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                } else {
+                    Button(action: {
+                        companionManager.setAnthropicAPIKey(apiKeyInput)
+                    }) {
+                        Text("Save")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(DS.Colors.textPrimary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .fill(Color.white.opacity(0.1))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                    .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .onAppear {
+            // Show masked version if key is already saved, or empty for new input
+            if companionManager.isUsingDirectAPIKey {
+                apiKeyInput = companionManager.anthropicAPIKey
+            }
+        }
+    }
+
+    // MARK: - TTS Provider Picker
+
+    private var ttsProviderPickerRow: some View {
+        VStack(spacing: 6) {
+            HStack {
+                Text("Voice")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                HStack(spacing: 0) {
+                    ttsProviderOptionButton(label: "ElevenLabs", providerID: "elevenlabs")
+                    ttsProviderOptionButton(label: "Supertonic", providerID: "supertonic")
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+
+                Button(action: { companionManager.testCurrentTTSProvider() }) {
+                    Text("Test")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(DS.Colors.textPrimary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(Color.white.opacity(0.1))
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+
+            if !companionManager.ttsTestStatus.isEmpty {
+                Text(companionManager.ttsTestStatus)
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func ttsProviderOptionButton(label: String, providerID: String) -> some View {
+        let isSelected = companionManager.selectedTTSProvider == providerID
+        return Button(action: {
+            companionManager.setSelectedTTSProvider(providerID)
+        }) {
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    // MARK: - STT Provider Picker
+
+    private var sttProviderPickerRow: some View {
+        VStack(spacing: 6) {
+            HStack {
+                Text("Speech")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                HStack(spacing: 0) {
+                    sttProviderOptionButton(label: "AssemblyAI", providerID: "assemblyai")
+                    sttProviderOptionButton(label: "Parakeet", providerID: "parakeet")
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+
+                Button(action: { companionManager.testCurrentSTTProvider() }) {
+                    Text("Test")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(DS.Colors.textPrimary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(Color.white.opacity(0.1))
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+
+            if !companionManager.sttTestStatus.isEmpty {
+                Text(companionManager.sttTestStatus)
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func sttProviderOptionButton(label: String, providerID: String) -> some View {
+        let isSelected = companionManager.selectedSTTProvider == providerID
+        return Button(action: {
+            companionManager.setSelectedSTTProvider(providerID)
         }) {
             Text(label)
                 .font(.system(size: 11, weight: .medium))

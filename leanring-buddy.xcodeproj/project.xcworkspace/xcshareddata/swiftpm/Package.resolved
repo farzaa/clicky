@@ -1,6 +1,24 @@
 {
-  "originHash" : "3c6fb67fefedcfcd00708e24ca8088151f21dccfc0ade32ea80c406646277e89",
+  "originHash" : "709531fd15543507c78c7fc8573126ccac523700790f55ff54fcb863042e60aa",
   "pins" : [
+    {
+      "identity" : "fluidaudio",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/FluidInference/FluidAudio.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "4ef33f0b64837c2943e8cd0f66940d5861176d6a"
+      }
+    },
+    {
+      "identity" : "onnxruntime-swift-package-manager",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/microsoft/onnxruntime-swift-package-manager.git",
+      "state" : {
+        "revision" : "b7fb7f7dea8a2469e6335d95a61b8f36d0dc83b2",
+        "version" : "1.24.2"
+      }
+    },
     {
       "identity" : "plcrashreporter",
       "kind" : "remoteSourceControl",

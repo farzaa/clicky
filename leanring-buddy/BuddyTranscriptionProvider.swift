@@ -30,10 +30,11 @@ protocol BuddyTranscriptionProvider {
 }
 
 enum BuddyTranscriptionProviderFactory {
-    private enum PreferredProvider: String {
+    enum PreferredProvider: String {
         case assemblyAI = "assemblyai"
         case openAI = "openai"
         case appleSpeech = "apple"
+        case parakeet = "parakeet"
     }
 
     static func makeDefaultProvider() -> any BuddyTranscriptionProvider {
@@ -42,14 +43,30 @@ enum BuddyTranscriptionProviderFactory {
         return provider
     }
 
-    private static func resolveProvider() -> any BuddyTranscriptionProvider {
-        let preferredProviderRawValue = AppBundleConfiguration
-            .stringValue(forKey: "VoiceTranscriptionProvider")?
-            .lowercased()
-        let preferredProvider = preferredProviderRawValue.flatMap(PreferredProvider.init(rawValue:))
+    static func makeProvider(for preferredProvider: PreferredProvider) -> any BuddyTranscriptionProvider {
+        let provider = resolveProvider(preferred: preferredProvider)
+        print("🎙️ Transcription: switching to \(provider.displayName)")
+        return provider
+    }
+
+    private static func resolveProvider(preferred: PreferredProvider? = nil) -> any BuddyTranscriptionProvider {
+        // Use the explicit preferred value if passed, otherwise read from Info.plist
+        let preferredProvider: PreferredProvider?
+        if let preferred {
+            preferredProvider = preferred
+        } else {
+            let rawValue = AppBundleConfiguration
+                .stringValue(forKey: "VoiceTranscriptionProvider")?
+                .lowercased()
+            preferredProvider = rawValue.flatMap(PreferredProvider.init(rawValue:))
+        }
 
         let assemblyAIProvider = AssemblyAIStreamingTranscriptionProvider()
         let openAIProvider = OpenAIAudioTranscriptionProvider()
+
+        if preferredProvider == .parakeet {
+            return ParakeetTranscriptionProvider()
+        }
 
         if preferredProvider == .appleSpeech {
             return AppleSpeechTranscriptionProvider()

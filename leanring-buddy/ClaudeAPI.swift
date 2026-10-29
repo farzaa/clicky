@@ -6,17 +6,25 @@
 import Foundation
 
 /// Claude API helper with streaming for progressive text display.
+///
+/// Supports two modes:
+/// - **Proxy mode** (default): Sends requests to a Cloudflare Worker that injects the API key.
+/// - **Direct mode**: When an `apiKey` is provided, sends requests straight to
+///   `api.anthropic.com` with the key in the `x-api-key` header. No Worker needed.
 class ClaudeAPI {
     private static let tlsWarmupLock = NSLock()
     private static var hasStartedTLSWarmup = false
 
     private let apiURL: URL
     var model: String
+    private let apiKey: String?
     private let session: URLSession
 
+    /// Creates a ClaudeAPI in proxy mode (requests go to a Cloudflare Worker).
     init(proxyURL: String, model: String = "claude-sonnet-4-6") {
         self.apiURL = URL(string: proxyURL)!
         self.model = model
+        self.apiKey = nil
 
         // Use .default instead of .ephemeral so TLS session tickets are cached.
         // Ephemeral sessions do a full TLS handshake on every request, which causes
@@ -36,11 +44,34 @@ class ClaudeAPI {
         warmUpTLSConnectionIfNeeded()
     }
 
+    /// Creates a ClaudeAPI in direct mode (requests go straight to Anthropic).
+    init(apiKey: String, model: String = "claude-sonnet-4-6") {
+        self.apiURL = URL(string: "https://api.anthropic.com/v1/messages")!
+        self.model = model
+        self.apiKey = apiKey
+
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 120
+        config.timeoutIntervalForResource = 300
+        config.waitsForConnectivity = true
+        config.urlCache = nil
+        config.httpCookieStorage = nil
+        self.session = URLSession(configuration: config)
+
+        warmUpTLSConnectionIfNeeded()
+    }
+
     private func makeAPIRequest() -> URLRequest {
         var request = URLRequest(url: apiURL)
         request.httpMethod = "POST"
         request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // In direct mode, add the Anthropic auth headers that the Worker would
+        // normally inject. In proxy mode these are omitted — the Worker adds them.
+        if let apiKey {
+            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        }
         return request
     }
 
