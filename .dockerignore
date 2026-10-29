@@ -1,0 +1,9 @@
+.git
+.agent
+.DS_Store
+build
+releases
+pet-art
+worker/node_modules
+**/xcuserdata
+**/.build

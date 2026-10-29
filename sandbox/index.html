@@ -1,0 +1,698 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <link rel="icon" href="data:,">
+  <title>Hey Clicky + Pip sandbox</title>
+  <style>
+    :root {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, sans-serif;
+      color: #252525;
+      background: #eef0f3;
+      --sidebar: #f7f7f5;
+      --line: rgba(15, 15, 15, 0.09);
+      --muted: #787774;
+      --blue: #2387ff;
+      --panel: #191a1d;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 14% 4%, rgba(67, 128, 246, 0.12), transparent 30%),
+        #eef0f3;
+    }
+
+    button, input { font: inherit; }
+
+    .shell {
+      position: absolute;
+      inset: 22px;
+      display: grid;
+      grid-template-columns: 236px minmax(0, 1fr);
+      overflow: hidden;
+      border: 1px solid rgba(14, 17, 23, 0.15);
+      border-radius: 15px;
+      background: white;
+      box-shadow: 0 28px 80px rgba(23, 29, 40, 0.18);
+    }
+
+    .sidebar {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      padding: 12px 9px;
+      border-right: 1px solid var(--line);
+      background: var(--sidebar);
+    }
+
+    .workspace-name {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 6px 8px 13px;
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .avatar {
+      display: grid;
+      width: 24px;
+      height: 24px;
+      place-items: center;
+      border-radius: 6px;
+      background: #303237;
+      color: white;
+      font-size: 11px;
+    }
+
+    .nav-button, .page-button {
+      display: flex;
+      width: 100%;
+      align-items: center;
+      gap: 9px;
+      padding: 7px 8px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: #5f5e5b;
+      text-align: left;
+      cursor: default;
+    }
+
+    .nav-button:hover, .page-button:hover { background: rgba(55, 53, 47, 0.07); }
+    .nav-icon { width: 17px; color: #878680; text-align: center; }
+    .section-label { padding: 18px 8px 6px; color: #91918e; font-size: 11px; font-weight: 650; }
+    .page-button.active { background: rgba(55, 53, 47, 0.08); color: #37352f; }
+
+    #new-page {
+      margin-top: auto;
+      color: #585752;
+      font-weight: 560;
+      cursor: pointer;
+    }
+
+    #new-page.targeted, #share.targeted, #editor-target.targeted {
+      outline: 3px solid rgba(35, 135, 255, 0.25);
+      background: rgba(35, 135, 255, 0.08);
+    }
+
+    .document {
+      position: relative;
+      min-width: 0;
+      overflow: auto;
+      background: white;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      display: flex;
+      height: 46px;
+      align-items: center;
+      gap: 12px;
+      padding: 0 14px;
+      border-bottom: 1px solid transparent;
+      background: rgba(255, 255, 255, 0.94);
+      backdrop-filter: blur(14px);
+    }
+
+    .crumb { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+    .topbar-spacer { flex: 1; }
+
+    #share {
+      padding: 6px 10px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: #37352f;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    #share:hover { background: #f1f1ef; }
+
+    .page {
+      width: min(760px, calc(100% - 72px));
+      margin: 74px auto 160px;
+    }
+
+    .page-icon { margin-bottom: 10px; font-size: 66px; }
+    h1 { margin: 0; font-size: clamp(34px, 5vw, 48px); line-height: 1.08; letter-spacing: -0.035em; }
+    .subtitle { margin: 12px 0 28px; color: var(--muted); line-height: 1.55; }
+
+    #editor-target {
+      min-height: 190px;
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      transition: outline-color 160ms ease, background 160ms ease;
+    }
+
+    .block { display: flex; align-items: flex-start; gap: 10px; padding: 7px 0; line-height: 1.5; }
+    .check { width: 16px; height: 16px; margin-top: 3px; border: 1.5px solid #b8b7b3; border-radius: 3px; }
+    .slash-hint { margin-top: 18px; color: #aaa9a5; font-size: 14px; }
+
+    .clicky-panel {
+      position: fixed;
+      z-index: 30;
+      bottom: 36px;
+      right: 36px;
+      width: min(320px, calc(100vw - 40px));
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 15px;
+      background: var(--panel);
+      color: #f5f5f4;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.3);
+    }
+
+    .panel-header, .panel-row {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 12px 14px;
+    }
+
+    .panel-header { border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #49cf83; box-shadow: 0 0 8px #49cf83; }
+    .panel-title { font-size: 14px; font-weight: 700; }
+    .panel-state { margin-left: auto; color: #9a9ba0; font-size: 12px; }
+
+    .panel-copy { padding: 14px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
+    .panel-copy strong { display: block; margin-bottom: 5px; font-size: 12px; }
+    .panel-copy span { color: #a9aaaf; font-size: 11px; line-height: 1.45; }
+
+    .panel-row { min-height: 42px; padding-top: 7px; padding-bottom: 7px; color: #d4d4d7; font-size: 12px; }
+    .panel-row + .panel-row { border-top: 1px solid rgba(255, 255, 255, 0.055); }
+    .panel-row .hint { margin-left: auto; color: #85868c; font-size: 10px; }
+
+    .switch {
+      position: relative;
+      width: 34px;
+      height: 20px;
+      margin-left: auto;
+      border: 0;
+      border-radius: 99px;
+      background: #55565c;
+      cursor: pointer;
+    }
+
+    .switch::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: white;
+      transition: transform 160ms ease;
+    }
+
+    .switch[aria-checked="true"] { background: var(--blue); }
+    .switch[aria-checked="true"]::after { transform: translateX(14px); }
+
+    .ask-area { padding: 12px 14px 14px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+    .sample-label { margin: 0 0 8px; color: #85868c; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+    .sample-grid { display: grid; gap: 6px; }
+
+    .sample {
+      padding: 8px 10px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.055);
+      color: #efeff0;
+      text-align: left;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .sample:hover, .sample.selected {
+      border-color: rgba(35, 135, 255, 0.65);
+      background: rgba(35, 135, 255, 0.12);
+    }
+
+    #hold-to-talk {
+      width: 100%;
+      margin-top: 9px;
+      padding: 10px;
+      border: 0;
+      border-radius: 8px;
+      background: var(--blue);
+      color: white;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    #hold-to-talk.listening { background: #805ad5; }
+
+    #clicky-pointer {
+      position: fixed;
+      z-index: 25;
+      width: 18px;
+      height: 18px;
+      pointer-events: none;
+      transform: translate(-50%, -50%) rotate(-35deg);
+      clip-path: polygon(50% 0, 100% 86%, 50% 67%, 0 86%);
+      background: var(--blue);
+      filter: drop-shadow(0 0 7px rgba(35, 135, 255, 0.95));
+    }
+
+    #pip {
+      position: fixed;
+      z-index: 24;
+      width: 64px;
+      height: 69.333px;
+      background-image: url("/leanring-buddy/Assets.xcassets/PipSpritesheet.imageset/PipSpritesheet.png");
+      background-repeat: no-repeat;
+      background-size: 512px 762.667px;
+      pointer-events: none;
+      user-select: none;
+      transform: translate(-50%, -50%);
+      filter: drop-shadow(0 8px 9px rgba(71, 46, 25, 0.17));
+    }
+
+    #point-bubble {
+      position: fixed;
+      z-index: 26;
+      max-width: min(280px, calc(100vw - 36px));
+      padding: 10px 12px;
+      border-radius: 9px;
+      background: var(--blue);
+      color: white;
+      box-shadow: 0 10px 30px rgba(35, 135, 255, 0.28);
+      font-size: 12px;
+      font-weight: 650;
+      line-height: 1.4;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(5px) scale(.97);
+      transition: opacity 160ms ease, transform 190ms ease;
+    }
+
+    #point-bubble.visible { opacity: 1; transform: translateY(0) scale(1); }
+
+    .sandbox-badge {
+      position: fixed;
+      z-index: 35;
+      left: 296px;
+      bottom: 32px;
+      padding: 8px 11px;
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      border-radius: 99px;
+      background: rgba(255, 255, 255, 0.9);
+      color: #65645f;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .08);
+      font-size: 11px;
+      font-weight: 650;
+      backdrop-filter: blur(12px);
+    }
+
+    @media (max-width: 760px) {
+      body { overflow: auto; }
+      .shell { inset: 12px; grid-template-columns: 1fr; min-height: 760px; }
+      .sidebar { display: none; }
+      .clicky-panel { right: 20px; bottom: 20px; }
+      .page { width: calc(100% - 38px); margin-top: 54px; }
+      .sandbox-badge { left: 20px; top: 22px; bottom: auto; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0s !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell" aria-label="Local productivity workspace used only for the Clicky sandbox">
+    <aside class="sidebar">
+      <div class="workspace-name"><span class="avatar">L</span> Learning lab</div>
+      <button class="nav-button"><span class="nav-icon">⌕</span> Search</button>
+      <button class="nav-button"><span class="nav-icon">⌂</span> Home</button>
+      <button class="nav-button"><span class="nav-icon">◷</span> Inbox</button>
+      <div class="section-label">PRIVATE</div>
+      <button class="page-button active"><span class="nav-icon">📘</span> Science project</button>
+      <button class="page-button"><span class="nav-icon">🧠</span> Things I learned</button>
+      <button class="page-button"><span class="nav-icon">📚</span> Reading list</button>
+      <button id="new-page" class="nav-button"><span class="nav-icon">＋</span> New page</button>
+    </aside>
+
+    <section class="document">
+      <header class="topbar">
+        <span class="crumb">Science project / Solar system notes</span>
+        <span class="topbar-spacer"></span>
+        <button id="share">Share</button>
+        <span aria-hidden="true">•••</span>
+      </header>
+      <article class="page">
+        <div class="page-icon">🪐</div>
+        <h1>Solar system notes</h1>
+        <p class="subtitle">A local demo workspace for testing how Clicky teaches someone to navigate unfamiliar software.</p>
+        <div id="editor-target">
+          <div class="block"><span class="check"></span><span>Find out why Saturn has rings</span></div>
+          <div class="block"><span class="check"></span><span>Draw the order of the planets</span></div>
+          <div class="block"><span class="check"></span><span>Write three facts about Mars</span></div>
+          <div class="slash-hint">Type “/” to choose a block</div>
+        </div>
+      </article>
+    </section>
+  </div>
+
+  <section class="clicky-panel" aria-label="Hey Clicky controls">
+    <div class="panel-header">
+      <span class="status-dot"></span>
+      <span class="panel-title">Clicky</span>
+      <span id="panel-state" class="panel-state">Ready</span>
+    </div>
+    <div class="panel-copy">
+      <strong>Hold Control+Option to talk.</strong>
+      <span>Ask about the app you’re using. Clicky points things out; Pip tags along.</span>
+    </div>
+    <div class="panel-row"><span>Model</span><span class="hint">Sandbox fixture</span></div>
+    <div class="panel-row"><span>Show Pip</span><button id="pet-toggle" class="switch" role="switch" aria-label="Show Pip" aria-checked="true"></button></div>
+    <div class="panel-row"><span>Kid-friendly answers</span><button id="kids-toggle" class="switch" role="switch" aria-label="Kid-friendly answers" aria-checked="false"></button></div>
+    <div class="ask-area">
+      <p class="sample-label">Try navigating this workspace</p>
+      <div class="sample-grid">
+        <button class="sample selected" data-lesson="new-page" aria-pressed="true">How do I make a new page?</button>
+        <button class="sample" data-lesson="checklist" aria-pressed="false">How do I add another checklist item?</button>
+        <button class="sample" data-lesson="share" aria-pressed="false">How do I share this page?</button>
+      </div>
+      <button id="hold-to-talk">Hold to ask the selected question</button>
+    </div>
+  </section>
+
+  <div id="clicky-pointer" aria-hidden="true"></div>
+  <div id="pip" role="img" aria-label="Pip, Clicky’s optional learning pet"></div>
+  <div id="point-bubble" role="status" aria-live="polite"></div>
+  <div class="sandbox-badge">Local sandbox · no microphone, screen capture, or network</div>
+
+  <script>
+    const frameSets = {
+      idle: { row: 0, count: 6, durations: [280, 110, 110, 140, 140, 320] },
+      right: { row: 1, count: 8, durations: [120, 120, 120, 120, 120, 120, 120, 220] },
+      left: { row: 2, count: 8, durations: [120, 120, 120, 120, 120, 120, 120, 220] },
+      jumping: { row: 4, count: 5, durations: [140, 140, 140, 140, 280] },
+      waiting: { row: 6, count: 6, durations: [150, 150, 150, 150, 150, 260] },
+      working: { row: 7, count: 6, durations: [120, 120, 120, 120, 120, 220] },
+      review: { row: 8, count: 6, durations: [150, 150, 150, 150, 150, 280] }
+    };
+
+    const lessons = {
+      "new-page": {
+        target: "new-page",
+        label: "new page",
+        standard: "Use the New page button at the bottom of the sidebar, then choose a blank page or a template.",
+        kids: "Click New page at the bottom of the sidebar. Then choose a blank page and give it a name."
+      },
+      checklist: {
+        target: "editor-target",
+        label: "page editor",
+        standard: "Click in the page, type slash, and choose To-do list to add another checkbox.",
+        kids: "Click inside the page and type slash. Pick To-do list, and a new checkbox will appear."
+      },
+      share: {
+        target: "share",
+        label: "share",
+        standard: "The Share button is in the top-right. Open it to choose who can access this page.",
+        kids: "The Share button is at the top-right. Ask a grown-up to help before changing who can see the page."
+      }
+    };
+
+    const pointer = document.querySelector("#clicky-pointer");
+    const pip = document.querySelector("#pip");
+    const bubble = document.querySelector("#point-bubble");
+    const panelState = document.querySelector("#panel-state");
+    const holdButton = document.querySelector("#hold-to-talk");
+    const petToggle = document.querySelector("#pet-toggle");
+    const kidsToggle = document.querySelector("#kids-toggle");
+    const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    const physicalCursor = { x: innerWidth * 0.52, y: innerHeight * 0.56 };
+    const clicky = { x: physicalCursor.x + 35, y: physicalCursor.y + 25 };
+    let flight = null;
+    let selectedLesson = "new-page";
+    let phase = "idle";
+    let petEnabled = true;
+    let kidsMode = false;
+    let petAnimation = "idle";
+    let frameIndex = 0;
+    let frameChangedAt = performance.now();
+    let returnTimer;
+    let processingTimer;
+    let petIdleTimer;
+
+    function setToggle(button, value) {
+      button.setAttribute("aria-checked", String(value));
+    }
+
+    function setPetAnimation(nextAnimation, now = performance.now()) {
+      if (petAnimation === nextAnimation) return;
+      petAnimation = nextAnimation;
+      frameIndex = 0;
+      frameChangedAt = now;
+    }
+
+    function updatePetFrame(now) {
+      const frameSet = frameSets[petAnimation];
+      if (!reducedMotion && now - frameChangedAt >= frameSet.durations[frameIndex]) {
+        frameIndex = (frameIndex + 1) % frameSet.count;
+        frameChangedAt = now;
+      }
+      const column = reducedMotion ? 0 : frameIndex;
+      pip.style.backgroundPosition = `${-column * 64}px ${-frameSet.row * 69.333}px`;
+    }
+
+    function petPosition() {
+      const placeLeft = clicky.x > innerWidth - 100;
+      const placeAbove = clicky.y > innerHeight - 95;
+      return {
+        x: clicky.x + (placeLeft ? -52 : 52),
+        y: clicky.y + (placeAbove ? -43 : 43)
+      };
+    }
+
+    function pointOnBezier(start, control, end, progress) {
+      const remainder = 1 - progress;
+      return {
+        x: remainder * remainder * start.x + 2 * remainder * progress * control.x + progress * progress * end.x,
+        y: remainder * remainder * start.y + 2 * remainder * progress * control.y + progress * progress * end.y
+      };
+    }
+
+    function targetCenter(element) {
+      const rectangle = element.getBoundingClientRect();
+      return { x: rectangle.left + rectangle.width / 2, y: rectangle.top + rectangle.height / 2 };
+    }
+
+    function clearTarget() {
+      document.querySelectorAll(".targeted").forEach(element => element.classList.remove("targeted"));
+    }
+
+    function beginFlight(destination, purpose, lesson) {
+      clearTimeout(returnTimer);
+      const start = { ...clicky };
+      const distance = Math.hypot(destination.x - start.x, destination.y - start.y);
+      flight = {
+        start,
+        end: destination,
+        control: {
+          x: (start.x + destination.x) / 2,
+          y: (start.y + destination.y) / 2 - Math.min(Math.max(distance * .2, 38), 105)
+        },
+        startedAt: performance.now(),
+        duration: reducedMotion ? 1 : Math.min(Math.max(distance / .82, 560), 1300),
+        purpose,
+        lesson
+      };
+      phase = purpose === "outbound" ? "navigating" : "returning";
+      setPetAnimation(destination.x >= start.x ? "right" : "left");
+      panelState.textContent = purpose === "outbound" ? "Pointing" : "Returning";
+    }
+
+    function finishFlight(now) {
+      const completed = flight;
+      flight = null;
+
+      if (completed.purpose === "outbound") {
+        phase = "pointing";
+        setPetAnimation("jumping", now);
+        const target = document.getElementById(completed.lesson.target);
+        target.classList.add("targeted");
+        bubble.textContent = kidsMode ? completed.lesson.kids : completed.lesson.standard;
+        bubble.classList.add("visible");
+        placeBubble();
+        panelState.textContent = kidsMode ? "Explaining simply" : "Explaining";
+        returnTimer = setTimeout(() => {
+          clearTarget();
+          bubble.classList.remove("visible");
+          bubble.textContent = "";
+          beginFlight(
+            { x: physicalCursor.x + 35, y: physicalCursor.y + 25 },
+            "return",
+            completed.lesson
+          );
+        }, 3200);
+      } else {
+        phase = "idle";
+        setPetAnimation("idle", now);
+        panelState.textContent = "Ready";
+      }
+    }
+
+    function runLesson(lessonID = selectedLesson) {
+      const lesson = lessons[lessonID];
+      if (!lesson || phase !== "idle") return;
+      selectedLesson = lessonID;
+      clearTimeout(processingTimer);
+      clearTimeout(returnTimer);
+      clearTarget();
+      bubble.classList.remove("visible");
+      bubble.textContent = "";
+      phase = "processing";
+      panelState.textContent = "Looking at screen";
+      setPetAnimation("working");
+      processingTimer = setTimeout(() => {
+        const destination = targetCenter(document.getElementById(lesson.target));
+        beginFlight(destination, "outbound", lesson);
+      }, reducedMotion ? 20 : 650);
+    }
+
+    function beginListening() {
+      if (phase !== "idle") return;
+      phase = "listening";
+      panelState.textContent = "Listening";
+      holdButton.classList.add("listening");
+      holdButton.textContent = "Listening… release to ask";
+      setPetAnimation("waiting");
+    }
+
+    function endListening() {
+      if (phase !== "listening") return;
+      phase = "idle";
+      holdButton.classList.remove("listening");
+      holdButton.textContent = "Hold to ask the selected question";
+      runLesson(selectedLesson);
+    }
+
+    function placeBubble() {
+      const width = bubble.offsetWidth || 250;
+      const height = bubble.offsetHeight || 52;
+      const x = Math.min(
+        Math.max(clicky.x - width / 2, 16),
+        innerWidth - width - 16
+      );
+      const preferredY = clicky.y - height - 28;
+      const y = preferredY >= 16
+        ? preferredY
+        : Math.min(clicky.y + 28, innerHeight - height - 16);
+      bubble.style.left = `${x}px`;
+      bubble.style.top = `${Math.max(16, y)}px`;
+    }
+
+    function animate(now) {
+      if (flight) {
+        const linearProgress = Math.min((now - flight.startedAt) / flight.duration, 1);
+        const easedProgress = linearProgress * linearProgress * (3 - 2 * linearProgress);
+        const next = pointOnBezier(flight.start, flight.control, flight.end, easedProgress);
+        clicky.x = next.x;
+        clicky.y = next.y;
+        if (linearProgress >= 1) finishFlight(now);
+      } else if (phase === "idle" || phase === "listening" || phase === "processing") {
+        clicky.x += (physicalCursor.x + 35 - clicky.x) * .28;
+        clicky.y += (physicalCursor.y + 25 - clicky.y) * .28;
+      }
+
+      const petLocation = petPosition();
+      pointer.style.left = `${clicky.x}px`;
+      pointer.style.top = `${clicky.y}px`;
+      pip.style.left = `${petLocation.x}px`;
+      pip.style.top = `${petLocation.y}px`;
+      pip.hidden = !petEnabled;
+      updatePetFrame(now);
+      if (bubble.classList.contains("visible")) placeBubble();
+      requestAnimationFrame(animate);
+    }
+
+    document.addEventListener("pointermove", event => {
+      physicalCursor.x = event.clientX;
+      physicalCursor.y = event.clientY;
+      if (phase === "idle") {
+        const movingRight = event.movementX >= 0;
+        if (Math.abs(event.movementX) > .5) setPetAnimation(movingRight ? "right" : "left");
+        clearTimeout(petIdleTimer);
+        petIdleTimer = setTimeout(() => {
+          if (phase === "idle") setPetAnimation("idle");
+        }, 140);
+      }
+    });
+
+    document.querySelectorAll(".sample").forEach(button => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll(".sample").forEach(sampleButton => {
+          const isSelected = sampleButton === button;
+          sampleButton.classList.toggle("selected", isSelected);
+          sampleButton.setAttribute("aria-pressed", String(isSelected));
+        });
+        selectedLesson = button.dataset.lesson;
+        runLesson(selectedLesson);
+      });
+    });
+
+    holdButton.addEventListener("pointerdown", event => {
+      event.preventDefault();
+      holdButton.setPointerCapture(event.pointerId);
+      beginListening();
+    });
+    holdButton.addEventListener("pointerup", endListening);
+    holdButton.addEventListener("pointercancel", endListening);
+
+    petToggle.addEventListener("click", () => {
+      petEnabled = !petEnabled;
+      setToggle(petToggle, petEnabled);
+    });
+
+    kidsToggle.addEventListener("click", () => {
+      kidsMode = !kidsMode;
+      setToggle(kidsToggle, kidsMode);
+      if (phase === "pointing") {
+        const lesson = lessons[selectedLesson];
+        bubble.textContent = kidsMode ? lesson.kids : lesson.standard;
+        panelState.textContent = kidsMode ? "Explaining simply" : "Explaining";
+        placeBubble();
+      }
+    });
+
+    const keysDown = new Set();
+    document.addEventListener("keydown", event => {
+      keysDown.add(event.key);
+      if ((event.ctrlKey || keysDown.has("Control")) && (event.altKey || keysDown.has("Alt"))) {
+        event.preventDefault();
+        beginListening();
+      }
+    });
+    document.addEventListener("keyup", event => {
+      keysDown.delete(event.key);
+      if (phase === "listening" && !(event.ctrlKey && event.altKey)) endListening();
+    });
+
+    addEventListener("resize", () => {
+      physicalCursor.x = Math.min(physicalCursor.x, innerWidth - 40);
+      physicalCursor.y = Math.min(physicalCursor.y, innerHeight - 40);
+    });
+
+    updatePetFrame(performance.now());
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>

@@ -31,6 +31,20 @@ struct CompanionPanelView: View {
 
                 modelPickerRow
                     .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 8)
+
+                companionModeRows
+                    .padding(.horizontal, 16)
+            }
+
+            if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 12)
+
+                companionModeRows
+                    .padding(.horizontal, 16)
             }
 
             if !companionManager.allPermissionsGranted {
@@ -58,7 +72,9 @@ struct CompanionPanelView: View {
             //         .padding(.horizontal, 16)
             // }
 
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+            if companionManager.hasCompletedOnboarding
+                && companionManager.allPermissionsGranted
+                && !companionManager.isKidsModeEnabled {
                 Spacer()
                     .frame(height: 16)
 
@@ -127,10 +143,27 @@ struct CompanionPanelView: View {
     @ViewBuilder
     private var permissionsCopySection: some View {
         if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            Text("Hold Control+Option to talk.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Hold Control+Option to talk.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                Text("Ask about the app you’re using. Clicky can point things out, and Pip can tag along.")
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else if companionManager.allPermissionsGranted && companionManager.isKidsModeEnabled {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Kid-friendly setup is ready.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                Text("No email is needed. A grown-up should review the permissions, then press Start.")
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         } else if companionManager.allPermissionsGranted && !companionManager.hasSubmittedEmail {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Drop your email to get started.")
@@ -184,7 +217,7 @@ struct CompanionPanelView: View {
     @ViewBuilder
     private var startButton: some View {
         if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            if !companionManager.hasSubmittedEmail {
+            if !companionManager.hasSubmittedEmail && !companionManager.isKidsModeEnabled {
                 VStack(spacing: 8) {
                     TextField("Enter your email", text: $emailInput)
                         .textFieldStyle(.plain)
@@ -565,6 +598,64 @@ struct CompanionPanelView: View {
             Toggle("", isOn: Binding(
                 get: { companionManager.isClickyCursorEnabled },
                 set: { companionManager.setClickyCursorEnabled($0) }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .tint(DS.Colors.accent)
+            .scaleEffect(0.8)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var companionModeRows: some View {
+        VStack(spacing: 2) {
+            learningPetToggleRow
+            kidsModeToggleRow
+        }
+    }
+
+    private var learningPetToggleRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                LearningPetSpriteView(animation: .idle, height: 24)
+
+                Text("Show Pip")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { companionManager.isLearningPetEnabled },
+                set: { companionManager.setLearningPetEnabled($0) }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .tint(DS.Colors.accent)
+            .scaleEffect(0.8)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var kidsModeToggleRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "figure.and.child.holdinghands")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 24)
+
+                Text("Kid-friendly answers")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { companionManager.isKidsModeEnabled },
+                set: { companionManager.setKidsModeEnabled($0) }
             ))
             .toggleStyle(.switch)
             .labelsHidden()
