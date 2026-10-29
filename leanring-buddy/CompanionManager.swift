@@ -493,6 +493,7 @@ final class CompanionManager: ObservableObject {
 
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
+            currentResponseTask = nil
             elevenLabsTTSClient.stopPlayback()
             clearDetectedElementLocation()
 
