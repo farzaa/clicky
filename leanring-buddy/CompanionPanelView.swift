@@ -599,16 +599,42 @@ struct CompanionPanelView: View {
     // MARK: - Model Picker
 
     private var modelPickerRow: some View {
+        // Two provider rows stacked vertically — Claude and Gemini. Four buttons
+        // in a single row would be too cramped in the menu bar panel width.
+        VStack(alignment: .leading, spacing: 8) {
+            modelProviderRow(
+                providerLabel: "Claude",
+                options: [
+                    (displayLabel: "Sonnet", modelID: "claude-sonnet-4-6"),
+                    (displayLabel: "Opus", modelID: "claude-opus-4-6")
+                ]
+            )
+            modelProviderRow(
+                providerLabel: "Gemini",
+                options: [
+                    (displayLabel: "Flash", modelID: "gemini-2.5-flash"),
+                    (displayLabel: "Pro", modelID: "gemini-2.5-pro")
+                ]
+            )
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func modelProviderRow(
+        providerLabel: String,
+        options: [(displayLabel: String, modelID: String)]
+    ) -> some View {
         HStack {
-            Text("Model")
+            Text(providerLabel)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(DS.Colors.textSecondary)
 
             Spacer()
 
             HStack(spacing: 0) {
-                modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
-                modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
+                ForEach(options, id: \.modelID) { option in
+                    modelOptionButton(label: option.displayLabel, modelID: option.modelID)
+                }
             }
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -619,7 +645,6 @@ struct CompanionPanelView: View {
                     .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
             )
         }
-        .padding(.vertical, 4)
     }
 
     private func modelOptionButton(label: String, modelID: String) -> some View {

@@ -1,0 +1,94 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+
+    <!--
+        Design system tokens ported 1:1 from the macOS app's DesignSystem.swift.
+        Any color or radius change here must be mirrored there so both platforms
+        look identical.
+    -->
+
+    <!-- Surfaces -->
+    <SolidColorBrush x:Key="Background"            Color="#101211"/>
+    <SolidColorBrush x:Key="Surface1"              Color="#171918"/>
+    <SolidColorBrush x:Key="Surface2"              Color="#202221"/>
+    <SolidColorBrush x:Key="Surface3"              Color="#272A29"/>
+    <SolidColorBrush x:Key="Surface4"              Color="#2E3130"/>
+
+    <!-- Borders -->
+    <SolidColorBrush x:Key="BorderSubtle"          Color="#373B39"/>
+    <SolidColorBrush x:Key="BorderStrong"          Color="#444947"/>
+
+    <!-- Text -->
+    <SolidColorBrush x:Key="TextPrimary"           Color="#ECEEED"/>
+    <SolidColorBrush x:Key="TextSecondary"         Color="#ADB5B2"/>
+    <SolidColorBrush x:Key="TextTertiary"          Color="#6B736F"/>
+
+    <!-- Accent (Tailwind Blue scale — matches macOS DS.Colors.blueXXX) -->
+    <SolidColorBrush x:Key="Blue400"               Color="#60A5FA"/>
+    <SolidColorBrush x:Key="Blue500"               Color="#3B82F6"/>
+    <SolidColorBrush x:Key="Blue600"               Color="#2563EB"/>
+    <SolidColorBrush x:Key="Blue700"               Color="#1D4ED8"/>
+    <SolidColorBrush x:Key="Accent"                Color="#2563EB"/>
+    <SolidColorBrush x:Key="AccentText"            Color="#60A5FA"/>
+
+    <!-- Overlay cursor (blue triangle color) -->
+    <SolidColorBrush x:Key="OverlayCursorBlue"     Color="#3380FF"/>
+
+    <!-- Semantic -->
+    <SolidColorBrush x:Key="Destructive"           Color="#E5484D"/>
+    <SolidColorBrush x:Key="Success"               Color="#34D399"/>
+    <SolidColorBrush x:Key="Warning"               Color="#FFB224"/>
+
+    <!-- Subtle translucent fills used on buttons + segmented controls -->
+    <SolidColorBrush x:Key="TranslucentFillLow"    Color="#FFFFFF" Opacity="0.06"/>
+    <SolidColorBrush x:Key="TranslucentFillMid"    Color="#FFFFFF" Opacity="0.10"/>
+    <SolidColorBrush x:Key="TranslucentFillHover"  Color="#FFFFFF" Opacity="0.08"/>
+
+    <!-- Corner radii -->
+    <sys:Double x:Key="CornerRadiusSmall">6</sys:Double>
+    <sys:Double x:Key="CornerRadiusMedium">8</sys:Double>
+    <sys:Double x:Key="CornerRadiusLarge">10</sys:Double>
+    <sys:Double x:Key="CornerRadiusExtraLarge">12</sys:Double>
+
+    <CornerRadius x:Key="CornerRadiusSmallR">6</CornerRadius>
+    <CornerRadius x:Key="CornerRadiusMediumR">8</CornerRadius>
+    <CornerRadius x:Key="CornerRadiusLargeR">10</CornerRadius>
+    <CornerRadius x:Key="CornerRadiusExtraLargeR">12</CornerRadius>
+
+    <!-- Typography defaults. WPF has no equivalent to SF Pro, but Segoe UI
+         Variable on Win11 is visually close enough at this weight/size. -->
+    <FontFamily x:Key="PrimaryFontFamily">Segoe UI Variable, Segoe UI, Arial</FontFamily>
+
+    <!-- Shared text styles -->
+    <Style x:Key="BodyTextStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource PrimaryFontFamily}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+        <Setter Property="TextOptions.TextRenderingMode" Value="ClearType"/>
+        <Setter Property="TextOptions.TextFormattingMode" Value="Ideal"/>
+    </Style>
+
+    <Style x:Key="SecondaryTextStyle" TargetType="TextBlock" BasedOn="{StaticResource BodyTextStyle}">
+        <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+    </Style>
+
+    <Style x:Key="TertiaryTextStyle" TargetType="TextBlock" BasedOn="{StaticResource BodyTextStyle}">
+        <Setter Property="Foreground" Value="{StaticResource TextTertiary}"/>
+        <Setter Property="FontSize" Value="11"/>
+    </Style>
+
+    <Style x:Key="HeaderTextStyle" TargetType="TextBlock" BasedOn="{StaticResource BodyTextStyle}">
+        <Setter Property="FontSize" Value="14"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+    </Style>
+
+    <!-- Drop shadow matching the macOS panel (two stacked shadows for depth) -->
+    <DropShadowEffect x:Key="PanelShadowEffect"
+                      Color="Black"
+                      BlurRadius="28"
+                      ShadowDepth="8"
+                      Opacity="0.42"
+                      Direction="270"/>
+
+</ResourceDictionary>

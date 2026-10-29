@@ -1,0 +1,401 @@
+<Window x:Class="Clicky.Views.TrayPanelWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:Clicky.ViewModels"
+        xmlns:views="clr-namespace:Clicky.Views"
+        mc:Ignorable="d"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        Title="Clicky"
+        Width="320"
+        SizeToContent="Height"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        Topmost="True"
+        ShowActivated="False"
+        WindowStartupLocation="Manual"
+        UseLayoutRounding="True"
+        FontFamily="{DynamicResource PrimaryFontFamily}"
+        d:DataContext="{d:DesignInstance vm:TrayPanelViewModel}">
+
+    <!-- Outer transparent margin reserves space for the drop shadow so it's
+         not clipped to the window bounds. -->
+    <Grid Margin="16">
+
+        <!-- Window-local resources. MUST be declared before any descendant
+             that references them via {StaticResource ...}: WPF resolves
+             static-resource markup extensions at parse time and does NOT
+             support forward references within the same XAML scope. The
+             DynamicResource brushes below resolve later via the merged
+             App.xaml dictionaries, which is why they don't need to live
+             here. -->
+        <Grid.Resources>
+
+            <!-- Converter: collapses an element when its bound string is empty. -->
+            <views:StringToVisibilityConverter x:Key="StringToVisibilityConverter"/>
+
+            <!-- Converter: maps bool -> Visibility (pass "Invert" as parameter to flip). -->
+            <views:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+
+            <!-- Primary CTA button used by onboarding "Get started". -->
+            <Style x:Key="PrimaryButtonStyle" TargetType="Button">
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Foreground" Value="White"/>
+                <Setter Property="FontFamily" Value="{DynamicResource PrimaryFontFamily}"/>
+                <Setter Property="FontSize" Value="13"/>
+                <Setter Property="FontWeight" Value="SemiBold"/>
+                <Setter Property="Padding" Value="14,8"/>
+                <Setter Property="Background" Value="{DynamicResource OverlayCursorBlue}"/>
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="SnapsToDevicePixels" Value="True"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="ButtonSurface"
+                                    Background="{TemplateBinding Background}"
+                                    CornerRadius="6"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="ButtonSurface" Property="Opacity" Value="0.9"/>
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="ButtonSurface" Property="Opacity" Value="0.8"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- Segmented-control option button. Highlights via the Tag
+                 property bound to IsSelected. -->
+            <Style x:Key="ModelOptionButtonStyle" TargetType="Button">
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Foreground" Value="{DynamicResource TextTertiary}"/>
+                <Setter Property="FontFamily" Value="{DynamicResource PrimaryFontFamily}"/>
+                <Setter Property="FontSize" Value="11"/>
+                <Setter Property="FontWeight" Value="Medium"/>
+                <Setter Property="Padding" Value="10,5"/>
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="SnapsToDevicePixels" Value="True"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="OptionBackground"
+                                    Background="Transparent"
+                                    CornerRadius="5"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <!-- Selected state drives the highlight via the Tag bound to IsSelected -->
+                                <Trigger Property="Tag" Value="True">
+                                    <Setter TargetName="OptionBackground" Property="Background" Value="{DynamicResource TranslucentFillMid}"/>
+                                    <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+                                </Trigger>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- Quiet footer button (Quit link) -->
+            <Style x:Key="FooterTextButtonStyle" TargetType="Button">
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+                <Setter Property="FontFamily" Value="{DynamicResource PrimaryFontFamily}"/>
+                <Setter Property="FontSize" Value="12"/>
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="Padding" Value="4,6"/>
+                <Setter Property="HorizontalContentAlignment" Value="Left"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border Background="Transparent" Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                  VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+        </Grid.Resources>
+
+        <!-- Panel shell: dark rounded surface with a subtle border and a
+             two-layer drop shadow to match the macOS panel's depth. -->
+        <Border Background="{DynamicResource Background}"
+                BorderBrush="{DynamicResource BorderSubtle}"
+                BorderThickness="1"
+                CornerRadius="{DynamicResource CornerRadiusExtraLargeR}"
+                Effect="{DynamicResource PanelShadowEffect}">
+            <StackPanel Margin="16,14,16,14">
+
+                <!-- Header: status dot + app name -->
+                <Grid Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <Ellipse Grid.Column="0"
+                             Width="8" Height="8"
+                             Fill="{DynamicResource Success}"
+                             VerticalAlignment="Center"
+                             Margin="0,0,8,0"/>
+
+                    <TextBlock Grid.Column="1"
+                               Text="Clicky"
+                               Style="{DynamicResource HeaderTextStyle}"
+                               VerticalAlignment="Center"/>
+                </Grid>
+
+                <!-- Divider -->
+                <Rectangle Height="1"
+                           Fill="{DynamicResource BorderSubtle}"
+                           Margin="0,2,0,12"/>
+
+                <!-- First-run onboarding. Hidden once the user hits "Get started". -->
+                <StackPanel Visibility="{Binding IsOnboardingVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <TextBlock Style="{DynamicResource BodyTextStyle}"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,6">
+                        <Run Text="Welcome to Clicky." FontWeight="SemiBold"/>
+                        <Run Text=" Your always-on screen companion."/>
+                    </TextBlock>
+
+                    <TextBlock Style="{DynamicResource TertiaryTextStyle}"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,10">
+                        <Run Text="Hold "/><Run Text="Ctrl + Alt" FontWeight="SemiBold"/><Run Text=" anywhere to talk. Release to send. Clicky sees your screen, answers out loud, and can fly a blue triangle to point at anything you ask about."/>
+                    </TextBlock>
+
+                    <TextBlock Style="{DynamicResource TertiaryTextStyle}"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,14">
+                        Your mic stays off until you hold the shortcut. Responses are spoken back through your speakers.
+                    </TextBlock>
+
+                    <Button Style="{DynamicResource PrimaryButtonStyle}"
+                            Command="{Binding CompleteOnboardingCommand}"
+                            Content="Get started"
+                            HorizontalAlignment="Stretch"
+                            Margin="0,0,0,14"/>
+                </StackPanel>
+
+                <!-- Regular panel body. Hidden during onboarding. -->
+                <StackPanel Visibility="{Binding IsMainContentVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
+
+                    <!-- Primary instruction -->
+                    <TextBlock Style="{DynamicResource BodyTextStyle}"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,6">
+                        <Run Text="Hold "/>
+                        <Run Text="Ctrl + Alt" FontWeight="SemiBold"/>
+                        <Run Text=" to talk. Release to send."/>
+                    </TextBlock>
+
+                    <TextBlock Style="{DynamicResource TertiaryTextStyle}"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,14">
+                        Clicky sees your screen and speaks back. Your mic stays off until you hold the shortcut.
+                    </TextBlock>
+
+                    <!-- Microphone-denied callout. Shown whenever the mic is
+                         off or blocked by Windows privacy settings; the
+                         button deep-links to ms-settings:privacy-microphone
+                         so the user can fix it in one click. -->
+                    <Border Background="{DynamicResource TranslucentFillLow}"
+                            BorderBrush="{DynamicResource BorderSubtle}"
+                            BorderThickness="0.5"
+                            CornerRadius="{DynamicResource CornerRadiusSmallR}"
+                            Padding="10,8"
+                            Margin="0,0,0,10"
+                            Visibility="{Binding AppState.IsMicrophonePermissionIssue, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <StackPanel>
+                            <TextBlock Text="Microphone appears to be off"
+                                       Style="{DynamicResource SecondaryTextStyle}"
+                                       Margin="0,0,0,2"/>
+                            <TextBlock Style="{DynamicResource TertiaryTextStyle}"
+                                       TextWrapping="Wrap"
+                                       Margin="0,0,0,6">
+                                Clicky can't start dictation until Windows grants microphone access. Open privacy settings and enable microphone access for desktop apps.
+                            </TextBlock>
+                            <Button Style="{DynamicResource FooterTextButtonStyle}"
+                                    Command="{Binding OpenMicrophonePrivacySettingsCommand}"
+                                    HorizontalContentAlignment="Left"
+                                    Content="Open Windows privacy settings"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+
+                <!-- Live transcript / model picker / footer — all only
+                     visible after onboarding completes. Wrapped in an outer
+                     StackPanel so the visibility binding sits on one place. -->
+                <StackPanel Visibility="{Binding IsMainContentVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
+
+                <!-- Live transcript (user side). Shown while dictating and
+                     briefly after release. Collapsed when empty. -->
+                <Border Background="{DynamicResource TranslucentFillLow}"
+                        BorderBrush="{DynamicResource BorderSubtle}"
+                        BorderThickness="0.5"
+                        CornerRadius="{DynamicResource CornerRadiusSmallR}"
+                        Padding="10,8"
+                        Margin="0,0,0,8"
+                        Visibility="{Binding AppState.LiveTranscript, Converter={StaticResource StringToVisibilityConverter}}">
+                    <StackPanel>
+                        <TextBlock Text="You"
+                                   Style="{DynamicResource TertiaryTextStyle}"
+                                   Margin="0,0,0,2"/>
+                        <TextBlock Text="{Binding AppState.LiveTranscript}"
+                                   Style="{DynamicResource BodyTextStyle}"
+                                   TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- Streaming assistant response. Fills in as SSE chunks
+                     arrive from the active provider. -->
+                <Border Background="{DynamicResource TranslucentFillLow}"
+                        BorderBrush="{DynamicResource BorderSubtle}"
+                        BorderThickness="0.5"
+                        CornerRadius="{DynamicResource CornerRadiusSmallR}"
+                        Padding="10,8"
+                        Margin="0,0,0,14"
+                        Visibility="{Binding AppState.StreamedResponseText, Converter={StaticResource StringToVisibilityConverter}}">
+                    <StackPanel>
+                        <TextBlock Text="Clicky"
+                                   Style="{DynamicResource TertiaryTextStyle}"
+                                   Margin="0,0,0,2"/>
+                        <TextBlock Text="{Binding AppState.StreamedResponseText}"
+                                   Style="{DynamicResource BodyTextStyle}"
+                                   TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- Status/error line. Only appears when the pipeline
+                     reports something the user should know about. -->
+                <TextBlock Text="{Binding AppState.LastStatusMessage}"
+                           Style="{DynamicResource TertiaryTextStyle}"
+                           TextWrapping="Wrap"
+                           Margin="0,0,0,10"
+                           Visibility="{Binding AppState.LastStatusMessage, Converter={StaticResource StringToVisibilityConverter}}"/>
+
+                <!-- Model picker rows -->
+                <StackPanel Margin="0,4,0,14">
+
+                    <!-- Claude row -->
+                    <Grid Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Grid.Column="0"
+                                   Text="Claude"
+                                   Style="{DynamicResource SecondaryTextStyle}"
+                                   VerticalAlignment="Center"/>
+
+                        <Border Grid.Column="1"
+                                Background="{DynamicResource TranslucentFillLow}"
+                                BorderBrush="{DynamicResource BorderSubtle}"
+                                BorderThickness="0.5"
+                                CornerRadius="{DynamicResource CornerRadiusSmallR}">
+                            <ItemsControl ItemsSource="{Binding ClaudeOptions}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <StackPanel Orientation="Horizontal"/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Style="{DynamicResource ModelOptionButtonStyle}"
+                                                Command="{Binding SelectCommand}"
+                                                CommandParameter="{Binding ModelId}"
+                                                Content="{Binding DisplayLabel}"
+                                                Tag="{Binding IsSelected}"/>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Border>
+                    </Grid>
+
+                    <!-- Gemini row -->
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Grid.Column="0"
+                                   Text="Gemini"
+                                   Style="{DynamicResource SecondaryTextStyle}"
+                                   VerticalAlignment="Center"/>
+
+                        <Border Grid.Column="1"
+                                Background="{DynamicResource TranslucentFillLow}"
+                                BorderBrush="{DynamicResource BorderSubtle}"
+                                BorderThickness="0.5"
+                                CornerRadius="{DynamicResource CornerRadiusSmallR}">
+                            <ItemsControl ItemsSource="{Binding GeminiOptions}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <StackPanel Orientation="Horizontal"/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Style="{DynamicResource ModelOptionButtonStyle}"
+                                                Command="{Binding SelectCommand}"
+                                                CommandParameter="{Binding ModelId}"
+                                                Content="{Binding DisplayLabel}"
+                                                Tag="{Binding IsSelected}"/>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Border>
+                    </Grid>
+
+                </StackPanel>
+
+                <!-- Footer divider -->
+                <Rectangle Height="1"
+                           Fill="{DynamicResource BorderSubtle}"
+                           Margin="0,0,0,10"/>
+
+                <!-- Replay onboarding — mirrors the macOS "Watch
+                     Onboarding Again" footer link. -->
+                <Button Style="{DynamicResource FooterTextButtonStyle}"
+                        Command="{Binding ReplayOnboardingCommand}"
+                        HorizontalContentAlignment="Left"
+                        Margin="0,0,0,2"
+                        Content="Watch welcome again"/>
+
+                <!-- Quit -->
+                <Button Style="{DynamicResource FooterTextButtonStyle}"
+                        Command="{Binding QuitCommand}"
+                        HorizontalContentAlignment="Left"
+                        Content="Quit Clicky"/>
+
+                </StackPanel><!-- /IsMainContentVisible -->
+
+            </StackPanel>
+        </Border>
+
+    </Grid>
+</Window>
