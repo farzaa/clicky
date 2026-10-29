@@ -6,8 +6,10 @@
 //
 
 import Testing
-@testable import leanring_buddy
+@testable import Clicky
 
+// The app target defaults to MainActor isolation, so its helpers must be called from the main actor.
+@MainActor
 struct leanring_buddyTests {
 
     @Test func firstPermissionRequestUsesSystemPromptOnly() async throws {

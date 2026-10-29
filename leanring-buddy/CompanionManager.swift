@@ -65,6 +65,8 @@ final class CompanionManager: ObservableObject {
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
+    /// Local-only log of recent transcripts so text survives failed requests.
+    let dictationHistoryStore = DictationHistoryStore()
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
@@ -92,6 +94,9 @@ final class CompanionManager: ObservableObject {
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
+    /// Periodically prunes dictation history so age-based retention is enforced
+    /// even when Clicky runs for days without new dictations.
+    private var dictationHistoryCleanupTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
@@ -176,6 +181,7 @@ final class CompanionManager: ObservableObject {
         refreshAllPermissions()
         print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
+        startDictationHistoryCleanupTimer()
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
@@ -300,6 +306,8 @@ final class CompanionManager: ObservableObject {
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
+        dictationHistoryCleanupTimer?.invalidate()
+        dictationHistoryCleanupTimer = nil
     }
 
     func refreshAllPermissions() {
@@ -419,6 +427,15 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    private func startDictationHistoryCleanupTimer() {
+        dictationHistoryCleanupTimer?.invalidate()
+        dictationHistoryCleanupTimer = Timer.scheduledTimer(withTimeInterval: 10 * 60, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.dictationHistoryStore.removeExpiredEntries()
+            }
+        }
+    }
+
     private func bindAudioPowerLevel() {
         audioPowerCancellable = buddyDictationManager.$currentAudioPowerLevel
             .receive(on: DispatchQueue.main)
@@ -514,14 +531,27 @@ final class CompanionManager: ObservableObject {
             pendingKeyboardShortcutStartTask = Task {
                 await buddyDictationManager.startPushToTalkFromKeyboardShortcut(
                     currentDraftText: "",
-                    updateDraftText: { _ in
-                        // Partial transcripts are hidden (waveform-only UI)
+                    updateDraftText: { [weak self] recoveredDraftText in
+                        // Partial transcripts are hidden (waveform-only UI), so the
+                        // dictation manager only calls this when a session ends
+                        // without being submitted — e.g. transcription errored out
+                        // mid-sentence. Save whatever was heard so it isn't lost.
+                        self?.dictationHistoryStore.recordFailedEntry(
+                            text: recoveredDraftText,
+                            failureReason: "Transcription stopped before you finished."
+                        )
                     },
                     submitDraftText: { [weak self] finalTranscript in
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
                         ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
-                        self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                        // Save the transcript locally before sending so it can be
+                        // recovered from the history panel if the request fails.
+                        let dictationHistoryEntryID = self?.dictationHistoryStore.recordSendingEntry(text: finalTranscript)
+                        self?.sendTranscriptToClaudeWithScreenshot(
+                            transcript: finalTranscript,
+                            dictationHistoryEntryID: dictationHistoryEntryID
+                        )
                     }
                 )
             }
@@ -537,6 +567,61 @@ final class CompanionManager: ObservableObject {
         case .none:
             break
         }
+    }
+
+    // MARK: - Dictation History Actions
+
+    /// Sends a saved transcript to Claude again with a fresh screenshot, exactly
+    /// like a new push-to-talk message, and updates the same history entry.
+    func resendDictationHistoryEntryToClaude(_ dictationHistoryEntry: DictationHistoryEntry) {
+        // Same gates as push-to-talk: not mid-dictation, not during the onboarding video.
+        guard !buddyDictationManager.isDictationInProgress else { return }
+        guard !showOnboardingVideo else { return }
+
+        // Close the panel first so it isn't in the screenshot and doesn't cover the cursor.
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+
+        transientHideTask?.cancel()
+        transientHideTask = nil
+
+        // Same as push-to-talk: bring the cursor back transiently if it's hidden
+        if !isClickyCursorEnabled && !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+
+        clearDetectedElementLocation()
+        lastTranscript = dictationHistoryEntry.text
+        dictationHistoryStore.markEntrySending(id: dictationHistoryEntry.id)
+        sendTranscriptToClaudeWithScreenshot(
+            transcript: dictationHistoryEntry.text,
+            dictationHistoryEntryID: dictationHistoryEntry.id
+        )
+    }
+
+    /// Pastes a saved transcript into the app the user was working in. Returns
+    /// false (after copying the text instead) when Accessibility permission is
+    /// missing, so the panel can tell the user to paste it themselves.
+    @discardableResult
+    func insertDictationHistoryEntryIntoFrontmostApp(_ dictationHistoryEntry: DictationHistoryEntry) -> Bool {
+        guard DictationTextInsertionUtility.canInsertTextIntoFrontmostApp else {
+            DictationTextInsertionUtility.copyTextToClipboard(dictationHistoryEntry.text)
+            return false
+        }
+
+        // The panel can hold keyboard focus even though it's non-activating, so
+        // close it before pasting or the cmd+V would land in the panel itself.
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+
+        Task {
+            await DictationTextInsertionUtility.insertTextIntoFrontmostApp(dictationHistoryEntry.text)
+        }
+        return true
+    }
+
+    func copyDictationHistoryEntryToClipboard(_ dictationHistoryEntry: DictationHistoryEntry) {
+        DictationTextInsertionUtility.copyTextToClipboard(dictationHistoryEntry.text)
     }
 
     // MARK: - Companion Prompt
@@ -583,11 +668,24 @@ final class CompanionManager: ObservableObject {
     /// the spinner/processing state until TTS audio begins playing.
     /// Claude's response may include a [POINT:x,y:label] tag which triggers
     /// the buddy to fly to that element on screen.
-    private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
+    ///
+    /// `dictationHistoryEntryID` is the local history entry for this transcript
+    /// (nil when history is off). Its status is updated as the request succeeds,
+    /// fails, or gets interrupted, so failed messages stay recoverable.
+    private func sendTranscriptToClaudeWithScreenshot(transcript: String, dictationHistoryEntryID: UUID?) {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
 
         currentResponseTask = Task {
+            // Every early return below on Task.isCancelled means the user started
+            // a new message first. markEntryInterrupted only changes entries that
+            // are still sending, so it never overwrites a sent or failed outcome.
+            defer {
+                if Task.isCancelled {
+                    dictationHistoryStore.markEntryInterrupted(id: dictationHistoryEntryID)
+                }
+            }
+
             // Stay in processing (spinner) state — no streaming text displayed
             voiceState = .processing
 
@@ -696,6 +794,7 @@ final class CompanionManager: ObservableObject {
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")
 
                 ClickyAnalytics.trackAIResponseReceived(response: spokenText)
+                dictationHistoryStore.markEntrySent(id: dictationHistoryEntryID)
 
                 // Play the response via TTS. Keep the spinner (processing state)
                 // until the audio actually starts playing, then switch to responding.
@@ -705,6 +804,14 @@ final class CompanionManager: ObservableObject {
                         // speakText returns after player.play() — audio is now playing
                         voiceState = .responding
                     } catch {
+                        // Claude replied but the user never heard it, so keep the
+                        // message recoverable. Skip this if the user interrupted.
+                        if !Task.isCancelled {
+                            dictationHistoryStore.markEntryFailed(
+                                id: dictationHistoryEntryID,
+                                failureReason: "Clicky replied, but the voice reply couldn't play."
+                            )
+                        }
                         ClickyAnalytics.trackTTSError(error: error.localizedDescription)
                         print("⚠️ ElevenLabs TTS error: \(error)")
                         speakCreditsErrorFallback()
@@ -713,6 +820,14 @@ final class CompanionManager: ObservableObject {
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
+                // URLSession surfaces cancellation as URLError.cancelled rather than
+                // CancellationError, so check the task too before calling it a failure.
+                if !Task.isCancelled {
+                    dictationHistoryStore.markEntryFailed(
+                        id: dictationHistoryEntryID,
+                        failureReason: "Couldn't get a reply from Clicky."
+                    )
+                }
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
                 speakCreditsErrorFallback()

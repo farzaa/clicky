@@ -574,7 +574,13 @@ final class BuddyDictationManager: NSObject, ObservableObject {
                 from: error,
                 fallback: "couldn't transcribe that. try again."
             )
-            cancelCurrentDictation(preserveDraftText: false)
+            // Hand back whatever was recognized before the error so the caller
+            // can keep it (the companion saves it to dictation history) instead
+            // of the user losing a half-finished sentence.
+            let hasRecognizedTextWorthPreserving = !latestRecognizedText
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
+            cancelCurrentDictation(preserveDraftText: hasRecognizedTextWorthPreserving)
         }
     }
 

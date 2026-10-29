@@ -13,6 +13,8 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    /// Swaps the panel body for the local dictation history view.
+    @State private var isShowingDictationHistory = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -21,64 +23,105 @@ struct CompanionPanelView: View {
                 .background(DS.Colors.borderSubtle)
                 .padding(.horizontal, 16)
 
-            permissionsCopySection
-                .padding(.top, 16)
-                .padding(.horizontal, 16)
-
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 12)
-
-                modelPickerRow
-                    .padding(.horizontal, 16)
+            if isShowingDictationHistory {
+                DictationHistoryPanelView(
+                    companionManager: companionManager,
+                    dictationHistoryStore: companionManager.dictationHistoryStore,
+                    onBackButtonPressed: {
+                        isShowingDictationHistory = false
+                    }
+                )
+            } else {
+                mainPanelContent
             }
-
-            if !companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                settingsSection
-                    .padding(.horizontal, 16)
+        }
+        .frame(width: 320)
+        // Always lay out at the content's ideal height so the measured height
+        // below reflects what the panel actually needs, not the current frame.
+        .fixedSize(horizontal: false, vertical: true)
+        .background(panelBackground)
+        .onGeometryChange(for: CGFloat.self) { geometryProxy in
+            geometryProxy.size.height
+        } action: { _ in
+            // Deferred so the panel is resized after SwiftUI finishes this layout pass.
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .clickyPanelContentHeightDidChange, object: nil)
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .clickyDismissPanel)) { _ in
+            // Reopening the panel should always land on the main view.
+            isShowingDictationHistory = false
+        }
+    }
 
-            if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
+    @ViewBuilder
+    private var mainPanelContent: some View {
+        permissionsCopySection
+            .padding(.top, 16)
+            .padding(.horizontal, 16)
 
-                startButton
-                    .padding(.horizontal, 16)
-            }
-
-            // Show Clicky toggle — hidden for now
-            // if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            //     Spacer()
-            //         .frame(height: 16)
-            //
-            //     showClickyCursorToggleRow
-            //         .padding(.horizontal, 16)
-            // }
-
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                dmFarzaButton
-                    .padding(.horizontal, 16)
-            }
-
+        if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
             Spacer()
                 .frame(height: 12)
 
-            Divider()
-                .background(DS.Colors.borderSubtle)
+            modelPickerRow
                 .padding(.horizontal, 16)
 
-            footerSection
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+            Spacer()
+                .frame(height: 8)
+
+            DictationHistoryPanelRow(
+                dictationHistoryStore: companionManager.dictationHistoryStore,
+                onOpenHistory: {
+                    isShowingDictationHistory = true
+                }
+            )
+            .padding(.horizontal, 16)
         }
-        .frame(width: 320)
-        .background(panelBackground)
+
+        if !companionManager.allPermissionsGranted {
+            Spacer()
+                .frame(height: 16)
+
+            settingsSection
+                .padding(.horizontal, 16)
+        }
+
+        if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+            Spacer()
+                .frame(height: 16)
+
+            startButton
+                .padding(.horizontal, 16)
+        }
+
+        // Show Clicky toggle — hidden for now
+        // if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+        //     Spacer()
+        //         .frame(height: 16)
+        //
+        //     showClickyCursorToggleRow
+        //         .padding(.horizontal, 16)
+        // }
+
+        if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+            Spacer()
+                .frame(height: 16)
+
+            dmFarzaButton
+                .padding(.horizontal, 16)
+        }
+
+        Spacer()
+            .frame(height: 12)
+
+        Divider()
+            .background(DS.Colors.borderSubtle)
+            .padding(.horizontal, 16)
+
+        footerSection
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
     }
 
     // MARK: - Header
