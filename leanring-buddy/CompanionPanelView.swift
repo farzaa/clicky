@@ -62,6 +62,14 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 16)
 
+                toolsToggleRow
+                    .padding(.horizontal, 16)
+            }
+
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 16)
+
                 dmFarzaButton
                     .padding(.horizontal, 16)
             }
@@ -565,6 +573,39 @@ struct CompanionPanelView: View {
             Toggle("", isOn: Binding(
                 get: { companionManager.isClickyCursorEnabled },
                 set: { companionManager.setClickyCursorEnabled($0) }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .tint(DS.Colors.accent)
+            .scaleEffect(0.8)
+        }
+        .padding(.vertical, 4)
+    }
+
+    // MARK: - Composio Tools Toggle
+
+    /// Toggles whether voice requests can call Composio-backed tools (Slack,
+    /// Gmail, Linear, etc.) on the user's connected accounts. Off by default —
+    /// requires `composio link <toolkit>` setup against the Clicky user-id
+    /// before any tool calls will succeed.
+    private var toolsToggleRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "wrench.and.screwdriver")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                Text("Tools (Composio)")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { companionManager.isToolsEnabled },
+                set: { companionManager.setToolsEnabled($0) }
             ))
             .toggleStyle(.switch)
             .labelsHidden()

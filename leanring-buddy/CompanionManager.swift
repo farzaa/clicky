@@ -76,8 +76,28 @@ final class CompanionManager: ObservableObject {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
     }()
 
+    /// URL of the tool-augmented chat endpoint on the Worker. Used when
+    /// `isToolsEnabled` is on so Claude can call Composio-backed tools
+    /// (Slack, Gmail, etc.) inside the user's connected accounts.
+    private static let toolsProxyURL = "\(workerBaseURL)/chat-tools"
+
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
         return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
+    }()
+
+    /// Stable per-install identifier used to namespace the user's Composio
+    /// session on the Worker. Generated once on first launch and persisted
+    /// to UserDefaults so the same Mac maps to the same set of connected
+    /// Composio apps (Slack, Gmail, etc.) across restarts.
+    private static let clickyComposioUserId: String = {
+        let userDefaultsKey = "clickyComposioUserId"
+        if let existingClickyComposioUserId = UserDefaults.standard.string(forKey: userDefaultsKey),
+           !existingClickyComposioUserId.isEmpty {
+            return existingClickyComposioUserId
+        }
+        let newClickyComposioUserId = "clicky-\(UUID().uuidString.lowercased())"
+        UserDefaults.standard.set(newClickyComposioUserId, forKey: userDefaultsKey)
+        return newClickyComposioUserId
     }()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
@@ -137,6 +157,18 @@ final class CompanionManager: ObservableObject {
             overlayWindowManager.hideOverlay()
             isOverlayVisible = false
         }
+    }
+
+    /// User preference for whether Composio tool-calling is enabled. When on,
+    /// voice requests route to `/chat-tools` on the Worker which can execute
+    /// connected-app actions (Slack, Gmail, Linear, etc.) on the user's
+    /// behalf instead of just chatting and pointing. Off by default — opt-in
+    /// because it requires `composio link <toolkit>` setup out-of-band.
+    @Published var isToolsEnabled: Bool = UserDefaults.standard.bool(forKey: "isToolsEnabled")
+
+    func setToolsEnabled(_ enabled: Bool) {
+        isToolsEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isToolsEnabled")
     }
 
     /// Whether the user has completed onboarding at least once. Persisted
@@ -610,15 +642,37 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
-                    conversationHistory: historyForAPI,
-                    userPrompt: transcript,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
+                // When the Composio tools toggle is on, route through /chat-tools
+                // so Claude can execute connected-app actions server-side. The
+                // tools path is non-streaming (the Worker runs the agentic loop
+                // and returns a single final response) and skips the [POINT:...]
+                // pointing flow because tools mode is about acting, not pointing.
+                let fullResponseText: String
+                if isToolsEnabled {
+                    let toolsResult = try await claudeAPI.analyzeImageWithTools(
+                        toolsProxyURL: Self.toolsProxyURL,
+                        clickyUserId: Self.clickyComposioUserId,
+                        images: labeledImages,
+                        systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                        conversationHistory: historyForAPI,
+                        userPrompt: transcript
+                    )
+                    fullResponseText = toolsResult.text
+                    if !toolsResult.toolCallNames.isEmpty {
+                        print("🛠️ Composio tools executed: \(toolsResult.toolCallNames.joined(separator: ", "))")
                     }
-                )
+                } else {
+                    let streamingResult = try await claudeAPI.analyzeImageStreaming(
+                        images: labeledImages,
+                        systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                        conversationHistory: historyForAPI,
+                        userPrompt: transcript,
+                        onTextChunk: { _ in
+                            // No streaming text display — spinner stays until TTS plays
+                        }
+                    )
+                    fullResponseText = streamingResult.text
+                }
 
                 guard !Task.isCancelled else { return }
 
