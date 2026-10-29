@@ -8,11 +8,15 @@
 //
 
 import AVFoundation
+import AppKit
 import SwiftUI
 
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    @State private var isRecordingTextHotkey = false
+    @State private var textHotkeyValidationMessage: String?
+    @State private var textHotkeyRecorderMonitor: Any?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -30,6 +34,12 @@ struct CompanionPanelView: View {
                     .frame(height: 12)
 
                 modelPickerRow
+                    .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 10)
+
+                textHotkeyRow
                     .padding(.horizontal, 16)
             }
 
@@ -79,6 +89,9 @@ struct CompanionPanelView: View {
         }
         .frame(width: 320)
         .background(panelBackground)
+        .onDisappear {
+            stopRecordingTextHotkey()
+        }
     }
 
     // MARK: - Header
@@ -594,6 +607,108 @@ struct CompanionPanelView: View {
                 .foregroundColor(DS.Colors.textTertiary)
         }
         .padding(.vertical, 4)
+    }
+
+    // MARK: - Text Hotkey
+
+    private var textHotkeyRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Text Hotkey")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                Text(isRecordingTextHotkey ? "Press keys..." : companionManager.textInputKeyboardShortcut.displayText)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(isRecordingTextHotkey ? DS.Colors.blue400 : DS.Colors.textPrimary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color.white.opacity(0.08))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .stroke(isRecordingTextHotkey ? DS.Colors.blue400.opacity(0.7) : DS.Colors.borderSubtle, lineWidth: 0.6)
+                    )
+
+                Button(action: {
+                    toggleTextHotkeyRecording()
+                }) {
+                    Text(isRecordingTextHotkey ? "Cancel" : "Record")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(DS.Colors.textSecondary)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(
+                            Capsule()
+                                .stroke(DS.Colors.borderSubtle, lineWidth: 0.8)
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+
+            if let textHotkeyValidationMessage {
+                Text(textHotkeyValidationMessage)
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.warning)
+            } else {
+                Text("Open typed input near the cursor.")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func toggleTextHotkeyRecording() {
+        if isRecordingTextHotkey {
+            stopRecordingTextHotkey()
+        } else {
+            startRecordingTextHotkey()
+        }
+    }
+
+    private func startRecordingTextHotkey() {
+        stopRecordingTextHotkey()
+        isRecordingTextHotkey = true
+        textHotkeyValidationMessage = nil
+
+        textHotkeyRecorderMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
+            guard isRecordingTextHotkey else { return event }
+
+            if event.keyCode == 53 {
+                stopRecordingTextHotkey()
+                return nil
+            }
+
+            guard let shortcut = ClickyKeyboardShortcut.shortcut(from: event) else {
+                textHotkeyValidationMessage = "Choose a key with at least one modifier."
+                return nil
+            }
+
+            if let validationErrorMessage = shortcut.validationErrorMessage {
+                textHotkeyValidationMessage = validationErrorMessage
+            } else {
+                companionManager.setTextInputKeyboardShortcut(shortcut)
+                textHotkeyValidationMessage = nil
+                stopRecordingTextHotkey()
+            }
+
+            return nil
+        }
+    }
+
+    private func stopRecordingTextHotkey() {
+        isRecordingTextHotkey = false
+
+        if let textHotkeyRecorderMonitor {
+            NSEvent.removeMonitor(textHotkeyRecorderMonitor)
+            self.textHotkeyRecorderMonitor = nil
+        }
     }
 
     // MARK: - Model Picker
