@@ -258,6 +258,29 @@ struct BlueCursorView: View {
                     }
             }
 
+            // Keep a readable text response available even when voice output is
+            // disabled. This also makes spoken responses accessible without sound.
+            if isCursorOnThisScreen && !companionManager.displayedResponseText.isEmpty {
+                Text(companionManager.displayedResponseText)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white)
+                    .lineLimit(10)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .frame(maxWidth: 320, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(Color.black.opacity(0.86))
+                            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.35), radius: 8)
+                    )
+                    .position(
+                        x: min(max(cursorPosition.x + 170, 170), screenFrame.width - 170),
+                        y: min(max(cursorPosition.y + 70, 70), screenFrame.height - 90)
+                    )
+                    .animation(.spring(response: 0.2, dampingFraction: 0.7), value: cursorPosition)
+                    .allowsHitTesting(false)
+            }
+
             // Navigation pointer bubble — shown when buddy arrives at a detected element.
             // Pops in with a scale-bounce (0.5x → 1.0x spring) and a bright initial
             // glow that settles, creating a "materializing" effect.

@@ -56,9 +56,11 @@ If you want to do it yourself, here's the deal.
 
 - macOS 14.2+ (for ScreenCaptureKit)
 - Xcode 15+
-- Node.js 18+ (for the Cloudflare Worker)
-- A [Cloudflare](https://cloudflare.com) account (free tier works)
-- API keys for: [Anthropic](https://console.anthropic.com), [AssemblyAI](https://www.assemblyai.com), [ElevenLabs](https://elevenlabs.io)
+- Node.js 18+ and a [Cloudflare](https://cloudflare.com) account only if you use the optional Worker integrations
+- A ChatGPT account with an eligible plan, or an [Anthropic API key](https://console.anthropic.com)
+- Optional API keys for hosted voice services: [AssemblyAI](https://www.assemblyai.com) and [ElevenLabs](https://elevenlabs.io)
+
+Clicky can run without voice-service API keys. Choose Apple Speech for transcription and Mac Voice for spoken responses, or type prompts directly in the menu bar panel. OpenAI responses can use your ChatGPT plan through **Continue with ChatGPT**; OAuth credentials stay in the macOS Keychain and OpenAI requests go directly from the app to the Responses API.
 
 ### 1. Set up the Cloudflare Worker
 
@@ -69,7 +71,7 @@ cd worker
 npm install
 ```
 
-Now add your secrets. Wrangler will prompt you to paste each one:
+If you want to use Claude, AssemblyAI, or ElevenLabs, add the corresponding secrets. Wrangler will prompt you to paste each one:
 
 ```bash
 npx wrangler secret put ANTHROPIC_API_KEY
@@ -91,6 +93,8 @@ npx wrangler deploy
 ```
 
 It'll give you a URL like `https://your-worker-name.your-subdomain.workers.dev`. Copy that.
+
+You can skip the Worker when using only a ChatGPT plan, Apple Speech, and Mac Voice.
 
 ### 2. Run the Worker locally (for development)
 
@@ -123,6 +127,8 @@ grep -r "clicky-proxy" leanring-buddy/
 You'll find it in:
 - `CompanionManager.swift` — Claude chat + ElevenLabs TTS
 - `AssemblyAIStreamingTranscriptionProvider.swift` — AssemblyAI token endpoint
+
+ChatGPT-plan requests intentionally do not use the Worker. In Clicky's menu, select OpenAI and choose **Continue with ChatGPT**. The app dynamically loads the models available to that account.
 
 ### 4. Open in Xcode and run
 

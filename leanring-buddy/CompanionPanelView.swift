@@ -13,6 +13,7 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    @State private var typedPrompt: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -29,8 +30,37 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 12)
 
+                typedPromptComposer
+                    .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 12)
+
+                aiProviderPickerRow
+                    .padding(.horizontal, 16)
+
+                if companionManager.selectedAIProvider == .openAI {
+                    chatGPTAccountRow
+                        .padding(.horizontal, 16)
+                }
+
                 modelPickerRow
                     .padding(.horizontal, 16)
+
+                speechToTextProviderRow
+                    .padding(.horizontal, 16)
+
+                speechOutputProviderRow
+                    .padding(.horizontal, 16)
+
+                if let serviceErrorMessage {
+                    Text(serviceErrorMessage)
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 4)
+                }
             }
 
             if !companionManager.allPermissionsGranted {
@@ -79,6 +109,23 @@ struct CompanionPanelView: View {
         }
         .frame(width: 320)
         .background(panelBackground)
+        .alert(
+            "You're using your ChatGPT plan",
+            isPresented: Binding(
+                get: { companionManager.chatGPTAuthenticationManager.shouldShowPlanUsageConfirmation },
+                set: { isPresented in
+                    if !isPresented {
+                        companionManager.chatGPTAuthenticationManager.acknowledgePlanUsage()
+                    }
+                }
+            )
+        ) {
+            Button("Got it") {
+                companionManager.chatGPTAuthenticationManager.acknowledgePlanUsage()
+            }
+        } message: {
+            Text("Eligible OpenAI requests in Clicky use your ChatGPT plan. You can manage usage in ChatGPT settings.")
+        }
     }
 
     // MARK: - Header
@@ -127,7 +174,7 @@ struct CompanionPanelView: View {
     @ViewBuilder
     private var permissionsCopySection: some View {
         if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            Text("Hold Control+Option to talk.")
+            Text("Type below, or hold Control+Option to talk.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(DS.Colors.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -153,7 +200,7 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(DS.Colors.textSecondary)
 
-                Text("Some permissions were revoked. Grant all four below to keep using Clicky.")
+                Text("A required permission was revoked. Restore the screen and accessibility permissions below to keep using Clicky.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -589,9 +636,199 @@ struct CompanionPanelView: View {
 
             Spacer()
 
-            Text(companionManager.buddyDictationManager.transcriptionProviderDisplayName)
+            Menu {
+                ForEach(VoiceTranscriptionProvider.allCases) { provider in
+                    Button(provider.displayName) {
+                        companionManager.buddyDictationManager.setTranscriptionProvider(provider)
+                    }
+                }
+            } label: {
+                compactMenuLabel(companionManager.buddyDictationManager.transcriptionProviderDisplayName)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .pointerCursor()
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var speechOutputProviderRow: some View {
+        HStack {
+            Text("Voice Output")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Spacer()
+
+            Menu {
+                ForEach(CompanionSpeechOutputProvider.allCases) { provider in
+                    Button(provider.displayName) {
+                        companionManager.setSpeechOutputProvider(provider)
+                    }
+                }
+            } label: {
+                compactMenuLabel(companionManager.speechOutputProvider.displayName)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .pointerCursor()
+        }
+        .padding(.vertical, 4)
+    }
+
+    // MARK: - Prompt and AI
+
+    private var typedPromptComposer: some View {
+        HStack(spacing: 8) {
+            TextField("Ask about your screen…", text: $typedPrompt)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .foregroundColor(DS.Colors.textPrimary)
+                .onSubmit(submitTypedPrompt)
+
+            Button(action: submitTypedPrompt) {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(DS.Colors.textOnAccent)
+                    .frame(width: 24, height: 24)
+                    .background(Circle().fill(DS.Colors.accent))
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .disabled(!canSubmitTypedPrompt)
+            .opacity(canSubmitTypedPrompt ? 1 : 0.4)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                .fill(Color.white.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+        )
+    }
+
+    private var canSubmitTypedPrompt: Bool {
+        let hasPrompt = !typedPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasAIProvider = companionManager.selectedAIProvider == .claude
+            || (companionManager.chatGPTAuthenticationManager.isSignedIn
+                && !companionManager.selectedOpenAIModel.isEmpty)
+        return hasPrompt && hasAIProvider && companionManager.voiceState == .idle
+    }
+
+    private var serviceErrorMessage: String? {
+        companionManager.chatGPTAuthenticationManager.authenticationErrorMessage
+            ?? companionManager.openAIModelsErrorMessage
+            ?? companionManager.buddyDictationManager.lastErrorMessage
+    }
+
+    private func submitTypedPrompt() {
+        guard canSubmitTypedPrompt else { return }
+        let prompt = typedPrompt
+        typedPrompt = ""
+        companionManager.submitTypedPrompt(prompt)
+    }
+
+    private var aiProviderPickerRow: some View {
+        HStack {
+            Text("AI Provider")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Spacer()
+
+            HStack(spacing: 0) {
+                ForEach(CompanionAIProvider.allCases) { provider in
+                    providerOptionButton(provider)
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func providerOptionButton(_ provider: CompanionAIProvider) -> some View {
+        let isSelected = companionManager.selectedAIProvider == provider
+        return Button(action: { companionManager.setAIProvider(provider) }) {
+            Text(provider.displayName)
                 .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    private var chatGPTAccountRow: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            HStack {
+                Text("ChatGPT")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                if companionManager.chatGPTAuthenticationManager.isSignedIn {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(companionManager.chatGPTAuthenticationManager.accountEmail ?? "Connected")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(DS.Colors.success)
+                            .lineLimit(1)
+
+                        Button("Manage usage") {
+                            if let usageURL = URL(string: "https://chatgpt.com/settings/usage") {
+                                NSWorkspace.shared.open(usageURL)
+                            }
+                        }
+                        .font(.system(size: 9, weight: .medium))
+                        .buttonStyle(.plain)
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .pointerCursor()
+                    }
+
+                    Button("Disconnect") {
+                        companionManager.chatGPTAuthenticationManager.signOut()
+                    }
+                        .font(.system(size: 10, weight: .medium))
+                    .buttonStyle(.plain)
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .pointerCursor()
+                } else {
+                    Button {
+                        companionManager.chatGPTAuthenticationManager.signIn()
+                    } label: {
+                        Text(companionManager.chatGPTAuthenticationManager.isSigningIn ? "Connecting…" : "Continue with ChatGPT")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(DS.Colors.textOnAccent)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(Capsule().fill(DS.Colors.accent))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                    .disabled(companionManager.chatGPTAuthenticationManager.isSigningIn)
+                }
+            }
+
+            if companionManager.chatGPTAuthenticationManager.authenticationErrorMessage != nil {
+                Button("Try another account or workspace") {
+                    companionManager.chatGPTAuthenticationManager.signInWithAnotherAccountOrWorkspace()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 9, weight: .medium))
                 .foregroundColor(DS.Colors.textTertiary)
+                .pointerCursor()
+            }
         }
         .padding(.vertical, 4)
     }
@@ -606,20 +843,66 @@ struct CompanionPanelView: View {
 
             Spacer()
 
-            HStack(spacing: 0) {
-                modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
-                modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
+            if companionManager.selectedAIProvider == .openAI {
+                openAIModelPicker
+            } else {
+                HStack(spacing: 0) {
+                    modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
+                    modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
             }
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-            )
         }
         .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private var openAIModelPicker: some View {
+        if !companionManager.chatGPTAuthenticationManager.isSignedIn {
+            Text("Connect first")
+                .font(.system(size: 11))
+                .foregroundColor(DS.Colors.textTertiary)
+        } else if companionManager.isLoadingOpenAIModels {
+            ProgressView()
+                .controlSize(.small)
+        } else {
+            Menu {
+                ForEach(companionManager.availableOpenAIModels) { model in
+                    Button(model.displayName) {
+                        companionManager.setSelectedModel(model.id)
+                    }
+                }
+                if companionManager.availableOpenAIModels.isEmpty {
+                    Button("Reload Models") {
+                        companionManager.loadOpenAIModels()
+                    }
+                }
+            } label: {
+                let selectedName = companionManager.availableOpenAIModels
+                    .first(where: { $0.id == companionManager.selectedOpenAIModel })?.displayName
+                    ?? "Choose model"
+                compactMenuLabel(selectedName)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .pointerCursor()
+        }
+    }
+
+    private func compactMenuLabel(_ text: String) -> some View {
+        HStack(spacing: 4) {
+            Text(text)
+                .font(.system(size: 11, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: 130)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 8, weight: .semibold))
+        }
+        .foregroundColor(DS.Colors.textTertiary)
     }
 
     private func modelOptionButton(label: String, modelID: String) -> some View {

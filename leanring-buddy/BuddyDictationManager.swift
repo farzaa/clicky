@@ -233,6 +233,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     )
     @Published private(set) var microphoneButtonRecordingStartedAt: Date?
     @Published private(set) var transcriptionProviderDisplayName = ""
+    @Published private(set) var selectedTranscriptionProvider: VoiceTranscriptionProvider
     @Published var lastErrorMessage: String?
     @Published private(set) var currentPermissionProblem: BuddyDictationPermissionProblem?
 
@@ -262,7 +263,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         return AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined
     }
 
-    private let transcriptionProvider: any BuddyTranscriptionProvider
+    private var transcriptionProvider: any BuddyTranscriptionProvider
     private let audioEngine = AVAudioEngine()
     private var activeTranscriptionSession: (any BuddyStreamingTranscriptionSession)?
     private var activeStartSource: BuddyDictationStartSource?
@@ -281,10 +282,25 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     private var lastPermissionRequestCompletedAt: Date?
 
     override init() {
-        let transcriptionProvider = BuddyTranscriptionProviderFactory.makeDefaultProvider()
+        let (selectedTranscriptionProvider, transcriptionProvider) = BuddyTranscriptionProviderFactory.makeDefaultProvider()
+        self.selectedTranscriptionProvider = selectedTranscriptionProvider
         self.transcriptionProvider = transcriptionProvider
         self.transcriptionProviderDisplayName = transcriptionProvider.displayName
         super.init()
+    }
+
+    func setTranscriptionProvider(_ selectedTranscriptionProvider: VoiceTranscriptionProvider) {
+        guard !isDictationInProgress else { return }
+        let transcriptionProvider = BuddyTranscriptionProviderFactory.makeProvider(selectedTranscriptionProvider)
+        guard transcriptionProvider.isConfigured else {
+            lastErrorMessage = transcriptionProvider.unavailableExplanation
+            return
+        }
+        self.selectedTranscriptionProvider = selectedTranscriptionProvider
+        self.transcriptionProvider = transcriptionProvider
+        self.transcriptionProviderDisplayName = transcriptionProvider.displayName
+        BuddyTranscriptionProviderFactory.saveSelectedProvider(selectedTranscriptionProvider)
+        lastErrorMessage = nil
     }
 
     func updateContextualKeyterms(_ contextualKeyterms: [String]) {

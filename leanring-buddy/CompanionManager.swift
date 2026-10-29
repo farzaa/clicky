@@ -30,9 +30,10 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var hasScreenRecordingPermission = false
     @Published private(set) var hasMicrophonePermission = false
     @Published private(set) var hasScreenContentPermission = false
+    @Published private(set) var displayedResponseText = ""
 
     /// Screen location (global AppKit coords) of a detected UI element the
-    /// buddy should fly to and point at. Parsed from Claude's response;
+    /// buddy should fly to and point at. Parsed from the AI response;
     /// observed by BlueCursorView to trigger the flight animation.
     @Published var detectedElementScreenLocation: CGPoint?
     /// The display frame (global AppKit coords) of the screen the detected
@@ -65,6 +66,7 @@ final class CompanionManager: ObservableObject {
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
+    let chatGPTAuthenticationManager = ChatGPTAuthenticationManager()
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
@@ -73,15 +75,20 @@ final class CompanionManager: ObservableObject {
     private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
 
     private lazy var claudeAPI: ClaudeAPI = {
-        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedClaudeModel)
     }()
+
+    private lazy var openAIResponsesAPI = OpenAIResponsesAPI(
+        authenticationManager: chatGPTAuthenticationManager
+    )
 
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
         return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
     }()
+    private let systemTTSClient = SystemTTSClient()
 
-    /// Conversation history so Claude remembers prior exchanges within a session.
-    /// Each entry is the user's transcript and Claude's response.
+    /// Conversation history so the selected AI remembers prior exchanges within a session.
+    /// Each entry is the user's prompt and the assistant response.
     private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
 
     /// The currently running AI response task, if any. Cancelled when the user
@@ -91,29 +98,89 @@ final class CompanionManager: ObservableObject {
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
+    private var chatGPTAuthenticationCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
+    private var responseTextHideTask: Task<Void, Never>?
 
-    /// True when all three required permissions (accessibility, screen recording,
-    /// microphone) are granted. Used by the panel to show a single "all good" state.
+    /// Core permissions needed for typed prompts and screen-aware responses.
+    /// Microphone access stays optional because Clicky also supports typed input.
     var allPermissionsGranted: Bool {
-        hasAccessibilityPermission && hasScreenRecordingPermission && hasMicrophonePermission && hasScreenContentPermission
+        typedPromptPermissionsGranted
+    }
+
+    /// Typed prompts do not require microphone access, so they become available
+    /// as soon as the cursor and screenshot permissions are ready.
+    var typedPromptPermissionsGranted: Bool {
+        hasAccessibilityPermission && hasScreenRecordingPermission && hasScreenContentPermission
     }
 
     /// Whether the blue cursor overlay is currently visible on screen.
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
 
-    /// The Claude model used for voice responses. Persisted to UserDefaults.
-    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+    @Published var selectedAIProvider = CompanionAIProvider(
+        rawValue: UserDefaults.standard.string(forKey: "selectedAIProvider") ?? ""
+    ) ?? .openAI
+    @Published var selectedClaudeModel = UserDefaults.standard.string(forKey: "selectedClaudeModel")
+        ?? "claude-sonnet-4-6"
+    @Published var selectedOpenAIModel = UserDefaults.standard.string(forKey: "selectedOpenAIModel") ?? ""
+    @Published private(set) var availableOpenAIModels: [OpenAIModelOption] = []
+    @Published private(set) var isLoadingOpenAIModels = false
+    @Published private(set) var openAIModelsErrorMessage: String?
+    @Published var speechOutputProvider = CompanionSpeechOutputProvider(
+        rawValue: UserDefaults.standard.string(forKey: "speechOutputProvider") ?? ""
+    ) ?? .system
+
+    var selectedModel: String {
+        selectedAIProvider == .openAI ? selectedOpenAIModel : selectedClaudeModel
+    }
+
+    func setAIProvider(_ provider: CompanionAIProvider) {
+        selectedAIProvider = provider
+        UserDefaults.standard.set(provider.rawValue, forKey: "selectedAIProvider")
+        if provider == .openAI && chatGPTAuthenticationManager.isSignedIn {
+            loadOpenAIModels()
+        }
+    }
 
     func setSelectedModel(_ model: String) {
-        selectedModel = model
-        UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
-        claudeAPI.model = model
+        if selectedAIProvider == .openAI {
+            selectedOpenAIModel = model
+            UserDefaults.standard.set(model, forKey: "selectedOpenAIModel")
+        } else {
+            selectedClaudeModel = model
+            UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
+            claudeAPI.model = model
+        }
+    }
+
+    func setSpeechOutputProvider(_ provider: CompanionSpeechOutputProvider) {
+        stopSpeechPlayback()
+        speechOutputProvider = provider
+        UserDefaults.standard.set(provider.rawValue, forKey: "speechOutputProvider")
+    }
+
+    func loadOpenAIModels() {
+        guard chatGPTAuthenticationManager.isSignedIn, !isLoadingOpenAIModels else { return }
+        isLoadingOpenAIModels = true
+        openAIModelsErrorMessage = nil
+        Task {
+            do {
+                let models = try await openAIResponsesAPI.listAvailableModels()
+                availableOpenAIModels = models
+                if selectedOpenAIModel.isEmpty || !models.contains(where: { $0.id == selectedOpenAIModel }) {
+                    selectedOpenAIModel = models.first?.id ?? ""
+                    UserDefaults.standard.set(selectedOpenAIModel, forKey: "selectedOpenAIModel")
+                }
+            } catch {
+                openAIModelsErrorMessage = error.localizedDescription
+            }
+            isLoadingOpenAIModels = false
+        }
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -179,9 +246,13 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
+        bindChatGPTAuthentication()
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
+        if chatGPTAuthenticationManager.isSignedIn {
+            loadOpenAIModels()
+        }
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -295,9 +366,12 @@ final class CompanionManager: ObservableObject {
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
+        stopSpeechPlayback()
         shortcutTransitionCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
+        chatGPTAuthenticationCancellable?.cancel()
+        responseTextHideTask?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
     }
@@ -470,6 +544,21 @@ final class CompanionManager: ObservableObject {
             }
     }
 
+    private func bindChatGPTAuthentication() {
+        chatGPTAuthenticationCancellable = chatGPTAuthenticationManager.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.objectWillChange.send()
+                DispatchQueue.main.async { [weak self] in
+                    guard let self,
+                          self.chatGPTAuthenticationManager.isSignedIn,
+                          self.availableOpenAIModels.isEmpty else { return }
+                    self.loadOpenAIModels()
+                }
+            }
+    }
+
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
         case .pressed:
@@ -493,7 +582,8 @@ final class CompanionManager: ObservableObject {
 
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
-            elevenLabsTTSClient.stopPlayback()
+            stopSpeechPlayback()
+            clearDisplayedResponseText()
             clearDetectedElementLocation()
 
             // Dismiss the onboarding prompt if it's showing
@@ -521,7 +611,7 @@ final class CompanionManager: ObservableObject {
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
                         ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
-                        self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                        self?.sendPromptWithScreenshot(prompt: finalTranscript)
                     }
                 )
             }
@@ -578,14 +668,23 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - AI Response Pipeline
 
-    /// Captures a screenshot, sends it along with the transcript to Claude,
-    /// and plays the response aloud via ElevenLabs TTS. The cursor stays in
-    /// the spinner/processing state until TTS audio begins playing.
-    /// Claude's response may include a [POINT:x,y:label] tag which triggers
+    /// Captures screenshots, sends them with a voice or typed prompt to the selected AI,
+    /// and presents the response using the selected output. The response may include
+    /// a [POINT:x,y:label] tag which triggers
     /// the buddy to fly to that element on screen.
-    private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
+    func submitTypedPrompt(_ prompt: String) {
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPrompt.isEmpty, typedPromptPermissionsGranted else { return }
+        lastTranscript = trimmedPrompt
+        ClickyAnalytics.trackUserMessageSent(transcript: trimmedPrompt)
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+        sendPromptWithScreenshot(prompt: trimmedPrompt)
+    }
+
+    private func sendPromptWithScreenshot(prompt: String) {
         currentResponseTask?.cancel()
-        elevenLabsTTSClient.stopPlayback()
+        stopSpeechPlayback()
+        clearDisplayedResponseText()
 
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
@@ -598,23 +697,23 @@ final class CompanionManager: ObservableObject {
                 guard !Task.isCancelled else { return }
 
                 // Build image labels with the actual screenshot pixel dimensions
-                // so Claude's coordinate space matches the image it sees. We
+                // so the AI's coordinate space matches the image it sees. We
                 // scale from screenshot pixels to display points ourselves.
                 let labeledImages = screenCaptures.map { capture in
                     let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
                     return (data: capture.imageData, label: capture.label + dimensionInfo)
                 }
 
-                // Pass conversation history so Claude remembers prior exchanges
+                // Pass conversation history so the selected AI remembers prior exchanges
                 let historyForAPI = conversationHistory.map { entry in
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                let (fullResponseText, _) = try await requestAIResponse(
                     images: labeledImages,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt,
                     conversationHistory: historyForAPI,
-                    userPrompt: transcript,
+                    userPrompt: prompt,
                     onTextChunk: { _ in
                         // No streaming text display — spinner stays until TTS plays
                     }
@@ -622,11 +721,13 @@ final class CompanionManager: ObservableObject {
 
                 guard !Task.isCancelled else { return }
 
-                // Parse the [POINT:...] tag from Claude's response
+                // Parse the [POINT:...] tag from the AI response
                 let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
                 let spokenText = parseResult.spokenText
+                displayedResponseText = spokenText
+                scheduleResponseTextHide()
 
-                // Handle element pointing if Claude returned coordinates.
+                // Handle element pointing if the AI returned coordinates.
                 // Switch to idle BEFORE setting the location so the triangle
                 // becomes visible and can fly to the target. Without this, the
                 // spinner hides the triangle and the flight animation is invisible.
@@ -635,7 +736,7 @@ final class CompanionManager: ObservableObject {
                     voiceState = .idle
                 }
 
-                // Pick the screen capture matching Claude's screen number,
+                // Pick the screen capture matching the AI's screen number,
                 // falling back to the cursor screen if not specified.
                 let targetScreenCapture: CompanionScreenCapture? = {
                     if let screenNumber = parseResult.screenNumber,
@@ -647,7 +748,7 @@ final class CompanionManager: ObservableObject {
 
                 if let pointCoordinate = parseResult.coordinate,
                    let targetScreenCapture {
-                    // Claude's coordinates are in the screenshot's pixel space
+                    // The coordinates are in the screenshot's pixel space
                     // (top-left origin, e.g. 1280x831). Scale to the display's
                     // point space (e.g. 1512x982), then convert to AppKit global coords.
                     let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
@@ -684,7 +785,7 @@ final class CompanionManager: ObservableObject {
                 // Save this exchange to conversation history (with the point tag
                 // stripped so it doesn't confuse future context)
                 conversationHistory.append((
-                    userTranscript: transcript,
+                    userTranscript: prompt,
                     assistantResponse: spokenText
                 ))
 
@@ -701,13 +802,11 @@ final class CompanionManager: ObservableObject {
                 // until the audio actually starts playing, then switch to responding.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     do {
-                        try await elevenLabsTTSClient.speakText(spokenText)
-                        // speakText returns after player.play() — audio is now playing
-                        voiceState = .responding
+                        try await playSpeechResponse(spokenText)
                     } catch {
                         ClickyAnalytics.trackTTSError(error: error.localizedDescription)
                         print("⚠️ ElevenLabs TTS error: \(error)")
-                        speakCreditsErrorFallback()
+                        speakResponseErrorFallback()
                     }
                 }
             } catch is CancellationError {
@@ -715,7 +814,9 @@ final class CompanionManager: ObservableObject {
             } catch {
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
-                speakCreditsErrorFallback()
+                displayedResponseText = error.localizedDescription
+                scheduleResponseTextHide()
+                speakResponseErrorFallback()
             }
 
             if !Task.isCancelled {
@@ -735,7 +836,7 @@ final class CompanionManager: ObservableObject {
         transientHideTask?.cancel()
         transientHideTask = Task {
             // Wait for TTS audio to finish playing
-            while elevenLabsTTSClient.isPlaying {
+            while isSpeechPlaying {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }
@@ -758,11 +859,77 @@ final class CompanionManager: ObservableObject {
     /// Speaks a hardcoded error message using macOS system TTS when API
     /// credits run out. Uses NSSpeechSynthesizer so it works even when
     /// ElevenLabs is down.
-    private func speakCreditsErrorFallback() {
-        let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
+    private func speakResponseErrorFallback() {
+        systemTTSClient.speakText("I couldn't complete that request. Check Clicky's settings and try again.")
         voiceState = .responding
+    }
+
+    private var isSpeechPlaying: Bool {
+        elevenLabsTTSClient.isPlaying || systemTTSClient.isPlaying
+    }
+
+    private func stopSpeechPlayback() {
+        elevenLabsTTSClient.stopPlayback()
+        systemTTSClient.stopPlayback()
+    }
+
+    private func playSpeechResponse(_ text: String) async throws {
+        switch speechOutputProvider {
+        case .system:
+            systemTTSClient.speakText(text)
+            voiceState = .responding
+        case .elevenLabs:
+            try await elevenLabsTTSClient.speakText(text)
+            voiceState = .responding
+        case .silent:
+            voiceState = .responding
+        }
+    }
+
+    private func clearDisplayedResponseText() {
+        responseTextHideTask?.cancel()
+        responseTextHideTask = nil
+        displayedResponseText = ""
+    }
+
+    private func scheduleResponseTextHide() {
+        responseTextHideTask?.cancel()
+        responseTextHideTask = Task {
+            try? await Task.sleep(for: .seconds(15))
+            guard !Task.isCancelled else { return }
+            displayedResponseText = ""
+        }
+    }
+
+    private func requestAIResponse(
+        images: [(data: Data, label: String)],
+        systemPrompt: String,
+        conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
+        userPrompt: String,
+        onTextChunk: @MainActor @Sendable (String) -> Void
+    ) async throws -> (text: String, duration: TimeInterval) {
+        switch selectedAIProvider {
+        case .openAI:
+            guard !selectedOpenAIModel.isEmpty else {
+                throw OpenAIResponsesAPIError(message: "Choose an OpenAI model in Clicky's menu first.")
+            }
+            return try await openAIResponsesAPI.analyzeImageStreaming(
+                images: images,
+                model: selectedOpenAIModel,
+                systemPrompt: systemPrompt,
+                conversationHistory: conversationHistory,
+                userPrompt: userPrompt,
+                onTextChunk: onTextChunk
+            )
+        case .claude:
+            return try await claudeAPI.analyzeImageStreaming(
+                images: images,
+                systemPrompt: systemPrompt,
+                conversationHistory: conversationHistory,
+                userPrompt: userPrompt,
+                onTextChunk: onTextChunk
+            )
+        }
     }
 
     // MARK: - Point Tag Parsing
@@ -982,7 +1149,7 @@ final class CompanionManager: ObservableObject {
                 let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
                 let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                let (fullResponseText, _) = try await requestAIResponse(
                     images: labeledImages,
                     systemPrompt: Self.onboardingDemoSystemPrompt,
                     userPrompt: "look around my screen and find something interesting to point at",
