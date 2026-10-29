@@ -96,6 +96,13 @@ enum CompanionScreenCaptureUtility {
                 configuration: configuration
             )
 
+            // Diagnostic: ScreenCaptureKit can ignore configuration.width/.height
+            // and return the image at the display's native pixel resolution
+            // (especially on Retina displays). If `actual` ≠ `configured`,
+            // the dimensions we report to the AI must reflect `actual` — not
+            // what we requested — or all coordinate scaling will be off.
+            print("📷 Capture: configured=\(configuration.width)×\(configuration.height), actual cgImage=\(cgImage.width)×\(cgImage.height), display points=\(Int(displayFrame.width))×\(Int(displayFrame.height))")
+
             guard let jpegData = NSBitmapImageRep(cgImage: cgImage)
                     .representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
                 continue
@@ -117,8 +124,16 @@ enum CompanionScreenCaptureUtility {
                 displayWidthInPoints: Int(displayFrame.width),
                 displayHeightInPoints: Int(displayFrame.height),
                 displayFrame: displayFrame,
-                screenshotWidthInPixels: configuration.width,
-                screenshotHeightInPixels: configuration.height
+                // Use the actual cgImage dimensions, NOT configuration.width/.height.
+                // ScreenCaptureKit can return the image at the display's native
+                // pixel resolution regardless of what we configured — particularly
+                // on Retina displays where the backing scale factor is auto-applied.
+                // Reporting `configuration.width` when the JPEG is actually 2x as
+                // large means the AI's coordinates are scaled to the wrong space,
+                // causing the cursor to land at the wrong proportional position
+                // (typically far below the intended target).
+                screenshotWidthInPixels: cgImage.width,
+                screenshotHeightInPixels: cgImage.height
             ))
         }
 

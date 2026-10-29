@@ -85,6 +85,7 @@ struct NavigationBubbleSizePreferenceKey: PreferenceKey {
     }
 }
 
+
 /// The buddy's behavioral mode. Controls whether it follows the cursor,
 /// is flying toward a detected UI element, or is pointing at an element.
 enum BuddyNavigationMode {
@@ -143,6 +144,7 @@ struct BlueCursorView: View {
     @State private var navigationBubbleText: String = ""
     @State private var navigationBubbleOpacity: Double = 0.0
     @State private var navigationBubbleSize: CGSize = .zero
+
 
     /// The cursor position at the moment navigation started, used to detect
     /// if the user moves the cursor enough to cancel the navigation.
@@ -308,7 +310,7 @@ struct BlueCursorView: View {
                 .rotationEffect(.degrees(triangleRotationDegrees))
                 .shadow(color: DS.Colors.overlayCursorBlue, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
                 .scaleEffect(buddyFlightScale)
-                .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
+                .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) && companionManager.isCursorTriangleVisible ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(
                     buddyNavigationMode == .followingCursor
@@ -317,6 +319,7 @@ struct BlueCursorView: View {
                     value: cursorPosition
                 )
                 .animation(.easeIn(duration: 0.25), value: companionManager.voiceState)
+                .animation(.easeInOut(duration: 0.25), value: companionManager.isCursorTriangleVisible)
                 .animation(
                     buddyNavigationMode == .navigatingToTarget ? nil : .easeInOut(duration: 0.3),
                     value: triangleRotationDegrees
@@ -324,12 +327,17 @@ struct BlueCursorView: View {
 
             // Blue waveform — replaces the triangle while listening
             BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel)
-                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .listening ? cursorOpacity : 0)
+                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .listening && companionManager.isCursorTriangleVisible ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
 
-            // Blue spinner — shown while the AI is processing (transcription + Claude + waiting for TTS)
+            // Blue spinner — shown while the AI is processing (transcription + Claude + waiting for TTS).
+            // Intentionally NOT gated on `isCursorTriangleVisible` so the
+            // spinner appears next to the mouse during text-mode chat too,
+            // mirroring the visual feedback voice mode gets while waiting
+            // on Claude. The triangle/waveform stay gated on visibility,
+            // but the spinner is always meaningful when processing.
             BlueCursorSpinnerView()
                 .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing ? cursorOpacity : 0)
                 .position(cursorPosition)
@@ -457,20 +465,29 @@ struct BlueCursorView: View {
         // Don't interrupt welcome animation
         guard !showWelcome || welcomeText.isEmpty else { return }
 
-        // Convert the AppKit screen location to SwiftUI coordinates for this screen
+        // Convert the AppKit screen location to SwiftUI coordinates for this screen.
         let targetInSwiftUI = convertScreenPointToSwiftUICoordinates(screenLocation)
 
-        // Offset the target so the buddy sits beside the element rather than
-        // directly on top of it — 8px to the right, 12px below.
-        let offsetTarget = CGPoint(
-            x: targetInSwiftUI.x + 8,
-            y: targetInSwiftUI.y + 12
+        // Compensate for the cursor's tip-to-center offset so the
+        // visible TIP of the triangle lands directly on the target
+        // (not the triangle's geometric center). The Triangle shape's
+        // top vertex is ~9.24px above the 16x16 frame's center, and a
+        // -35° rotation shifts that vertex to (-5.30, -7.57) in SwiftUI
+        // coords. To put the tip ON the target, the cursor's center
+        // must be at `target + (5.30, 7.57)` — i.e., shift the
+        // animation destination down-and-right by exactly that amount.
+        // The navigation speech bubble is positioned offset from the
+        // cursor anyway (see line ~288), so it ends up beside the
+        // target as a natural consequence — no extra padding needed.
+        let tipCompensatedTarget = CGPoint(
+            x: targetInSwiftUI.x + 5.30,
+            y: targetInSwiftUI.y + 7.57
         )
 
         // Clamp target to screen bounds with padding
         let clampedTarget = CGPoint(
-            x: max(20, min(offsetTarget.x, screenFrame.width - 20)),
-            y: max(20, min(offsetTarget.y, screenFrame.height - 20))
+            x: max(20, min(tipCompensatedTarget.x, screenFrame.width - 20)),
+            y: max(20, min(tipCompensatedTarget.y, screenFrame.height - 20))
         )
 
         // Record the current cursor position so we can detect if the user

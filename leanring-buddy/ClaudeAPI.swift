@@ -13,11 +13,34 @@ class ClaudeAPI {
     private let apiURL: URL
     var model: String
     private let session: URLSession
+    /// Optional Anthropic API key for direct calls. When set, requests go
+    /// to api.anthropic.com with `x-api-key` + `anthropic-version` headers
+    /// instead of through the Cloudflare Worker proxy.
+    private let directAPIKey: String?
 
+    /// Initializer for proxy-based usage (Cloudflare Worker handles auth).
+    /// `proxyURL` is the full URL of the chat endpoint, e.g.
+    /// `https://your-worker.workers.dev/chat`.
     init(proxyURL: String, model: String = "claude-sonnet-4-6") {
         self.apiURL = URL(string: proxyURL)!
         self.model = model
+        self.directAPIKey = nil
+        self.session = Self.makeURLSession()
+        warmUpTLSConnectionIfNeeded()
+    }
 
+    /// Initializer for direct-to-Anthropic usage with a user-supplied key.
+    /// Bypasses the Cloudflare Worker — the key is sent in the `x-api-key`
+    /// header on every request.
+    init(directAnthropicAPIKey apiKey: String, model: String = "claude-sonnet-4-6") {
+        self.apiURL = URL(string: "https://api.anthropic.com/v1/messages")!
+        self.model = model
+        self.directAPIKey = apiKey
+        self.session = Self.makeURLSession()
+        warmUpTLSConnectionIfNeeded()
+    }
+
+    private static func makeURLSession() -> URLSession {
         // Use .default instead of .ephemeral so TLS session tickets are cached.
         // Ephemeral sessions do a full TLS handshake on every request, which causes
         // transient -1200 (errSSLPeerHandshakeFail) errors with large image payloads.
@@ -28,12 +51,7 @@ class ClaudeAPI {
         config.waitsForConnectivity = true
         config.urlCache = nil
         config.httpCookieStorage = nil
-        self.session = URLSession(configuration: config)
-
-        // Fire a lightweight HEAD request in the background to pre-establish the TLS
-        // connection. This caches the TLS session ticket so the first real API call
-        // (which carries a large image payload) doesn't need a cold TLS handshake.
-        warmUpTLSConnectionIfNeeded()
+        return URLSession(configuration: config)
     }
 
     private func makeAPIRequest() -> URLRequest {
@@ -41,6 +59,13 @@ class ClaudeAPI {
         request.httpMethod = "POST"
         request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // When using a direct API key, add Anthropic's required auth and
+        // version headers. The Cloudflare Worker injects these server-side
+        // when proxying, so we only set them in direct mode.
+        if let directAPIKey {
+            request.setValue(directAPIKey, forHTTPHeaderField: "x-api-key")
+            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        }
         return request
     }
 
