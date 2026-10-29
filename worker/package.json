@@ -1,9 +1,14 @@
 {
   "name": "clicky-proxy",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test": "node --test \"test/**/*.test.ts\""
+  },
+  "engines": {
+    "node": ">=23.6"
   },
   "devDependencies": {
     "wrangler": "^3.0.0"
