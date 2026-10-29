@@ -14,6 +14,9 @@ interface Env {
   ELEVENLABS_API_KEY: string;
   ELEVENLABS_VOICE_ID: string;
   ASSEMBLYAI_API_KEY: string;
+  // When set to "true", the worker returns mock responses for /chat
+  // (useful for local development / unlimited interactions testing).
+  DEV_UNLIMITED?: string;
 }
 
 export default {
@@ -50,6 +53,43 @@ export default {
 
 async function handleChat(request: Request, env: Env): Promise<Response> {
   const body = await request.text();
+
+  // Dev/mock mode: if DEV_UNLIMITED is enabled, return a fake
+  // server-sent-events (SSE) stream that mimics Anthropic's
+  // content_block_delta events. This allows local testing without
+  // consuming real API credits.
+  if (env.DEV_UNLIMITED === "true") {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        const chunks = [
+          JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "Hello from Clicky (dev mode)." } }),
+          JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: " This is a mock unlimited-response stream." } }),
+        ];
+        let i = 0;
+        function pushNext() {
+          if (i >= chunks.length) {
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+            return;
+          }
+          controller.enqueue(encoder.encode(`data: ${chunks[i]}\n\n`));
+          i++;
+          // Small stagger so clients can render progressively
+          setTimeout(pushNext, 120);
+        }
+        pushNext();
+      }
+    });
+
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+      },
+    });
+  }
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
