@@ -180,6 +180,7 @@ final class MenuBarPanelManager: NSObject {
         guard let buttonWindow = statusItem?.button?.window else { return }
 
         let statusItemFrame = buttonWindow.frame
+        let visibleScreenFrame = buttonWindow.screen?.visibleFrame
         let gapBelowMenuBar: CGFloat = 4
 
         // Calculate the panel's content height from the hosting view's fitting size
@@ -188,12 +189,38 @@ final class MenuBarPanelManager: NSObject {
         let actualPanelHeight = fittingSize.height
 
         // Horizontally center the panel beneath the status item icon
-        let panelOriginX = statusItemFrame.midX - (panelWidth / 2)
+        let panelOriginX = Self.clampedPanelOriginX(
+            statusItemFrame: statusItemFrame,
+            panelWidth: panelWidth,
+            visibleScreenFrame: visibleScreenFrame
+        )
         let panelOriginY = statusItemFrame.minY - actualPanelHeight - gapBelowMenuBar
 
         panel.setFrame(
             NSRect(x: panelOriginX, y: panelOriginY, width: panelWidth, height: actualPanelHeight),
             display: true
+        )
+    }
+
+    static func clampedPanelOriginX(
+        statusItemFrame: NSRect,
+        panelWidth: CGFloat,
+        visibleScreenFrame: NSRect?
+    ) -> CGFloat {
+        let centeredPanelOriginX = statusItemFrame.midX - (panelWidth / 2)
+
+        guard let visibleScreenFrame else {
+            return centeredPanelOriginX
+        }
+
+        let maximumPanelOriginX = max(
+            visibleScreenFrame.minX,
+            visibleScreenFrame.maxX - panelWidth
+        )
+
+        return min(
+            max(centeredPanelOriginX, visibleScreenFrame.minX),
+            maximumPanelOriginX
         )
     }
 
