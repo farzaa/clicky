@@ -6,3 +6,4 @@ build/
 releases/
 .claude/
 coding-plans/
+.clicky-worktree.env

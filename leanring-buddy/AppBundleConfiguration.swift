@@ -8,6 +8,18 @@
 import Foundation
 
 enum AppBundleConfiguration {
+    private static let placeholderWorkerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
+
+    /// Cloudflare Worker base URL for Claude, TTS, and AssemblyAI token routes.
+    /// Set `ClickyWorkerBaseURL` in Info.plist (no trailing slash).
+    static var workerBaseURL: String {
+        stringValue(forKey: "ClickyWorkerBaseURL") ?? placeholderWorkerBaseURL
+    }
+
+    static var isWorkerBaseURLConfigured: Bool {
+        workerBaseURL != placeholderWorkerBaseURL
+    }
+
     static func stringValue(forKey key: String) -> String? {
         if let value = Bundle.main.object(forInfoDictionaryKey: key) as? String {
             let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)

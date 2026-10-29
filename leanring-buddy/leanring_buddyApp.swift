@@ -37,24 +37,40 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         print("🎯 Clicky: Starting...")
         print("🎯 Clicky: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
 
-        UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
+        ClickyDefaults.shared.register(defaults: ["NSInitialToolTipDelay": 0])
 
         ClickyAnalytics.configure()
         ClickyAnalytics.trackAppOpened()
+        ClickyE2EConfiguration.applyLaunchOverrides()
+        MacOSScreenshotFloatingThumbnailSuppression.enableForAppLifetime()
 
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
         companionManager.start()
+
+        companionManager.runE2EInjectSequenceIfNeeded()
+        companionManager.runE2EBootstrapActionsIfNeeded()
         // Auto-open the panel if the user still needs to do something:
         // either they haven't onboarded yet, or permissions were revoked.
-        if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
+        // Skip during headless E2E — the ad-hoc E2E build has a different code
+        // signature than the Xcode Debug app, so TCC checks (accessibility, etc.)
+        // will look "denied" even when the dev build is already approved.
+        if !ClickyE2EConfiguration.isEnabled,
+           !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
             menuBarPanelManager?.showPanelOnLaunch()
         }
         registerAsLoginItemIfNeeded()
         // startSparkleUpdater()
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        // Re-check TCC after the user returns from System Settings.
+        companionManager.refreshAllPermissions()
+        companionManager.schedulePermissionRefreshBurstAfterReturningFromSettings()
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         companionManager.stop()
+        MacOSScreenshotFloatingThumbnailSuppression.restoreAfterAppTermination()
     }
 
     /// Registers the app as a login item so it launches automatically on
