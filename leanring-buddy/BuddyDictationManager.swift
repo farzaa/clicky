@@ -265,6 +265,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     private let transcriptionProvider: any BuddyTranscriptionProvider
     private let audioEngine = AVAudioEngine()
     private var activeTranscriptionSession: (any BuddyStreamingTranscriptionSession)?
+    private var activeTranscriptionSessionIdentifier: UUID?
     private var activeStartSource: BuddyDictationStartSource?
     private var draftCallbacks: BuddyDictationDraftCallbacks?
     private var draftTextBeforeCurrentDictation = ""
@@ -514,6 +515,8 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     private func startRecognitionSession() async throws {
         activeTranscriptionSession?.cancel()
         activeTranscriptionSession = nil
+        let transcriptionSessionIdentifier = UUID()
+        activeTranscriptionSessionIdentifier = transcriptionSessionIdentifier
 
         print("🎙️ BuddyDictationManager: opening transcription provider \(transcriptionProvider.displayName)")
 
@@ -521,12 +524,27 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             keyterms: buildTranscriptionKeyterms(),
             onTranscriptUpdate: { [weak self] transcriptText in
                 Task { @MainActor in
-                    self?.latestRecognizedText = transcriptText
+                    guard let self,
+                          Self.shouldAcceptTranscriptionCallback(
+                            callbackSessionIdentifier: transcriptionSessionIdentifier,
+                            activeSessionIdentifier: self.activeTranscriptionSessionIdentifier
+                          ) else {
+                        return
+                    }
+
+                    self.latestRecognizedText = transcriptText
                 }
             },
             onFinalTranscriptReady: { [weak self] transcriptText in
                 Task { @MainActor in
-                    guard let self else { return }
+                    guard let self,
+                          Self.shouldAcceptTranscriptionCallback(
+                            callbackSessionIdentifier: transcriptionSessionIdentifier,
+                            activeSessionIdentifier: self.activeTranscriptionSessionIdentifier
+                          ) else {
+                        return
+                    }
+
                     self.latestRecognizedText = transcriptText
 
                     if self.isFinalizingTranscript {
@@ -538,7 +556,15 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             },
             onError: { [weak self] error in
                 Task { @MainActor in
-                    self?.handleRecognitionError(error)
+                    guard let self,
+                          Self.shouldAcceptTranscriptionCallback(
+                            callbackSessionIdentifier: transcriptionSessionIdentifier,
+                            activeSessionIdentifier: self.activeTranscriptionSessionIdentifier
+                          ) else {
+                        return
+                    }
+
+                    self.handleRecognitionError(error)
                 }
             }
         )
@@ -557,6 +583,13 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         audioEngine.prepare()
         try audioEngine.start()
+    }
+
+    static func shouldAcceptTranscriptionCallback(
+        callbackSessionIdentifier: UUID,
+        activeSessionIdentifier: UUID?
+    ) -> Bool {
+        callbackSessionIdentifier == activeSessionIdentifier
     }
 
     private func handleRecognitionError(_ error: Error) {
@@ -629,6 +662,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     private func resetSessionState() {
         pendingStartRequestIdentifier = UUID()
         activeTranscriptionSession = nil
+        activeTranscriptionSessionIdentifier = nil
         draftCallbacks = nil
         activeStartSource = nil
         draftTextBeforeCurrentDictation = ""

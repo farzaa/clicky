@@ -5,6 +5,7 @@
 //  Created by thorfinn on 3/2/26.
 //
 
+import Foundation
 import Testing
 @testable import leanring_buddy
 
@@ -35,6 +36,28 @@ struct leanring_buddyTests {
         )
 
         #expect(shouldTreatPermissionAsGranted)
+    }
+
+    @MainActor
+    @Test func currentTranscriptionSessionCallbackIsAccepted() {
+        let currentSessionIdentifier = UUID()
+
+        let shouldAcceptCallback = BuddyDictationManager.shouldAcceptTranscriptionCallback(
+            callbackSessionIdentifier: currentSessionIdentifier,
+            activeSessionIdentifier: currentSessionIdentifier
+        )
+
+        #expect(shouldAcceptCallback)
+    }
+
+    @MainActor
+    @Test func cancelledTranscriptionSessionCallbackIsRejected() {
+        let shouldAcceptCallback = BuddyDictationManager.shouldAcceptTranscriptionCallback(
+            callbackSessionIdentifier: UUID(),
+            activeSessionIdentifier: UUID()
+        )
+
+        #expect(!shouldAcceptCallback)
     }
 
 }
