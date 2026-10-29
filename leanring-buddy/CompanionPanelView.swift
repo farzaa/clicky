@@ -29,8 +29,12 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 12)
 
-                modelPickerRow
-                    .padding(.horizontal, 16)
+                VStack(spacing: 8) {
+                    assistantModePickerRow
+                    modelPickerRow
+                    tftSnapshotStatusRow
+                }
+                .padding(.horizontal, 16)
             }
 
             if !companionManager.allPermissionsGranted {
@@ -127,7 +131,9 @@ struct CompanionPanelView: View {
     @ViewBuilder
     private var permissionsCopySection: some View {
         if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            Text("Hold Control+Option to talk.")
+            Text(companionManager.selectedAssistantMode == .tftCoach
+                 ? "Hold Control+Option to ask for TFT coaching."
+                 : "Hold Control+Option to talk.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(DS.Colors.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -598,6 +604,49 @@ struct CompanionPanelView: View {
 
     // MARK: - Model Picker
 
+    private var assistantModePickerRow: some View {
+        HStack {
+            Text("Mode")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Spacer()
+
+            HStack(spacing: 0) {
+                assistantModeOptionButton(mode: .general)
+                assistantModeOptionButton(mode: .tftCoach)
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func assistantModeOptionButton(mode: CompanionAssistantMode) -> some View {
+        let isSelected = companionManager.selectedAssistantMode == mode
+        return Button(action: {
+            companionManager.setSelectedAssistantMode(mode)
+        }) {
+            Text(mode.panelLabel)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
     private var modelPickerRow: some View {
         HStack {
             Text("Model")
@@ -639,6 +688,23 @@ struct CompanionPanelView: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
+    }
+
+    @ViewBuilder
+    private var tftSnapshotStatusRow: some View {
+        if companionManager.selectedAssistantMode == .tftCoach {
+            HStack(spacing: 8) {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+
+                Text(companionManager.tftMetaStatusMessage)
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.vertical, 2)
+        }
     }
 
     // MARK: - DM Farza Button

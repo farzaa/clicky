@@ -37,4 +37,19 @@ struct leanring_buddyTests {
         #expect(shouldTreatPermissionAsGranted)
     }
 
+    @Test func tftPromptContextIncludesPatchAndDataDragonVersion() async throws {
+        let promptContext = TFTMetaPromptBuilder.buildPromptContext()
+        let snapshot = TFTMetaKnowledgeBase.currentSnapshot
+
+        #expect(promptContext.contains(snapshot.latestPatchTitle))
+        #expect(promptContext.contains(snapshot.dataDragonVersion))
+        #expect(promptContext.contains("TFT SNAPSHOT (manual)"))
+    }
+
+    @Test func tftStatusMessageMarksSnapshotAsManual() async throws {
+        let statusMessage = TFTMetaPromptBuilder.buildStatusMessage()
+
+        #expect(statusMessage.contains("Manual TFT snapshot"))
+    }
+
 }
