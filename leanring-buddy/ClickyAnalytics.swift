@@ -69,6 +69,13 @@ enum ClickyAnalytics {
 
     // MARK: - Voice Interaction
 
+    /// User switched assistant behavior mode from the panel.
+    static func trackAssistantModeSelected(mode: String) {
+        PostHogSDK.shared.capture("assistant_mode_selected", properties: [
+            "mode": mode
+        ])
+    }
+
     /// User pressed the push-to-talk shortcut (control+option) to start talking.
     static func trackPushToTalkStarted() {
         PostHogSDK.shared.capture("push_to_talk_started")
