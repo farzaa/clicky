@@ -232,11 +232,19 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
             value: modelName,
             usingBoundary: boundary
         )
-        requestBodyData.appendMultipartFormField(
-            named: "language",
-            value: "en",
-            usingBoundary: boundary
-        )
+
+        // Language hint for Whisper:
+        //  • Auto-detect on  → omit field (Whisper picks the best language)
+        //  • Single language  → pin the BCP-47 tag for best accuracy
+        //  • Multiple languages → omit field (Whisper auto-detects among them;
+        //    no API-level candidate list is supported)
+        if let languageID = LanguageSettings.shared.primaryLanguageID {
+            requestBodyData.appendMultipartFormField(
+                named: "language",
+                value: languageID,
+                usingBoundary: boundary
+            )
+        }
         requestBodyData.appendMultipartFormField(
             named: "response_format",
             value: "json",
