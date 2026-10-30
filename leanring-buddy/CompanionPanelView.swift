@@ -31,6 +31,9 @@ struct CompanionPanelView: View {
 
                 modelPickerRow
                     .padding(.horizontal, 16)
+
+                openRouterModelPickerRow
+                    .padding(.horizontal, 16)
             }
 
             if !companionManager.allPermissionsGranted {
@@ -623,7 +626,7 @@ struct CompanionPanelView: View {
     }
 
     private func modelOptionButton(label: String, modelID: String) -> some View {
-        let isSelected = companionManager.selectedModel == modelID
+        let isSelected = companionManager.selectedModel == modelID && !companionManager.isUsingOpenRouter
         return Button(action: {
             companionManager.setSelectedModel(modelID)
         }) {
@@ -639,6 +642,87 @@ struct CompanionPanelView: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
+    }
+
+    // MARK: - OpenRouter Model Picker
+
+    /// Available OpenRouter models shown in the dropdown.
+    private static let openRouterModels: [(label: String, modelID: String)] = [
+        ("Sonnet", "anthropic/claude-sonnet-4"),
+        ("Opus", "anthropic/claude-opus-4"),
+        ("ChatGPT", "openai/gpt-4.1"),
+        ("Grok", "x-ai/grok-3"),
+        ("Gemini", "google/gemini-2.5-pro"),
+        ("Qwen", "qwen/qwen3-235b-a22b"),
+    ]
+
+    private var openRouterModelPickerRow: some View {
+        HStack {
+            Text("OpenRouter")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Spacer()
+
+            Menu {
+                // "Off" option to switch back to Claude direct
+                Button(action: {
+                    companionManager.setSelectedModel(companionManager.selectedModel)
+                }) {
+                    if !companionManager.isUsingOpenRouter {
+                        Label("Off", systemImage: "checkmark")
+                    } else {
+                        Text("Off")
+                    }
+                }
+
+                Divider()
+
+                ForEach(Self.openRouterModels, id: \.modelID) { model in
+                    Button(action: {
+                        companionManager.setSelectedOpenRouterModel(model.modelID)
+                    }) {
+                        if companionManager.selectedOpenRouterModel == model.modelID {
+                            Label(model.label, systemImage: "checkmark")
+                        } else {
+                            Text(model.label)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(openRouterDisplayLabel)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(companionManager.isUsingOpenRouter ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(companionManager.isUsingOpenRouter ? Color.white.opacity(0.1) : Color.clear)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .pointerCursor()
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// Display label for the currently selected OpenRouter model, or "Off" if not using OpenRouter.
+    private var openRouterDisplayLabel: String {
+        guard let selectedOpenRouterModelID = companionManager.selectedOpenRouterModel else {
+            return "Off"
+        }
+        return Self.openRouterModels.first(where: { $0.modelID == selectedOpenRouterModelID })?.label ?? selectedOpenRouterModelID
     }
 
     // MARK: - DM Farza Button

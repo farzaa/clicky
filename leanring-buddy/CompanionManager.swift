@@ -76,6 +76,10 @@ final class CompanionManager: ObservableObject {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
     }()
 
+    private lazy var openRouterAPI: OpenRouterAPI = {
+        return OpenRouterAPI(proxyURL: "\(Self.workerBaseURL)/openrouter-chat", model: selectedOpenRouterModel ?? "anthropic/claude-sonnet-4")
+    }()
+
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
         return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
     }()
@@ -110,10 +114,27 @@ final class CompanionManager: ObservableObject {
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
 
+    /// The selected OpenRouter model ID, or nil if using Claude direct.
+    /// When set, voice requests route through OpenRouter instead of the Anthropic API.
+    @Published var selectedOpenRouterModel: String? = UserDefaults.standard.string(forKey: "selectedOpenRouterModel")
+
+    /// Whether voice requests should route through OpenRouter instead of Claude direct.
+    var isUsingOpenRouter: Bool {
+        return selectedOpenRouterModel != nil
+    }
+
     func setSelectedModel(_ model: String) {
         selectedModel = model
+        selectedOpenRouterModel = nil
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
+        UserDefaults.standard.removeObject(forKey: "selectedOpenRouterModel")
         claudeAPI.model = model
+    }
+
+    func setSelectedOpenRouterModel(_ openRouterModelID: String) {
+        selectedOpenRouterModel = openRouterModelID
+        UserDefaults.standard.set(openRouterModelID, forKey: "selectedOpenRouterModel")
+        openRouterAPI.model = openRouterModelID
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -610,7 +631,7 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                let (fullResponseText, _) = try await analyzeImageStreamingWithActiveProvider(
                     images: labeledImages,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt,
                     conversationHistory: historyForAPI,
@@ -982,7 +1003,7 @@ final class CompanionManager: ObservableObject {
                 let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
                 let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                let (fullResponseText, _) = try await analyzeImageStreamingWithActiveProvider(
                     images: labeledImages,
                     systemPrompt: Self.onboardingDemoSystemPrompt,
                     userPrompt: "look around my screen and find something interesting to point at",
@@ -1021,6 +1042,36 @@ final class CompanionManager: ObservableObject {
             } catch {
                 print("⚠️ Onboarding demo error: \(error)")
             }
+        }
+    }
+
+    // MARK: - Provider Routing
+
+    /// Routes a streaming vision request to either Claude direct or OpenRouter,
+    /// depending on whether an OpenRouter model is selected.
+    private func analyzeImageStreamingWithActiveProvider(
+        images: [(data: Data, label: String)],
+        systemPrompt: String,
+        conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
+        userPrompt: String,
+        onTextChunk: @MainActor @Sendable (String) -> Void
+    ) async throws -> (text: String, duration: TimeInterval) {
+        if isUsingOpenRouter {
+            return try await openRouterAPI.analyzeImageStreaming(
+                images: images,
+                systemPrompt: systemPrompt,
+                conversationHistory: conversationHistory,
+                userPrompt: userPrompt,
+                onTextChunk: onTextChunk
+            )
+        } else {
+            return try await claudeAPI.analyzeImageStreaming(
+                images: images,
+                systemPrompt: systemPrompt,
+                conversationHistory: conversationHistory,
+                userPrompt: userPrompt,
+                onTextChunk: onTextChunk
+            )
         }
     }
 }
