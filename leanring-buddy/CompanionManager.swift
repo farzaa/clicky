@@ -70,14 +70,18 @@ final class CompanionManager: ObservableObject {
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
-
     private lazy var claudeAPI: ClaudeAPI = {
-        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+        let defaultURL = "https://your-worker-name.your-subdomain.workers.dev" // Default placeholder, will be dynamically updated in start()
+        return ClaudeAPI(proxyURL: "\(defaultURL)/chat", model: selectedModel)
+    }()
+
+    private lazy var openAIAPI: OpenAIAPI = {
+        return OpenAIAPI(apiKey: lmStudioAPIKey, model: selectedModel)
     }()
 
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
-        return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
+        let defaultURL = "https://your-worker-name.your-subdomain.workers.dev"
+        return ElevenLabsTTSClient(proxyURL: "\(defaultURL)/tts")
     }()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
@@ -107,13 +111,65 @@ final class CompanionManager: ObservableObject {
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
 
+    /// The user's preferred spoken and transcribing language code (e.g. "en", "fr").
+    @Published var selectedLanguageCode: String = UserDefaults.standard.string(forKey: "selectedLanguageCode") ?? "en" {
+        didSet {
+            UserDefaults.standard.set(selectedLanguageCode, forKey: "selectedLanguageCode")
+        }
+    }
+
     /// The Claude model used for voice responses. Persisted to UserDefaults.
-    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedGemmaModel") ?? ""
+
+    /// The API key for local LLM requests. Persisted to UserDefaults.
+    @Published var lmStudioAPIKey: String = UserDefaults.standard.string(forKey: "lmStudioAPIKey") ?? "" {
+        didSet {
+            UserDefaults.standard.set(lmStudioAPIKey, forKey: "lmStudioAPIKey")
+            openAIAPI.apiKey = lmStudioAPIKey
+        }
+    }
+
+    /// List of available models fetched from LM Studio API
+    @Published var availableModels: [String] = []
+
+    func fetchAvailableModels() {
+        guard let url = URL(string: "http://127.0.0.1:1234/v1/models") else { return }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 3
+        if !lmStudioAPIKey.isEmpty {
+            request.setValue("Bearer \(lmStudioAPIKey)", forHTTPHeaderField: "Authorization")
+        }
+        
+        Task {
+            do {
+                let (data, _) = try await URLSession.shared.data(for: request)
+                if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let dataArr = json["data"] as? [[String: Any]] {
+                    var models = dataArr.compactMap { $0["id"] as? String }
+                    // Filter out embedding models or non-chat models if needed, 
+                    // usually all are fine but we just list them.
+                    models.sort()
+                    await MainActor.run {
+                        self.availableModels = models
+                        // If current selected isn't in there, don't force change it yet
+                        // unless it's completely empty. It's safe to let them manually select it.
+                    }
+                }
+            } catch {
+                print("Failed to fetch models from LM Studio: \\(error)")
+            }
+        }
+    }
 
     func setSelectedModel(_ model: String) {
         selectedModel = model
-        UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
-        claudeAPI.model = model
+        UserDefaults.standard.set(model, forKey: "selectedGemmaModel")
+        
+        if model.lowercased().contains("claude") {
+            claudeAPI.model = model
+        } else {
+            openAIAPI.model = model
+        }
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -173,15 +229,24 @@ final class CompanionManager: ObservableObject {
     }
 
     func start() {
+        Task {
+            let baseURL = await WorkerEnvironment.shared.getBaseURL()
+            self.claudeAPI.proxyURL = "\(baseURL)/chat"
+            self.elevenLabsTTSClient.proxyURL = "\(baseURL)/tts"
+            
+            // Eagerly touch APIs so their TLS warmup handshakes complete
+            // well before the onboarding demo fires at ~40s into the video.
+            self.claudeAPI.warmUpTLSConnectionIfNeeded()
+            _ = self.openAIAPI
+        }
+        
+        fetchAvailableModels()
         refreshAllPermissions()
         print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
-        // Eagerly touch the Claude API so its TLS warmup handshake completes
-        // well before the onboarding demo fires at ~40s into the video.
-        _ = claudeAPI
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -610,15 +675,30 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
-                    conversationHistory: historyForAPI,
-                    userPrompt: transcript,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
-                    }
-                )
+                let fullResponseText: String
+                let duration: TimeInterval
+                
+                if selectedModel.lowercased().contains("claude") {
+                    (fullResponseText, duration) = try await claudeAPI.analyzeImageStreaming(
+                        images: labeledImages,
+                        systemPrompt: Self.companionVoiceResponseSystemPrompt + "\n\nCRITICAL: Respond EXCLUSIVELY in the following language code: \(selectedLanguageCode)",
+                        conversationHistory: historyForAPI,
+                        userPrompt: transcript,
+                        onTextChunk: { _ in
+                            // No streaming text display — spinner stays until TTS plays
+                        }
+                    )
+                } else {
+                    (fullResponseText, duration) = try await openAIAPI.analyzeImageStreaming(
+                        images: labeledImages,
+                        systemPrompt: Self.companionVoiceResponseSystemPrompt + "\n\nCRITICAL: Respond EXCLUSIVELY in the following language code: \(selectedLanguageCode)",
+                        conversationHistory: historyForAPI,
+                        userPrompt: transcript,
+                        onTextChunk: { _ in
+                            // No streaming text display — spinner stays until TTS plays
+                        }
+                    )
+                }
 
                 guard !Task.isCancelled else { return }
 
@@ -982,12 +1062,24 @@ final class CompanionManager: ObservableObject {
                 let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
                 let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: Self.onboardingDemoSystemPrompt,
-                    userPrompt: "look around my screen and find something interesting to point at",
-                    onTextChunk: { _ in }
-                )
+                let fullResponseText: String
+                let duration: TimeInterval
+
+                if selectedModel.lowercased().contains("claude") {
+                    (fullResponseText, duration) = try await claudeAPI.analyzeImageStreaming(
+                        images: labeledImages,
+                        systemPrompt: Self.onboardingDemoSystemPrompt + "\n\nCRITICAL: Respond EXCLUSIVELY in the following language code: \(selectedLanguageCode)",
+                        userPrompt: "look around my screen and find something interesting to point at",
+                        onTextChunk: { _ in }
+                    )
+                } else {
+                    (fullResponseText, duration) = try await openAIAPI.analyzeImageStreaming(
+                        images: labeledImages,
+                        systemPrompt: Self.onboardingDemoSystemPrompt + "\n\nCRITICAL: Respond EXCLUSIVELY in the following language code: \(selectedLanguageCode)",
+                        userPrompt: "look around my screen and find something interesting to point at",
+                        onTextChunk: { _ in }
+                    )
+                }
 
                 let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
 

@@ -517,7 +517,9 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         print("🎙️ BuddyDictationManager: opening transcription provider \(transcriptionProvider.displayName)")
 
+        let languageCode = UserDefaults.standard.string(forKey: "selectedLanguageCode") ?? "en"
         let activeTranscriptionSession = try await transcriptionProvider.startStreamingSession(
+            languageCode: languageCode,
             keyterms: buildTranscriptionKeyterms(),
             onTranscriptUpdate: { [weak self] transcriptText in
                 Task { @MainActor in

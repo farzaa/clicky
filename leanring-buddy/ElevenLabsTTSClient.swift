@@ -12,7 +12,8 @@ import Foundation
 
 @MainActor
 final class ElevenLabsTTSClient {
-    private let proxyURL: URL
+    var proxyURL: String
+    private var apiURL: URL { URL(string: proxyURL)! }
     private let session: URLSession
 
     /// The audio player for the current TTS playback. Kept alive so the
@@ -20,7 +21,7 @@ final class ElevenLabsTTSClient {
     private var audioPlayer: AVAudioPlayer?
 
     init(proxyURL: String) {
-        self.proxyURL = URL(string: proxyURL)!
+        self.proxyURL = proxyURL
 
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 30
@@ -31,7 +32,7 @@ final class ElevenLabsTTSClient {
     /// Sends `text` to ElevenLabs TTS and plays the resulting audio.
     /// Throws on network or decoding errors. Cancellation-safe.
     func speakText(_ text: String) async throws {
-        var request = URLRequest(url: proxyURL)
+        var request = URLRequest(url: apiURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
