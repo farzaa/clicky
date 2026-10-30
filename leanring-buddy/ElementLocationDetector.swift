@@ -110,10 +110,7 @@ class ElementLocationDetector {
         // Convert from top-left origin (Computer Use / CoreGraphics) to bottom-left origin (AppKit)
         let scaledYBottomLeftOrigin = CGFloat(displayHeightInPoints) - scaledYTopLeftOrigin
 
-        print("🎯 ElementLocationDetector: mapped (\(Int(clampedX)), \(Int(clampedY))) in " +
-              "\(computerUseResolution.width)x\(computerUseResolution.height) → " +
-              "(\(Int(scaledX)), \(Int(scaledYBottomLeftOrigin))) in " +
-              "\(displayWidthInPoints)x\(displayHeightInPoints) display-local AppKit coords")
+        // Do not log coordinates — they reveal the pixel location of elements on the user's screen.
 
         return CGPoint(x: scaledX, y: scaledYBottomLeftOrigin)
     }
@@ -254,7 +251,7 @@ class ElementLocationDetector {
 
             let x = CGFloat(coordinate[0].doubleValue)
             let y = CGFloat(coordinate[1].doubleValue)
-            print("🎯 ElementLocationDetector: raw coordinate (\(Int(x)), \(Int(y)))")
+            // Do not log coordinate values — they reveal element positions on the user's screen.
             return CGPoint(x: x, y: y)
         }
 
