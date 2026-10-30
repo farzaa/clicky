@@ -91,6 +91,7 @@ final class CompanionManager: ObservableObject {
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
+    private var typingStateCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
     /// Scheduled hide for transient cursor mode — cancelled if the user
@@ -106,6 +107,11 @@ final class CompanionManager: ObservableObject {
     /// Whether the blue cursor overlay is currently visible on screen.
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
+
+    /// True while the user is actively typing (non-PTT keypress detected).
+    /// Forwarded from GlobalPushToTalkShortcutMonitor and used by BlueCursorView
+    /// to hide the cursor during idle typing, mirroring macOS hide-on-type behavior.
+    @Published private(set) var isUserTyping: Bool = false
 
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
@@ -179,6 +185,7 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
+        bindTypingState()
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
@@ -298,8 +305,16 @@ final class CompanionManager: ObservableObject {
         shortcutTransitionCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
+        typingStateCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
+    }
+
+    /// Called by BlueCursorView's cursor-tracking timer when the mouse moves
+    /// after a period of typing, restoring the cursor — mirrors the "until mouse
+    /// moves" part of NSCursor.setHiddenUntilMouseMoves(true).
+    func resetUserTyping() {
+        isUserTyping = false
     }
 
     func refreshAllPermissions() {
@@ -467,6 +482,16 @@ final class CompanionManager: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] transition in
                 self?.handleShortcutTransition(transition)
+            }
+    }
+
+    /// Forwards the monitor's isUserTyping flag onto CompanionManager so
+    /// BlueCursorView can observe a single source-of-truth for cursor hiding.
+    private func bindTypingState() {
+        typingStateCancellable = globalPushToTalkShortcutMonitor.$isUserTyping
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] typing in
+                self?.isUserTyping = typing
             }
     }
 
