@@ -23,6 +23,7 @@ protocol BuddyTranscriptionProvider {
 
     func startStreamingSession(
         keyterms: [String],
+        languageCode: String?,
         onTranscriptUpdate: @escaping (String) -> Void,
         onFinalTranscriptReady: @escaping (String) -> Void,
         onError: @escaping (Error) -> Void

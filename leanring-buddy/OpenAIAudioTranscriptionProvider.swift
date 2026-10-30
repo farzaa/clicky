@@ -35,6 +35,7 @@ final class OpenAIAudioTranscriptionProvider: BuddyTranscriptionProvider {
 
     func startStreamingSession(
         keyterms: [String],
+        languageCode: String?,
         onTranscriptUpdate: @escaping (String) -> Void,
         onFinalTranscriptReady: @escaping (String) -> Void,
         onError: @escaping (Error) -> Void
@@ -49,6 +50,7 @@ final class OpenAIAudioTranscriptionProvider: BuddyTranscriptionProvider {
             apiKey: apiKey,
             modelName: modelName,
             keyterms: keyterms,
+            languageCode: languageCode,
             onTranscriptUpdate: onTranscriptUpdate,
             onFinalTranscriptReady: onFinalTranscriptReady,
             onError: onError
@@ -69,6 +71,7 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
     private let apiKey: String
     private let modelName: String
     private let keyterms: [String]
+    private let languageCode: String?
     private let onTranscriptUpdate: (String) -> Void
     private let onFinalTranscriptReady: (String) -> Void
     private let onError: (Error) -> Void
@@ -89,6 +92,7 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
         apiKey: String,
         modelName: String,
         keyterms: [String],
+        languageCode: String?,
         onTranscriptUpdate: @escaping (String) -> Void,
         onFinalTranscriptReady: @escaping (String) -> Void,
         onError: @escaping (Error) -> Void
@@ -96,6 +100,7 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
         self.apiKey = apiKey
         self.modelName = modelName
         self.keyterms = keyterms
+        self.languageCode = languageCode
         self.onTranscriptUpdate = onTranscriptUpdate
         self.onFinalTranscriptReady = onFinalTranscriptReady
         self.onError = onError
@@ -232,11 +237,14 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
             value: modelName,
             usingBoundary: boundary
         )
+
+        let languageValue = languageCode ?? "en"
         requestBodyData.appendMultipartFormField(
             named: "language",
-            value: "en",
+            value: languageValue,
             usingBoundary: boundary
         )
+
         requestBodyData.appendMultipartFormField(
             named: "response_format",
             value: "json",

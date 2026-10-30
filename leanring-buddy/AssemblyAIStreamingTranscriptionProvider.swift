@@ -19,7 +19,7 @@ struct AssemblyAIStreamingTranscriptionProviderError: LocalizedError {
 final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider {
     /// URL for the Cloudflare Worker endpoint that returns a short-lived
     /// AssemblyAI streaming token. The real API key never leaves the server.
-    private static let tokenProxyURL = "https://your-worker-name.your-subdomain.workers.dev/transcribe-token"
+    private static let tokenProxyURL = "https://clicky-proxy.clicky-mark.workers.dev/transcribe-token"
 
     let displayName = "AssemblyAI"
     let requiresSpeechRecognitionPermission = false
@@ -35,11 +35,11 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
 
     func startStreamingSession(
         keyterms: [String],
+        languageCode: String?,
         onTranscriptUpdate: @escaping (String) -> Void,
         onFinalTranscriptReady: @escaping (String) -> Void,
         onError: @escaping (Error) -> Void
     ) async throws -> any BuddyStreamingTranscriptionSession {
-        // Fetch a fresh temporary token from the proxy before each session
         let temporaryToken = try await fetchTemporaryToken()
         print("🎙️ AssemblyAI: fetched temporary token (\(temporaryToken.prefix(20))...)")
 
@@ -48,6 +48,7 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
             temporaryToken: temporaryToken,
             urlSession: sharedWebSocketURLSession,
             keyterms: keyterms,
+            languageCode: languageCode,
             onTranscriptUpdate: onTranscriptUpdate,
             onFinalTranscriptReady: onFinalTranscriptReady,
             onError: onError
@@ -85,6 +86,53 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
 }
 
 private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStreamingTranscriptionSession {
+    private enum StreamingSpeechModelConfiguration {
+        case universalRealtimePro
+        case whisperRealtime
+
+        init(languageCode: String?) {
+            let normalizedLanguageCode = languageCode?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+
+            if let normalizedLanguageCode,
+               !normalizedLanguageCode.isEmpty,
+               normalizedLanguageCode != "en" {
+                self = .whisperRealtime
+                return
+            }
+
+            self = .universalRealtimePro
+        }
+
+        var modelIdentifier: String {
+            switch self {
+            case .universalRealtimePro:
+                return "u3-rt-pro"
+            case .whisperRealtime:
+                return "whisper-rt"
+            }
+        }
+
+        var supportsExplicitLanguageCode: Bool {
+            switch self {
+            case .universalRealtimePro:
+                return true
+            case .whisperRealtime:
+                return false
+            }
+        }
+
+        var shouldEnableLanguageDetection: Bool {
+            switch self {
+            case .universalRealtimePro:
+                return false
+            case .whisperRealtime:
+                return true
+            }
+        }
+    }
+
     private struct MessageEnvelope: Decodable {
         let type: String
     }
@@ -117,6 +165,7 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
     private let apiKey: String?
     private let temporaryToken: String?
     private let keyterms: [String]
+    private let languageCode: String?
     private let onTranscriptUpdate: (String) -> Void
     private let onFinalTranscriptReady: (String) -> Void
     private let onError: (Error) -> Void
@@ -142,6 +191,7 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
         temporaryToken: String?,
         urlSession: URLSession,
         keyterms: [String],
+        languageCode: String?,
         onTranscriptUpdate: @escaping (String) -> Void,
         onFinalTranscriptReady: @escaping (String) -> Void,
         onError: @escaping (Error) -> Void
@@ -150,6 +200,7 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
         self.temporaryToken = temporaryToken
         self.urlSession = urlSession
         self.keyterms = keyterms
+        self.languageCode = languageCode
         self.onTranscriptUpdate = onTranscriptUpdate
         self.onFinalTranscriptReady = onFinalTranscriptReady
         self.onError = onError
@@ -158,7 +209,8 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
     func open() async throws {
         let websocketURL = try Self.makeWebsocketURL(
             temporaryToken: temporaryToken,
-            keyterms: keyterms
+            keyterms: keyterms,
+            languageCode: languageCode
         )
 
         var websocketRequest = URLRequest(url: websocketURL)
@@ -436,7 +488,8 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
 
     private static func makeWebsocketURL(
         temporaryToken: String?,
-        keyterms: [String]
+        keyterms: [String],
+        languageCode: String?
     ) throws -> URL {
         guard var websocketURLComponents = URLComponents(string: websocketBaseURLString) else {
             throw AssemblyAIStreamingTranscriptionProviderError(
@@ -444,12 +497,28 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
             )
         }
 
+        let streamingSpeechModelConfiguration = StreamingSpeechModelConfiguration(
+            languageCode: languageCode
+        )
+
         var queryItems = [
             URLQueryItem(name: "sample_rate", value: "16000"),
             URLQueryItem(name: "encoding", value: "pcm_s16le"),
             URLQueryItem(name: "format_turns", value: "true"),
-            URLQueryItem(name: "speech_model", value: "u3-rt-pro")
+            URLQueryItem(
+                name: "speech_model",
+                value: streamingSpeechModelConfiguration.modelIdentifier
+            )
         ]
+
+        if streamingSpeechModelConfiguration.shouldEnableLanguageDetection {
+            queryItems.append(URLQueryItem(name: "language_detection", value: "true"))
+        }
+
+        if streamingSpeechModelConfiguration.supportsExplicitLanguageCode,
+           let languageCode {
+            queryItems.append(URLQueryItem(name: "language_code", value: languageCode))
+        }
 
         let normalizedKeyterms = keyterms
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }

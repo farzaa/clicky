@@ -203,7 +203,7 @@ class ClaudeAPI {
                 accumulatedResponseText += textChunk
                 // Send the accumulated text so far to the UI for progressive rendering
                 let currentAccumulatedText = accumulatedResponseText
-                await onTextChunk(currentAccumulatedText)
+                onTextChunk(currentAccumulatedText)
             }
         }
 

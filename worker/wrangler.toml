@@ -4,3 +4,4 @@ compatibility_date = "2024-01-01"
 
 [vars]
 ELEVENLABS_VOICE_ID = "kPzsL2i3teMYv0FxEYQ6"
+ELEVENLABS_CHINESE_VOICE_ID = ""

@@ -25,11 +25,12 @@ final class AppleSpeechTranscriptionProvider: BuddyTranscriptionProvider {
 
     func startStreamingSession(
         keyterms: [String],
+        languageCode: String?,
         onTranscriptUpdate: @escaping (String) -> Void,
         onFinalTranscriptReady: @escaping (String) -> Void,
         onError: @escaping (Error) -> Void
     ) async throws -> any BuddyStreamingTranscriptionSession {
-        guard let speechRecognizer = Self.makeBestAvailableSpeechRecognizer() else {
+        guard let speechRecognizer = Self.makeBestAvailableSpeechRecognizer(languageCode: languageCode) else {
             throw AppleSpeechTranscriptionProviderError(message: "dictation is not available on this mac.")
         }
 
@@ -41,14 +42,23 @@ final class AppleSpeechTranscriptionProvider: BuddyTranscriptionProvider {
         )
     }
 
-    private static func makeBestAvailableSpeechRecognizer() -> SFSpeechRecognizer? {
-        let preferredLocales = [
-            Locale.autoupdatingCurrent,
-            Locale(identifier: "en-US")
-        ]
+    private static func makeBestAvailableSpeechRecognizer(languageCode: String?) -> SFSpeechRecognizer? {
+        var preferredLocales: [Locale] = []
+
+        if let languageCode {
+            preferredLocales.append(Locale(identifier: languageCode))
+        }
+
+        preferredLocales.append(Locale.autoupdatingCurrent)
+        preferredLocales.append(Locale(identifier: "en-US"))
+
+        if languageCode != "zh-CN" {
+            preferredLocales.append(Locale(identifier: "zh-CN"))
+        }
 
         for preferredLocale in preferredLocales {
-            if let speechRecognizer = SFSpeechRecognizer(locale: preferredLocale) {
+            if let speechRecognizer = SFSpeechRecognizer(locale: preferredLocale),
+               speechRecognizer.isAvailable {
                 return speechRecognizer
             }
         }
