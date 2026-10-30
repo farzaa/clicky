@@ -29,6 +29,12 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 12)
 
+                pushToTalkShortcutPickerRow
+                    .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 4)
+
                 modelPickerRow
                     .padding(.horizontal, 16)
             }
@@ -127,7 +133,7 @@ struct CompanionPanelView: View {
     @ViewBuilder
     private var permissionsCopySection: some View {
         if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            Text("Hold Control+Option to talk.")
+            Text("Hold \(companionManager.selectedPushToTalkModifierCombination.pickerLabel) to talk.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(DS.Colors.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -592,6 +598,57 @@ struct CompanionPanelView: View {
             Text(companionManager.buddyDictationManager.transcriptionProviderDisplayName)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(DS.Colors.textTertiary)
+        }
+        .padding(.vertical, 4)
+    }
+
+    // MARK: - Push-to-Talk Shortcut Picker
+
+    private var pushToTalkShortcutPickerRow: some View {
+        HStack {
+            Text("Shortcut")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Spacer()
+
+            Menu {
+                ForEach(BuddyPushToTalkShortcut.ShortcutOption.allCases, id: \.self) { shortcutOption in
+                    Button(action: {
+                        companionManager.setSelectedPushToTalkModifierCombination(shortcutOption)
+                    }) {
+                        HStack {
+                            Text(shortcutOption.pickerLabel)
+                            if shortcutOption == companionManager.selectedPushToTalkModifierCombination {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(companionManager.selectedPushToTalkModifierCombination.pickerLabel)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.textPrimary)
+
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .pointerCursor()
         }
         .padding(.vertical, 4)
     }
