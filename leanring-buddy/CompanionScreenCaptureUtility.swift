@@ -24,10 +24,18 @@ struct CompanionScreenCapture {
 @MainActor
 enum CompanionScreenCaptureUtility {
 
-    /// Captures all connected displays as JPEG data, labeling each with
-    /// whether the user's cursor is on that screen. This gives the AI
-    /// full context across multiple monitors.
-    static func captureAllScreensAsJPEG() async throws -> [CompanionScreenCapture] {
+    /// Captures displays as JPEG data based on the provided settings.
+    ///
+    /// - Parameters:
+    ///   - captureOnlyPrimaryScreen: When true, only the screen containing the cursor is captured.
+    ///   - captureActiveWindowOnly: When true, captures only the frontmost application window
+    ///     instead of the full screen.
+    ///   - jpegCompressionQuality: JPEG compression factor from 0.0 (max compression) to 1.0 (min compression).
+    static func captureAllScreensAsJPEG(
+        captureOnlyPrimaryScreen: Bool = false,
+        captureActiveWindowOnly: Bool = false,
+        jpegCompressionQuality: CGFloat = 0.8
+    ) async throws -> [CompanionScreenCapture] {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
 
         guard !content.displays.isEmpty else {
@@ -67,6 +75,16 @@ enum CompanionScreenCaptureUtility {
             return false
         }
 
+        // If capturing only the active window, find the frontmost non-own window
+        let activeWindow: SCWindow? = captureActiveWindowOnly
+            ? content.windows.first(where: { window in
+                window.owningApplication?.bundleIdentifier != ownBundleIdentifier
+                    && window.isOnScreen
+                    && window.frame.width > 100
+                    && window.frame.height > 100
+              })
+            : nil
+
         var capturedScreens: [CompanionScreenCapture] = []
 
         for (displayIndex, display) in sortedDisplays.enumerated() {
@@ -78,17 +96,43 @@ enum CompanionScreenCaptureUtility {
                           width: CGFloat(display.width), height: CGFloat(display.height))
             let isCursorScreen = displayFrame.contains(mouseLocation)
 
-            let filter = SCContentFilter(display: display, excludingWindows: ownAppWindows)
+            // Skip non-cursor screens when primary-only mode is enabled
+            if captureOnlyPrimaryScreen && !isCursorScreen {
+                continue
+            }
+
+            let filter: SCContentFilter
+            if let activeWindow {
+                // Capture just the active window — no desktop or other windows
+                filter = SCContentFilter(desktopIndependentWindow: activeWindow)
+            } else {
+                filter = SCContentFilter(display: display, excludingWindows: ownAppWindows)
+            }
 
             let configuration = SCStreamConfiguration()
             let maxDimension = 1280
-            let aspectRatio = CGFloat(display.width) / CGFloat(display.height)
-            if display.width >= display.height {
-                configuration.width = maxDimension
-                configuration.height = Int(CGFloat(maxDimension) / aspectRatio)
+
+            if let activeWindow {
+                // Size the capture to the window's actual dimensions, capped at maxDimension
+                let windowWidth = Int(activeWindow.frame.width)
+                let windowHeight = Int(activeWindow.frame.height)
+                let windowAspectRatio = CGFloat(windowWidth) / CGFloat(windowHeight)
+                if windowWidth >= windowHeight {
+                    configuration.width = min(windowWidth, maxDimension)
+                    configuration.height = Int(CGFloat(configuration.width) / windowAspectRatio)
+                } else {
+                    configuration.height = min(windowHeight, maxDimension)
+                    configuration.width = Int(CGFloat(configuration.height) * windowAspectRatio)
+                }
             } else {
-                configuration.height = maxDimension
-                configuration.width = Int(CGFloat(maxDimension) * aspectRatio)
+                let aspectRatio = CGFloat(display.width) / CGFloat(display.height)
+                if display.width >= display.height {
+                    configuration.width = maxDimension
+                    configuration.height = Int(CGFloat(maxDimension) / aspectRatio)
+                } else {
+                    configuration.height = maxDimension
+                    configuration.width = Int(CGFloat(maxDimension) * aspectRatio)
+                }
             }
 
             let cgImage = try await SCScreenshotManager.captureImage(
@@ -97,12 +141,15 @@ enum CompanionScreenCaptureUtility {
             )
 
             guard let jpegData = NSBitmapImageRep(cgImage: cgImage)
-                    .representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
+                    .representation(using: .jpeg, properties: [.compressionFactor: jpegCompressionQuality]) else {
                 continue
             }
 
             let screenLabel: String
-            if sortedDisplays.count == 1 {
+            if captureActiveWindowOnly, let activeWindow {
+                let appName = activeWindow.owningApplication?.applicationName ?? "unknown app"
+                screenLabel = "active window (\(appName)) — cursor screen"
+            } else if sortedDisplays.count == 1 || captureOnlyPrimaryScreen {
                 screenLabel = "user's screen (cursor is here)"
             } else if isCursorScreen {
                 screenLabel = "screen \(displayIndex + 1) of \(sortedDisplays.count) — cursor is on this screen (primary focus)"
@@ -120,6 +167,11 @@ enum CompanionScreenCaptureUtility {
                 screenshotWidthInPixels: configuration.width,
                 screenshotHeightInPixels: configuration.height
             ))
+
+            // Only need one screen when capturing the active window
+            if captureActiveWindowOnly {
+                break
+            }
         }
 
         guard !capturedScreens.isEmpty else {
