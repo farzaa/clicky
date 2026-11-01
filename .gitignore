@@ -6,3 +6,9 @@ build/
 releases/
 .claude/
 coding-plans/
+
+# Windows port
+windows/node_modules/
+windows/dist/
+windows/*.log
+windows/test/e2e/out/

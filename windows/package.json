@@ -1,0 +1,86 @@
+{
+  "name": "clicky-windows",
+  "productName": "Clicky",
+  "version": "1.0.0",
+  "description": "Windows port of Clicky: an AI buddy that lives next to your cursor (Groq powered).",
+  "main": "src/main/main.js",
+  "author": "moony-coder",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "test": "node --test \"test/unit/*.test.js\"",
+    "test:e2e": "node test/e2e/run-e2e.js",
+    "icons": "python3 scripts/make-icons.py",
+    "dist": "electron-builder --win nsis --x64",
+    "dist:dir": "electron-builder --win dir --x64"
+  },
+  "dependencies": {
+    "hls.js": "^1.6.0",
+    "koffi": "^3.3.6",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "electron": "^45.2.1",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.moonycoder.clicky",
+    "productName": "Clicky",
+    "copyright": "MIT",
+    "directories": {
+      "output": "dist",
+      "buildResources": "buildResources"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json",
+      "node_modules/hls.js/dist/hls.min.js",
+      "node_modules/three/build/three.module.js",
+      "node_modules/three/build/three.core.js",
+      "node_modules/koffi/**/*",
+      "!node_modules/koffi/build/koffi/!(win32_x64)/**",
+      "!**/*.map"
+    ],
+    "asarUnpack": [
+      "node_modules/koffi/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "assets",
+        "to": "assets",
+        "filter": [
+          "ff.mp3",
+          "tray.png",
+          "app-1024.png"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "buildResources/icon.ico",
+      "artifactName": "Clicky-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Clicky",
+      "installerIcon": "buildResources/icon.ico",
+      "uninstallerIcon": "buildResources/icon.ico",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}

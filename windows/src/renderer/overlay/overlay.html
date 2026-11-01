@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' blob: https:; connect-src https://*.mux.com https://stream.mux.com https://image.mux.com; worker-src blob:">
+<link rel="stylesheet" href="../shared/design.css">
+<link rel="stylesheet" href="overlay.css">
+<title>Clicky overlay</title></head>
+<body>
+<div id="drive-edge"></div>
+<div id="drive-chip"><span class="pulse"></span><span id="drive-text">Clicky is driving</span><span class="esc">Esc to stop</span></div>
+<svg id="draw-layer" xmlns="http://www.w3.org/2000/svg"></svg>
+<div id="cards"></div>
+<div id="caption"></div>
+<div id="onboarding-video"><video id="video" playsinline></video></div>
+<div id="welcome" class="bubble"></div>
+<div id="prompt" class="bubble"></div>
+<div id="nav-bubble" class="bubble"></div>
+<div id="buddy-wave"></div>
+<div id="buddy-spinner"><svg viewBox="0 0 14 14" width="14" height="14"></svg></div>
+<div id="buddy-triangle"><svg viewBox="0 0 16 16" width="16" height="16" style="overflow:visible"><polygon points="8,-1.24 0,12.62 16,12.62" fill="#3380FF"/></svg></div>
+<script src="../../shared/motion.js"></script>
+<script src="../../../node_modules/hls.js/dist/hls.min.js"></script>
+<script src="overlay.js"></script>
+</body></html>

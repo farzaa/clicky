@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; script-src 'self'">
+<link rel="stylesheet" href="../shared/design.css">
+<link rel="stylesheet" href="model3d.css">
+<title>Clicky 3D</title></head>
+<body>
+<div class="frame glass">
+  <div class="bar"><div class="ttl"><span class="tri"></span><span id="title">3D model</span></div>
+    <div class="ctl"><button id="reset" title="Reset view">Reset</button><button id="close" class="x" title="Close">&#x2715;</button></div></div>
+  <div class="stage"><canvas id="cv"></canvas>
+    <div id="loading" class="loading"><div class="spin"></div><div id="loadtxt">Building model...</div></div>
+    <div id="label" class="label"></div></div>
+  <div class="info" id="info"><span class="muted">Drag to rotate, scroll to zoom, click a part to learn about it.</span></div>
+</div>
+<script type="module" src="model3d.js"></script></body></html>

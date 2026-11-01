@@ -7,6 +7,8 @@ The official app is **[HeyClicky](https://www.heyclicky.com/)**, an AI buddy for
 
 Those are the only official downloads. Other Windows apps built from this repo are community ports, not made by us.
 
+Windows community port (Groq powered, tray app with agentic features): see [windows/README.md](windows/README.md).
+
 ---
 
 Update: April 27, 2026.

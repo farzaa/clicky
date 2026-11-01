@@ -1,0 +1,20 @@
+html, body { height: 100%; overflow: hidden; }
+body { padding: 0; }
+.notch { margin: 0 auto; width: 420px; border-radius: 0 0 22px 22px; padding: 10px 14px 12px; background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,0)), rgba(10,12,11,.82); animation: notch-in .38s cubic-bezier(.2,1.1,.3,1); transform-origin: top center; }
+@keyframes notch-in { from { opacity: 0; transform: translateY(-14px) scaleY(.7); } }
+.job { display: grid; grid-template-columns: 26px 1fr auto; gap: 10px; align-items: center; padding: 6px 0; }
+.job + .job { border-top: 1px solid var(--border-subtle); }
+.orb { width: 22px; height: 22px; border-radius: 50%; position: relative; display: grid; place-items: center; }
+.orb::before { content: ""; position: absolute; inset: 0; border-radius: 50%; border: 2px solid rgba(96,165,250,.25); border-top-color: var(--cursor-blue); animation: spin 1s linear infinite; }
+.orb.waiting::before { border-color: rgba(255,178,36,.3); border-top-color: var(--warning); animation-duration: 1.8s; }
+.orb i { width: 8px; height: 8px; border-radius: 50%; background: var(--cursor-blue); box-shadow: 0 0 10px var(--cursor-blue); animation: pulse 1.2s ease-in-out infinite; }
+.orb.waiting i { background: var(--warning); box-shadow: 0 0 10px var(--warning); }
+@keyframes spin { to { transform: rotate(360deg); } }
+.jname { font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.jnote { font-size: 11.5px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+.jstop { padding: 4px 12px !important; }
+.prompt { margin: 4px 0 8px; padding: 10px 12px; border-radius: var(--r-lg); background: rgba(255,178,36,.08); border: 1px solid rgba(255,178,36,.28); animation: toast-in .25s ease-out; }
+.prompt .ptext { font-size: 12.5px; line-height: 1.4; white-space: pre-wrap; color: var(--text-primary); max-height: 150px; overflow: auto; }
+.prompt .pbtns { display: flex; gap: 8px; margin-top: 10px; justify-content: flex-end; }
+.prompt .field { margin-top: 8px; }
+.hint { font-size: 11px; color: var(--text-tertiary); margin-top: 6px; }

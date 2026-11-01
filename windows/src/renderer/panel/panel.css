@@ -1,0 +1,40 @@
+html, body { height: 100%; overflow: hidden; }
+body { padding: 10px 14px 24px; }
+.panel { width: 320px; border-radius: 12px; overflow: hidden; animation: panel-in .28s cubic-bezier(.2,.9,.3,1.1); transform-origin: top right; }
+@keyframes panel-in { from { opacity: 0; transform: translateY(-6px) scale(.97); } }
+.hdr { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; }
+.hdr .l { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
+.hdr .r { display: flex; align-items: center; gap: 10px; }
+.hdr .status { font-size: 12px; font-weight: 500; color: var(--text-tertiary); }
+.xbtn { width: 20px; height: 20px; border-radius: 50%; border: 0; background: rgba(255,255,255,.08); color: var(--text-tertiary); font-size: 10px; cursor: pointer; display: grid; place-items: center; transition: background var(--t-fast), color var(--t-fast); }
+.xbtn:hover { background: rgba(255,255,255,.16); color: var(--text-primary); }
+.sec { padding: 0 16px; }
+.copy-title { font-size: 12px; font-weight: 700; color: var(--text-secondary); }
+.copy-body { font-size: 11px; color: var(--text-tertiary); margin-top: 6px; line-height: 1.4; }
+.copy-line { font-size: 12px; font-weight: 500; color: var(--text-secondary); }
+.copy-warn { font-size: 11px; color: #e66666; margin-top: 6px; line-height: 1.4; }
+.perm-title { font-size: 10px; font-weight: 700; letter-spacing: .08em; color: var(--text-tertiary); margin: 0 0 4px; }
+.row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; gap: 8px; }
+.row .lbl { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.row .ic { width: 16px; height: 16px; display: grid; place-items: center; color: var(--text-tertiary); flex: none; }
+.row .ic.warn { color: var(--warning); }
+.row .name { font-size: 13px; font-weight: 500; color: var(--text-secondary); }
+.row .sub { font-size: 10px; color: var(--text-tertiary); margin-top: 1px; }
+.granted { display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 500; color: var(--success); }
+.granted i { width: 6px; height: 6px; border-radius: 50%; background: var(--success); display: block; }
+.keybox { display: flex; gap: 6px; }
+.keybox .field { padding: 7px 10px; font-size: 12px; }
+.btn.full { width: 100%; }
+.dm { display: flex; gap: 8px; align-items: center; width: 100%; text-align: left; padding: 10px 12px; border-radius: var(--r-md); border: 1px solid var(--border-subtle); background: rgba(255,255,255,.06); color: var(--text-secondary); cursor: pointer; transition: background var(--t-fast); font: inherit; }
+.dm:hover { background: rgba(255,255,255,.1); }
+.dm b { font-size: 12px; font-weight: 600; display: block; }
+.dm span { font-size: 10px; color: var(--text-tertiary); display: block; margin-top: 2px; }
+.foot { display: flex; justify-content: space-between; padding: 12px 16px; }
+.foot button { display: flex; align-items: center; gap: 6px; }
+.spacer12 { height: 12px; } .spacer16 { height: 16px; }
+.mini-link { font-size: 11px; color: var(--accent-text); cursor: pointer; background: none; border: 0; padding: 0; font: inherit; font-size: 11px; }
+.mini-link:hover { text-decoration: underline; }
+.jobs { margin-top: 12px; display: grid; gap: 6px; }
+.job { padding: 8px 10px; border-radius: var(--r-md); background: rgba(255,255,255,.05); border: 1px solid var(--border-subtle); font-size: 11px; color: var(--text-secondary); display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.job b { color: var(--text-primary); font-weight: 600; }
+.err { color: #ff9a9d; font-size: 11px; margin-top: 6px; }

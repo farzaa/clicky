@@ -1,0 +1,31 @@
+name: Windows build
+
+on:
+  push:
+    paths: ['windows/**', '.github/workflows/windows-build.yml']
+  pull_request:
+    paths: ['windows/**', '.github/workflows/windows-build.yml']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: windows/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - name: Smoke test native Win32 layer (koffi + user32)
+        run: node scripts/win32-smoke.js
+      - run: npm run dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Clicky-Windows-Setup
+          path: windows/dist/Clicky-Setup-*.exe

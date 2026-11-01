@@ -1,0 +1,47 @@
+html, body { width: 100vw; height: 100vh; overflow: hidden; background: transparent; pointer-events: none; }
+body { position: relative; }
+.bubble, #buddy-triangle, #buddy-wave, #buddy-spinner, #onboarding-video { position: absolute; left: 0; top: 0; will-change: transform, opacity; }
+.bubble { font-size: 11px; font-weight: 500; color: #fff; background: var(--cursor-blue); padding: 4px 8px; border-radius: 6px; white-space: nowrap; opacity: 0; box-shadow: 0 0 6px rgba(51,128,255,.5); }
+#nav-bubble { transform-origin: left center; }
+#buddy-triangle { width: 16px; height: 16px; margin: -8px 0 0 -8px; opacity: 0; transition: opacity .25s ease-in; }
+#buddy-triangle svg { display: block; transform-origin: 50% 50%; }
+#buddy-wave { display: flex; align-items: center; gap: 2px; height: 16px; margin: -8px 0 0 -5px; opacity: 0; transition: opacity .15s ease-in; filter: drop-shadow(0 0 6px rgba(51,128,255,.6)); }
+#buddy-wave i { display: block; width: 2px; border-radius: 1.5px; background: var(--cursor-blue); height: 3px; }
+#buddy-spinner { width: 14px; height: 14px; margin: -7px 0 0 -7px; opacity: 0; transition: opacity .15s ease-in; filter: drop-shadow(0 0 6px rgba(51,128,255,.6)); }
+#buddy-spinner svg { animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+#onboarding-video { width: 330px; height: 186px; border-radius: 10px; overflow: hidden; background: #000; opacity: 0; box-shadow: 0 6px 12px rgba(0,0,0,.4); transition: opacity 2s ease-in-out; }
+#onboarding-video video { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+#draw-layer { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+#draw-layer .shape { filter: drop-shadow(0 0 5px rgba(51,128,255,.9)); transition: opacity .8s ease; }
+#draw-layer .stroke-core { fill: none; stroke: var(--cursor-blue); stroke-width: 3.6; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw var(--dur, .8s) cubic-bezier(.5,.1,.3,1) forwards; }
+#draw-layer .stroke-halo { fill: none; stroke: rgba(255,255,255,.9); stroke-width: 7; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw var(--dur, .8s) cubic-bezier(.5,.1,.3,1) forwards; opacity: .85; }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+#draw-layer .hl { fill: rgba(51,128,255,.28); stroke: none; clip-path: inset(0 100% 0 0 round 6px); animation: wipe .7s cubic-bezier(.4,0,.2,1) forwards; }
+@keyframes wipe { to { clip-path: inset(0 0 0 0 round 6px); } }
+.draw-pill { position: absolute; transform: translate(-50%, -100%) scale(.6); opacity: 0; background: var(--cursor-blue); color: #fff; font-size: 12px; font-weight: 600; padding: 4px 9px; border-radius: 7px; white-space: nowrap; box-shadow: 0 0 10px rgba(51,128,255,.6); animation: pill-in .35s .35s cubic-bezier(.3,1.5,.5,1) forwards; transition: opacity .8s; }
+@keyframes pill-in { to { opacity: 1; transform: translate(-50%, -100%) scale(1); } }
+.draw-badge { position: absolute; width: 28px; height: 28px; margin: -14px 0 0 -14px; border-radius: 50%; background: var(--cursor-blue); color: #fff; font-weight: 700; font-size: 14px; display: grid; place-items: center; box-shadow: 0 0 0 3px rgba(255,255,255,.9), 0 0 14px rgba(51,128,255,.8); transform: scale(0); animation: badge-in .4s cubic-bezier(.3,1.6,.5,1) forwards; transition: opacity .8s; }
+@keyframes badge-in { to { transform: scale(1); } }
+
+#cards { position: absolute; right: 24px; bottom: 28px; width: 300px; display: grid; gap: 10px; justify-items: stretch; }
+.card { border-radius: 14px; overflow: hidden; padding: 0; animation: card-in .5s cubic-bezier(.2,.9,.3,1.15); transition: opacity .6s, transform .6s; }
+.card.out { opacity: 0; transform: translateY(10px) scale(.97); }
+@keyframes card-in { from { opacity: 0; transform: translateY(18px) scale(.94); } }
+.card img { display: block; width: 100%; height: 130px; object-fit: cover; }
+.card .cb { padding: 12px 14px 14px; }
+.card h4 { margin: 0 0 4px; font-size: 14px; font-weight: 650; color: var(--text-primary); }
+.card p { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-secondary); }
+.card .tag { font-size: 10px; letter-spacing: .08em; font-weight: 700; color: var(--accent-text); margin-bottom: 6px; }
+
+#caption { position: absolute; left: 50%; bottom: 54px; transform: translateX(-50%) translateY(8px); max-width: min(720px, 70vw); text-align: center; padding: 10px 18px; border-radius: 14px; font-size: 15px; font-weight: 500; line-height: 1.4; color: var(--text-primary); background: rgba(16,18,17,.72); backdrop-filter: blur(22px) saturate(1.4); border: 1px solid var(--glass-border); box-shadow: 0 10px 30px rgba(0,0,0,.45); opacity: 0; transition: opacity .3s, transform .3s; }
+#caption.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+#drive-edge { position: absolute; inset: 0; opacity: 0; transition: opacity .4s; box-shadow: inset 0 0 0 2px rgba(51,128,255,.85), inset 0 0 60px 6px rgba(51,128,255,.38); animation: edge-pulse 2.4s ease-in-out infinite; }
+#drive-edge.on { opacity: 1; }
+@keyframes edge-pulse { 50% { box-shadow: inset 0 0 0 2px rgba(96,165,250,.95), inset 0 0 90px 12px rgba(51,128,255,.5); } }
+#drive-chip { position: absolute; top: 14px; left: 50%; transform: translate(-50%, -20px); opacity: 0; display: flex; align-items: center; gap: 10px; padding: 7px 14px; border-radius: 999px; font-size: 12px; font-weight: 600; background: rgba(16,18,17,.8); backdrop-filter: blur(20px); border: 1px solid rgba(51,128,255,.5); box-shadow: 0 8px 24px rgba(0,0,0,.4); transition: all .35s cubic-bezier(.2,.9,.3,1.2); }
+#drive-chip.on { opacity: 1; transform: translate(-50%, 0); }
+#drive-chip .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--cursor-blue); box-shadow: 0 0 8px var(--cursor-blue); animation: pulse 1s infinite; }
+#drive-chip .esc { font-size: 10px; color: var(--text-tertiary); border: 1px solid var(--border-strong); border-radius: 5px; padding: 1px 6px; }
