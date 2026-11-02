@@ -21,7 +21,11 @@ class PCM16AudioConverter:
     """Converts variable-rate float32 mono audio into PCM16 bytes at
     targetSampleRate. The resampler tracks the stream's absolute sample
     position so frame counts are exact across chunk boundaries (no chronic
-    sample drift, unlike naive per-chunk floor() resampling)."""
+    sample drift, unlike naive per-chunk floor() resampling).
+
+    This layer reports RAW boosted RMS power (boost 10.2, clamped 0..1) with
+    no smoothing — the decay-smoothing from updateAudioPowerLevel in Swift
+    lives in BuddyDictationManager."""
 
     def __init__(self, target_sample_rate: int, on_audio_level: Optional[Callable[[float], None]] = None):
         self.target_sample_rate = target_sample_rate
@@ -134,11 +138,20 @@ class PCM16AudioConverter:
 
     @staticmethod
     def compute_audio_power_level(float_samples) -> float:
-        """RMS power normalized to 0..1 for waveform visualization."""
+        """Boosted RMS power clamped 0..1 — boost 10.2 exactly like
+        updateAudioPowerLevel in Swift. Smoothing happens upstream (dictation
+        manager) with the 0.72 decay floor."""
         import numpy
 
         root_mean_square = float(numpy.sqrt(numpy.mean(float_samples * float_samples) + 1e-12))
-        return max(0.0, min(1.0, root_mean_square * 3.0))
+        return max(0.0, min(1.0, root_mean_square * 10.2))
+
+
+def smooth_audio_power_level(boosted_level: float, previous_level: float) -> float:
+    """Faithful port of Swift's smoothing: the new sample arms the ceiling,
+    but the waveform falls back slowly (previous * 0.72) instead of jumping
+    between frames with the mic RMS jitter."""
+    return max(boosted_level, previous_level * 0.72)
 
 
 class WAVFileBuilder:

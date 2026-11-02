@@ -12,7 +12,7 @@ import sys
 
 from PySide6.QtCore import QCoreApplication, Qt
 from PySide6.QtGui import QCursor
-from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon, QWidget
 
 from clickpy.companion_manager import CompanionManager, CompanionVoiceState
 from clickpy.config import CompanionSettings
@@ -46,6 +46,7 @@ class OverlayController(QWidget):
         companion_manager.pointingTargetRequested.connect(self.fly_to_target)
         companion_manager.captureRequested.connect(self._on_capture_requested)
         companion_manager.voiceStateChanged.connect(self._on_voice_state_changed)
+        companion_manager.ttsPlaybackStateChanged.connect(self._on_tts_playback_state)
 
     # -- overlay lifecycle ---------------------------------------------------
 
@@ -81,6 +82,12 @@ class OverlayController(QWidget):
 
         if new_state == CompanionVoiceState.IDLE and self.overlay_window is not None:
             self.fly_to_target(QCursor.pos().x(), QCursor.pos().y())
+
+    def _on_tts_playback_state(self, is_playing: bool):
+        """Waveform above the response bubble while TTS audio is playing."""
+        if self.overlay_window is None:
+            return
+        self.overlay_window.set_response_waveform_active(is_playing)
 
     def _on_show_spinner(self):
         if self.overlay_window is not None:
@@ -182,6 +189,19 @@ def main() -> int:
     # Keyboard push-to-talk monitor
     push_to_talk_monitor.start_monitoring()
     panel_manager.show_status_bar_icon()
+
+    # First-run hint: a tray balloon once, so first launch isn't a mystery
+    # (the macOS equivalent opens the onboarding video; balloons are the
+    # Windows-native way to say "I exist and how to talk to me")
+    if not settings.has_seen_first_run_hint:
+        panel_manager.tray_icon.showMessage(
+            "clicky",
+            "running in your tray — hold ctrl + alt to talk",
+            QSystemTrayIcon.MessageIcon.Information,
+            8_000,
+        )
+        settings.has_seen_first_run_hint = True
+        settings.save()
 
     # Surface mic availability up front instead of failing mid-push
     companion_manager.check_microphone_availability()

@@ -37,6 +37,138 @@ class TranscriptionProviderError(Exception):
     """Raised for session failures — same role as the Swift error struct."""
 
 
+class AssemblyAITurnTranscriptStore:
+    """Turn-based transcript bookkeeping, extracted from the websocket
+    session so it is unit-testable without a live connection — the exact
+    logic of handleTurnMessage's state machine:
+    - committed turns are stored by turn_order
+    - an in-flight (uncommitted) turn composes as trailing text
+    - a formatted turn beats a previously-stored unformatted one
+    - empty transcripts never pollute the committed store"""
+
+    def __init__(self):
+        # turn_order -> {"transcript_text": str, "is_formatted": bool}
+        self._stored_turn_transcripts_by_order: dict[int, dict] = {}
+        self._active_turn_order: Optional[int] = None
+        self._active_turn_transcript_text = ""
+        self._latest_transcript_text = ""
+
+    def handle_turn_message(
+        self, turn_message: dict
+    ) -> tuple[bool, str]:
+        """Applies one `turn` event; returns (transcript_changed, transcript).
+
+        Mirrors handleTurnMessage: when the turn commits (end_of_turn or
+        turn_is_formatted) the active text clears and lands in the store;
+        otherwise it trails as the live active turn."""
+        transcript_text = (turn_message.get("transcript") or "").strip()
+        end_of_turn = turn_message.get("end_of_turn") is True
+        turn_is_formatted = turn_message.get("turn_is_formatted") is True
+        turn_order = turn_message.get("turn_order")
+        if turn_order is None:
+            turn_order = (
+                self._active_turn_order
+                if self._active_turn_order is not None
+                else (max(self._stored_turn_transcripts_by_order.keys(), default=-1) + 1)
+            )
+
+        if end_of_turn or turn_is_formatted:
+            self._active_turn_order = None
+            self._active_turn_transcript_text = ""
+            self.store_turn_transcript(
+                transcript_text, turn_order=turn_order, is_formatted=turn_is_formatted
+            )
+        else:
+            self._active_turn_order = turn_order
+            self._active_turn_transcript_text = transcript_text
+
+        full_transcript_text = self.compose_full_transcript()
+        self._latest_transcript_text = (
+            full_transcript_text if full_transcript_text else self._latest_transcript_text
+        )
+        changed = bool(full_transcript_text)
+        return changed, full_transcript_text
+
+    def store_turn_transcript(self, transcript_text: str, turn_order: int, is_formatted: bool):
+        if not transcript_text:
+            return
+        existing = self._stored_turn_transcripts_by_order.get(turn_order)
+        if existing and existing["is_formatted"] and not is_formatted:
+            return
+        self._stored_turn_transcripts_by_order[turn_order] = {
+            "transcript_text": transcript_text,
+            "is_formatted": is_formatted,
+        }
+
+    def compose_full_transcript(self) -> str:
+        committed_segments = [
+            stored_turn["transcript_text"]
+            for _turn_order, stored_turn in sorted(
+                self._stored_turn_transcripts_by_order.items(), key=lambda item: item[0]
+            )
+            if stored_turn["transcript_text"]
+        ]
+        segments = committed_segments
+        active_text = (self._active_turn_transcript_text or "").strip()
+        if active_text:
+            segments = segments + [active_text]
+        return " ".join(segments)
+
+    def best_available_transcript_text(self) -> str:
+        composed = self.compose_full_transcript().strip()
+        if composed:
+            return composed
+        return (self._latest_transcript_text or "").strip()
+
+    def reset(self):
+        """Fresh session -> fresh store (reconnects shouldn't carry old turns)."""
+        self._stored_turn_transcripts_by_order = {}
+        self._active_turn_order = None
+        self._active_turn_transcript_text = ""
+        self._latest_transcript_text = ""
+
+
+def build_transcription_keyterms(
+    contextual_keyterms: Optional[list[str]] = None,
+) -> list[str]:
+    """Ports BuddyDictationManager.buildTranscriptionKeyterms: the product's
+    base keyterm list plus context words, deduped case-insensitively while
+    preserving the original casing of the first appearance."""
+    base_keyterms = [
+        "makesomething",
+        "Learning Buddy",
+        "Codex",
+        "Claude",
+        "Anthropic",
+        "OpenAI",
+        "SwiftUI",
+        "Xcode",
+        "Vercel",
+        "Next.js",
+        "localhost",
+    ]
+
+    combined_keyterms = base_keyterms + list(contextual_keyterms or [])
+    unique_normalized_keyterms: set[str] = set()
+    ordered_keyterms: list[str] = []
+
+    for candidate_keyterm in combined_keyterms:
+        if candidate_keyterm is None:
+            continue
+        trimmed_keyterm = candidate_keyterm.strip()
+        if not trimmed_keyterm:
+            continue
+
+        normalized_keyterm = trimmed_keyterm.lower()
+        if normalized_keyterm in unique_normalized_keyterms:
+            continue
+
+        unique_normalized_keyterms.add(normalized_keyterm)
+        ordered_keyterms.append(trimmed_keyterm)
+
+    return ordered_keyterms
+
+
 class TranscriptionProvider:
     """Protocol surface. A provider returns a streaming session on start."""
 
@@ -165,13 +297,10 @@ class _AssemblyAIStreamingTranscriptionSession(StreamingTranscriptionSession):
         self._on_final_transcript_ready = on_final_transcript_ready
         self._on_error = on_error
 
-        # Only mutated on the loop thread
+        # Turn-state store + websocket, all mutated on the shared loop thread
+        self._turn_transcript_store = AssemblyAITurnTranscriptStore()
         self._websocket = None
         self._receive_task: Optional[asyncio.Task] = None
-        self._stored_turn_transcripts_by_order: dict[int, dict] = {}
-        self._active_turn_order: Optional[int] = None
-        self._active_turn_transcript_text = ""
-        self._latest_transcript_text = ""
         self._has_delivered_final_transcript = False
         self._is_awaiting_explicit_final_transcript = False
         self._explicit_final_deadline_handle: Optional[asyncio.TimerHandle] = None
@@ -301,73 +430,30 @@ class _AssemblyAIStreamingTranscriptionSession(StreamingTranscriptionSession):
             self._fail_session(TranscriptionProviderError(message_text))
 
     def _handle_turn_message(self, turn_message: dict):
-        """Ports handleTurnMessage: committed turns are stored by turn_order,
-        in-flight turns compose as text, formatted turns win over unformatted
-        ones, and the full transcript is reported after every event."""
-        transcript_text = (turn_message.get("transcript") or "").strip()
-        end_of_turn = turn_message.get("end_of_turn") is True
-        turn_is_formatted = turn_message.get("turn_is_formatted") is True
-        turn_order = turn_message.get("turn_order")
-        if turn_order is None:
-            turn_order = (
-                self._active_turn_order
-                if self._active_turn_order is not None
-                else (max(self._stored_turn_transcripts_by_order.keys(), default=-1) + 1)
-            )
-
-        if end_of_turn or turn_is_formatted:
-            self._active_turn_order = None
-            self._active_turn_transcript_text = ""
-            self._store_turn_transcript(
-                transcript_text, turn_order=turn_order, is_formatted=turn_is_formatted
-            )
-        else:
-            self._active_turn_order = turn_order
-            self._active_turn_transcript_text = transcript_text
-
-        full_transcript_text = self._compose_full_transcript()
-        self._latest_transcript_text = full_transcript_text
-
-        if full_transcript_text:
-            self._on_transcript_update(full_transcript_text)
+        """Ports handleTurnMessage via the extracted store: committed turns
+        are stored by turn_order, in-flight turns compose as text, formatted
+        turns win over unformatted ones — and the transcript reports only
+        after state actually changed."""
+        _changed, full_transcript_text = self._turn_transcript_store.handle_turn_message(
+            turn_message
+        )
+        if not full_transcript_text:
+            return
+        self._on_transcript_update(full_transcript_text)
 
         if not self._is_awaiting_explicit_final_transcript:
             return
 
+        end_of_turn = turn_message.get("end_of_turn") is True
+        turn_is_formatted = turn_message.get("turn_is_formatted") is True
         if end_of_turn or turn_is_formatted:
             self._cancel_explicit_final_deadline()
-            self._deliver_final_transcript_if_needed(self._best_available_transcript_text())
-
-    def _store_turn_transcript(self, transcript_text: str, turn_order: int, is_formatted: bool):
-        if not transcript_text:
-            return
-        existing = self._stored_turn_transcripts_by_order.get(turn_order)
-        if existing and existing["is_formatted"] and not is_formatted:
-            return
-        self._stored_turn_transcripts_by_order[turn_order] = {
-            "transcript_text": transcript_text,
-            "is_formatted": is_formatted,
-        }
-
-    def _compose_full_transcript(self) -> str:
-        committed_segments = [
-            stored_turn["transcript_text"]
-            for _turn_order, stored_turn in sorted(
-                self._stored_turn_transcripts_by_order.items(), key=lambda item: item[0]
+            self._deliver_final_transcript_if_needed(
+                self._turn_transcript_store.best_available_transcript_text()
             )
-            if stored_turn["transcript_text"]
-        ]
-        segments = committed_segments
-        active_text = (self._active_turn_transcript_text or "").strip()
-        if active_text:
-            segments = segments + [active_text]
-        return " ".join(segments)
 
     def _best_available_transcript_text(self) -> str:
-        composed = self._compose_full_transcript().strip()
-        if composed:
-            return composed
-        return (self._latest_transcript_text or "").strip()
+        return self._turn_transcript_store.best_available_transcript_text()
 
     def _deliver_final_transcript_if_needed(self, transcript_text: str):
         if self._has_delivered_final_transcript:
@@ -384,8 +470,8 @@ class _AssemblyAIStreamingTranscriptionSession(StreamingTranscriptionSession):
             send_task = self._loop_thread.ensure_task_now(
                 self._websocket.send(json.dumps(payload))
             )
-            # Sending Fire-and-forget: caller paths run inside the loop, so we
-            # can schedule the coroutine without awaiting it.
+            # Fire-and-forget: caller paths run inside the loop, so we can
+            # schedule the coroutine without awaiting it.
             _ = send_task
         except Exception as send_error:
             self._fail_session(send_error)

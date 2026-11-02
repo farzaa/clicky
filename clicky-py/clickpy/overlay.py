@@ -71,6 +71,9 @@ class OverlayWindowHarness(QWidget):
         self.is_recording = False
         self.is_processing = False
         self.audio_power_level = 0.0
+        # When TTS is playing, the waveform bars animate above the response
+        # bubble (Swift's CompanionResponseOverlay waveform)
+        self.response_waveform_active = False
         self._waveform_phase = 0.0
         self.screen_target = None
 
@@ -138,6 +141,10 @@ class OverlayWindowHarness(QWidget):
 
     def set_audio_power_level(self, power_level: float):
         self.audio_power_level = power_level
+        self.update()
+
+    def set_response_waveform_active(self, active: bool):
+        self.response_waveform_active = active
         self.update()
 
     # -- flight animation -------------------------------------------------
@@ -268,7 +275,7 @@ class OverlayWindowHarness(QWidget):
             bubble_rect = self._compute_bubble_rect(cursor_point, bubble_text)
 
         # Keep the cursor from disappearing behind the bubble
-        if self.is_recording:
+        if self.is_recording or self.response_waveform_active:
             self._draw_waveform(painter, bubble_rect)
         if self.is_processing:
             self._draw_spinner(painter, cursor_point)

@@ -44,6 +44,8 @@ class CompanionManager(QObject):
     captureRequested = Signal(object, object)
     # Chat backend changed: (model_choices, selected_model) for the panel combo
     modelChoicesChanged = Signal(list, str)
+    # TTS playback lifecycle so the overlay can wave during the response
+    ttsPlaybackStateChanged = Signal(bool)
 
     def __init__(
         self,
@@ -454,9 +456,11 @@ class CompanionManager(QObject):
     # -- TTS callbacks -----------------------------------------------------------
 
     def _on_tts_playback_started(self):
+        self.ttsPlaybackStateChanged.emit(True)
         self._set_voice_state(CompanionVoiceState.RESPONDING)
 
     def _on_tts_playback_finished(self):
+        self.ttsPlaybackStateChanged.emit(False)
         if self.dictation_manager.is_dictating:
             return
         self._set_voice_state(CompanionVoiceState.IDLE)

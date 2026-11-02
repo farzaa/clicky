@@ -42,6 +42,10 @@ class CompanionSettings:
     # (direct, OPENAI_API_KEY from the environment).
     selected_chat_backend: str = "claude"
     available_models_claude: tuple[str, ...] = ("claude-sonnet-4-6", "claude-opus-4-6")
+    # Extra transcription keyterms fed to the provider (bias recognition)
+    contextual_keyterms: tuple[str, ...] = ()
+    # Show the tray balloon hint exactly once on first run
+    has_seen_first_run_hint: bool = False
 
     @classmethod
     def load(cls) -> "CompanionSettings":

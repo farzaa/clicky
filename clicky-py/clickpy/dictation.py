@@ -16,8 +16,9 @@ from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
 
-from .audio_conversion import PCM16AudioConverter
+from .audio_conversion import PCM16AudioConverter, smooth_audio_power_level
 from .transcription import (
+    build_transcription_keyterms,
     StreamingTranscriptionSession,
     TranscriptionProvider,
     TranscriptionProviderError,
@@ -102,10 +103,18 @@ class BuddyDictationManager(QObject):
         self.active_session: Optional[StreamingTranscriptionSession] = None
         self.microphone_stream = None
         self.pcm16_converter = None
+        # Contextual keyterms (Swift's updateContextualKeyterms): extra words
+        # fed to the transcription model to bias recognition toward them
+        self.contextual_keyterms: list[str] = []
+        # Smoothed audio power for the waveform (0.72 decay floor upstream)
+        self.current_audio_power_level = 0.0
 
     @property
     def is_dictating(self) -> bool:
         return self.active_session is not None
+
+    def update_contextual_keyterms(self, contextual_keyterms: list[str]):
+        self.contextual_keyterms = list(contextual_keyterms)
 
     def start_keyboard_dictation(self, keyterms: Optional[list[str]] = None):
         """Starts push-to-talk capture. Callbacks emitted as Qt signals so
@@ -129,18 +138,26 @@ class BuddyDictationManager(QObject):
             self._stop_microphone_stream()
             self.dictationFailed.emit(str(session_error))
 
+        def on_raw_audio_power(boosted_level: float):
+            # Faithful updateAudioPowerLevel smoothing: boost the ceiling,
+            # decay the falls (previous * 0.72) so bars read as one wave
+            self.current_audio_power_level = smooth_audio_power_level(
+                boosted_level, self.current_audio_power_level
+            )
+            self.audioPowerLevelUpdated.emit(self.current_audio_power_level)
+
         # Provider sessions are created up front so mic audio flows into the
         # websocket from the first callback (Swift does the same in
-        # startDictationTask).
+        # startDictationTask). Keyterms combine base + contextual lists.
         self.active_session = self.transcription_provider.start_streaming_session(
-            keyterms=keyterms or [],
+            keyterms=keyterms or build_transcription_keyterms(self.contextual_keyterms),
             on_transcript_update=on_transcript_update,
             on_final_transcript_ready=on_final_transcript_ready,
             on_error=on_error,
         )
 
         self.pcm16_converter = PCM16AudioConverter(
-            target_sample_rate=16_000, on_audio_level=self.audioPowerLevelUpdated.emit
+            target_sample_rate=16_000, on_audio_level=on_raw_audio_power
         )
         self._start_microphone_stream()
 
@@ -190,6 +207,9 @@ class BuddyDictationManager(QObject):
             finally:
                 self.microphone_stream.close()
                 self.microphone_stream = None
+        # Reset the decay floor so the next push starts bars from silence
+        self.current_audio_power_level = 0.0
+        self.audioPowerLevelUpdated.emit(0.0)
 
     def end_dictation(self):
         """Key-up: asks the provider for the final transcript (which stops the

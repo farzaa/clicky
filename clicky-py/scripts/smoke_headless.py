@@ -119,6 +119,12 @@ def main() -> int:
     assert overlay_window._flight_in_progress is False
     assert overlay_window.cursor_position.x() > 250.0  # arc landed near target
 
+    # Response waveform: TTS playback lifecycle toggles the bars
+    overlay_window.set_response_waveform_active(True)
+    paired_pixmap = overlay_window.grab()
+    assert not paired_pixmap.isNull()
+    overlay_window.set_response_waveform_active(False)
+
     # Panel dragging: bare-surface press latches the drag offset
     press_event = QMouseEvent(
         QEvent.Type.MouseButtonPress,
