@@ -17,21 +17,29 @@ struct AssemblyAIStreamingTranscriptionProviderError: LocalizedError {
 }
 
 final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider {
-    /// URL for the Cloudflare Worker endpoint that returns a short-lived
-    /// AssemblyAI streaming token. The real API key never leaves the server.
-    private static let tokenProxyURL = "https://your-worker-name.your-subdomain.workers.dev/transcribe-token"
+    private let proxyConfiguration: WorkerProxyConfiguration
 
     let displayName = "AssemblyAI"
     let requiresSpeechRecognitionPermission = false
 
-    var isConfigured: Bool { true }
-    var unavailableExplanation: String? { nil }
+    var isConfigured: Bool { proxyConfiguration.isConfigured }
+    var unavailableExplanation: String? {
+        guard !proxyConfiguration.isConfigured else { return nil }
+        let configurationError: WorkerProxyConfigurationError = proxyConfiguration.workerBaseURL == nil
+            ? .missingConfiguration
+            : .missingToken
+        return configurationError.localizedDescription
+    }
 
     /// Single long-lived URLSession shared across all streaming sessions.
     /// Creating and invalidating a URLSession per session corrupts the OS
     /// connection pool and causes "Socket is not connected" errors after
     /// a few rapid reconnections to the same host.
     private let sharedWebSocketURLSession = URLSession(configuration: .default)
+
+    init(proxyConfiguration: WorkerProxyConfiguration = .shared) {
+        self.proxyConfiguration = proxyConfiguration
+    }
 
     func startStreamingSession(
         keyterms: [String],
@@ -59,8 +67,9 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
 
     /// Calls the Cloudflare Worker to get a short-lived AssemblyAI token.
     private func fetchTemporaryToken() async throws -> String {
-        var request = URLRequest(url: URL(string: Self.tokenProxyURL)!)
+        var request = URLRequest(url: try proxyConfiguration.endpoint(for: "transcribe-token"))
         request.httpMethod = "POST"
+        try proxyConfiguration.authorize(&request)
 
         let (data, response) = try await URLSession.shared.data(for: request)
 

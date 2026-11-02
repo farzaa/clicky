@@ -1,0 +1,42 @@
+name: macOS tests
+
+on:
+  push:
+    paths:
+      - "leanring-buddy/**"
+      - "leanring-buddyTests/**"
+      - "leanring-buddy.xcodeproj/**"
+      - "worker/**"
+      - ".github/workflows/macos-tests.yml"
+  pull_request:
+    paths:
+      - "leanring-buddy/**"
+      - "leanring-buddyTests/**"
+      - "leanring-buddy.xcodeproj/**"
+      - "worker/**"
+      - ".github/workflows/macos-tests.yml"
+
+jobs:
+  unit-tests:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve Swift packages
+        run: xcodebuild -resolvePackageDependencies -project leanring-buddy.xcodeproj -scheme leanring-buddy
+      - name: Run unit tests
+        run: >-
+          xcodebuild test
+          -project leanring-buddy.xcodeproj
+          -scheme leanring-buddy
+          -destination 'platform=macOS'
+          -derivedDataPath "$RUNNER_TEMP/ClickyDerivedData"
+          CODE_SIGNING_ALLOWED=NO
+
+  worker-security-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm test --prefix worker

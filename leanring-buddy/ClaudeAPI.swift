@@ -10,12 +10,12 @@ class ClaudeAPI {
     private static let tlsWarmupLock = NSLock()
     private static var hasStartedTLSWarmup = false
 
-    private let apiURL: URL
+    private let proxyConfiguration: WorkerProxyConfiguration
     var model: String
     private let session: URLSession
 
-    init(proxyURL: String, model: String = "claude-sonnet-4-6") {
-        self.apiURL = URL(string: proxyURL)!
+    init(proxyConfiguration: WorkerProxyConfiguration = .shared, model: String = "claude-sonnet-4-6") {
+        self.proxyConfiguration = proxyConfiguration
         self.model = model
 
         // Use .default instead of .ephemeral so TLS session tickets are cached.
@@ -36,11 +36,12 @@ class ClaudeAPI {
         warmUpTLSConnectionIfNeeded()
     }
 
-    private func makeAPIRequest() -> URLRequest {
-        var request = URLRequest(url: apiURL)
+    private func makeAPIRequest() throws -> URLRequest {
+        var request = URLRequest(url: try proxyConfiguration.endpoint(for: "chat"))
         request.httpMethod = "POST"
         request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        try proxyConfiguration.authorize(&request)
         return request
     }
 
@@ -73,7 +74,8 @@ class ClaudeAPI {
 
         guard shouldStartTLSWarmup else { return }
 
-        guard var warmupURLComponents = URLComponents(url: apiURL, resolvingAgainstBaseURL: false) else {
+        guard let workerBaseURL = proxyConfiguration.workerBaseURL,
+              var warmupURLComponents = URLComponents(url: workerBaseURL, resolvingAgainstBaseURL: false) else {
             return
         }
 
@@ -107,7 +109,7 @@ class ClaudeAPI {
     ) async throws -> (text: String, duration: TimeInterval) {
         let startTime = Date()
 
-        var request = makeAPIRequest()
+        var request = try makeAPIRequest()
 
         // Build messages array
         var messages: [[String: Any]] = []
@@ -220,7 +222,7 @@ class ClaudeAPI {
     ) async throws -> (text: String, duration: TimeInterval) {
         let startTime = Date()
 
-        var request = makeAPIRequest()
+        var request = try makeAPIRequest()
 
         var messages: [[String: Any]] = []
         for (userPlaceholder, assistantResponse) in conversationHistory {

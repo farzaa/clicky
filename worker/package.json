@@ -1,9 +1,11 @@
 {
   "name": "clicky-proxy",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test": "node --experimental-strip-types --test \"test/**/*.test.ts\""
   },
   "devDependencies": {
     "wrangler": "^3.0.0"
