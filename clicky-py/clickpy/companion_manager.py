@@ -15,7 +15,6 @@ from typing import Callable, Optional
 
 from PySide6.QtCore import QObject, Signal
 
-from .analytics import ClickyAnalytics
 from .companion_system_prompt import COMPANION_VOICE_RESPONSE_SYSTEM_PROMPT
 from .config import CompanionSettings
 
@@ -60,7 +59,6 @@ class CompanionManager(QObject):
         self.panel_manager = panel_manager
         self.dictation_manager = dictation_manager
         self.push_to_talk_monitor = push_to_talk_monitor
-        self.analytics = ClickyAnalytics()
 
         self._voice_state: str = CompanionVoiceState.IDLE
         self._last_transcript: Optional[str] = None
@@ -201,7 +199,6 @@ class CompanionManager(QObject):
 
         self._set_voice_state(CompanionVoiceState.LISTENING)
         self.overlayShowRequested.emit("")  # show overlay with empty transcript
-        self.analytics.push_to_talk_pressed()
         try:
             self.dictation_manager.start_keyboard_dictation()
         except Exception as dictation_start_error:
@@ -227,7 +224,6 @@ class CompanionManager(QObject):
 
     def _on_dictation_failed(self, error_text: str):
         print(f"⚠️ Transcription error: {error_text}")
-        self.analytics.track_transcription_error(error_text)
         self._set_voice_state(CompanionVoiceState.IDLE)
         self.overlayDismissRequested.emit()
         self.panel_manager.set_companion_status(f"transcription error — {error_text[:80]}")
@@ -258,7 +254,6 @@ class CompanionManager(QObject):
                 if is_cancelled_fn():
                     return
                 print(f"⚠️ Companion response error: {pipeline_error}")
-                self.analytics.track_response_error(str(pipeline_error))
                 self.overlayResponseTextChanged.emit(f"error — {str(pipeline_error)[:120]}")
                 self._set_voice_state(CompanionVoiceState.IDLE)
 
@@ -356,7 +351,6 @@ class CompanionManager(QObject):
                 f"{parse_result.coordinate[1]}) → "
                 f"\"{parse_result.element_label or 'element'}\" → global {global_point}"
             )
-            self.analytics.track_element_pointed(parse_result.element_label)
             self.overlayResponseTextChanged.emit(spoken_text)
             self._emit_pointing_to_overlay(global_point)
         else:
@@ -368,8 +362,6 @@ class CompanionManager(QObject):
         if len(self._conversation_history) > 10:
             self._conversation_history = self._conversation_history[-10:]
         print(f"🧠 Conversation history: {len(self._conversation_history)} exchanges")
-
-        self.analytics.track_ai_response_received(spoken_text)
 
         if not spoken_text.strip():
             self._set_voice_state(CompanionVoiceState.IDLE)
@@ -383,7 +375,6 @@ class CompanionManager(QObject):
             self._set_voice_state(CompanionVoiceState.RESPONDING)
         except Exception as tts_error:
             print(f"⚠️ ElevenLabs TTS error: {tts_error}")
-            self.analytics.track_tts_error(str(tts_error))
             self._speak_credits_error_fallback()
 
     def _map_parsed_coordinate_to_global_point(self, parse_result, target_screen_capture):

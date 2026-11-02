@@ -21,10 +21,9 @@ behavior — rebuilt on PySide6 instead of AppKit/SwiftUI.
 | [POINT:x,y:label:screenN] parsing | Identical regex + coordinate mapping (no AppKit Y-flip on Windows) |
 | Conversation memory (last 10) | Same history trimming |
 
-Not ported (yet): onboarding video flow, SAPI replacement of NSSpeech fallback
-(requires `pywin32`), PostHog analytics (off by default; set
-`CLICKY_PY_POSTHOG_KEY` to enable), Apple Speech provider (Windows has no
-equivalent; use OpenAI or AssemblyAI).
+Not ported (by design): onboarding video flow (mac-only assets), PostHog
+telemetry (the user asked for none of it), Apple Speech provider (Windows
+has no equivalent; use OpenAI or AssemblyAI).
 
 ## Install & run
 
@@ -60,7 +59,7 @@ python scripts\smoke_headless.py   # offscreen Qt assembly + painting
 python scripts\smoke_devices.py    # real hardware: mic devices, global keyboard hook, SAPI availability
 ```
 
-Optional layers (analytics, SAPI error fallback): `pip install -r requirements-optional.txt`.
+Optional layer (SAPI error fallback): `pip install -r requirements-optional.txt`.
 
 The GUI itself is not covered by pytest; run `python main.py` and use the tray
 icon to poke the panel.
