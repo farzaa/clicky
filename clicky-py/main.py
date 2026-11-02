@@ -45,6 +45,7 @@ class OverlayController(QWidget):
         companion_manager.overlayDismissRequested.connect(self.dismiss)
         companion_manager.pointingTargetRequested.connect(self.fly_to_target)
         companion_manager.captureRequested.connect(self._on_capture_requested)
+        companion_manager.voiceStateChanged.connect(self._on_voice_state_changed)
 
     # -- overlay lifecycle ---------------------------------------------------
 
@@ -67,7 +68,19 @@ class OverlayController(QWidget):
         if self._capture_guard_active:
             return
         self._ensure_overlay_exists()
+        # A new interaction parks the buddy under the user's pointer
+        # immediately (Swift's jump-back-to-cursor before recording starts).
+        self.overlay_window.reset_cursor_to_position(QCursor.pos())
         self.overlay_window.set_recording_state(True, live_transcript)
+
+    def _on_voice_state_changed(self, new_state: str):
+        """When the interaction ends, the buddy flies home to the user's
+        pointer — the Swift BlueCursorView behavior after playback + pointing
+        complete."""
+        from PySide6.QtCore import QPointF
+
+        if new_state == CompanionVoiceState.IDLE and self.overlay_window is not None:
+            self.fly_to_target(QCursor.pos().x(), QCursor.pos().y())
 
     def _on_show_spinner(self):
         if self.overlay_window is not None:
@@ -141,8 +154,7 @@ class OverlayController(QWidget):
 
 def main() -> int:
     configure_unicode_console()
-    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
-    application = QApplication(sys.argv)
+    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)    application = QApplication(sys.argv)
     application.setApplicationName("clicky-py")
     application.setQuitOnLastWindowClosed(False)  # tray app: quitting is explicit
 
@@ -173,6 +185,8 @@ def main() -> int:
 
     # Surface mic availability up front instead of failing mid-push
     companion_manager.check_microphone_availability()
+    # Same for the Worker proxy — down proxy = actionable panel hint
+    companion_manager.check_proxy_reachable()
 
     def quit_everything():
         companion_manager._response_worker_cancelled = True

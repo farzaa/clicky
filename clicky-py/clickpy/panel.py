@@ -133,6 +133,7 @@ class CompanionPanelView(QWidget):
         super().__init__(parent)
         self.setObjectName("ClickyPanel")
         self.setStyleSheet(PANEL_STYLESHEET)
+        self._drag_offset_from_window_corner: QPoint | None = None
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.Tool
@@ -210,6 +211,29 @@ class CompanionPanelView(QWidget):
 
     def set_status_text(self, status_text: str):
         self.status_label.setText(status_text)
+
+    # -- draggable frameless window ------------------------------------------
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            # Child widgets (combo boxes, buttons) handle their own events, so
+            # only the bare panel surface starts a drag — like macOS panels.
+            self._drag_offset_from_window_corner = (
+                event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            )
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (
+            self._drag_offset_from_window_corner is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            self.move(event.globalPosition().toPoint() - self._drag_offset_from_window_corner)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_offset_from_window_corner = None
+        super().mouseReleaseEvent(event)
 
     def set_model_choices(self, model_choices: list, current_model: str):
         """Replaces the model picker's contents when the chat backend changes.

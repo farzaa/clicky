@@ -11,7 +11,7 @@ back through signals.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 from PySide6.QtCore import QObject, Signal
 
@@ -63,8 +63,12 @@ class CompanionManager(QObject):
         self._voice_state: str = CompanionVoiceState.IDLE
         self._last_transcript: Optional[str] = None
         self._conversation_history: list[tuple[str, str]] = []
-        self._response_worker_cancelled = False
+        # Generation counter instead of a bool: any new push invalidates the
+        # running response pipeline (a bool has a race where a newer pipeline
+        # clearing the flag un-cancels a stale worker mid-flight).
+        self._response_generation = 0
         self._microphone_available = True
+        self._proxy_available = True
 
         from .chat import resolve_chat_client
 
@@ -165,12 +169,29 @@ class CompanionManager(QObject):
             )
         print(f"🎙️ Microphone available: {microphone_found}")
 
+    def check_proxy_reachable(self):
+        """One probe at startup: if the Worker proxy is down, the panel says
+        exactly how to fix it instead of the first push dying in a generic
+        500. A wrong key still produces real HTTP responses — only the
+        transport failing counts as unreachable."""
+        from .connectivity import probe_http_endpoint
+
+        self._proxy_available = probe_http_endpoint(
+            self.settings.proxy_base_url.rstrip("/")
+        )
+        if not self._proxy_available:
+            self.panel_manager.set_companion_status(
+                f"proxy unreachable at {self.settings.proxy_base_url} — run `npx wrangler dev` in worker/"
+            )
+        print(f"🛰️ Proxy reachable: {self._proxy_available}")
+
     # -- push-to-talk edges ---------------------------------------------------
 
     def on_push_to_talk_started(self):
         """Start dictation. A second push interrupts an in-flight response
         (Swift cancels currentResponseTask + stops TTS here)."""
-        self._response_worker_cancelled = True
+        # Invalidate any in-flight response pipeline immediately
+        self._response_generation += 1
         self.eleven_labs_tts_client.stop_playback()
 
         if self.dictation_manager.is_dictating:
@@ -217,19 +238,22 @@ class CompanionManager(QObject):
         sendTranscriptToClaudeWithScreenshot."""
         from threading import Thread
 
-        self._response_worker_cancelled = False
+        # This pipeline's generation: a newer push invalidates an older one
+        self._response_generation += 1
+        pipeline_generation = self._response_generation
+        is_cancelled_fn = lambda: self._response_generation != pipeline_generation  # noqa: E731
 
         def run_pipeline():
             try:
                 pipeline_result = _ResponsePipelineResult()
                 self._capture_and_query_claude(
-                    transcript, pipeline_result, is_cancelled_fn=lambda: self._response_worker_cancelled
+                    transcript, pipeline_result, is_cancelled_fn=is_cancelled_fn
                 )
-                if self._response_worker_cancelled:
+                if is_cancelled_fn():
                     return
                 self._handle_ai_response(transcript, pipeline_result)
             except Exception as pipeline_error:
-                if self._response_worker_cancelled:
+                if is_cancelled_fn():
                     return
                 print(f"⚠️ Companion response error: {pipeline_error}")
                 self.analytics.track_response_error(str(pipeline_error))
@@ -258,7 +282,10 @@ class CompanionManager(QObject):
         return capture_holder["captures"]
 
     def _capture_and_query_claude(
-        self, transcript: str, pipeline_result: "_ResponsePipelineResult", is_cancelled_fn
+        self,
+        transcript: str,
+        pipeline_result: "_ResponsePipelineResult",
+        is_cancelled_fn: Callable[[], bool],
     ):
         """Worker-thread body: screenshots -> labeled images -> streamed Claude call."""
         screen_captures = self._request_capture_from_main_thread()
@@ -290,7 +317,7 @@ class CompanionManager(QObject):
             user_prompt=transcript,
             on_text_chunk=lambda chunk: None,
             # No streaming bubble — the Swift version also keeps the spinner
-            is_cancelled_fn=lambda: self._response_worker_cancelled,
+            is_cancelled_fn=is_cancelled_fn,
         )
         pipeline_result.full_response_text = full_response_text
         pipeline_result.screen_captures = screen_captures
@@ -480,10 +507,23 @@ class CompanionManager(QObject):
         print(f"💬 Chat backend: {normalized} (model {self.chat_client.model})")
 
     def _on_transcription_provider_selected(self, provider_identifier: str):
-        self.settings.save()
-        try:
-            from threading import Thread  # noqa: F401 — provider swap happens lazily
+        # UI shows friendly names; the manager layer expects identifiers
+        provider_identifier = provider_identifier.lower()
+        if provider_identifier == "openai":
+            import os
 
+            if os.environ.get("OPENAI_API_KEY") is None:
+                # Switching without a key would fail on the first push; keep
+                # AssemblyAI and say so (the user can set the key and retry).
+                warning_text = (
+                    "OpenAI transcription needs OPENAI_API_KEY in the environment — "
+                    "still using AssemblyAI"
+                )
+                print(f"⚠️ {warning_text}")
+                self.panel_manager.set_companion_status(warning_text)
+                return
+
+        try:
             from .transcription import resolve_transcription_provider
 
             new_provider = resolve_transcription_provider(

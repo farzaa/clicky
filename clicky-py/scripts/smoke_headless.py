@@ -7,6 +7,7 @@ display or mic. Not a pytest test — run manually:
 
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -16,8 +17,8 @@ from clickpy.console import configure_unicode_console  # noqa: E402
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 configure_unicode_console()
 
-from PySide6.QtGui import QCursor  # noqa: E402
-from PySide6.QtCore import QPoint  # noqa: E402
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt  # noqa: E402
+from PySide6.QtGui import QCursor, QMouseEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 
@@ -95,11 +96,42 @@ def main() -> int:
     # Mic availability probe (real audio stack, no GUI needed)
     companion_manager.check_microphone_availability()
 
+    # Startup proxy probe against an unbindable localhost port -> hint text
+    companion_manager.settings.proxy_base_url = "http://127.0.0.1:1"
+    companion_manager.check_proxy_reachable()
+    assert companion_manager._proxy_available is False
+    companion_manager.settings.proxy_base_url = "http://127.0.0.1:59999"
+
     # Chat backend switching: with no OPENAI_API_KEY the switch must fall
     # back to Claude and refresh the panel's model picker.
     companion_manager._on_chat_backend_selected("openai")
     companion_manager._on_chat_backend_selected("claude")
     assert isinstance(companion_manager.chat_client, object)
+
+    # OpenAI transcription selection without a key stays on AssemblyAI
+    companion_manager._on_transcription_provider_selected("openai")
+
+    # Flight animation: full bezier arc driven by a real event loop
+    overlay_window.start_flight_arc(to_position=QPointF(300.0, 160.0))
+    spin_deadline = time.monotonic() + 3.0
+    while overlay_window._flight_in_progress and time.monotonic() < spin_deadline:
+        application.processEvents()
+    assert overlay_window._flight_in_progress is False
+    assert overlay_window.cursor_position.x() > 250.0  # arc landed near target
+
+    # Panel dragging: bare-surface press latches the drag offset
+    press_event = QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        QPointF(20.0, 20.0),
+        QPoint(20, 20),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    companion_panel.mousePressEvent(press_event)
+    assert companion_panel._drag_offset_from_window_corner is not None
+    companion_panel.mouseReleaseEvent(press_event)
+    assert companion_panel._drag_offset_from_window_corner is None
 
     print("smoke ok — Qt stack assembled and painted offscreen")
     return 0
