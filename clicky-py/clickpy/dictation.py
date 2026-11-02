@@ -16,6 +16,7 @@ from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
 
+from .audio_conversion import PCM16AudioConverter
 from .transcription import (
     StreamingTranscriptionSession,
     TranscriptionProvider,
@@ -138,33 +139,49 @@ class BuddyDictationManager(QObject):
             on_error=on_error,
         )
 
-        self.pcm16_converter = _build_converter(
-            on_audio_level=self.audioPowerLevelUpdated.emit
+        self.pcm16_converter = PCM16AudioConverter(
+            target_sample_rate=16_000, on_audio_level=self.audioPowerLevelUpdated.emit
         )
-        self._start_microphone_stream(session_error_capture)
+        self._start_microphone_stream()
 
-    def _start_microphone_stream(self, session_error_capture: list[Exception]):
+    def _start_microphone_stream(self):
         import sounddevice
 
-        def mic_callback(indata, frames, time_info, status):
+        try:
+            self._open_microphone_stream(sounddevice, channel_count=1)
+        except sounddevice.PortAudioError:
+            # Some input devices are stereo-only; capture two channels and
+            # downmix to mono in the callback.
+            self._open_microphone_stream(sounddevice, channel_count=2)
+        self.microphone_stream.start()
+
+    def _open_microphone_stream(self, sounddevice, channel_count: int):
+        def microphone_callback(indata, frames, time_info, status):
             if status:
                 # PortAudio overflows are usually recoverable; log and continue
                 print(f"[dictation] mic status: {status}")
             session = self.active_session
             if session is None:
                 return
-            pcm16_bytes = self.pcm16_converter.convert_to_pcm16_bytes(indata)
+            mic_samples = indata
+            if mic_samples.ndim == 2 and mic_samples.shape[1] > 1:
+                mic_samples = mic_samples.mean(axis=1)
+            pcm16_bytes = self.pcm16_converter.convert_to_pcm16_bytes(mic_samples)
             if pcm16_bytes:
                 session.append_audio_buffer(pcm16_bytes)
 
         self.microphone_stream = sounddevice.InputStream(
-            samplerate=48_000,
-            channels=1,
+            samplerate=None,  # capture at the device's native rate
+            channels=channel_count,
             dtype="float32",
             blocksize=0,  # let PortAudio choose a low-latency block size
-            callback=mic_callback,
+            callback=microphone_callback,
         )
-        self.microphone_stream.start()
+        # Feed the real device rate before the first callback so resampling is
+        # correct from sample zero (the AVAudioConverter lazy-setup equivalent).
+        self.pcm16_converter.session_source_format_changed(
+            int(self.microphone_stream.samplerate)
+        )
 
     def _stop_microphone_stream(self):
         if self.microphone_stream is not None:
@@ -187,28 +204,6 @@ class BuddyDictationManager(QObject):
             self.active_session = None
         self._stop_microphone_stream()
         self.dictationEnded.emit()
-
-
-def _build_converter(on_audio_level) -> "object":
-    """PCM16AudioConverter bound to the mic rate; the rate is snapped once the
-    first block arrives, mirroring the AVAudioConverter's lazy format setup."""
-    from .audio_conversion import PCM16AudioConverter
-
-    converter = PCM16AudioConverter(
-        target_sample_rate=16_000, on_audio_level=on_audio_level
-    )
-
-    original_convert = converter.convert_to_pcm16_bytes
-
-    def rate_aware_convert(float32_buffer: bytes):
-        # sounddevice.InputStream's actual rate is passed in by the caller
-        # through `_set_source_rate`; until then assume 48 kHz.
-        if converter._source_sample_rate is None:
-            converter.session_source_format_changed(48_000)
-        return original_convert(float32_buffer)
-
-    converter.convert_to_pcm16_bytes = rate_aware_convert
-    return converter
 
 
 class TranscriptionChoiceResolver:

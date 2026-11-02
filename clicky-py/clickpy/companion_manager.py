@@ -38,9 +38,10 @@ class CompanionManager(QObject):
     overlayResponseTextChanged = Signal(str)
     overlayAudioPowerChanged = Signal(float)
     overlayDismissRequested = Signal()
-    overlayCaptureGuardRequested = Signal(bool)
     # Asking the overlay to fly to a global logical point (element pointing)
     pointingTargetRequested = Signal(float, float)
+    # Worker thread -> main thread screen capture round-trip: (holder, completion_event)
+    captureRequested = Signal(object, object)
 
     def __init__(
         self,
@@ -201,27 +202,29 @@ class CompanionManager(QObject):
         pipeline_thread = Thread(target=run_pipeline, daemon=True, name="companion-response")
         pipeline_thread.start()
 
+    def _request_capture_from_main_thread(self):
+        """Round-trip: the overlays must hide on the GUI thread before mss
+        grabs the desktop, and Qt widget calls are only safe on the main
+        thread. So the response worker emits `captureRequested`, the main
+        thread's receiver hides/captures/reshows, and this call blocks until
+        the completion event resolves (Swift got this for free via
+        ScreenCaptureKit's per-window exclusion + actor re-entrancy)."""
+        from threading import Event
+
+        capture_holder = {"captures": None, "error": None}
+        completion_event = Event()
+        self.captureRequested.emit(capture_holder, completion_event)
+        if not completion_event.wait(timeout=20.0):
+            raise RuntimeError("Screen capture timed out waiting for the main thread")
+        if capture_holder["error"] is not None:
+            raise capture_holder["error"]
+        return capture_holder["captures"]
+
     def _capture_and_query_claude(
         self, transcript: str, pipeline_result: "_ResponsePipelineResult", is_cancelled_fn
     ):
         """Worker-thread body: screenshots -> labeled images -> streamed Claude call."""
-        from .screen_capture import capture_all_screens_as_jpeg
-
-        # Hide this app's overlays during capture (mss has no per-window
-        # exclusion, the way Swift excluded its own SCWindows).
-        self.overlayCaptureGuardRequested.emit(True)
-        try:
-            # Signal handlers run on the main thread; wait one paint cycle so
-            # the overlay is actually hidden before the grab.
-            from PySide6.QtCore import QThread
-
-            QThread.msleep(120)
-            screen_captures = capture_all_screens_as_jpeg()
-        finally:
-            self.overlayCaptureGuardRequested.emit(False)
-            from PySide6.QtCore import QThread
-
-            QThread.msleep(80)
+        screen_captures = self._request_capture_from_main_thread()
 
         if is_cancelled_fn():
             return
@@ -389,8 +392,24 @@ class CompanionManager(QObject):
         self._set_voice_state(CompanionVoiceState.RESPONDING)
 
     def _on_tts_playback_finished(self):
-        if not self.dictation_manager.is_dictating:
-            self._set_voice_state(CompanionVoiceState.IDLE)
+        if self.dictation_manager.is_dictating:
+            return
+        self._set_voice_state(CompanionVoiceState.IDLE)
+        # Transient cursor mode: after the interaction completes (response
+        # spoken, pointing arc done), fade out after 1 second of inactivity —
+        # the scheduleTransientHideIfNeeded behavior. A new push cancels it
+        # naturally: _ensure re-show happens on the next pushToTalk start.
+        if not self.settings.is_clicky_cursor_enabled:
+            self._schedule_transient_hide()
+
+    def _schedule_transient_hide(self):
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(1_000, self._maybe_dismiss_transient_overlay)
+
+    def _maybe_dismiss_transient_overlay(self):
+        if not self.dictation_manager.is_dictating and self._voice_state == CompanionVoiceState.IDLE:
+            self.overlayDismissRequested.emit()
 
     # -- panel options ------------------------------------------------------------
 

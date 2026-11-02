@@ -14,7 +14,7 @@ from PySide6.QtCore import QCoreApplication, Qt
 from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
-from clickpy.companion_manager import CompanionManager
+from clickpy.companion_manager import CompanionManager, CompanionVoiceState
 from clickpy.config import CompanionSettings
 from clickpy.dictation import (
     BuddyDictationManager,
@@ -43,14 +43,17 @@ class OverlayController(QWidget):
         companion_manager.overlayAudioPowerChanged.connect(self._on_audio_power)
         companion_manager.overlayDismissRequested.connect(self.dismiss)
         companion_manager.pointingTargetRequested.connect(self.fly_to_target)
-        companion_manager.overlayCaptureGuardRequested.connect(self._set_capture_guard)
+        companion_manager.captureRequested.connect(self._on_capture_requested)
 
     # -- overlay lifecycle ---------------------------------------------------
 
-    def _ensure_overlay_exists(self):
+    def _ensure_overlay_exists(self, screen=None):
         if self.overlay_window is None:
             self.overlay_window = OverlayWindowHarness()
-            screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+            if screen is None:
+                screen = (
+                    QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+                )
             self.overlay_window.show_on_screen(screen, QCursor.pos())
 
     def dismiss(self):
@@ -84,20 +87,55 @@ class OverlayController(QWidget):
         BlueCursorView flight logic."""
         from PySide6.QtCore import QPointF
 
+        target_screen = (
+            QApplication.screenAt(QPoint(int(global_x), int(global_y)))
+            or QApplication.primaryScreen()
+        )
         self._ensure_overlay_exists()
+        if self.overlay_window.screen_target is not target_screen:
+            # The pointing target lives on another monitor: rebuild the
+            # overlay there so the clamp window lets the buddy land properly.
+            self.overlay_window.hide_overlay()
+            self.overlay_window = None
+            self._ensure_overlay_exists(target_screen)
         self.overlay_window.set_global_target_position(QPointF(global_x, global_y))
 
-    def _set_capture_guard(self, active: bool):
-        """Called by CompanionManager while capturing: hide (so mss does not
-        capture the overlay), show again after."""
-        if self.overlay_window is None:
-            self._capture_guard_active = active
-            return
-        if active:
-            self._capture_guard_active = True
-            self.overlay_window.hide_overlay()
-        else:
+    def _on_capture_requested(self, capture_holder: dict, completion_event):
+        """Executes on the main thread, where widget calls are safe. Hides the
+        overlay, grabs the screenshots, then reveals the overlay again and
+        resolves the waiting worker thread."""
+        from clickpy.screen_capture import capture_all_screens_as_jpeg
+
+        try:
+            did_hide = False
+            if self.overlay_window is not None and self.overlay_window.isVisible():
+                self.overlay_window.hide_overlay()
+                did_hide = True
+                # Two event-loop turns let Qt actually present the scene
+                # without our overlay before mss reads the screen.
+                QApplication.processEvents()
+                QApplication.processEvents()
+            capture_holder["captures"] = capture_all_screens_as_jpeg()
+        except Exception as capture_error:
+            capture_holder["error"] = capture_error
+        finally:
+            completion_event.set()
+
+        # Bring the overlay back for the spinner/response — unless the user
+        # already dismissed it deliberately.
+        active_states = (
+            CompanionVoiceState.LISTENING,
+            CompanionVoiceState.PROCESSING,
+            CompanionVoiceState.RESPONDING,
+        )
+        companion_state = self.companion_manager.voice_state
+        if did_hide and companion_state in active_states:
             self._capture_guard_active = False
+            if self.overlay_window is None:
+                self._ensure_overlay_exists()
+            self.overlay_window.set_processing_state(
+                companion_state == CompanionVoiceState.PROCESSING
+            )
 
 
 def main() -> int:

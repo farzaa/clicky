@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 from PySide6.QtGui import QCursor  # noqa: E402
+from PySide6.QtCore import QPoint  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 
@@ -28,6 +29,7 @@ def main() -> int:
         TranscriptionChoiceResolver,
     )
     from clickpy.companion_manager import CompanionManager  # noqa: E402
+    from clickpy.companion_manager import CompanionVoiceState  # noqa: F401,E402
 
     settings = CompanionSettings.load()
     settings.proxy_base_url = "http://127.0.0.1:59999"  # never hit the network here
@@ -67,6 +69,24 @@ def main() -> int:
     companion_manager.overlayResponseTextChanged.emit(
         "click the run button [POINT:640,400:run button]"
     )
+
+    # Transient-cursor scheduling logic runs even without media playback:
+    companion_manager._on_tts_playback_finished()
+    companion_manager._maybe_dismiss_transient_overlay()
+
+    # Panel hit-testing logic (frameless windows + tray-click dismissal):
+    # show the panel in the offscreen space, then check edge semantics
+    companion_panel = panel_manager.companion_panel
+    companion_panel.position_near_cursor()
+    companion_panel.show()
+    interior_point = companion_panel.mapToGlobal(QPoint(10, 10))
+    assert panel_manager._is_pointer_inside_panel(interior_point.x(), interior_point.y())
+    corner_point = QPoint(
+        interior_point.x() + companion_panel.width() + 200,
+        interior_point.y() + companion_panel.height() + 200,
+    )
+    assert not panel_manager._is_pointer_inside_panel(corner_point.x(), corner_point.y())
+    companion_panel.hide()
 
     print("smoke ok — Qt stack assembled and painted offscreen")
     return 0

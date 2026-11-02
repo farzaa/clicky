@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QObject, QPoint, QSize, Qt, Signal
+from PySide6.QtCore import QObject, QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import (
     QBrush,
     QAction,
@@ -307,13 +307,9 @@ class MenuBarPanelManager(QObject):
             print(f"[panel] outside-click dismissal unavailable: {listener_error}")
 
     def _is_pointer_inside_panel(self, global_x: int, global_y: int) -> bool:
-        panel_global_rect = self.companion_panel.geometry()
-        local_top_left = self.companion_panel.mapToGlobal(QPoint(0, 0))
-        panel_global_rect.translate(
-            local_top_left - self.companion_panel.mapToGlobal(QPoint(0, 0))
-        )
-        panel_global_rect.moveTopLeft(local_top_left)
-        return panel_global_rect.contains(global_x, global_y)
+        panel_origin = self.companion_panel.mapToGlobal(QPoint(0, 0))
+        panel_global_rect = QRect(panel_origin, self.companion_panel.size())
+        return panel_global_rect.contains(QPoint(global_x, global_y))
 
     def show_status_bar_icon(self):
         self.tray_icon.show()
