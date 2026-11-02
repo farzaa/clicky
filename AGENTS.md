@@ -7,7 +7,7 @@
 
 macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to Claude. Claude responds with text (streamed via SSE) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements Claude references on any connected monitor.
 
-All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in the app.
+Provider API keys live on the Cloudflare Worker. Each app installation uses a bearer token stored in macOS Keychain; it is not bundled in the app.
 
 ## Architecture
 
@@ -22,10 +22,11 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
 - **Analytics**: PostHog via `ClickyAnalytics.swift`
+- **Worker Configuration**: user-specific HTTPS endpoint in Application Support and bearer token in macOS Keychain
 
 ### API Proxy (Cloudflare Worker)
 
-The app never calls external APIs directly. All requests go through a Cloudflare Worker (`worker/src/index.ts`) that holds the real API keys as secrets.
+The app never calls external APIs directly. All requests go through a Cloudflare Worker (`worker/src/index.ts`) that holds provider API keys as secrets and requires the installation-specific `CLICKY_PROXY_TOKEN` bearer token.
 
 | Route | Upstream | Purpose |
 |-------|----------|---------|
@@ -33,7 +34,7 @@ The app never calls external APIs directly. All requests go through a Cloudflare
 | `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
 | `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Fetches a short-lived (480s) AssemblyAI websocket token |
 
-Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`
+Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`, `CLICKY_PROXY_TOKEN`
 Worker vars: `ELEVENLABS_VOICE_ID`
 
 ### Key Architecture Decisions
@@ -74,7 +75,8 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
-| `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
+| `WorkerProxyConfiguration.swift` | ~145 | Reads the user's Worker endpoint from Application Support, the bearer token from Keychain, and creates authorized requests. |
+| `worker/src/index.ts` | ~222 | Cloudflare Worker proxy. Authenticates all three routes: `/chat` (Claude), `/tts` (ElevenLabs), and `/transcribe-token` (AssemblyAI temp token). |
 
 ## Build & Run
 
@@ -91,6 +93,8 @@ open leanring-buddy.xcodeproj
 **Do NOT run `xcodebuild` from the terminal** — it invalidates TCC (Transparency, Consent, and Control) permissions and the app will need to re-request screen recording, accessibility, etc.
 
 ## Cloudflare Worker
+
+The Worker requires a `CLICKY_PROXY_TOKEN` secret. Run `./scripts/configure-proxy.sh` from the repository root after deployment to generate the token, configure the endpoint, and store the token in Keychain. For local development, enter `http://localhost:8787`; the script writes the token to ignored `worker/.dev.vars`.
 
 ```bash
 cd worker
