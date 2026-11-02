@@ -10,7 +10,11 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from clickpy.console import configure_unicode_console  # noqa: E402
+
+# Offscreen + UTF-8 so emoji logging never kills the run on cp1252 consoles
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
+configure_unicode_console()
 
 from PySide6.QtGui import QCursor  # noqa: E402
 from PySide6.QtCore import QPoint  # noqa: E402
@@ -87,6 +91,15 @@ def main() -> int:
     )
     assert not panel_manager._is_pointer_inside_panel(corner_point.x(), corner_point.y())
     companion_panel.hide()
+
+    # Mic availability probe (real audio stack, no GUI needed)
+    companion_manager.check_microphone_availability()
+
+    # Chat backend switching: with no OPENAI_API_KEY the switch must fall
+    # back to Claude and refresh the panel's model picker.
+    companion_manager._on_chat_backend_selected("openai")
+    companion_manager._on_chat_backend_selected("claude")
+    assert isinstance(companion_manager.chat_client, object)
 
     print("smoke ok — Qt stack assembled and painted offscreen")
     return 0

@@ -138,7 +138,7 @@ class CompanionPanelView(QWidget):
             | Qt.WindowType.Tool
             | Qt.WindowType.WindowStaysOnTopHint
         )
-        self.setFixedSize(QSize(300, 210))
+        self.setFixedSize(QSize(300, 244))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 12)
@@ -156,11 +156,23 @@ class CompanionPanelView(QWidget):
         picker_row = QHBoxLayout()
         model_caption = QLabel("model")
         self.model_combo_box = QComboBox()
-        self.model_combo_box.addItems(list(settings.available_models))
-        if settings.selected_model in settings.available_models:
+        self.model_combo_box.addItems(list(settings.available_models_claude))
+        if settings.selected_model in settings.available_models_claude:
             self.model_combo_box.setCurrentText(settings.selected_model)
         picker_row.addWidget(model_caption)
         picker_row.addWidget(self.model_combo_box, 1)
+        layout.addLayout(picker_row)
+
+        chat_row = QHBoxLayout()
+        chat_caption = QLabel("chat backend")
+        self.chat_combo_box = QComboBox()
+        self.chat_combo_box.addItems(["Claude", "OpenAI"])
+        self.chat_combo_box.setCurrentText(
+            "OpenAI" if settings.selected_chat_backend.lower() == "openai" else "Claude"
+        )
+        chat_row.addWidget(chat_caption)
+        chat_row.addWidget(self.chat_combo_box, 1)
+        layout.addLayout(chat_row)
 
         transcription_caption = QLabel("transcription")
         self.transcription_combo_box = QComboBox()
@@ -199,6 +211,17 @@ class CompanionPanelView(QWidget):
     def set_status_text(self, status_text: str):
         self.status_label.setText(status_text)
 
+    def set_model_choices(self, model_choices: list, current_model: str):
+        """Replaces the model picker's contents when the chat backend changes.
+        Signals are blocked so the change doesn't loop back as a user pick."""
+        combo_box = self.model_combo_box
+        combo_box.blockSignals(True)
+        combo_box.clear()
+        combo_box.addItems(model_choices)
+        if current_model in model_choices:
+            combo_box.setCurrentText(current_model)
+        combo_box.blockSignals(False)
+
     def position_near_cursor(self):
         """Opens the panel near its tray click without wandering off-screen."""
         mouse_position = self.cursor().pos()
@@ -224,6 +247,7 @@ class MenuBarPanelManager(QObject):
     companionPanelToggled = Signal(bool)  # visible
     modelSelected = Signal(str)
     transcriptionProviderSelected = Signal(str)
+    chatProviderSelected = Signal(str)
     clickyCursorPreferenceChanged = Signal(bool)
     quitRequested = Signal()
     holdToTalkPressed = Signal()
@@ -265,6 +289,9 @@ class MenuBarPanelManager(QObject):
     def _wire_panel_signals(self):
         self.companion_panel.model_combo_box.currentTextChanged.connect(
             self.modelSelected.emit
+        )
+        self.companion_panel.chat_combo_box.currentTextChanged.connect(
+            lambda display_name: self.chatProviderSelected.emit(display_name.lower())
         )
         self.companion_panel.transcription_combo_box.currentTextChanged.connect(
             self._on_transcription_selected

@@ -70,10 +70,13 @@ class ClaudeAPI:
         user_prompt: str,
         on_text_chunk: Callable[[str], None],
         http_client=None,
+        is_cancelled_fn: Optional[Callable[[], bool]] = None,
     ) -> tuple[str, float]:
         """Sends a vision request to Claude with streaming. Calls
         `on_text_chunk` with the accumulated text each time new text arrives
-        (progressive display). Returns (full text, duration) when done."""
+        (progressive display). Returns (full text, duration) when done.
+        `is_cancelled_fn` is checked between events so a new push-to-talk
+        abandons a stale response without waiting for the stream to finish."""
         return self._analyze(
             images=images,
             system_prompt=system_prompt,
@@ -83,6 +86,7 @@ class ClaudeAPI:
             streaming=True,
             on_text_chunk=on_text_chunk,
             http_client=http_client,
+            is_cancelled_fn=is_cancelled_fn,
         )
 
     def analyze_image(
@@ -115,6 +119,7 @@ class ClaudeAPI:
         streaming,
         on_text_chunk,
         http_client,
+        is_cancelled_fn: Optional[Callable[[], bool]] = None,
     ) -> tuple[str, float]:
         import httpx  # imported lazily so pure-Python tests skip the dependency
 
@@ -143,7 +148,9 @@ class ClaudeAPI:
                     "POST", self.proxy_url, headers=request_headers, json=body
                 ) as response:
                     self._raise_for_error(response, streaming=True)
-                    accumulated_text = self._consume_sse_stream(response, on_text_chunk)
+                    accumulated_text = self._consume_sse_stream(
+                        response, on_text_chunk, is_cancelled_fn=is_cancelled_fn
+                    )
             else:
                 response = http_client.post(
                     self.proxy_url, headers=request_headers, json=body
@@ -176,11 +183,17 @@ class ClaudeAPI:
         raise RuntimeError(f"API Error ({response.status_code}): {error_body}")
 
     @staticmethod
-    def _consume_sse_stream(response, on_text_chunk: Optional[Callable[[str], None]]) -> str:
+    def _consume_sse_stream(
+        response,
+        on_text_chunk: Optional[Callable[[str], None]],
+        is_cancelled_fn: Optional[Callable[[], bool]] = None,
+    ) -> str:
         """Parses the SSE stream — each event is "data: {json}\\n\\n". We care
         about content_block_delta events carrying text_delta payloads.
         Extracted as a static method so it is unit-testable with a fake
-        line stream (no network)."""
+        line stream (no network). Raises RuntimeError("response cancelled")
+        the moment `is_cancelled_fn` turns truthy — matching the Swift
+        Task.isCancelled mid-stream abandonment."""
         accumulated_response_text = ""
         for line in response.iter_lines():
             # httpx yields decoded str lines without the trailing newline
@@ -200,6 +213,8 @@ class ClaudeAPI:
                     accumulated_response_text += delta["text"]
                     if on_text_chunk is not None:
                         on_text_chunk(accumulated_response_text)
+            if is_cancelled_fn is not None and is_cancelled_fn():
+                raise RuntimeError("response cancelled")
         return accumulated_response_text
 
 

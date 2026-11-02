@@ -32,13 +32,16 @@ class CompanionSettings:
     # Claude model used for voice responses. Named exactly like the Swift
     # value so both apps read/write the same model identifiers.
     selected_model: str = "claude-sonnet-4-6"
-    available_models: tuple[str, ...] = ("claude-sonnet-4-6", "claude-opus-4-6")
     # Whether the blue cursor overlay is always visible. When off, the cursor
     # only appears transiently during an interaction (transient cursor mode).
     is_clicky_cursor_enabled: bool = True
     # Push-to-talk key combination. ctrl+option on macOS; ctrl+alt is the
     # direct Windows equivalent.
     push_to_talk_hold_keys: tuple[str, ...] = ("ctrl", "alt")
+    # Which vision/chat backend answers: "claude" (Worker proxy) or "openai"
+    # (direct, OPENAI_API_KEY from the environment).
+    selected_chat_backend: str = "claude"
+    available_models_claude: tuple[str, ...] = ("claude-sonnet-4-6", "claude-opus-4-6")
 
     @classmethod
     def load(cls) -> "CompanionSettings":

@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
 from clickpy.companion_manager import CompanionManager, CompanionVoiceState
 from clickpy.config import CompanionSettings
+from clickpy.console import configure_unicode_console
 from clickpy.dictation import (
     BuddyDictationManager,
     GlobalPushToTalkShortcutMonitor,
@@ -139,6 +140,7 @@ class OverlayController(QWidget):
 
 
 def main() -> int:
+    configure_unicode_console()
     QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
     application = QApplication(sys.argv)
     application.setApplicationName("clicky-py")
@@ -168,6 +170,9 @@ def main() -> int:
     # Keyboard push-to-talk monitor
     push_to_talk_monitor.start_monitoring()
     panel_manager.show_status_bar_icon()
+
+    # Surface mic availability up front instead of failing mid-push
+    companion_manager.check_microphone_availability()
 
     def quit_everything():
         companion_manager._response_worker_cancelled = True

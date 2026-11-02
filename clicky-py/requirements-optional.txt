@@ -1,0 +1,7 @@
+# Optional layers for clicky-py (install only if you want them):
+#   .venv\Scripts\activate
+#   pip install -r requirements-optional.txt
+# - posthog: enables usage analytics when CLICKY_PY_POSTHOG_KEY is set
+# - pywin32: enables the SAPI TTS fallback used when ElevenLabs is down
+posthog>=3
+pywin32>=306; sys_platform == "win32"

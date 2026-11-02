@@ -42,6 +42,8 @@ class CompanionManager(QObject):
     pointingTargetRequested = Signal(float, float)
     # Worker thread -> main thread screen capture round-trip: (holder, completion_event)
     captureRequested = Signal(object, object)
+    # Chat backend changed: (model_choices, selected_model) for the panel combo
+    modelChoicesChanged = Signal(list, str)
 
     def __init__(
         self,
@@ -62,14 +64,17 @@ class CompanionManager(QObject):
         self._last_transcript: Optional[str] = None
         self._conversation_history: list[tuple[str, str]] = []
         self._response_worker_cancelled = False
+        self._microphone_available = True
 
-        from .claude_api import ClaudeAPI
+        from .chat import resolve_chat_client
+
+        # Claude (Worker proxy) by default; OpenAI direct when the panel or
+        # settings say so. resolve_chat_client falls back to Claude if the
+        # OpenAI key is missing.
+        self.chat_client = resolve_chat_client(settings)
+
         from .tts import ElevenLabsTTSClient
 
-        self.claude_api = ClaudeAPI(
-            proxy_url=f"{settings.proxy_base_url.rstrip('/')}/chat",
-            model=settings.selected_model,
-        )
         self.eleven_labs_tts_client = ElevenLabsTTSClient(
             proxy_url=f"{settings.proxy_base_url.rstrip('/')}/tts"
         )
@@ -114,6 +119,11 @@ class CompanionManager(QObject):
         self.panel_manager.clickyCursorPreferenceChanged.connect(
             self._on_clicky_cursor_preference_changed
         )
+        self.panel_manager.chatProviderSelected.connect(self._on_chat_backend_selected)
+        # Model list refreshes flow straight into the panel's picker
+        self.modelChoicesChanged.connect(
+            self.panel_manager.companion_panel.set_model_choices
+        )
 
     # -- state ---------------------------------------------------------------
 
@@ -126,7 +136,34 @@ class CompanionManager(QObject):
             return
         self._voice_state = new_state
         self.voiceStateChanged.emit(new_state)
-        self.panel_manager.set_companion_status(_STATUS_TEXT_FOR_STATE.get(new_state, new_state))
+        status_text = _STATUS_TEXT_FOR_STATE.get(new_state, new_state)
+        if new_state == CompanionVoiceState.IDLE and not self._microphone_available:
+            status_text = "no microphone found — check Windows sound settings"
+        self.panel_manager.set_companion_status(status_text)
+
+    # -- device checks ---------------------------------------------------------
+
+    def check_microphone_availability(self):
+        """Probes PortAudio for any input device so the panel can say so up
+        front instead of failing on the first push-to-talk. Called once from
+        main() during startup."""
+        try:
+            import sounddevice
+
+            microphone_found = any(
+                device.get("max_input_channels", 0) > 0
+                for device in sounddevice.query_devices()
+            )
+        except Exception as audio_probe_error:
+            print(f"[startup] audio probe failed: {audio_probe_error}")
+            microphone_found = False
+
+        self._microphone_available = microphone_found
+        if not microphone_found:
+            self.panel_manager.set_companion_status(
+                "no microphone found — check Windows sound settings"
+            )
+        print(f"🎙️ Microphone available: {microphone_found}")
 
     # -- push-to-talk edges ---------------------------------------------------
 
@@ -246,13 +283,14 @@ class CompanionManager(QObject):
             f"🌐 Claude streaming request: {payload_mb:.1f}MB, {len(labeled_images)} image(s)"
         )
 
-        full_response_text, _duration = self.claude_api.analyze_image_streaming(
+        full_response_text, _duration = self.chat_client.analyze_image_streaming(
             images=labeled_images,
             system_prompt=COMPANION_VOICE_RESPONSE_SYSTEM_PROMPT,
             conversation_history=list(self._conversation_history),
             user_prompt=transcript,
             on_text_chunk=lambda chunk: None,
             # No streaming bubble — the Swift version also keeps the spinner
+            is_cancelled_fn=lambda: self._response_worker_cancelled,
         )
         pipeline_result.full_response_text = full_response_text
         pipeline_result.screen_captures = screen_captures
@@ -416,8 +454,30 @@ class CompanionManager(QObject):
     def set_selected_model(self, model: str):
         self.settings.selected_model = model
         self.settings.save()
-        self.claude_api.model = model
+        self.chat_client.model = model
         print(f"🧠 Model: {model}")
+
+    def _on_chat_backend_selected(self, backend: str):
+        """Panel asked for the other chat backend. Model lists differ per
+        backend, so an invalid model resets to that backend's default — and
+        the panel's picker is refreshes with the new list."""
+        from .chat import (
+            available_models_for_backend,
+            default_model_for_backend,
+            resolve_chat_client,
+        )
+
+        normalized = backend.lower()
+        self.settings.selected_chat_backend = normalized
+        available_models = available_models_for_backend(self.settings, normalized)
+        if self.settings.selected_model not in available_models:
+            self.settings.selected_model = default_model_for_backend(
+                self.settings, normalized
+            )
+        self.settings.save()
+        self.chat_client = resolve_chat_client(self.settings)
+        self.modelChoicesChanged.emit(list(available_models), self.settings.selected_model)
+        print(f"💬 Chat backend: {normalized} (model {self.chat_client.model})")
 
     def _on_transcription_provider_selected(self, provider_identifier: str):
         self.settings.save()
