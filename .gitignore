@@ -1,8 +1,15 @@
 worker/node_modules/
 worker/.dev.vars
+worker/.wrangler/
 .DS_Store
 *.xcuserstate
 build/
 releases/
 .claude/
 coding-plans/
+
+# Python port (clicky-py/)
+clicky-py/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

@@ -1,0 +1,9 @@
+PySide6>=6.7,<7
+httpx>=0.27,<1
+sounddevice>=0.4.6,<1
+numpy>=1.26
+mss>=9,<11
+pillow>=10
+pynput>=1.7
+websockets>=12,<16
+pytest>=8

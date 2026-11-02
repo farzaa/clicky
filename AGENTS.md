@@ -151,6 +151,16 @@ IMPORTANT: Follow these naming rules strictly. Clarity is the top priority.
 - Commit messages: imperative mood, concise, explain the "why" not the "what"
 - Do not force-push to main
 
+## Python Port (clicky-py/)
+
+A PySide6 port of the companion app that runs on Windows (`clicky-py/`), mirroring the Swift class names so the two codebases stay cross-readable. Same pipeline: push-to-talk (ctrl+alt) -> mic capture -> AssemblyAI/OpenAI transcription via the Worker proxy -> screenshot (mss, cursor screen first) -> Claude SSE streaming -> parsed [POINT:...] tag -> transparent overlay with bezier flight -> ElevenLabs TTS via QMediaPlayer. All API traffic still goes through the Worker so no keys ship in the app.
+
+Windows conventions for the port:
+- PySide6/QThreadPool/pynput replace AppKit/AVFoundation/CGEvent tap
+- Qt signals carry main-thread hops (@MainActor's counterpart); heavy I/O runs on worker threads
+- Settings persist to `%APPDATA%\ClickyPy\settings.json` instead of UserDefaults
+- NOTE: `leanring-buddy/AGENTS.md` documents a FloatingSessionButton/ContentView generation that is NOT on this branch — treat this file and the checked-out Swift sources as the port reference
+
 ## Self-Update Instructions
 
 <!-- AI agents: follow these instructions to keep this file accurate. -->

@@ -1,0 +1,77 @@
+"""Headless smoke test: instantiates the full Qt app stack offscreen
+(QT_QPA_PLATFORM=offscreen) to catch wiring/enum/signature errors without a
+display or mic. Not a pytest test — run manually:
+
+    .\\.venv\\Scripts\\python.exe scripts\\smoke_headless.py
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
+from PySide6.QtGui import QCursor  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
+
+
+def main() -> int:
+    application = QApplication(sys.argv)
+
+    from clickpy.overlay import OverlayWindowHarness  # noqa: E402
+    from clickpy.panel import MenuBarPanelManager  # noqa: E402
+    from clickpy.config import CompanionSettings  # noqa: E402
+    from clickpy.dictation import (  # noqa: E402
+        BuddyDictationManager,
+        GlobalPushToTalkShortcutMonitor,
+        TranscriptionChoiceResolver,
+    )
+    from clickpy.companion_manager import CompanionManager  # noqa: E402
+
+    settings = CompanionSettings.load()
+    settings.proxy_base_url = "http://127.0.0.1:59999"  # never hit the network here
+
+    panel_manager = MenuBarPanelManager(settings)
+    resolver = TranscriptionChoiceResolver(settings.proxy_base_url, None)
+    push_to_talk_monitor = GlobalPushToTalkShortcutMonitor()
+    dictation_manager = BuddyDictationManager(resolver.provider)
+    companion_manager = CompanionManager(
+        settings=settings,
+        panel_manager=panel_manager,
+        dictation_manager=dictation_manager,
+        push_to_talk_monitor=push_to_talk_monitor,
+    )
+
+    # Drive the state machine offline: listening -> spinner -> response bubble
+    companion_manager.overlayShowRequested.emit("hello there")
+    companion_manager.overlayShowSpinnerRequested.emit()
+    companion_manager.overlayResponseTextChanged.emit("all good — [POINT:none]")
+
+    # Panel paints + status updates
+    panel_manager.set_companion_status("listening…")
+    assert panel_manager.tray_menu is not None
+
+    # Render every painter path (grab composites the widget offscreen)
+    overlay_window = OverlayWindowHarness()
+    overlay_window.show_on_screen(application.primaryScreen(), QCursor.pos())
+    overlay_window.set_recording_state(True, "something on my screen, hmm")
+    overlay_window.set_audio_power_level(0.7)
+    rendered_pixmap = overlay_window.grab()
+    assert not rendered_pixmap.isNull()
+
+    panel_pixmap = panel_manager.companion_panel.grab()
+    assert not panel_pixmap.isNull()
+
+    # Element pointing math end-to-end inside a live widget tree
+    companion_manager.overlayResponseTextChanged.emit(
+        "click the run button [POINT:640,400:run button]"
+    )
+
+    print("smoke ok — Qt stack assembled and painted offscreen")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+
