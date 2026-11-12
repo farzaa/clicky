@@ -12,11 +12,71 @@ import Combine
 import CoreGraphics
 import Foundation
 
+struct StandaloneControlKeyTapTracker {
+    private static let trackedModifierFlags: NSEvent.ModifierFlags = [
+        .control,
+        .option,
+        .command,
+        .shift,
+        .function
+    ]
+
+    private var isTrackingStandaloneControlPress = false
+    private var isModifierComboActive = false
+
+    /// Returns true only when Control is pressed and released by itself without
+    /// any other modifier or regular key pressed before all modifiers release.
+    mutating func didCompleteStandaloneControlTap(
+        for eventType: CGEventType,
+        modifierFlagsRawValue: UInt64
+    ) -> Bool {
+        let relevantModifierFlags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlagsRawValue))
+            .intersection(Self.trackedModifierFlags)
+
+        switch eventType {
+        case .keyDown:
+            isTrackingStandaloneControlPress = false
+            if !relevantModifierFlags.isEmpty {
+                isModifierComboActive = true
+            }
+            return false
+        case .keyUp:
+            isTrackingStandaloneControlPress = false
+            return false
+        case .flagsChanged:
+            let hasControlFlag = relevantModifierFlags.contains(.control)
+            let hasOtherModifierFlags = !relevantModifierFlags.subtracting(.control).isEmpty
+
+            if hasOtherModifierFlags {
+                isTrackingStandaloneControlPress = false
+                isModifierComboActive = true
+                return false
+            }
+
+            if hasControlFlag {
+                if !isModifierComboActive {
+                    isTrackingStandaloneControlPress = true
+                }
+                return false
+            }
+
+            let didCompleteTap = isTrackingStandaloneControlPress
+            isTrackingStandaloneControlPress = false
+            isModifierComboActive = false
+            return didCompleteTap
+        default:
+            return false
+        }
+    }
+}
+
 final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     let shortcutTransitionPublisher = PassthroughSubject<BuddyPushToTalkShortcut.ShortcutTransition, Never>()
+    let standaloneControlTapPublisher = PassthroughSubject<Void, Never>()
 
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
+    private var standaloneControlKeyTapTracker = StandaloneControlKeyTapTracker()
     /// Mutated exclusively from the CGEvent tap callback, which runs on
     /// `CFRunLoopGetMain()` and therefore always executes on the main thread.
     /// Published so the overlay can hide immediately on key release without
@@ -85,6 +145,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
     func stop() {
         isShortcutCurrentlyPressed = false
+        standaloneControlKeyTapTracker = StandaloneControlKeyTapTracker()
 
         if let globalEventTapRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), globalEventTapRunLoopSource, .commonModes)
@@ -106,6 +167,13 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
                 CGEvent.tapEnable(tap: globalEventTap, enable: true)
             }
             return Unmanaged.passUnretained(event)
+        }
+
+        if standaloneControlKeyTapTracker.didCompleteStandaloneControlTap(
+            for: eventType,
+            modifierFlagsRawValue: event.flags.rawValue
+        ) {
+            standaloneControlTapPublisher.send(())
         }
 
         let eventKeyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))

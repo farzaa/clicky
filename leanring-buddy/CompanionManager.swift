@@ -80,6 +80,13 @@ final class CompanionManager: ObservableObject {
         return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
     }()
 
+    /// Retained so system fallback speech can be tracked and stopped cleanly.
+    private var fallbackSpeechSynthesizer: NSSpeechSynthesizer?
+
+    private var isSpeakingResponseAudio: Bool {
+        elevenLabsTTSClient.isPlaying || (fallbackSpeechSynthesizer?.isSpeaking ?? false)
+    }
+
     /// Conversation history so Claude remembers prior exchanges within a session.
     /// Each entry is the user's transcript and Claude's response.
     private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
@@ -89,6 +96,7 @@ final class CompanionManager: ObservableObject {
     private var currentResponseTask: Task<Void, Never>?
 
     private var shortcutTransitionCancellable: AnyCancellable?
+    private var standaloneControlTapCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
@@ -179,6 +187,7 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
+        bindStandaloneControlTap()
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
@@ -295,7 +304,9 @@ final class CompanionManager: ObservableObject {
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
+        stopAudioPlayback()
         shortcutTransitionCancellable?.cancel()
+        standaloneControlTapCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
@@ -470,6 +481,31 @@ final class CompanionManager: ObservableObject {
             }
     }
 
+    private func bindStandaloneControlTap() {
+        standaloneControlTapCancellable = globalPushToTalkShortcutMonitor
+            .standaloneControlTapPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                self?.stopSpeakingPlayback()
+            }
+    }
+
+    func stopSpeakingPlayback() {
+        guard voiceState == .responding || isSpeakingResponseAudio else { return }
+
+        currentResponseTask?.cancel()
+        currentResponseTask = nil
+        stopAudioPlayback()
+        voiceState = .idle
+        scheduleTransientHideIfNeeded()
+    }
+
+    private func stopAudioPlayback() {
+        elevenLabsTTSClient.stopPlayback()
+        fallbackSpeechSynthesizer?.stopSpeaking()
+        fallbackSpeechSynthesizer = nil
+    }
+
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
         case .pressed:
@@ -493,7 +529,7 @@ final class CompanionManager: ObservableObject {
 
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
-            elevenLabsTTSClient.stopPlayback()
+            stopAudioPlayback()
             clearDetectedElementLocation()
 
             // Dismiss the onboarding prompt if it's showing
@@ -585,7 +621,7 @@ final class CompanionManager: ObservableObject {
     /// the buddy to fly to that element on screen.
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
-        elevenLabsTTSClient.stopPlayback()
+        stopAudioPlayback()
 
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
@@ -704,18 +740,36 @@ final class CompanionManager: ObservableObject {
                         try await elevenLabsTTSClient.speakText(spokenText)
                         // speakText returns after player.play() — audio is now playing
                         voiceState = .responding
+                    } catch is CancellationError {
+                        return
+                    } catch let urlError as URLError where urlError.code == .cancelled {
+                        return
                     } catch {
+                        guard !Task.isCancelled else { return }
                         ClickyAnalytics.trackTTSError(error: error.localizedDescription)
                         print("⚠️ ElevenLabs TTS error: \(error)")
                         speakCreditsErrorFallback()
                     }
+
+                    // Keep voiceState in .responding while audio is playing so the
+                    // UI and single-tap Control stop shortcut know speech is active.
+                    while !Task.isCancelled && isSpeakingResponseAudio {
+                        try? await Task.sleep(nanoseconds: 100_000_000)
+                    }
                 }
             } catch is CancellationError {
                 // User spoke again — response was interrupted
+            } catch let urlError as URLError where urlError.code == .cancelled {
+                // URLSession reports Task cancellation as URLError.cancelled
             } catch {
+                guard !Task.isCancelled else { return }
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
                 speakCreditsErrorFallback()
+
+                while !Task.isCancelled && isSpeakingResponseAudio {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
             }
 
             if !Task.isCancelled {
@@ -735,7 +789,7 @@ final class CompanionManager: ObservableObject {
         transientHideTask?.cancel()
         transientHideTask = Task {
             // Wait for TTS audio to finish playing
-            while elevenLabsTTSClient.isPlaying {
+            while isSpeakingResponseAudio {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }
@@ -760,8 +814,9 @@ final class CompanionManager: ObservableObject {
     /// ElevenLabs is down.
     private func speakCreditsErrorFallback() {
         let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
+        let speechSynthesizer = NSSpeechSynthesizer()
+        fallbackSpeechSynthesizer = speechSynthesizer
+        speechSynthesizer.startSpeaking(utterance)
         voiceState = .responding
     }
 
